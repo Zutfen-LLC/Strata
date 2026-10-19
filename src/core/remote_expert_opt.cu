@@ -114,6 +114,17 @@ void RemoteExpertOpt::accumulate(const RemoteExperts& remote) {
         h_mask_[token_begin_ * K + i] |= remote.owned_[(size_t) i] != 0;
 }
 
+void RemoteExpertOpt::accumulate_host(const float* partials, const uint8_t* owned, int n_tok, int k) {
+    // #349: the same two tables accumulate() writes for a helper tier, fed by the CPU worker's
+    // already-weighted partial instead of a reduced device sum.  Must run inside the begin()/end()
+    // bracket of the same group: h_sum_ was zeroed there and the GPU combine reads it after the flag.
+    if (weights_ == nullptr || partials == nullptr || owned == nullptr) return;
+    if (n_tok != tokens_ || k != K || token_begin_ + n_tok > MAXT) return;   // h_mask_ rows are K wide
+    for (int64_t i = 0; i < (int64_t) n_tok * H; ++i) h_sum_[token_begin_ * H + i] += partials[i];
+    for (int i = 0; i < n_tok * k; ++i)
+        h_mask_[token_begin_ * K + i] |= owned[(size_t) i] != 0;
+}
+
 void RemoteExpertOpt::copy_rows(float* dst, const float* src, int token_begin, int tokens,
                          const int32_t* hit_rows, const int32_t* count, void* stream) const {
     copy_cpu_rows<<<tokens * K, 128, 0, (cudaStream_t) stream>>>(

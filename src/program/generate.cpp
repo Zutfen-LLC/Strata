@@ -23,6 +23,7 @@
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/worker/expert_tier.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
@@ -551,6 +552,13 @@ struct Options {
     std::array<int, 3> expert_cache_remote{}; ///< CUDA1..3 slots; CUDA0 keeps dense/state/MTP
     std::array<bool, 3> expert_cache_remote_auto{};
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
+    /// inferswarm #349: the opt-in remote CPU-expert worker (default OFF - without the flag every path
+    /// below is untouched).  The worker holds the CPU-owned expert complement of another machine's RAM
+    /// and computes its weighted partials; see docs/CPU_WORKER.md and worker/expert_tier.hpp.
+    bool remote_cpu_experts = false;
+    std::string remote_cpu_host = "127.0.0.1";   ///< the worker, or the local end of an owned SSH forward
+    int remote_cpu_port = 7431;
+    int remote_cpu_deadline_ms = 10000;
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
     /// **R4.2g.  ROUND 328 MEASURED THAT THE GLOBAL ADMISSION POLICY CANNOT WORK, AND THIS IS THE FIX.**
@@ -983,6 +991,15 @@ void usage() {
                  "  --expert-cache-device2 N|auto  fill CUDA2 with more experts\n"
                  "  --expert-cache-device3 N|auto  fill CUDA3 with more experts\n"
                  "  --remote-expert-opt   enable remote-expert decode optimizations (serve mode)\n"
+                 "  --remote-cpu-experts HOST:PORT  inferswarm #349, experimental: the CPU-owned expert\n"
+                 "                       complement executes on a resident CPU-expert worker\n"
+                 "                       (strata-expert-worker, docs/CPU_WORKER.md) instead of this host's\n"
+                 "                       pool.  Opt-in and serve-only; needs a native Q8_0/Q8_0 pack, the\n"
+                 "                       expert cache and --expert-profile, fixed placement, prompts within\n"
+                 "                       --short-read through the verify windows, and refuses the modes it\n"
+                 "                       does not implement (batch slots, layer split, peer, pipeline,\n"
+                 "                       adaptive tiers, resident RAM mirrors, tail skipping).\n"
+                 "  --remote-cpu-deadline-ms N  per-frame deadline to the worker (default 10000)\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
                  "                       layers across CUDA1..3 (default: stripe)\n"
                  "  --peer-device N      a second GPU as an adaptive expert-cache tier (rows over P2P; it also\n"
@@ -2450,6 +2467,20 @@ int main(int argc, char** argv) {
             o.expert_cache_remote[r] = v == "auto" ? std::numeric_limits<int>::max() : std::atoi(v.c_str());
         }
         else if (a == "--remote-expert-opt") o.remote_expert_opt = true;
+        else if (a == "--remote-cpu-experts") {
+            o.remote_cpu_experts = true;
+            const std::string v = next("--remote-cpu-experts");
+            const size_t c = v.rfind(':');
+            const int port = c == std::string::npos ? -1 : std::atoi(v.c_str() + c + 1);
+            if (c == std::string::npos || v.substr(0, c).empty() || port < 1 || port > 65535) {
+                std::fprintf(stderr, "--remote-cpu-experts takes HOST:PORT\n");
+                return 2;
+            }
+            o.remote_cpu_host = v.substr(0, c);
+            o.remote_cpu_port = port;
+        }
+        else if (a == "--remote-cpu-deadline-ms")
+            o.remote_cpu_deadline_ms = std::max(100, std::atoi(next("--remote-cpu-deadline-ms")));
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
@@ -3182,6 +3213,28 @@ int main(int argc, char** argv) {
     if (o.remote_expert_opt && !o.serve) {
         std::fprintf(stderr, "strata generate: --remote-expert-opt requires --serve\n");
         return 2;
+    }
+    // inferswarm #349: the remote CPU-expert worker is a bounded, opt-in mode.  It refuses UP FRONT every
+    // configuration whose execution path it does not implement, rather than silently running a different
+    // one: the modes below are the ones the integration was framed for (see docs/CPU_WORKER.md).
+    if (o.remote_cpu_experts) {
+        const char* why = !o.serve ? "it needs --serve"
+                        : o.batch != 0 ? "not with --batch slots (serial text requests only)"
+                        : !o.layer_split.empty() ? "not with --layer-split (single-stage windows)"
+                        : o.peer_device >= 1 ? "not with --peer-device"
+                        : o.pipeline_windows > 0 ? "not with --pipeline-windows"
+                        : o.expert_cache <= 0 || o.no_pool ? "it needs the CUDA0 expert cache and the expert pool"
+                        : o.short_read <= 0 ? "it needs --short-read N >= 1 (prompts read through the verify windows)"
+                        : o.adapt_every > 0 && o.adapt_swaps > 0
+                              ? "not with the adaptive tier on (fixed placement only: --adapt-every 0)"
+                        : o.resident_cpu_experts ? "not with --resident-cpu-experts (no local RAM expert mirror)"
+                        : strata::core::tail_skip_rank() > 0
+                              ? "not with STRATA_ROUTE_TAIL_SKIP (every routed expert keeps its owner)"
+                        : nullptr;
+        if (why != nullptr) {
+            std::fprintf(stderr, "strata generate: --remote-cpu-experts: %s\n", why);
+            return 2;
+        }
     }
     // the peer tier is the second card's only user: a layer split or a remote expert cache would put a second engine
     // part (and a second copy of the same experts) on it
@@ -6362,7 +6415,11 @@ int main(int argc, char** argv) {
 
     std::array<strata::core::RemoteExperts, 3> remote_experts;
     std::unique_ptr<strata::core::RemoteExpertOpt> remote_opt;
-    if (o.remote_expert_opt && o.expert_cache_remote[0] > 0) remote_opt = std::make_unique<strata::core::RemoteExpertOpt>();
+    // #349: the worker's merge rides the same RemoteExpertOpt tables the helper tiers use (copy_rows /
+    // combine), so the mode needs one even without --remote-expert-opt; with both on, the helpers attach
+    // their peers below and the worker's partial lands on top of theirs.
+    if ((o.remote_expert_opt && o.expert_cache_remote[0] > 0) || o.remote_cpu_experts)
+        remote_opt = std::make_unique<strata::core::RemoteExpertOpt>();
     const bool multi_remote = o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
     if (o.expert_cache_remote[0] > 0) {
         if (o.expert_cache <= 0 || profile.empty() || o.no_pool) {
@@ -6467,6 +6524,84 @@ int main(int argc, char** argv) {
                      (long long) (peer.resident() + xcache.slots()), (long long) (g.n_layers * g.n_expert));
     }
 
+    // ---- inferswarm #349: the remote CPU-expert worker tier (opt-in; default off) ----------------------
+    // The partition is DERIVED, never configured: whatever no GPU tier holds after startup - CUDA0's
+    // cache, every stage cache, every helper tier - is the worker's, so every routed expert keeps exactly
+    // one executing owner.  The setup streams each owned blob from the expert source through one
+    // blob-sized staging buffer (no local RAM mirror), and inference may not start before the worker has
+    // verified the whole set (READY), which this open() waits for.
+    strata::worker::ExpertWorkerTier worker_tier;
+    if (o.remote_cpu_experts) {
+        if (profile.empty() || srcp == nullptr) {
+            std::fprintf(stderr, "strata generate: --remote-cpu-experts needs --expert-profile and the expert source\n");
+            return 1;
+        }
+        const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
+        if (!lay.native || lay.fmt.empty()) {
+            std::fprintf(stderr, "strata generate: --remote-cpu-experts needs a native pack whose every layer is "
+                                 "plain Q8_0/Q8_0 at one geometry (the worker's one fixture-tested layout)\n");
+            return 1;
+        }
+        const strata::kernels::cpu::NativeFmt& f0 = lay.fmt.front();
+        bool uniform = f0.gu_type == 8 && f0.d_type == 8 && f0.had_block == 0 && f0.n_embd == g.n_embd;
+        for (const auto& f : lay.fmt)
+            uniform = uniform && f.gu_type == f0.gu_type && f.d_type == f0.d_type && f.had_block == 0 &&
+                      f.n_embd == f0.n_embd && f.n_ff == f0.n_ff && f.bytes == f0.bytes;
+        if (!uniform) {
+            std::fprintf(stderr, "strata generate: --remote-cpu-experts needs a native pack whose every layer is "
+                                 "plain Q8_0/Q8_0 at one geometry (the worker's one fixture-tested layout)\n");
+            return 1;
+        }
+        const size_t stride = ((size_t) g.n_expert + 7) / 8;
+        std::vector<uint8_t> partition((size_t) g.n_layers * stride, 0xff);   // start with everything
+        auto gpu_holds = [&](int64_t l, int32_t e) {
+            if (xcache.slot_of(l, e) >= 0) return true;
+            for (const auto& st : stages)
+                if (st->cache.slot_of(l, e) >= 0) return true;
+            for (int r = 0; r < 3; ++r)
+                if (o.expert_cache_remote[(size_t) r] > 0 && remote_experts[(size_t) r].holds(l, e)) return true;
+            return false;
+        };
+        uint64_t owned = 0;
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            for (int32_t e = 0; e < g.n_expert; ++e)
+                if (!gpu_holds(l, e)) {
+                    ++owned;
+                } else {
+                    partition[(size_t) l * stride + (size_t) e / 8] &= (uint8_t) ~(1u << (e % 8));
+                }
+        std::fprintf(stderr, "strata generate: remote CPU experts: %llu of %lld experts are no GPU tier's "
+                             "(%.2f GiB at Q8_0); the worker partition is frozen at setup\n",
+                     (unsigned long long) owned, (long long) (g.n_layers * g.n_expert),
+                     (double) (owned * f0.bytes) / 1073741824.0);
+        strata::worker::ExpertWorkerTier::Open wopen;
+        wopen.host = o.remote_cpu_host;
+        wopen.port = (uint16_t) o.remote_cpu_port;
+        wopen.deadline_ms = o.remote_cpu_deadline_ms;
+        wopen.model_name = o.pack.c_str();
+        wopen.gu_type = 8;
+        wopen.d_type = 8;
+        wopen.n_layers = (uint16_t) g.n_layers;
+        wopen.n_expert = (uint16_t) g.n_expert;
+        wopen.n_embd = (uint16_t) g.n_embd;
+        wopen.n_ff = (uint16_t) f0.n_ff;
+        wopen.partition = std::move(partition);
+        wopen.fetch = [srcp, &lay](int64_t l, int64_t e, uint8_t* dst, uint32_t bytes) {
+            if (lay.blob_bytes(l) != (uint64_t) bytes) return false;   // never truncate or reinterpret
+            return srcp->copy_blob(l, e, dst);
+        };
+        const auto wt0 = Clock::now();
+        if (!worker_tier.open(wopen, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: remote CPU experts ready on %s:%d in %.1f s (%llu blobs, "
+                             "%.2f GiB streamed through one staging buffer)\n", o.remote_cpu_host.c_str(),
+                     o.remote_cpu_port, std::chrono::duration<double>(Clock::now() - wt0).count(),
+                     (unsigned long long) worker_tier.stats().setup_blobs,
+                     (double) worker_tier.stats().setup_weight_bytes / 1073741824.0);
+    }
+
     if (remote_opt && !remote_opt->init(err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
     Drive drive;
     // #731 (opt-in, STRATA_DISJOINT_ADAPT=1): the adaptive tiers leave an expert a helper GPU holds out of the primary's
@@ -6481,6 +6616,8 @@ int main(int argc, char** argv) {
     };
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
+    drive.d.worker = o.remote_cpu_experts ? &worker_tier : nullptr;
+    drive.d.remote_opt = remote_opt.get();   // #349: the dispatch reads the window's weights from it
     drive.d.peer = peer.valid() ? &peer : nullptr;
     drive.d.hit_cpu_order = o.expert_cache_cpu_order;
     drive.d.split_rows = !o.no_split_rows;
@@ -12227,6 +12364,10 @@ int main(int argc, char** argv) {
                              n_slots == 1 ? "" : "s", n_running, n_running == 1 ? "" : "s");
             }
             int64_t resume = 0;
+            // #349: this REQUEST's worker share - snapshotted before the prompt read so the DONE line
+            // counts the prompt's windows too, not only the decode's
+            const int64_t worker_ent0 = drive.d.worker_entries;
+            const double worker_req_ms0 = worker_tier.stats().request_ms;
             bool from_live = false;
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
@@ -13702,6 +13843,20 @@ int main(int argc, char** argv) {
                 if (to <= at) continue;
                 err.clear();
                 const bool win = windows_ok(at, to);
+                // #349: the remote CPU-expert mode implements prompt ingestion ONLY through the verify
+                // windows (the CPU-owned experts execute on the worker there).  A part the windows cannot
+                // take - longer than --short-read, or with picture rows - would fall to the batched
+                // prefill path, which reads the routed cold experts locally and is not implemented for
+                // this mode: reject the request explicitly instead of silently running a different path.
+                if (!win && o.remote_cpu_experts) {
+                    err = "the remote CPU-expert mode reads at most --short-read " + std::to_string(o.short_read) +
+                          " fresh tokens per part through the verify windows; this part of " +
+                          std::to_string(to - at) + " tokens needs the batched prefill path, which the mode refuses";
+                    std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+                    std::printf("ERR %s\n", err.c_str());
+                    std::fflush(stdout);
+                    return 1;
+                }
                 if (win && !refill(err)) {
                     std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
                     return 1;
@@ -15006,16 +15161,23 @@ int main(int argc, char** argv) {
             if (o.lookup_chain > 0)
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
+            // #349: the request's remote CPU-expert evidence, appended (key=value; an older reader ignores it)
+            char worker_txt[160] = "";
+            if (o.remote_cpu_experts) {
+                std::snprintf(worker_txt, sizeof worker_txt, " worker_entries=%lld worker_req_wall=%.1f",
+                              (long long) (drive.d.worker_entries - worker_ent0),
+                              worker_tier.stats().request_ms - worker_req_ms0);
+            }
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
-                        "experts_streamed=%lld\n",
+                        "experts_streamed=%lld%s\n",
                         (long long) produced_n,
                         (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
                         (long long) resume, (long long) req_hits, (long long) req_look,
                         (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
                         (long long) req_offload, chain_txt, (long long) req_chunk,
-                        (long long) (sp.chain_experts_streamed() - streamed0));
+                        (long long) (sp.chain_experts_streamed() - streamed0), worker_txt);
             std::fflush(stdout);
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
@@ -15149,6 +15311,19 @@ int main(int argc, char** argv) {
             if (drive.d.tail_experts > 0)   // STRATA_ROUTE_TAIL_SKIP, cumulative
                 std::fprintf(stderr, "strata serve: route tail skip: %lld missed experts skipped (%lld entries) since the "
                                      "start\n", (long long) drive.d.tail_experts, (long long) drive.d.tail_skipped);
+            if (o.remote_cpu_experts) {   // #349: the request's remote CPU-expert evidence, cumulative tier stats
+                std::string wr;
+                worker_tier.report(wr);
+                std::fprintf(stderr, "strata serve: %s; this request executed %lld routed entries remotely\n", wr.c_str(),
+                             (long long) (drive.d.worker_entries - worker_ent0));
+                strata::worker::WorkerStatusInfo wst;
+                if (worker_tier.status(wst, err))   // the worker's own counters: service time is ITS CPU time,
+                    std::fprintf(stderr, "                          worker status: %llu requests, %llu failures, "
+                                         "%.1f s CPU service, %.2f MiB in / %.2f MiB out\n",
+                                 (unsigned long long) wst.requests, (unsigned long long) wst.failures,
+                                 (double) wst.cpu_service_ns / 1e9, (double) wst.infer_in_bytes / 1048576.0,
+                                 (double) wst.infer_out_bytes / 1048576.0);   // NOT the client's wait
+            }
             // the resident RAM mode, cumulative: experts read from experts.bin since the copy was made (what the plain
             // mmap mode reads through the OS file cache, from the SSD when the RAM could not keep it)
             if (src.complement_ready())

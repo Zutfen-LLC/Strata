@@ -646,6 +646,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(expert_layout_test PRIVATE strata_engine)
     add_test(NAME expert_layout_test COMMAND expert_layout_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/native_experts)
     set_tests_properties(expert_layout_test PROPERTIES TIMEOUT 60)
+    # inferswarm #349: the REAL expert_pool_dispatch_multi against the REAL worker service (in-process,
+    # loopback) with the device operations faked only where necessary - the plan sink is host memory, the
+    # merge tables are RemoteExpertOpt's real mapped ones (so it needs a usable CUDA runtime).  Not built
+    # by a CPU-only configure; run it wherever a CUDA toolkit is available.
+    if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+      add_executable(worker_dispatch_test tests/core/worker_dispatch_test.cpp)
+      target_link_libraries(worker_dispatch_test PRIVATE strata_engine strata_worker_tier)
+      add_test(NAME worker_dispatch_test COMMAND worker_dispatch_test)
+      set_tests_properties(worker_dispatch_test PROPERTIES TIMEOUT 900)
+    endif()
     # #326: a native pack's BF16 (--compat-bf16) PLE key stays in the arena; a quantized key row loads as before
     add_executable(native_dense_ple_key_test tests/core/native_dense_ple_key_test.cpp)
     target_link_libraries(native_dense_ple_key_test PRIVATE strata_engine)
@@ -1664,6 +1674,28 @@ if(STRATA_NATIVE_EXPERTS)
       add_test(NAME expert_worker_e2e_test COMMAND expert_worker_e2e_test)
       set_tests_properties(expert_worker_e2e_test PROPERTIES TIMEOUT 300)
     endif()
+  endif()
+
+  # inferswarm #349: the ENGINE side of the worker - the opt-in tier the dispatch drives (setup streaming,
+  # one in-flight request, the already-weighted partial the verifier's merge consumes).  CPU-only like the
+  # service above, so its whole lifecycle is testable without a GPU toolkit; the CUDA engine links it from
+  # strata_engine (below) and only moves pointers between it and the verifier's buffers.
+  add_library(strata_worker_tier STATIC src/worker/expert_tier.cpp)
+  target_include_directories(strata_worker_tier PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_worker_tier PUBLIC strata_expert_worker)
+  # the engine (a GPU-backend target, defined above) drives the tier from its dispatch; this is the one
+  # place the worker code meets a CUDA/HIP build
+  if(TARGET strata_engine)
+    target_link_libraries(strata_engine PUBLIC strata_worker_tier)
+  endif()
+  if(STRATA_BUILD_TESTS)
+    # the focused engine-side checks: lifecycle against the real in-process service on a real loopback
+    # socket (Q8_0 fixtures), transported-vs-direct parity through the tier's own request construction,
+    # zero-work windows, sequence handling, the no-local-dereference property and the failure latch
+    add_executable(expert_tier_test tests/worker/expert_tier_test.cpp)
+    target_link_libraries(expert_tier_test PRIVATE strata_worker_tier)
+    add_test(NAME expert_tier_test COMMAND expert_tier_test)
+    set_tests_properties(expert_tier_test PROPERTIES TIMEOUT 600)
   endif()
 
   set(_strata_mmq_types q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)

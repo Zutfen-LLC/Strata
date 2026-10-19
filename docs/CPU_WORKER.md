@@ -126,10 +126,65 @@ cmake --build build-worker --target expert_worker_test expert_worker_e2e_test
   one geometry).
 - One connection, one outstanding request; no pipelining, no concurrency, no auth (session identity is
   correlation, not authentication - the loopback bind plus an owned tunnel is the boundary).
-- No engine integration: `FileExpertSource`, the GPU cache manifests and the failure/commit behavior of
-  the real runtime are #349's scope.
+- No engine integration in the worker itself: the engine side (`--remote-cpu-experts`, above) lives in
+  `ExpertWorkerTier` + the dispatch/verifier glue and keeps this service untouched.
 - Windows: the socket code compiles there, but this slice was built and tested on Linux only (the e2e
   test itself is POSIX-only). No Windows claim is made.
 - The setup manifest declares one layout per model, so the blob LENGTH is derived once for the whole
   partition; per-blob digests ride each UPLOAD frame and are enforced when a slot completes.  A manifest
   with per-slot digest tables would be a protocol extension if a pack ever needs it.
+
+## The engine mode (inferswarm #349): `--remote-cpu-experts HOST:PORT`
+
+The engine side is **opt-in and default-off**: `strata generate --serve --remote-cpu-experts 127.0.0.1:7431`
+(`--remote-cpu-deadline-ms N` bounds every frame; default 10000).  With the flag off, every path below is
+untouched.  The pieces:
+
+- **The tier** (`strata::worker::ExpertWorkerTier`, `strata_worker_tier`, CPU-only like the service):
+  owns the client, the frozen ownership bitmap, one in-flight request on its own thread, and the failure
+  latch.  `tests/worker/expert_tier_test` runs its whole lifecycle against the real in-process service.
+- **The partition is derived, never configured**: at startup, after CUDA0's cache, every stage cache and
+  every helper tier (`--expert-cache-device1..3`) is filled, the complement - every expert no GPU tier
+  holds - becomes the worker's.  Every routed expert keeps exactly one executing owner.  Setup streams
+  each owned blob from the expert source through ONE blob-sized staging buffer (no expert RAM mirror on
+  the engine host; the model files stay on its disk), and inference may not start before the worker has
+  verified the whole set (`READY`).
+- **In a verify window** (`expert_pool_dispatch_multi`), after the GPU's plan is published, the peer
+  launched and the helpers begun - and before the local pool's own work - the worker entries' frame goes
+  out (activations, ids, routing weights, ownership mask; nothing for a window with no owned entry).  The
+  round trip overlaps the local CPU jobs; `finish` joins before anything downstream may commit.
+- **The merge reuses the helper tiers' mechanism** (`RemoteExpertOpt`): the worker's entries' per-entry
+  rows are zeroed (the GPU's own weighted combine adds nothing for them) and its already-weighted partial
+  is added on top of the combined result, after every helper tier's partial - one contribution each,
+  disjoint masks, a deterministic order run to run.  The partial itself is bitwise
+  `ExpertWorkerService::direct_native_partial` (the same ordered reduction the #348 tests pin).
+- **Failures latch and abort**: any refusal, deadline or disconnect marks the tier dead; the dispatch
+  latches `failed`; the request aborts without committing partial state or returning stale data.  A dead
+  tier never retries silently - only a full engine restart (a fresh `SETUP_BEGIN` + upload) serves again.
+
+What the mode refuses up front (rather than silently running a different path): everything but `--serve`;
+`--batch` slots; `--layer-split`; `--peer-device`; `--pipeline-windows`; no CUDA0 expert cache / pool /
+`--expert-profile`; `--short-read 0`; the adaptive tier on (`--adapt-every 0` fixes placement);
+`--resident-cpu-experts` (no local RAM mirror); `STRATA_ROUTE_TAIL_SKIP`.  A non-uniform or non-Q8_0/Q8_0
+native pack is refused (the worker's one fixture-tested layout).  At request time, a prompt part the
+verify windows cannot take - longer than `--short-read N`, or with picture rows - is REJECTED with an
+error naming the batched prefill path, for the prompt ingestion as well as the decode (both go through
+the windows).  The one-shot `--prompt` path and the single-token expert path are not implemented for
+this mode and refuse if reached.
+
+The evidence it reports: a startup line with the frozen partition (blob count, GiB, setup seconds); the
+`DONE` line grows ` worker_entries=N worker_req_wall=ms` per request; and a per-request stderr line with
+the tier's cumulative counters plus the worker's own STATUS (requests, failures, CPU service seconds -
+the worker's kernel time, never the client's wait - and inference bytes in/out).
+
+## The two-host recipe (inferswarm05 + inferswarm03)
+
+A self-contained Hermes recipe for the first bounded run lives in
+**[CPU_WORKER_RECIPE.md](CPU_WORKER_RECIPE.md)**.  Its shape: build the CPU-only worker on **inferswarm05**
+(`build-worker`, no GPU toolkit involved) and a CUDA `sm_86` engine on **inferswarm03** (NOT the default
+`sm_120` target of the 3060s' installer), forward the worker's loopback port over an SSH tunnel the
+engine owns, and start the engine with `--serve --remote-cpu-experts 127.0.0.1:7431`, fixed placement
+(`--adapt-every 0`, `--pcie-frac 0`, `STRATA_ROUTE_TAIL_SKIP=0`), short prompts (`--short-read`), and one
+text request at a time.  The recipe's checks freeze the model, quant, kernel/window policy, speculation
+and KV settings, and its report separates setup from request time and client wait from worker CPU
+service.
