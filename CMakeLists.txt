@@ -1630,6 +1630,42 @@ if(STRATA_NATIVE_EXPERTS)
     add_test(NAME q8k_quant_parity COMMAND q8k_quant_parity)
     add_test(NAME q8k_quant_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:q8k_quant_parity>)
   endif()
+
+  # inferswarm #348: the resident CPU-expert worker - a loopback service that holds one model's CPU-owned
+  # expert blobs in a memory-budgeted arena and computes their weighted partial sums with the native CPU
+  # kernels above.  CPU-only by construction (strata_kernels_cpu; no CUDA/HIP/SYCL target or toolkit is
+  # involved), built here inside STRATA_NATIVE_EXPERTS because its arithmetic is ggml-cpu's.  The engine
+  # integration (#349) links this same library from the GPU side.
+  add_library(strata_expert_worker STATIC src/worker/expert_wire.cpp src/worker/expert_worker.cpp
+              src/worker/expert_client.cpp src/worker/wire_sock.cpp)
+  target_include_directories(strata_expert_worker PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_include_directories(strata_expert_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+  target_link_libraries(strata_expert_worker PUBLIC strata_kernels_cpu)
+  if(WIN32)
+    target_link_libraries(strata_expert_worker PUBLIC ws2_32)
+  endif()
+  add_executable(strata-expert-worker src/worker/expert_worker_main.cpp)
+  target_include_directories(strata-expert-worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+  target_link_libraries(strata-expert-worker PRIVATE strata_expert_worker)
+  if(STRATA_BUILD_TESTS)
+    # the focused worker checks: codec bounds, arena/session rejections, and direct-versus-transport
+    # native execution over a real loopback socket (Q8_0 packed fixtures, bitwise equality)
+    add_executable(expert_worker_test tests/worker/expert_worker_test.cpp)
+    target_include_directories(expert_worker_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+    target_link_libraries(expert_worker_test PRIVATE strata_expert_worker)
+    add_test(NAME expert_worker_test COMMAND expert_worker_test)
+    set_tests_properties(expert_worker_test PROPERTIES TIMEOUT 600)
+    # the minimal local reproduction: the real binary on a real loopback port (docs/CPU_WORKER.md).
+    # POSIX-only on purpose (fork/execv); the Windows socket path is built but not yet test-covered.
+    if(NOT WIN32)
+      add_executable(expert_worker_e2e_test tests/worker/expert_worker_e2e_test.cpp)
+      target_link_libraries(expert_worker_e2e_test PRIVATE strata_expert_worker)
+      target_compile_definitions(expert_worker_e2e_test PRIVATE STRATA_WORKER_BIN="$<TARGET_FILE:strata-expert-worker>")
+      add_test(NAME expert_worker_e2e_test COMMAND expert_worker_e2e_test)
+      set_tests_properties(expert_worker_e2e_test PROPERTIES TIMEOUT 300)
+    endif()
+  endif()
+
   set(_strata_mmq_types q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)
   # APR: the agention llama.cpp fork has MMQ instances for its trellis expert types (f62fdead0); any other ggml
   # tree leaves them to the FP16 prompt path

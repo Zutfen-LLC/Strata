@@ -1,0 +1,261 @@
+// src/worker/expert_client.cpp - inferswarm #348: the client's frame io and protocol steps.
+#include "strata/worker/expert_client.hpp"
+
+#include "wire_sock.hpp"
+
+#include <algorithm>
+#include <cstring>
+
+namespace strata::worker {
+namespace {
+
+bool fd_ok(uintptr_t fd) { return fd != ~(uintptr_t) 0; }
+
+}  // namespace
+
+ExpertWorkerClient::~ExpertWorkerClient() { close(); }
+
+bool ExpertWorkerClient::connect_host(const std::string& host, uint16_t port, int deadline_ms,
+                                      std::string& err) {
+    close();
+    sock_fd fd = kBadFd;
+    if (!sock::connect_host(host, port, deadline_ms, fd, err)) return false;
+    fd_ = (uintptr_t) fd;
+    deadline_ms_ = deadline_ms;
+    return true;
+}
+
+bool ExpertWorkerClient::send_frame(uint16_t msg, uint16_t st, const std::vector<uint8_t>& payload,
+                                    std::string& err) {
+    if (!fd_ok(fd_)) {
+        err = "not connected";
+        return false;
+    }
+    std::vector<uint8_t> buf;
+    encode_frame(buf, msg, st, payload.data(), payload.size());
+    if (!sock::send_all((sock_fd) fd_, buf.data(), buf.size(), deadline_ms_)) {
+        err = "send failed or timed out";
+        return false;
+    }
+    return true;
+}
+
+bool ExpertWorkerClient::recv_frame(uint16_t want_msg, WireFrame& f, std::string& err) {
+    uint8_t head[kHeaderBytes];
+    if (!sock::recv_all((sock_fd) fd_, head, sizeof head, deadline_ms_)) {
+        err = "connection closed, short frame or deadline while waiting for the reply";
+        return false;
+    }
+    const uint32_t magic = (uint32_t) head[0] | (uint32_t) head[1] << 8 | (uint32_t) head[2] << 16 |
+                           (uint32_t) head[3] << 24;
+    f.msg = (uint16_t) (head[4] | head[5] << 8);
+    f.status = (uint16_t) (head[6] | head[7] << 8);
+    uint64_t len = 0;
+    for (int b = 0; b < 8; ++b) len |= (uint64_t) head[8 + b] << (8 * b);
+    size_t cap = 0;
+    switch (f.msg) {
+        case MSG_SETUP_ACK: cap = 64; break;
+        case MSG_UPLOAD_ACK: cap = 32; break;
+        case MSG_READY_ACK: cap = 32; break;
+        case MSG_INFER_ACK: cap = kReplyPayloadMax; break;
+        case MSG_STATUS_ACK: cap = 128; break;
+        default:
+            err = "unexpected reply type";
+            return false;
+    }
+    if (magic != kWireMagic || f.msg != want_msg || len > cap) {
+        err = "malformed reply";
+        return false;
+    }
+    f.payload.resize((size_t) len);
+    if (len > 0 && !sock::recv_all((sock_fd) fd_, f.payload.data(), f.payload.size(), deadline_ms_)) {
+        err = "reply payload cut short";
+        return false;
+    }
+    return true;
+}
+
+namespace {
+
+uint64_t cur_u64(const uint8_t* p, size_t n, size_t& i) {
+    uint64_t v = 0;
+    if (i + 8 <= n) {
+        for (int b = 0; b < 8; ++b) v |= (uint64_t) p[i + b] << (8 * b);
+        i += 8;
+    }
+    return v;
+}
+uint32_t cur_u32(const uint8_t* p, size_t n, size_t& i) {
+    uint32_t v = 0;
+    if (i + 4 <= n) {
+        for (int b = 0; b < 4; ++b) v |= (uint32_t) p[i + b] << (8 * b);
+        i += 4;
+    }
+    return v;
+}
+
+void push_u64(std::vector<uint8_t>& o, uint64_t v) {
+    for (int b = 0; b < 8; ++b) o.push_back((uint8_t) (v >> (8 * b)));
+}
+void push_u32(std::vector<uint8_t>& o, uint32_t v) {
+    for (int b = 0; b < 4; ++b) o.push_back((uint8_t) (v >> (8 * b)));
+}
+void push_u16(std::vector<uint8_t>& o, uint16_t v) {
+    o.push_back((uint8_t) v);
+    o.push_back((uint8_t) (v >> 8));
+}
+
+}  // namespace
+
+bool ExpertWorkerClient::setup(const SetupManifest& m, std::string& err) {
+    std::vector<uint8_t> payload;
+    if (!encode_setup_begin(m, payload)) {
+        err = "the manifest is outside the protocol's bounds";
+        return false;
+    }
+    if (!send_frame(MSG_SETUP_BEGIN, ST_OK, payload, err)) return false;
+    WireFrame f;
+    if (!recv_frame(MSG_SETUP_ACK, f, err)) return false;
+    last_status_ = f.status;
+    if (f.status != ST_OK) {
+        err = std::string("setup refused: ") + status_name(f.status);
+        return false;
+    }
+    size_t i = 0;
+    session_ = cur_u64(f.payload.data(), f.payload.size(), i);
+    blob_bytes_ = (uint32_t) cur_u64(f.payload.data(), f.payload.size(), i);
+    chunk_cap_ = cur_u32(f.payload.data(), f.payload.size(), i);
+    n_embd_ = m.n_embd;
+    return true;
+}
+
+bool ExpertWorkerClient::upload(int layer, int expert, const uint8_t* blob, uint32_t blob_bytes,
+                                std::string& err) {
+    if (session_ == 0) {
+        err = "no session: call setup first";
+        return false;
+    }
+    if (blob_bytes != blob_bytes_) {
+        err = "blob length does not match the session's layout";
+        return false;
+    }
+    const Digest128 want = blob_digest(blob, blob_bytes);
+    uint32_t off = 0;
+    while (off < blob_bytes) {
+        const uint32_t chunk =
+            (uint32_t) std::min<size_t>(chunk_cap_ - kUploadHeadBytes, blob_bytes - off);
+        std::vector<uint8_t> p;
+        p.reserve(48 + chunk);
+        push_u64(p, session_);
+        push_u16(p, (uint16_t) layer);
+        push_u16(p, (uint16_t) expert);
+        push_u32(p, blob_bytes);
+        push_u32(p, off);
+        push_u32(p, chunk);
+        push_u64(p, want.a);
+        push_u64(p, want.b);
+        p.insert(p.end(), blob + off, blob + off + chunk);
+        if (!send_frame(MSG_UPLOAD, ST_OK, p, err)) return false;
+        WireFrame f;
+        if (!recv_frame(MSG_UPLOAD_ACK, f, err)) return false;
+        last_status_ = f.status;
+        if (f.status != ST_OK) {
+            err = std::string("upload refused at byte ") + std::to_string(off) + ": " + status_name(f.status);
+            return false;
+        }
+        off += chunk;
+    }
+    return true;
+}
+
+bool ExpertWorkerClient::mark_ready(std::string& err) {
+    if (session_ == 0) {
+        err = "no session";
+        return false;
+    }
+    std::vector<uint8_t> p;
+    push_u64(p, session_);
+    if (!send_frame(MSG_READY, ST_OK, p, err)) return false;
+    WireFrame f;
+    if (!recv_frame(MSG_READY_ACK, f, err)) return false;
+    last_status_ = f.status;
+    if (f.status != ST_OK) {
+        size_t i = 8;
+        const uint64_t missing = cur_u64(f.payload.data(), f.payload.size(), i);
+        err = std::string("not ready: ") + status_name(f.status) + " (" + std::to_string(missing) +
+              " slots missing)";
+        return false;
+    }
+    return true;
+}
+
+bool ExpertWorkerClient::infer(const InferRequest& r, InferReply& reply, std::string& err) {
+    std::vector<uint8_t> p;
+    if (!encode_infer(r, n_embd_, p)) {
+        err = "the request is outside the protocol's bounds";
+        return false;
+    }
+    if (!send_frame(MSG_INFER, ST_OK, p, err)) return false;
+    WireFrame f;
+    if (!recv_frame(MSG_INFER_ACK, f, err)) return false;
+    last_status_ = f.status;
+    if (f.status != ST_OK) {
+        err = std::string("inference refused: ") + status_name(f.status);
+        return false;
+    }
+    if (!decode_infer_ack(f.payload.data(), f.payload.size(), n_embd_, r.T, reply)) {
+        err = "the reply's shape does not match the request";
+        return false;
+    }
+    if (reply.session != session_ || reply.sequence != r.sequence) {
+        err = "the reply's session or sequence does not match the request";
+        return false;
+    }
+    return true;
+}
+
+bool ExpertWorkerClient::status(WorkerStatusInfo& out, std::string& err) {
+    if (!send_frame(MSG_STATUS, ST_OK, {}, err)) return false;
+    WireFrame f;
+    if (!recv_frame(MSG_STATUS_ACK, f, err)) return false;
+    last_status_ = f.status;
+    if (f.status != ST_OK) {
+        err = "status refused";
+        return false;
+    }
+    const uint8_t* p = f.payload.data();
+    const size_t n = f.payload.size();
+    size_t i = 0;
+    out.session = cur_u64(p, n, i);
+    out.setup_weight_bytes = cur_u64(p, n, i);
+    out.infer_in_bytes = cur_u64(p, n, i);
+    out.infer_out_bytes = cur_u64(p, n, i);
+    out.requests = cur_u64(p, n, i);
+    out.failures = cur_u64(p, n, i);
+    out.cpu_service_ns = cur_u64(p, n, i);
+    if (i + 3 > n) {
+        err = "short status reply";
+        return false;
+    }
+    out.last_error = (uint16_t) (p[i] | p[i + 1] << 8);
+    i += 2;
+    out.ready = p[i++];
+    return true;
+}
+
+bool ExpertWorkerClient::shutdown(std::string& err) {
+    if (!send_frame(MSG_SHUTDOWN, ST_OK, {}, err)) return false;
+    WireFrame f;
+    if (!recv_frame(MSG_STATUS_ACK, f, err)) return false;
+    return f.status == ST_OK;
+}
+
+void ExpertWorkerClient::close() {
+    if (!fd_ok(fd_)) return;
+    sock_fd fd = (sock_fd) fd_;
+    sock::close_fd(fd);
+    fd_ = ~(uintptr_t) 0;
+    session_ = 0;
+}
+
+}  // namespace strata::worker
