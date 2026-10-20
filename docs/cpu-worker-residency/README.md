@@ -1,8 +1,10 @@
 # Bounded CPU weight residency across engine sessions
 
-**NOT RUNTIME VALIDATED.** The final source has not been built or tested. Earlier checks were interrupted
-and one residency suite failed. See the [retained failure and static corrections](evidence/validation.md).
-Run the fixture-first Hermes handoff before any full-model trial.
+**16d065e: user-reported Hermes runtime validation passed.** CPU/CUDA fixtures, exact-base compatibility
+and one full-model cold/warm restart trial are recorded in the [attributed receipt](evidence/hermes-16d065e-receipt.md).
+The later native-OFF correction remains **runtime-unvalidated**. Use the
+[narrow correction handoff](NATIVE_OFF_HERMES.md), which does not require another full-model load.
+The earlier failed/interrupted coding-task history remains in [validation.md](evidence/validation.md).
 
 The worker can keep a complete verified CPU partition after an engine exits. Enable both worker
 `--residency-ms 1800000` and engine `--remote-cpu-resident` with the existing trusted local manifest.
@@ -115,3 +117,13 @@ inference. A live PID alone proves nothing.
 [Retained failed/interrupted validation and independent static reviews](evidence/validation.md) use generated Q8_0 fixtures and
 real worker binaries. No full-model numerical parity, CUDA/HIP/SYCL build, GPU release on real hardware,
 SATA throughput or full-size RSS measurement is claimed by this candidate.
+
+## Native experts disabled
+
+`STRATA_NATIVE_EXPERTS=OFF` remains supported. The shared CUDA/HIP engine excludes worker calls,
+construction and reports when the worker libraries are absent. All six `--remote-cpu-*` worker options
+are refused before model-header dispatch or GPU setup with `requires STRATA_NATIVE_EXPERTS=ON`.
+An attached worker pointer also fails closed before multi-token dispatch reads inputs or accesses a
+source/device. Native-ON retains its worker path. This correction is a static fix prediction until the
+[separate OFF build and ON regressions](NATIVE_OFF_HERMES.md) run. HIP remains unvalidated. SYCL uses
+separate migrated sources; this feature is not claimed there.

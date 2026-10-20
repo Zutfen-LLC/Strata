@@ -23,7 +23,9 @@
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
+#ifdef STRATA_NATIVE_EXPERTS
 #include "strata/worker/expert_tier.hpp"
+#endif
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
@@ -2241,6 +2243,20 @@ int main(int argc, char** argv) {
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+#ifndef STRATA_NATIVE_EXPERTS
+    // The worker libraries are absent. Refuse before model-header dispatch or GPU setup,
+    // including a worker modifier supplied without --remote-cpu-experts.
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--remote-cpu-experts" || a == "--remote-cpu-local-manifest" ||
+            a == "--remote-cpu-local-fallback" || a == "--remote-cpu-resident" ||
+            a == "--remote-cpu-setup-ms" || a == "--remote-cpu-deadline-ms") {
+            std::fprintf(stderr, "strata: %s requires STRATA_NATIVE_EXPERTS=ON; this build excludes the remote CPU-expert worker\n",
+                         a.c_str());
+            return 2;
+        }
+    }
+#endif
     // `strata --version` / `-V` (also `strata generate --version`): the version and nothing else, before any GPU is touched
     for (int i = 1; i < argc && i < 3; ++i) {
         if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-V") == 0) {
@@ -6554,6 +6570,7 @@ int main(int argc, char** argv) {
     // one executing owner.  The setup streams each owned blob from the expert source through one
     // blob-sized staging buffer (no local RAM mirror), and inference may not start before the worker has
     // verified the whole set (READY), which this open() waits for.
+#ifdef STRATA_NATIVE_EXPERTS
     strata::worker::ExpertWorkerTier worker_tier;
     if (o.remote_cpu_experts) {
         if (profile.empty() || srcp == nullptr) {
@@ -6642,6 +6659,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,"strata generate: %s\n",setup_report.c_str());
     }
 
+#endif // STRATA_NATIVE_EXPERTS: no worker construction or setup in the disabled build
     if (remote_opt && !remote_opt->init(err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
     Drive drive;
     // #731 (opt-in, STRATA_DISJOINT_ADAPT=1): the adaptive tiers leave an expert a helper GPU holds out of the primary's
@@ -6656,7 +6674,9 @@ int main(int argc, char** argv) {
     };
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
+#ifdef STRATA_NATIVE_EXPERTS
     drive.d.worker = o.remote_cpu_experts ? &worker_tier : nullptr;
+#endif
     drive.d.remote_opt = remote_opt.get();   // #349: the dispatch reads the window's weights from it
     drive.d.peer = peer.valid() ? &peer : nullptr;
     drive.d.hit_cpu_order = o.expert_cache_cpu_order;
@@ -12406,8 +12426,10 @@ int main(int argc, char** argv) {
             int64_t resume = 0;
             // #349: this REQUEST's worker share - snapshotted before the prompt read so the DONE line
             // counts the prompt's windows too, not only the decode's
+#ifdef STRATA_NATIVE_EXPERTS
             const int64_t worker_ent0 = drive.d.worker_entries;
             const double worker_req_ms0 = worker_tier.stats().request_ms;
+#endif
             bool from_live = false;
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
@@ -15203,11 +15225,13 @@ int main(int argc, char** argv) {
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
             // #349: the request's remote CPU-expert evidence, appended (key=value; an older reader ignores it)
             char worker_txt[160] = "";
+#ifdef STRATA_NATIVE_EXPERTS
             if (o.remote_cpu_experts) {
                 std::snprintf(worker_txt, sizeof worker_txt, " worker_entries=%lld worker_req_wall=%.1f",
                               (long long) (drive.d.worker_entries - worker_ent0),
                               worker_tier.stats().request_ms - worker_req_ms0);
             }
+#endif
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
                         "experts_streamed=%lld%s\n",
@@ -15351,6 +15375,7 @@ int main(int argc, char** argv) {
             if (drive.d.tail_experts > 0)   // STRATA_ROUTE_TAIL_SKIP, cumulative
                 std::fprintf(stderr, "strata serve: route tail skip: %lld missed experts skipped (%lld entries) since the "
                                      "start\n", (long long) drive.d.tail_experts, (long long) drive.d.tail_skipped);
+#ifdef STRATA_NATIVE_EXPERTS
             if (o.remote_cpu_experts) {   // #349: the request's remote CPU-expert evidence, cumulative tier stats
                 std::string wr;
                 worker_tier.report(wr);
@@ -15364,6 +15389,7 @@ int main(int argc, char** argv) {
                                  (double) wst.cpu_service_ns / 1e9, (double) wst.infer_in_bytes / 1048576.0,
                                  (double) wst.infer_out_bytes / 1048576.0);   // NOT the client's wait
             }
+#endif // STRATA_NATIVE_EXPERTS
             // the resident RAM mode, cumulative: experts read from experts.bin since the copy was made (what the plain
             // mmap mode reads through the OS file cache, from the SSD when the RAM could not keep it)
             if (src.complement_ready())

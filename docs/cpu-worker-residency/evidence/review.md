@@ -1,5 +1,9 @@
 # Independent static spec and quality review
 
+This is the historical review for 16d065e before runtime validation. The later
+[user-attributed Hermes receipt](hermes-16d065e-receipt.md) supersedes the old validation status,
+not the preserved source findings. A native-OFF correction has its own static review and runtime gate.
+
 Reviewed base `5260f2b7c8166021d86f57e4eb80fc44b050e570` to draft `bcc5792`, then the source/staging
 corrections below. Two independent reviewers inspected the diff and relevant source/docs. Neither
 reviewer edited files or ran builds, tests, binaries, benchmarks, models or host connections.

@@ -1,15 +1,21 @@
-# Candidate status: NOT RUNTIME VALIDATED
+# Validation status by revision
 
-The final source has not been built or executed. The user prohibited local builds, tests, test binaries,
-benchmarks and model loads on Geekom after desktop/session disruptions. Only code/document edits,
-lightweight repository inspection and static independent reviews are permitted. Static review is not
-runtime validation. No inferswarm05/03 connection, GPU execution, full-model test or broad CI dispatch
-was performed by this coding task.
+**16d065e23211f2d422c56a3497a8be200c1e1d4d: user-reported Hermes runtime validation passed.**
+The later [attributed receipt](hermes-16d065e-receipt.md) records CPU/CUDA fixtures, compatibility and one
+full-model cold/warm restart trial. This coding task did not independently execute or inspect that run.
+**The subsequent native-OFF correction is runtime-unvalidated** until its
+[narrow remote regression handoff](../NATIVE_OFF_HERMES.md) passes.
 
-## Retained earlier evidence, not a candidate PASS
+At the original coding handoff, 16d065e had not been built or run. The failed/interrupted local history
+below is preserved; it is not erased by the later user-run receipt. The user prohibits builds, tests,
+test binaries, benchmarks and model loads on Geekom. Only code/document edits, lightweight repository
+inspection and independent static reviews are permitted. Static review is not runtime validation.
+This coding task has not connected to or operated either inferswarm host or dispatched broad CI.
+
+## Retained earlier coding-task evidence, not a passing run
 
 The earlier CPU-only configure/build used GCC 16.2.1 on Geekom and the retained ggml source cache at
-`3cf03257f219afbe7334045ff7c6a06ac68c627d`. Those binaries predate the final source changes. Restricted
+`3cf03257f219afbe7334045ff7c6a06ac68c627d`. Those binaries predate 16d065e and the correction. Restricted
 socket attempts could not create sockets; permitted loopback runs were subsequently used. Several
 legacy suites passed before interruption, but the combined run did not finish.
 
@@ -18,7 +24,7 @@ The [interrupted suite log](prior-suite-interrupted.log) ends at worker_residenc
 `FAIL exception: connect failed, cancelled or timed out`. Earlier assertions in that FAILED run showed
 20,889,600 B reused, zero loaded/verified/network-weight deltas, one arena allocation, native reference
 A/B/A checks, mismatch refusal, unload and expiry. These are partial observations, not a passing suite
-or validation of this final candidate. There is no full-model numerical parity claim.
+or validation of 16d065e or the correction. There is no full-model numerical parity claim.
 
 ## Static findings from the retained failure
 
@@ -40,15 +46,16 @@ Review also corrected partial-line startup parsing/constructor cleanup, and idle
 replies are blocked. Successful inference reply deadlines remain distinct from idle expiry.
 Do not execute any pre-fix worker_residency_test binary. Hermes must compile the published source first.
 
-## Validation to run on inferswarm05
+## Original validation handoff and later user receipt
 
-[Hermes handoff](../HERMES.md) gates all model activity on conservative serial CPU build and focused
-synthetic tests, including harness cleanup, lifecycle, direct native parity, controls and exact-base
-old/new wire compatibility. Run those commands on inferswarm05, not Geekom. Stop on the first failure;
-retain unique child logs, source/binary identity, process exits and the corrected connection-stage output.
+The original [Hermes handoff](../HERMES.md) gated model activity on serial synthetic checks. The user
+later reported those checks, CUDA fixtures and one cold/warm trial passed for 16d065e; the
+[attributed receipt](hermes-16d065e-receipt.md) records scope, numbers, archive identity and caveats.
+The native-OFF correction now needs its own [narrow handoff](../NATIVE_OFF_HERMES.md), not an automatic
+repeat of the full model. No correction-head build or execution has been performed on Geekom.
 
 ## Independent static reviews
 
 [Independent static review record](review.md) contains both reports and source dispositions.
-No material finding remains open in those static reviews; all final-source runtime checks remain
-pending. Static review does not establish compilation or execution correctness.
+No material finding remained open in those original static reviews. At that coding handoff runtime
+checks were pending; the later 16d065e receipt is recorded separately. The correction needs fresh checks. Static review does not establish compilation or execution correctness.

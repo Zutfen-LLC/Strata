@@ -1,8 +1,11 @@
 # Hermes: fixture-first validation, then bounded CPU residency
 
-**NOT RUNTIME VALIDATED.** The published source has not been built or executed. Earlier tests were
-interrupted and one residency test failed. Static-only source corrections require verification on 05.
-Do not run builds, tests, binaries or benchmarks on Geekom. Start with section 1 on inferswarm05.
+**Revision-specific status:** the user reports that **16d065e23211f2d422c56a3497a8be200c1e1d4d** passed
+this CPU/CUDA fixture and full-model workflow; see the [attributed receipt](evidence/hermes-16d065e-receipt.md).
+The subsequent native-OFF correction has not been built or run. Use
+[NATIVE_OFF_HERMES.md](NATIVE_OFF_HERMES.md) for that narrow correction; do not repeat the full-model
+workflow just because source changed. The original recipe below is retained for later selected trials.
+Do not run builds, tests, binaries or benchmarks on Geekom.
 
 These commands are for Hermes on its controller and existing dedicated inferswarm05/03 checkouts.
 The coding task does not connect to either host. Use fail-fast Bash, preserve all logs and the first
@@ -119,8 +122,8 @@ disabled TTL and TTL-without-client-opt-in behavior. The controls script checks 
 and invalid TTL values. New binary processes use two pool workers; default test service pools are also
 capped at two. Fixture cleanup cannot signal other tasks by using a negative or group PID.
 
-**Stop and return this fixture/build report now.** Final source remains NOT RUNTIME VALIDATED until
-these commands actually pass on 05. Sections 2 onward are a later full-model validation window, gated on
+**Stop and return this fixture/build report now.** These checks were user-reported passed at 16d065e.
+Do not transfer that result to an untested correction head; validate its selected regression scope. Sections 2 onward are a later full-model validation window, gated on
 this result and selection of that window. They must not be launched just to complete this code handoff.
 
 ### Later gated CUDA fixture check on 03

@@ -211,3 +211,9 @@ A complete trusted local partition can now survive engine exit for an explicit b
 See [the lifecycle and compatibility contract](cpu-worker-residency/README.md) and
 [the ready-to-use Hermes recipe](cpu-worker-residency/HERMES.md). Without the new flags, the
 session-scoped behavior described above remains in force.
+
+A `STRATA_NATIVE_EXPERTS=OFF` engine excludes the CPU worker integration and refuses its remote-worker
+CLI options before resource setup. See the [native-OFF correction and regression handoff](cpu-worker-residency/NATIVE_OFF_HERMES.md).
+The [16d065e Hermes receipt](cpu-worker-residency/evidence/hermes-16d065e-receipt.md) is user-attributed;
+its runtime results do not validate the later correction head. HIP is unvalidated and SYCL uses separate
+migrated sources; this worker feature is not claimed for SYCL.

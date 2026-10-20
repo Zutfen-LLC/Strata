@@ -7,7 +7,9 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#ifdef STRATA_NATIVE_EXPERTS
 #include "strata/worker/expert_tier.hpp"
+#endif
 #include "strata/artifact/gguf_reader.hpp"
 
 #include "strata/core/pinned.hpp"
@@ -4357,6 +4359,16 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                                 float* out) {
     using namespace strata::kernels::cpu;
     if (d.failed) return;
+#ifndef STRATA_NATIVE_EXPERTS
+    // A caller cannot attach a worker to a build that does not link its implementation.
+    // Refuse before lookahead, source reads, GPU planning or any partial output.
+    if (d.worker != nullptr) {
+        d.failed = true;
+        d.fail = "the remote CPU-expert worker requires STRATA_NATIVE_EXPERTS=ON";
+        d.fail_layer = d.layers;
+        return;
+    }
+#endif
     if (n_tok < 1 || n_tok > MAXT) {
         d.failed = true;
         d.fail = "a verify window has more tokens than the multi-token expert kernel takes";
@@ -4405,6 +4417,15 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // Distinct experts in routing order; resident ones and the last pcie_num/256 of the missed ones go to the GPU.
     const int64_t n = n_tok * k;
     int32_t kind[kMaxWindowEntries];       // per entry: -1 CPU, 0 VRAM, 1 PCIe, 2 peer/helper, 3 the remote CPU worker
+    // A worker-owned expert is never a local miss or part of the PCIe share.
+    auto worker_holds = [&](int32_t e) {
+#ifdef STRATA_NATIVE_EXPERTS
+        return d.worker != nullptr && d.worker->holds(d.layers, e);
+#else
+        (void)e;
+        return false;
+#endif
+    };
     if (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap) {
         int64_t distinct[kMaxWindowEntries], first_of[kMaxWindowEntries];
         int nd = 0, nmiss = 0;
@@ -4417,9 +4438,6 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 if (d.remote[r]->holds(d.layers, e)) return true;
             return false;
         };
-        // inferswarm #349: an expert this host's remote CPU worker owns executes there - not a miss of
-        // this plan, never read from the local file, never part of the PCIe share
-        auto worker_holds = [&](int32_t e) { return d.worker != nullptr && d.worker->holds(d.layers, e); };
         for (int64_t i = 0; i < n; ++i) {
             first_of[i] = i;
             for (int64_t j = 0; j < i; ++j)
@@ -4548,7 +4566,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             kind[i] = (e >= 0 && e < d.n_expert && d.host_res != nullptr &&
                        d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) ? 0
                     : (e >= 0 && e < d.n_expert && d.peer != nullptr && d.peer->has(d.layers, e)) ? 2
-                    : (e >= 0 && e < d.n_expert && d.worker != nullptr && d.worker->holds(d.layers, e)) ? 3 : -1;
+                    : (e >= 0 && e < d.n_expert && worker_holds(e)) ? 3 : -1;
         }
     }
     if (d.peer != nullptr) {                 // multi-GPU: start the second GPU's share before the CPU's own work
@@ -4570,6 +4588,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             for (int64_t i = 0; i < n; ++i) if (d.remote[r]->owns(i)) kind[i] = 2;
         }
     }
+#ifdef STRATA_NATIVE_EXPERTS
     // inferswarm #349: the remote CPU worker's request goes out HERE - after the GPU's plan is published,
     // the peer is launched and every helper tier has begun, and before the local CPU's own work - so the
     // round trip overlaps it.  The frame carries this group's activations, ids, routing weights (the same
@@ -4600,6 +4619,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             worker_sent = d.worker->posted();
         }
     }
+#endif // STRATA_NATIVE_EXPERTS: no worker requests in the disabled build
     static const bool dec_batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
     // the GPU's copy_rows_from_mapped zeroes the rows it computed itself (dec_batch); STRATA_VERIFY_DEVICE_PLAN's
     // copy_or_zero_from_mapped copies every row, so there the host still zeroes them
@@ -4804,6 +4824,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
     }
+#ifdef STRATA_NATIVE_EXPERTS
     if (d.worker != nullptr) {   // #349: join the worker's reply (its round trip overlapped the work above)
         // a failure ANYWHERE between the post and here returned early; the tier's own post() joins any
         // leftover request before its next use, and the destructor joins the last one, so no window can
@@ -4818,6 +4839,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         if (worker_sent && d.remote_opt != nullptr)
             d.remote_opt->accumulate_host(d.worker->partials(), worker_mask.data(), (int) n_tok, (int) k);
     }
+#endif // STRATA_NATIVE_EXPERTS
     if (d.peer != nullptr) {                 // multi-GPU: the second GPU's rows, into the same mapped rows
         std::string perr;
         if (!d.peer->finish(out, perr)) {
