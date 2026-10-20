@@ -1673,6 +1673,16 @@ if(STRATA_NATIVE_EXPERTS)
   target_link_libraries(strata-expert-worker PRIVATE strata_expert_worker)
   add_executable(strata-worker-manifest src/worker/local_manifest_main.cpp)
   target_link_libraries(strata-worker-manifest PRIVATE strata_expert_worker)
+
+  # Selective fixed-placement assets use bounded POSIX reads; the CPU worker stays CUDA-free.
+  if(NOT WIN32)
+    add_library(strata_gpu_assets STATIC src/worker/gpu_assets.cpp)
+    target_include_directories(strata_gpu_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(strata_gpu_assets PUBLIC strata_expert_worker strata_artifact)
+    add_executable(strata-gpu-manifest src/worker/gpu_manifest_main.cpp)
+    target_link_libraries(strata-gpu-manifest PRIVATE strata_gpu_assets)
+  endif()
+
   if(STRATA_BUILD_TESTS)
     # the focused worker checks: codec bounds, arena/session rejections, and direct-versus-transport
     # native execution over a real loopback socket (Q8_0 packed fixtures, bitwise equality)
