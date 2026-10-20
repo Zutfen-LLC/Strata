@@ -47,6 +47,10 @@ enum MsgType : uint16_t {
     MSG_INFER_ACK = 8,     ///< s->c: one F32 weighted partial sum per token
     MSG_STATUS = 9,        ///< c->c->s: the counters
     MSG_STATUS_ACK = 10,
+    MSG_LOCAL_SETUP = 12,  ///< versioned opt-in setup; never sent by an upload-only client
+    MSG_LOCAL_SETUP_ACK = 13,
+    MSG_LOCAL_LOAD = 14,   ///< owned slots only; paths remain operator configuration
+    MSG_LOCAL_LOAD_ACK = 15,
     MSG_SHUTDOWN = 11,     ///< c->s: polite stop (a test/tool knob; the engine just closes)
 };
 
@@ -67,6 +71,8 @@ enum Status : uint16_t {
     ST_DEADLINE = 13,       ///< reserved: a frame that misses its deadline closes the connection (the
                             ///< peer learns from the EOF; no reply frame is owed for an unreadable one)
     ST_INTERNAL = 14,
+    ST_LOCAL_INVALID = 15, ///< configured local file is present but invalid; never an upload miss
+    ST_LOCAL_UNAVAILABLE = 16, ///< local mode is not configured or its version is unsupported
 };
 
 // ---- compiled bounds --------------------------------------------------------

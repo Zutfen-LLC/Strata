@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#ifndef _WIN32
+#include <fcntl.h>
+#endif
 
 namespace strata::worker::sock {
 namespace {
@@ -22,9 +25,13 @@ struct Budget {
     }
 };
 
-bool wait_fd(sock_fd fd, bool write, const Budget& budget) {
+bool wait_fd(sock_fd fd, bool write, const Budget &budget, const std::function<bool()> &cancel = {}) {
     for (;;) {
-        const int ms = budget.remaining();
+        if (cancel && cancel())
+            return false;
+        int ms = budget.remaining();
+        if (cancel && (ms < 0 || ms > 50))
+            ms = 50;
         if (ms == 0) return false;
 #ifdef _WIN32
         fd_set set;
@@ -39,7 +46,9 @@ bool wait_fd(sock_fd fd, bool write, const Budget& budget) {
         const int r = ::poll(&p, 1, ms);
         if (r < 0 && errno == EINTR) continue;
 #endif
-        return r > 0;
+        if (cancel && r == 0 && budget.remaining() != 0)
+            continue;
+        return r > 0 && (!cancel || !cancel());
     }
 }
 
@@ -52,7 +61,11 @@ bool nonblocking(sock_fd fd) {
 
 }  // namespace
 
-bool send_all(sock_fd fd, const void* data, size_t n, int deadline_ms) {
+bool send_all(sock_fd fd, const void *data, size_t n, int deadline_ms) {
+    return send_all_controlled(fd, data, n, deadline_ms, {});
+}
+bool send_all_controlled(sock_fd fd, const void *data, size_t n, int deadline_ms,
+                         const std::function<bool()> &cancel) {
     const Budget budget(deadline_ms);
 #ifdef _WIN32
     if (!nonblocking(fd)) return false;
@@ -60,7 +73,8 @@ bool send_all(sock_fd fd, const void* data, size_t n, int deadline_ms) {
     const uint8_t* p = (const uint8_t*) data;
     size_t off = 0;
     while (off < n) {
-        if (!wait_fd(fd, true, budget)) return false;
+        if (!wait_fd(fd, true, budget, cancel))
+            return false;
 #ifdef _WIN32
         const int chunk = (int) (::send(fd, (const char*) (p + off), (int) (n - off), 0));
         const bool failed = chunk == SOCKET_ERROR;
@@ -76,7 +90,11 @@ bool send_all(sock_fd fd, const void* data, size_t n, int deadline_ms) {
     return true;
 }
 
-bool recv_all(sock_fd fd, void* data, size_t n, int deadline_ms) {
+bool recv_all(sock_fd fd, void *data, size_t n, int deadline_ms) {
+    return recv_all_controlled(fd, data, n, deadline_ms, {});
+}
+bool recv_all_controlled(sock_fd fd, void *data, size_t n, int deadline_ms,
+                         const std::function<bool()> &cancel) {
     const Budget budget(deadline_ms);
 #ifdef _WIN32
     if (!nonblocking(fd)) return false;
@@ -84,7 +102,8 @@ bool recv_all(sock_fd fd, void* data, size_t n, int deadline_ms) {
     uint8_t* p = (uint8_t*) data;
     size_t off = 0;
     while (off < n) {
-        if (!wait_fd(fd, false, budget)) return false;
+        if (!wait_fd(fd, false, budget, cancel))
+            return false;
 #ifdef _WIN32
         const int chunk = (int) ::recv(fd, (char*) (p + off), (int) (n - off), 0);
         const bool failed = chunk == SOCKET_ERROR;
@@ -97,6 +116,61 @@ bool recv_all(sock_fd fd, void* data, size_t n, int deadline_ms) {
         if (failed || chunk == 0) return false;      // error, or EOF before the frame was whole
         off += (size_t) chunk;
     }
+    return true;
+}
+
+bool connect_numeric_controlled(const std::string &host, uint16_t port, int deadline_ms,
+                                const std::function<bool()> &cancel, sock_fd &out, std::string &err) {
+    out = kBadFd;
+    if (cancel && cancel()) {
+        err = "setup cancelled before connection";
+        return false;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        err = "local setup needs a numeric IPv4 host (use 127.0.0.1 for an SSH forward)";
+        return false;
+    }
+    sock_fd fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == kBadFd) {
+        err = "socket failed";
+        return false;
+    }
+#ifdef _WIN32
+    if (!nonblocking(fd)) {
+        close_fd(fd);
+        err = "nonblocking connect failed";
+        return false;
+    }
+#else
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close_fd(fd);
+        err = "nonblocking connect failed";
+        return false;
+    }
+#endif
+    const Budget budget(deadline_ms);
+    const int rc = ::connect(fd, (sockaddr *)&addr, sizeof addr);
+#ifdef _WIN32
+    const bool pending =
+        rc != 0 && (WSAGetLastError() == WSAEWOULDBLOCK || WSAGetLastError() == WSAEINPROGRESS);
+#else
+    const bool pending = rc != 0 && errno == EINPROGRESS;
+#endif
+    int error = 0;
+    socklen_t size = sizeof error;
+    if ((rc != 0 && !pending) || (pending && !wait_fd(fd, true, budget, cancel)) ||
+        ::getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&error, &size) != 0 || error || (cancel && cancel())) {
+        close_fd(fd);
+        err = "connect failed, cancelled or timed out";
+        return false;
+    }
+    int one = 1;
+    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
+    out = fd;
     return true;
 }
 

@@ -1,0 +1,12 @@
+worker-manifest: layer 1/2; expert bytes read 10444800
+worker-manifest: layer 2/2; expert bytes read 20889600
+PASS transport equals direct native bits
+PASS actual binary CLI local-load smoke: zero network weights
+PASS actual worker binary clean shutdown
+strata-worker: listening on 127.0.0.1:40485 (budget 32 MiB, 2 pool workers)
+strata-worker: session 9e36a0cbda4e4484: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: local ready: read=20889600 B network=0 B hits=4 misses=0 read_s=0.005 verify_s=0.022 setup_s=0.027
+strata-worker: session 9e36a0cbda4e4484 ready: 4 blobs, 20889600 B verified
+strata-worker: stopped; setup 0 B, 1 requests, 0 failures, 2 ms cpu service
+strata-worker: local bytes 20889600, hits 4, misses 0; read 0.005 s, verify 0.022 s, setup 0.027 s
+worker_local_test: 0 failures

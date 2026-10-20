@@ -48,7 +48,10 @@ ExpertWorkerTier::~ExpertWorkerTier() {
 bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     if (dead_) { err = "the remote CPU-expert worker tier is dead: " + dead_why_; return false; }
     if (ready_) { err = "the remote CPU-expert worker tier is already open"; return false; }
-    if (in.fetch == nullptr) { err = "the remote CPU-expert tier needs a blob fetcher"; return false; }
+    if (in.fetch == nullptr && (!in.local || in.local_fallback)) {
+        err = "the remote CPU-expert tier needs a blob fetcher";
+        return false;
+    }
     if (in.n_layers < 1 || in.n_expert < 1 || in.n_embd < 1 || in.n_ff < 1 ||
         in.n_layers > kMaxLayers || in.n_expert > kMaxExperts || in.n_embd > kMaxNEmbd ||
         in.n_ff > kMaxNFf) {
@@ -61,10 +64,36 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
         return false;
     }
     const auto t0 = mono_ms();
-    if (!client_.connect_host(in.host, in.port, in.deadline_ms, err)) {
+    auto check_setup = [&] {
+        const auto elapsed = mono_ms() - t0;
+        if ((in.cancelled && in.cancelled()) ||
+            (in.local && (in.setup_ms <= 0 || in.deadline_ms <= 0 || elapsed >= (uint64_t)in.setup_ms))) {
+            err = "remote CPU setup cancelled or exceeded its total budget";
+            return false;
+        }
+        if (in.local)
+            client_.set_deadline_ms((int)std::min<uint64_t>(in.deadline_ms, in.setup_ms - elapsed));
+        return true;
+    };
+    if (!check_setup()) {
+        die(err);
+        return false;
+    }
+    const auto control = [&] { return !check_setup(); };
+    const bool connected =
+        in.local
+            ? client_.connect_local(in.host, in.port, std::min(in.deadline_ms, in.setup_ms), control, err)
+            : client_.connect_host(in.host, in.port, in.deadline_ms, err);
+    if (!connected) {
         err = "connecting the remote CPU-expert worker (" + in.host + ":" + std::to_string(in.port) + "): " + err;
         return false;
     }
+    struct ResetControl {
+        ExpertWorkerClient &client;
+        ~ResetControl() { client.set_setup_cancelled({}); }
+    } reset{client_};
+    if (in.local || in.cancelled)
+        client_.set_setup_cancelled(control);
     SetupManifest m;
     m.nonce = (uint64_t) t0 ^ ((uint64_t) (uintptr_t) this << 32);
     m.model_id = model_digest(in.model_name, in.gu_type, in.d_type, in.n_layers, in.n_expert, in.n_embd, in.n_ff);
@@ -78,7 +107,16 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     m.n_ff = in.n_ff;
     m.partition = in.partition;
     m.partition_id = blob_digest(in.partition).a;
-    if (!client_.setup(m, err)) {
+    if (in.local)
+        m.model_id = in.local->identity.a;
+    if (in.local && (!in.local->matches(m) || in.setup_ms <= 0 || in.deadline_ms <= 0)) {
+        err = "local manifest does not match engine geometry, quantization or setup budget";
+        client_.close();
+        return false;
+    }
+    const bool setup_ok =
+        in.local ? client_.setup_local(m, in.local->identity, in.local_fallback, err) : client_.setup(m, err);
+    if (!setup_ok) {
         err = std::string("the remote CPU-expert worker refused setup (") + status_name(client_.last_status()) +
               "): " + err;
         client_.close();
@@ -87,27 +125,66 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     }
     const uint32_t blob = client_.blob_bytes();
     if (blob == 0) { err = "the remote CPU-expert worker reported a zero blob size"; client_.close(); die(err); return false; }
-    std::vector<uint8_t> staging((size_t) blob);   // THE staging bound: one blob, reused for every slot
-    uint64_t owned = 0;
-    for (int l = 0; l < in.n_layers; ++l)
+    st_.connect_setup_ms = (double)(mono_ms() - t0);
+    std::vector<uint8_t> staging; // allocated only for upload; at most one blob
+    uint64_t owned = m.owned_count();
+    auto failed = [&] {
+        client_.set_setup_cancelled({});
+        client_.close();
+        die(err);
+        return false;
+    };
+    auto upload = [&](int l, int e) {
+        const auto t = mono_ms();
+        if (!check_setup())
+            return false;
+        staging.resize(blob);
+        if (!in.fetch || !in.fetch(l, e, staging.data(), blob)) {
+            err = "expert source could not produce the missing upload blob";
+            return false;
+        }
+        const Digest128 *expected = in.local ? &in.local->digests[(size_t)l * in.n_expert + e] : nullptr;
+        if (!check_setup() || !client_.upload(l, e, staging.data(), blob, err, expected))
+            return false;
+        st_.setup_network_bytes += blob;
+        st_.fetch_upload_ms += (double)(mono_ms() - t);
+        return true;
+    };
+    for (int l = 0; l < in.n_layers; ++l) {
+        std::vector<std::pair<uint16_t, uint16_t>> slots;
         for (int e = 0; e < in.n_expert; ++e)
-            if (m.owns(l, e)) {
-                if (!in.fetch(l, e, staging.data(), blob)) {
-                    err = "the expert source could not produce layer " + std::to_string(l) + " expert " +
-                          std::to_string(e) + " for the worker upload";
-                    client_.close();
-                    die(err);
-                    return false;
+            if (m.owns(l, e))
+                slots.push_back({(uint16_t)l, (uint16_t)e});
+        if (!in.local) {
+            for (const auto &s : slots)
+                if (!upload(s.first, s.second))
+                    return failed();
+            continue;
+        }
+        for (size_t i = 0; i < slots.size(); i += kLocalBatchMax) {
+            if (!check_setup())
+                return failed();
+            const auto t = mono_ms();
+            std::vector<std::pair<uint16_t, uint16_t>> batch(
+                slots.begin() + i, slots.begin() + std::min(slots.size(), i + kLocalBatchMax));
+            std::vector<uint8_t> hits;
+            if (!client_.load_local(batch, hits, err))
+                return failed();
+            st_.local_ms += (double)(mono_ms() - t);
+            for (size_t j = 0; j < hits.size(); ++j)
+                if (!hits[j]) {
+                    if (!in.local_fallback) {
+                        err = "local expert is absent and upload fallback was not requested";
+                        return failed();
+                    }
+                    if (!upload(batch[j].first, batch[j].second))
+                        return failed();
                 }
-                if (!client_.upload(l, e, staging.data(), blob, err)) {
-                    err = std::string("uploading layer ") + std::to_string(l) + " expert " + std::to_string(e) +
-                          " to the remote CPU-expert worker (" + status_name(client_.last_status()) + "): " + err;
-                    client_.close();
-                    die(err);
-                    return false;
-                }
-                ++owned;
-            }
+        }
+    }
+    if (!check_setup())
+        return failed();
+    const auto rt = mono_ms();
     if (owned == 0) {
         err = "the remote CPU-expert worker owns nothing: every expert is on a GPU tier already";
         client_.close();
@@ -120,6 +197,16 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
         die(err);
         return false;
     }
+    if (!check_setup())
+        return failed();
+    st_.ready_ms = (double)(mono_ms() - rt);
+    client_.set_deadline_ms(in.deadline_ms);
+    const auto &ls = client_.local_stats();
+    st_.local_bytes = ls.bytes;
+    st_.local_hits = ls.hits;
+    st_.local_misses = ls.misses;
+    st_.local_read_ns = ls.read_ns;
+    st_.local_verify_ns = ls.verify_ns;
     partition_ = std::move(m.partition);
     n_layers_ = in.n_layers;
     n_expert_ = in.n_expert;
@@ -240,15 +327,23 @@ bool ExpertWorkerTier::status(WorkerStatusInfo& out, std::string& err) {
 }
 
 void ExpertWorkerTier::report(std::string& out) const {
-    char buf[640];
+    char buf[1024];
     std::snprintf(buf, sizeof buf,
-                  "%s%llu blobs / %.2f GiB staged in %.1f s; %llu requests, %llu entries; "
+                  "%s%llu blobs / %.2f GiB verified in %.1f s; %llu requests, %llu entries; "
                   "request wall %.1f ms, of which waited %.1f ms",
                   dead_ ? "DEAD after its last failure; " : "", (unsigned long long) st_.setup_blobs,
                   (double) st_.setup_weight_bytes / 1073741824.0, st_.setup_ms / 1e3,
                   (unsigned long long) st_.requests, (unsigned long long) st_.entries, st_.request_ms,
                   st_.wait_ms);
     out = buf;
+    std::snprintf(buf, sizeof buf,
+                  "; setup network=%llu B local=%llu B hits=%llu misses=%llu; phases connect/setup=%.1f ms "
+                  "local=%.1f ms (read=%.1f verify=%.1f) fetch/upload=%.1f ms ready=%.1f ms",
+                  (unsigned long long)st_.setup_network_bytes, (unsigned long long)st_.local_bytes,
+                  (unsigned long long)st_.local_hits, (unsigned long long)st_.local_misses,
+                  st_.connect_setup_ms, st_.local_ms, st_.local_read_ns / 1e6, st_.local_verify_ns / 1e6,
+                  st_.fetch_upload_ms, st_.ready_ms);
+    out += buf;
 }
 
 }  // namespace strata::worker

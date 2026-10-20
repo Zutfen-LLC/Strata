@@ -198,3 +198,9 @@ The experimental setup optimization, measured small benchmark, bounded compatibi
 exact incremental 05/03 build/smoke commands are in
 [the setup-chunk handoff](cpu-worker-setup-chunks/README.md). It uses the existing SETUP_ACK cap;
 inference frames retain their separate bound. No physical network or full-model speedup is claimed.
+
+## Worker-local sources (default off)
+
+The negotiated local setup candidate can read assigned experts from an operator-configured copy of
+the GGUF shards. See [the local source contract](cpu-worker-local/README.md) and
+[the Hermes controller recipe](cpu-worker-local/HERMES.md). The default upload path is unchanged.

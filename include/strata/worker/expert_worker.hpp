@@ -30,13 +30,18 @@ struct WorkerOptions {
     int workers = 0;      ///< ExpertPool worker threads (0: the pool's default plan for this machine)
     int deadline_ms = 10000;   ///< per-frame send/recv deadline
     int verbose = 0;      ///< 1: log each request's identity/status line (still no payloads)
+    std::string local_root, local_manifest; // both empty by default; operator paths only
+    bool local_upload_fallback = false;
+    int local_setup_ms = 600000; // whole local setup budget, in addition to per-batch I/O budget
     uint32_t upload_chunk_max = kUploadChunkMax;   ///< advertised data cap, 1..kUploadChunkMax
 };
 
 /// #348 scope 8: what the service counts.  Identities and statuses are logged; prompts, activations and
 /// outputs never are.
 struct WorkerCounters {
-    uint64_t setup_weight_bytes = 0;   ///< expert bytes accepted into the arena
+    uint64_t setup_weight_bytes = 0; ///< network weight bytes accepted into the arena
+    uint64_t local_bytes = 0, local_hits = 0, local_misses = 0;
+    uint64_t local_read_ns = 0, local_verify_ns = 0, local_setup_ns = 0;
     uint64_t infer_in_bytes = 0;       ///< inference frames received (headers included)
     uint64_t infer_out_bytes = 0;      ///< inference replies sent
     uint64_t requests = 0;             ///< MSG_INFER handled (accepted or rejected)

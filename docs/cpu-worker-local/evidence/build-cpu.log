@@ -1,0 +1,23 @@
+ninja: warning: premature end of file; recovering
+[1/22] Building CXX object CMakeFiles/strata_expert_worker.dir/src/worker/expert_wire.cpp.o
+[2/22] Building CXX object CMakeFiles/strata_expert_worker.dir/src/worker/expert_client.cpp.o
+[3/22] Building CXX object CMakeFiles/strata_expert_worker.dir/src/worker/expert_worker.cpp.o
+[4/22] Building CXX object CMakeFiles/strata_expert_worker.dir/src/worker/wire_sock.cpp.o
+[5/22] Building CXX object CMakeFiles/strata_worker_tier.dir/src/worker/expert_tier.cpp.o
+[6/22] Building CXX object CMakeFiles/strata-expert-worker.dir/src/worker/expert_worker_main.cpp.o
+[7/22] Building CXX object CMakeFiles/strata_expert_worker.dir/src/worker/local_source.cpp.o
+[8/22] Linking CXX static library libstrata_expert_worker.a
+[9/22] Building CXX object CMakeFiles/strata-worker-manifest.dir/src/worker/local_manifest_main.cpp.o
+[10/22] Building CXX object CMakeFiles/worker_socket_test.dir/tests/worker/worker_socket_test.cpp.o
+[11/22] Building CXX object CMakeFiles/expert_worker_e2e_test.dir/tests/worker/expert_worker_e2e_test.cpp.o
+[12/22] Linking CXX static library libstrata_worker_tier.a
+[13/22] Building CXX object CMakeFiles/expert_worker_test.dir/tests/worker/expert_worker_test.cpp.o
+[14/22] Building CXX object CMakeFiles/expert_tier_test.dir/tests/worker/expert_tier_test.cpp.o
+[15/22] Linking CXX executable strata-expert-worker
+[16/22] Linking CXX executable strata-worker-manifest
+[17/22] Building CXX object CMakeFiles/worker_local_test.dir/tests/worker/worker_local_test.cpp.o
+[18/22] Linking CXX executable worker_socket_test
+[19/22] Linking CXX executable expert_worker_test
+[20/22] Linking CXX executable worker_local_test
+[21/22] Linking CXX executable expert_tier_test
+[22/22] Linking CXX executable expert_worker_e2e_test

@@ -1,0 +1,144 @@
+worker-manifest: layer 1/2; expert bytes read 10444800
+worker-manifest: layer 2/2; expert bytes read 20889600
+strata-worker: session 9e36a0c880858aec: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: session 9e36a0c880858aec ready: 4 blobs, 20889600 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb74871928: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: local ready: read=20889600 B network=0 B hits=4 misses=0 read_s=0.006 verify_s=0.022 setup_s=0.029
+strata-worker: session 9e36a0cb74871928 ready: 4 blobs, 20889600 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb6d4a4d9c: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: readiness refused: 2 of 4 assigned slots missing or bad
+strata-worker: local ready: read=13926400 B network=10444800 B hits=2 misses=2 read_s=0.003 verify_s=0.017 setup_s=0.063
+strata-worker: session 9e36a0cb6d4a4d9c ready: 4 blobs, 20889600 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb655112c6: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: local setup stopped: local expert digest mismatch (digest-mismatch)
+strata-worker: readiness refused: 4 of 4 assigned slots missing or bad
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb65e889ae: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: readiness refused: 4 of 4 assigned slots missing or bad
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb6598119a: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: readiness refused: 4 of 4 assigned slots missing or bad
+strata-worker: connection closed (eof or deadline)
+strata-worker: setup refused: 4 owned blobs need 20889600 B, budget 20889599 B (model '')
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb6451310a: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: local setup stopped: deadline or cancellation (deadline)
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb62d3e706: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: local setup stopped: local file type or size mismatch: a.gguf (local-invalid)
+strata-worker: readiness refused: 4 of 4 assigned slots missing or bad
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb6286c3be: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: local setup stopped: cannot open local regular file: a.gguf (local-invalid)
+strata-worker: readiness refused: 4 of 4 assigned slots missing or bad
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb62bb8430: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: local setup stopped: local file type or size mismatch: a.gguf (local-invalid)
+strata-worker: readiness refused: 4 of 4 assigned slots missing or bad
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb61ee6c4e: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: local setup stopped: local expert digest mismatch (digest-mismatch)
+strata-worker: readiness refused: 4 of 4 assigned slots missing or bad
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb60ab304e: model '' quant 'Q8_0' 2x2 gu=8 d=8, 2 owned blobs of 5222400 B
+strata-worker: local ready: read=10444800 B network=0 B hits=2 misses=0 read_s=0.002 verify_s=0.013 setup_s=0.016
+strata-worker: session 9e36a0cb60ab304e ready: 2 blobs, 10444800 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 4bf5562b52c1c441: model 'model' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: local ready: read=20889600 B network=0 B hits=4 misses=0 read_s=0.004 verify_s=0.024 setup_s=0.028
+strata-worker: session 4bf5562b52c1c441 ready: 4 blobs, 20889600 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 4bf5562b55687445: model 'model' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: local ready: read=13926400 B network=10444800 B hits=2 misses=2 read_s=0.003 verify_s=0.017 setup_s=0.049
+strata-worker: session 4bf5562b55687445 ready: 4 blobs, 20889600 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36a0cb54950014: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 3c6f2a00d5700665: model '' quant 'Q8_0' 2x2 gu=8 d=8, 4 owned blobs of 5222400 B
+strata-worker: readiness refused: 4 of 4 assigned slots missing or bad
+strata-worker: connection closed (eof or deadline)
+PASS legacy upload weight count
+PASS transport equals direct native bits
+PASS transport equals direct native bits
+PASS transport equals direct native bits
+PASS transport equals direct native bits
+PASS transport equals direct native bits
+PASS transport equals direct native bits
+PASS all local hits including split-role layer
+PASS local duplicate slot refused
+PASS all-local sends ZERO network weight bytes
+PASS transport equals direct native bits
+PASS upload/local inference parity T=1/4/8
+PASS transport equals direct native bits
+PASS upload/local inference parity T=1/4/8
+PASS transport equals direct native bits
+PASS upload/local inference parity T=1/4/8
+PASS transport equals direct native bits
+PASS upload/local inference parity T=1/4/8
+PASS transport equals direct native bits
+PASS upload/local inference parity T=1/4/8
+PASS transport equals direct native bits
+PASS upload/local inference parity T=1/4/8
+PASS local bytes/hits/phase counters
+LOCAL_FIXTURE bytes=20889600 network=0 read_ns=5715376 verify_ns=22283837 setup_ns=28180429
+PASS missing-only local/missing split
+PASS missing set cannot become ready
+PASS local hits cannot be overwritten by upload
+PASS fallback bytes must match trusted manifest
+PASS transport equals direct native bits
+PASS network contains only missing experts
+PASS corrupt present role is not hidden by missing role
+PASS corrupt partial source cannot become ready
+PASS new upload-only worker refuses local mode clearly
+PASS default upload setup still needs bytes
+PASS wrong model refused
+PASS wrong full manifest identity refused
+PASS inconsistent ownership identity refused
+PASS duplicate ownership list refused before reads
+PASS partial local setup cannot become ready
+PASS assigned arena memory limit enforced
+PASS total setup deadline enforced
+PASS deadline failure cannot become ready
+PASS truncation/symlink/directory/corruption is fatal, not absent
+PASS invalid source cannot become ready
+PASS truncation/symlink/directory/corruption is fatal, not absent
+PASS invalid source cannot become ready
+PASS truncation/symlink/directory/corruption is fatal, not absent
+PASS invalid source cannot become ready
+PASS truncation/symlink/directory/corruption is fatal, not absent
+PASS invalid source cannot become ready
+PASS overflowed slices rejected
+PASS out-of-bounds slices rejected
+PASS path escape rejected
+PASS overlapping role ranges rejected
+PASS truncated digest manifest rejected
+PASS changed native index invalidates reuse
+PASS local load refuses unassigned expert
+PASS sparse partition reads ONLY assigned bytes; unassigned corruption is untouched
+PASS real engine tier local setup / cancellation
+PASS tier fetches zero local hits and only missing blobs
+PASS tier setup network evidence
+PASS tier inference after local readiness
+PASS real engine tier local setup / cancellation
+PASS tier fetches zero local hits and only missing blobs
+PASS tier setup network evidence
+PASS tier inference after local readiness
+PASS real engine tier local setup / cancellation
+PASS tier fetches zero local hits and only missing blobs
+PASS cancelled tier cannot infer
+PASS disconnect clears client session
+PASS reconnect requires a new setup session
+PASS reconnect does not retain local readiness
+PASS negotiation header/payload obey total budget and cancellation
+NEGOTIATION mode=0 elapsed_ms=60
+PASS negotiation header/payload obey total budget and cancellation
+NEGOTIATION mode=1 elapsed_ms=59
+PASS negotiation header/payload obey total budget and cancellation
+NEGOTIATION mode=2 elapsed_ms=50
+PASS negotiation header/payload obey total budget and cancellation
+PASS already-cancelled setup does not connect or allocate worker arena
+NEGOTIATION mode=3 elapsed_ms=0
+worker_local_test: 0 failures

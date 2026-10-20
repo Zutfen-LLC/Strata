@@ -201,6 +201,10 @@ const char* status_name(uint16_t s) {
         case ST_STALE_SESSION: return "stale-session";
         case ST_NONFINITE: return "nonfinite";
         case ST_DEADLINE: return "deadline";
+        case ST_LOCAL_INVALID:
+            return "local-invalid";
+        case ST_LOCAL_UNAVAILABLE:
+            return "local-unavailable";
         case ST_INTERNAL: return "internal";
     }
     return "unknown";

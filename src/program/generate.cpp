@@ -559,6 +559,9 @@ struct Options {
     std::string remote_cpu_host = "127.0.0.1";   ///< the worker, or the local end of an owned SSH forward
     int remote_cpu_port = 7431;
     int remote_cpu_deadline_ms = 10000;
+    std::string remote_cpu_local_manifest;
+    bool remote_cpu_local_fallback = false;
+    int remote_cpu_setup_ms = 600000;
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
     /// **R4.2g.  ROUND 328 MEASURED THAT THE GLOBAL ADMISSION POLICY CANNOT WORK, AND THIS IS THE FIX.**
@@ -999,6 +1002,9 @@ void usage() {
                  "                       --short-read through the verify windows, and refuses the modes it\n"
                  "                       does not implement (batch slots, layer split, peer, pipeline,\n"
                  "                       adaptive tiers, resident RAM mirrors, tail skipping).\n"
+                 "  --remote-cpu-local-manifest FILE  opt-in trusted slice manifest; needs configured local worker\n"
+                 "  --remote-cpu-local-fallback  allow upload for absent local experts (worker must allow it)\n"
+                 "  --remote-cpu-setup-ms N  whole local setup budget (default 600000)\n"
                  "  --remote-cpu-deadline-ms N  per-frame deadline to the worker (default 10000)\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
                  "                       layers across CUDA1..3 (default: stripe)\n"
@@ -2479,6 +2485,9 @@ int main(int argc, char** argv) {
             o.remote_cpu_host = v.substr(0, c);
             o.remote_cpu_port = port;
         }
+        else if (a == "--remote-cpu-local-manifest") o.remote_cpu_local_manifest=next("--remote-cpu-local-manifest");
+        else if (a == "--remote-cpu-local-fallback") o.remote_cpu_local_fallback=true;
+        else if (a == "--remote-cpu-setup-ms") o.remote_cpu_setup_ms=std::atoi(next("--remote-cpu-setup-ms"));
         else if (a == "--remote-cpu-deadline-ms")
             o.remote_cpu_deadline_ms = std::max(100, std::atoi(next("--remote-cpu-deadline-ms")));
         else if (a == "--expert-cache-remote-placement")
@@ -3217,6 +3226,14 @@ int main(int argc, char** argv) {
     // inferswarm #349: the remote CPU-expert worker is a bounded, opt-in mode.  It refuses UP FRONT every
     // configuration whose execution path it does not implement, rather than silently running a different
     // one: the modes below are the ones the integration was framed for (see docs/CPU_WORKER.md).
+    if ((!o.remote_cpu_local_manifest.empty() && !o.remote_cpu_experts) ||
+        (o.remote_cpu_local_fallback && o.remote_cpu_local_manifest.empty()) || o.remote_cpu_setup_ms<=0) {
+        std::fprintf(stderr,"strata generate: local manifest needs --remote-cpu-experts; fallback needs a manifest; setup budget must be positive\n"); return 2;
+    }
+    if (!o.remote_cpu_local_manifest.empty() && (!o.mmap_experts || o.native_preset.empty())) {
+        std::fprintf(stderr, "strata generate: local worker sources require --mmap-experts and --native GGUF reference slices\n");
+        return 2;
+    }
     if (o.remote_cpu_experts) {
         const char* why = !o.serve ? "it needs --serve"
                         : o.batch != 0 ? "not with --batch slots (serial text requests only)"
@@ -5533,6 +5550,10 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        if (!o.remote_cpu_local_manifest.empty() && !src.gguf_mode()) {
+            std::fprintf(stderr, "strata generate: local worker manifest requires the GGUF expert source; pack/experts.bin is present\n");
+            return 1;
+        }
         std::fprintf(stderr, "strata generate: experts via mmap (--mmap-experts; %s)\n",
                      src.gguf_mode() ? "the GGUF shards in place, no experts.bin" : "the A/B arm of R2.1");
         // #286: with a RAM budget the hottest experts live in it, and the rest are read from the drive unbuffered
@@ -6590,16 +6611,31 @@ int main(int argc, char** argv) {
             if (lay.blob_bytes(l) != (uint64_t) bytes) return false;   // never truncate or reinterpret
             return srcp->copy_blob(l, e, dst);
         };
+        strata::worker::LocalManifest local_manifest;
+        if(!o.remote_cpu_local_manifest.empty()) {
+            const auto manifest_start = Clock::now();
+            if(!strata::worker::read_local_manifest(o.remote_cpu_local_manifest,local_manifest,err) ||
+               !strata::worker::match_local_index(local_manifest,o.pack,o.native_preset,lay,err)) {
+                std::fprintf(stderr,"strata generate: local manifest: %s\n",err.c_str()); return 1;
+            }
+            std::fprintf(stderr, "strata generate: local manifest validation %.3f s (metadata only)\n",
+                         std::chrono::duration<double>(Clock::now() - manifest_start).count());
+            wopen.local=&local_manifest;
+            wopen.local_fallback=o.remote_cpu_local_fallback;
+            wopen.setup_ms=o.remote_cpu_setup_ms;
+        }
         const auto wt0 = Clock::now();
         if (!worker_tier.open(wopen, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
         std::fprintf(stderr, "strata generate: remote CPU experts ready on %s:%d in %.1f s (%llu blobs, "
-                             "%.2f GiB streamed through one staging buffer)\n", o.remote_cpu_host.c_str(),
+                             "%.2f GiB verified)\n", o.remote_cpu_host.c_str(),
                      o.remote_cpu_port, std::chrono::duration<double>(Clock::now() - wt0).count(),
                      (unsigned long long) worker_tier.stats().setup_blobs,
                      (double) worker_tier.stats().setup_weight_bytes / 1073741824.0);
+        std::string setup_report; worker_tier.report(setup_report);
+        std::fprintf(stderr,"strata generate: %s\n",setup_report.c_str());
     }
 
     if (remote_opt && !remote_opt->init(err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }

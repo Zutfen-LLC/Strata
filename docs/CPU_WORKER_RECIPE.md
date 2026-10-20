@@ -1,5 +1,9 @@
 # Remote CPU-expert correction: Hermes retest and asset preparation
 
+For the worker-local candidate based on `7a590706`, use
+[the worker-local Hermes recipe](cpu-worker-local/HERMES.md). It supersedes upload startup for that
+opt-in candidate and reuses the existing builds, assets and fixed runtime settings below.
+
 For the additive setup-chunk candidate based on tested `96576b32`, use the exact incremental
 checkout/build/small-smoke commands in [the setup-chunk handoff](cpu-worker-setup-chunks/README.md).
 Those commands supersede section 1 for that candidate; the asset and runtime constraints below remain.

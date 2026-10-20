@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <string>
 
 #ifdef _WIN32
@@ -52,6 +53,14 @@ bool send_all(sock_fd fd, const void* data, size_t n, int deadline_ms);
 
 /// Reads exactly n bytes or returns false (one total budget; EOF and expiry are failures).
 bool recv_all(sock_fd fd, void* data, size_t n, int deadline_ms);
+
+// Opt-in setup control. The old full-I/O functions retain their existing budgets.
+bool send_all_controlled(sock_fd fd, const void *data, size_t n, int deadline_ms,
+                         const std::function<bool()> &cancel);
+bool recv_all_controlled(sock_fd fd, void *data, size_t n, int deadline_ms,
+                         const std::function<bool()> &cancel);
+bool connect_numeric_controlled(const std::string &host, uint16_t port, int deadline_ms,
+                                const std::function<bool()> &cancel, sock_fd &out, std::string &err);
 
 /// Binds and listens on 127.0.0.1:port (port 0 picks a free one; `port` receives it).  Loopback only.
 bool listen_loopback(uint16_t& port, sock_fd& out, std::string& err);

@@ -1648,7 +1648,7 @@ if(STRATA_NATIVE_EXPERTS)
   # involved), built here inside STRATA_NATIVE_EXPERTS because its arithmetic is ggml-cpu's.  The engine
   # integration (#349) links this same library from the GPU side.
   add_library(strata_expert_worker STATIC src/worker/expert_wire.cpp src/worker/expert_worker.cpp
-              src/worker/expert_client.cpp src/worker/wire_sock.cpp)
+              src/worker/expert_client.cpp src/worker/wire_sock.cpp src/worker/local_source.cpp)
   target_include_directories(strata_expert_worker PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_include_directories(strata_expert_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
   target_link_libraries(strata_expert_worker PUBLIC strata_kernels_cpu)
@@ -1658,6 +1658,8 @@ if(STRATA_NATIVE_EXPERTS)
   add_executable(strata-expert-worker src/worker/expert_worker_main.cpp)
   target_include_directories(strata-expert-worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
   target_link_libraries(strata-expert-worker PRIVATE strata_expert_worker)
+  add_executable(strata-worker-manifest src/worker/local_manifest_main.cpp)
+  target_link_libraries(strata-worker-manifest PRIVATE strata_expert_worker)
   if(STRATA_BUILD_TESTS)
     # the focused worker checks: codec bounds, arena/session rejections, and direct-versus-transport
     # native execution over a real loopback socket (Q8_0 packed fixtures, bitwise equality)
@@ -1698,6 +1700,14 @@ if(STRATA_NATIVE_EXPERTS)
     # the focused engine-side checks: lifecycle against the real in-process service on a real loopback
     # socket (Q8_0 fixtures), transported-vs-direct parity through the tier's own request construction,
     # zero-work windows, sequence handling, the no-local-dereference property and the failure latch
+    if(NOT WIN32)
+      add_executable(worker_local_test tests/worker/worker_local_test.cpp)
+      target_include_directories(worker_local_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+      target_link_libraries(worker_local_test PRIVATE strata_worker_tier)
+      add_test(NAME worker_local_test COMMAND worker_local_test)
+      add_test(NAME worker_local_binary_test COMMAND worker_local_test --binary $<TARGET_FILE:strata-expert-worker>)
+      set_tests_properties(worker_local_test worker_local_binary_test PROPERTIES TIMEOUT 120)
+    endif()
     add_executable(expert_tier_test tests/worker/expert_tier_test.cpp)
     target_link_libraries(expert_tier_test PRIVATE strata_worker_tier)
     add_test(NAME expert_tier_test COMMAND expert_tier_test)

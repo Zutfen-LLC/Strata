@@ -35,6 +35,10 @@ public:
     struct Open {
         std::string host = "127.0.0.1";   ///< the worker, or an SSH tunnel's local end
         uint16_t port = 7431;
+        const LocalManifest *local = nullptr; // trusted reusable manifest, opt-in
+        bool local_fallback = false;
+        int setup_ms = 600000;
+        std::function<bool()> cancelled;
         int deadline_ms = 10000;          ///< per-frame deadline (setup, upload, infer)
         const char* model_name = "model";
         uint16_t gu_type = 8, d_type = 8; ///< GGML_TYPE_Q8_0 - the one layout the worker runs
@@ -92,6 +96,9 @@ public:
     struct Stats {
         uint64_t setup_blobs = 0;          ///< owned blobs uploaded and verified
         uint64_t setup_weight_bytes = 0;   ///< blobs accepted by the worker (the SETUP_ACK's blob size x owned)
+        uint64_t setup_network_bytes = 0, local_bytes = 0, local_hits = 0, local_misses = 0;
+        double connect_setup_ms = 0, local_ms = 0, fetch_upload_ms = 0, ready_ms = 0;
+        uint64_t local_read_ns = 0, local_verify_ns = 0;
         uint64_t requests = 0;             ///< INFER frames sent (zero-work windows send none)
         uint64_t entries = 0;              ///< routed (token, expert) entries this tier executed
         uint64_t failures = 0;

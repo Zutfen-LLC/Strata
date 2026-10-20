@@ -5,7 +5,9 @@
 // counter bump - a rejected request lets the connection continue, a malformed frame closes it.
 #include "strata/worker/expert_worker.hpp"
 
+#include "strata/worker/local_source.hpp"
 #include "wire_sock.hpp"
+#include <algorithm>
 
 #include <atomic>
 #include <chrono>
@@ -157,6 +159,10 @@ struct ExpertWorkerService::Impl {
     State state = State::Empty;
     uint64_t session = 0, model_id = 0, partition_id = 0, session_serial = 0;
     SetupManifest manifest{};
+    std::unique_ptr<LocalSource> local;
+    bool local_mode = false, fallback = false;
+    uint64_t local_start_ns = 0;
+    std::vector<uint8_t> local_attempt; // 0 untried, 1 local hit, 2 absent, 3 invalid
     NativeFmt fmt{};
     std::vector<uint64_t> slot_off;      ///< owned slots, layer-major order: their arena offsets
     std::vector<uint32_t> slot_filled;   ///< bytes present (Setup phase)
@@ -179,6 +185,10 @@ struct ExpertWorkerService::Impl {
 
     void void_session() {
         state = State::Empty;
+        local_mode = false;
+        local_attempt.clear();
+        if (local)
+            local->close_files();
         arena.reset();
         arena_bytes = 0;
         slot_off.clear();
@@ -193,7 +203,11 @@ struct ExpertWorkerService::Impl {
     bool send_frame(sock_fd fd, uint16_t msg, uint16_t status, const std::vector<uint8_t>& payload);
 
     // ---- handlers: each replies once and returns false only to close the connection ----
-    void on_setup_begin(sock_fd fd, const uint8_t* p, size_t n);
+    void on_setup_begin(sock_fd fd, const uint8_t *p, size_t n, bool use_local = false);
+    void on_local_load(sock_fd fd, const uint8_t *p, size_t n);
+    bool local_expired() const {
+        return local_mode && mono_ns() - local_start_ns >= (uint64_t)opt.local_setup_ms * 1000000;
+    }
     void on_upload(sock_fd fd, const uint8_t* p, size_t n);
     void on_ready(sock_fd fd, const uint8_t* p, size_t n);
     void on_infer(sock_fd fd, const uint8_t* p, size_t n);
@@ -214,18 +228,46 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
     for (int b = 0; b < 8; ++b) len |= (uint64_t) head[8 + b] << (8 * b);
     size_t cap = 0;
     switch (f.msg) {
-        case MSG_SETUP_BEGIN: cap = kSetupFrameMax - kHeaderBytes; break;
-        case MSG_UPLOAD: cap = kUploadHeadBytes + opt.upload_chunk_max; break;
-        case MSG_INFER: cap = kInferPayloadMax; break;
-        case MSG_SETUP_ACK: cap = 64; break;
-        case MSG_UPLOAD_ACK: cap = 32; break;
-        case MSG_READY:
-        case MSG_SHUTDOWN: cap = 16; break;
-        case MSG_READY_ACK: cap = 32; break;
-        case MSG_INFER_ACK: cap = kReplyPayloadMax; break;
-        case MSG_STATUS: cap = 16; break;
-        case MSG_STATUS_ACK: cap = 128; break;
-        default: malformed = true; return false;
+    case MSG_LOCAL_SETUP:
+        cap = kSetupFrameMax - kHeaderBytes + 24;
+        break;
+    case MSG_LOCAL_LOAD:
+        cap = 12 + kLocalBatchMax * 4;
+        break;
+    case MSG_SETUP_BEGIN:
+        cap = kSetupFrameMax - kHeaderBytes;
+        break;
+    case MSG_UPLOAD:
+        cap = kUploadHeadBytes + opt.upload_chunk_max;
+        break;
+    case MSG_INFER:
+        cap = kInferPayloadMax;
+        break;
+    case MSG_SETUP_ACK:
+        cap = 64;
+        break;
+    case MSG_UPLOAD_ACK:
+        cap = 32;
+        break;
+    case MSG_READY:
+    case MSG_SHUTDOWN:
+        cap = 16;
+        break;
+    case MSG_READY_ACK:
+        cap = 32;
+        break;
+    case MSG_INFER_ACK:
+        cap = kReplyPayloadMax;
+        break;
+    case MSG_STATUS:
+        cap = 16;
+        break;
+    case MSG_STATUS_ACK:
+        cap = 128;
+        break;
+    default:
+        malformed = true;
+        return false;
     }
     if (magic != kWireMagic || len > cap) { malformed = true; return false; }
     f.payload.resize((size_t) len);
@@ -241,18 +283,41 @@ bool ExpertWorkerService::Impl::send_frame(sock_fd fd, uint16_t msg, uint16_t st
     return sock::send_all(fd, buf.data(), buf.size(), opt.deadline_ms);
 }
 
-void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t* p, size_t n) {
+void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, size_t n, bool use_local) {
+    const uint16_t ack = use_local ? MSG_LOCAL_SETUP_ACK : MSG_SETUP_ACK;
+    Digest128 identity{};
+    bool want_fallback = false;
+    if (use_local) {
+        void_session();
+        Cur c{p, n};
+        const auto version = c.u32(), flags = c.u32();
+        identity = {c.u64(), c.u64()};
+        if (n < 24 || version != kLocalVersion || flags > 1 || !local ||
+            (flags && !opt.local_upload_fallback)) {
+            fail(ST_LOCAL_UNAVAILABLE);
+            send_frame(fd, ack, ST_LOCAL_UNAVAILABLE, {});
+            return;
+        }
+        want_fallback = flags == 1;
+        p += 24;
+        n -= 24;
+    }
     SetupManifest m;
     if (!decode_setup_begin(p, n, m)) {
         fail(ST_BAD_REQUEST);
-        send_frame(fd, MSG_SETUP_ACK, ST_BAD_REQUEST, {});
+        send_frame(fd, ack, ST_BAD_REQUEST, {});
+        return;
+    }
+    if (use_local && (local->manifest().identity != identity || !local->manifest().matches(m))) {
+        fail(ST_LOCAL_INVALID);
+        send_frame(fd, ack, ST_LOCAL_INVALID, {});
         return;
     }
     if (!layout_supported(m.gu_type, m.d_type)) {
         logf("setup refused: layout gu=%u d=%u is not one this worker runs (model '%s')", m.gu_type,
              m.d_type, m.model_name);
         fail(ST_UNSUPPORTED_LAYOUT);
-        send_frame(fd, MSG_SETUP_ACK, ST_UNSUPPORTED_LAYOUT, {});
+        send_frame(fd, ack, ST_UNSUPPORTED_LAYOUT, {});
         return;
     }
     NativeFmt f;
@@ -260,7 +325,7 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t* p, siz
     if (!strata::kernels::cpu::native_fmt(m.gu_type, m.d_type, m.n_embd, m.n_ff, f, err)) {
         logf("setup refused: %s (model '%s')", err.c_str(), m.model_name);
         fail(ST_UNSUPPORTED_LAYOUT);
-        send_frame(fd, MSG_SETUP_ACK, ST_UNSUPPORTED_LAYOUT, {});
+        send_frame(fd, ack, ST_UNSUPPORTED_LAYOUT, {});
         return;
     }
     const uint64_t owned = m.owned_count();
@@ -270,11 +335,18 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t* p, siz
              (unsigned long long) owned, (unsigned long long) need, (unsigned long long) opt.memory_budget,
              m.model_name);
         fail(ST_OVER_BUDGET);
-        send_frame(fd, MSG_SETUP_ACK, ST_OVER_BUDGET, {});
+        send_frame(fd, ack, ST_OVER_BUDGET, {});
         return;
     }
     // a SETUP_BEGIN voids any previous session: a restart is a new session, old ids cannot continue
     void_session();
+    local_mode = use_local;
+    fallback = want_fallback;
+    if (use_local) {
+        local_start_ns = mono_ns();
+        counters->local_bytes = counters->local_hits = counters->local_misses = 0;
+        counters->local_read_ns = counters->local_verify_ns = counters->local_setup_ns = 0;
+    }
     manifest = m;
     fmt = f;
     model_id = m.model_id;
@@ -289,6 +361,7 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t* p, siz
             }
     slot_filled.assign(slot_off.size(), 0);
     slot_bad.assign(slot_off.size(), 0);
+    local_attempt.assign(slot_off.size(), 0);
     if (need > 0) {
         arena.reset(new uint8_t[need]);   // exactly the assigned set: the budget was checked above
         arena_bytes = need;
@@ -304,7 +377,192 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t* p, siz
     put64(reply, session);
     put64(reply, (uint64_t) f.bytes);
     put32(reply, opt.upload_chunk_max);
-    send_frame(fd, MSG_SETUP_ACK, ST_OK, reply);
+    if (use_local) {
+        put32(reply, kLocalVersion);
+        put32(reply, kLocalBatchMax);
+    }
+    send_frame(fd, ack, ST_OK, reply);
+}
+
+// Each batch writes at most 32 blobs directly into the assigned arena. Ranges are
+// sorted by file and offset. There is no second weight buffer or mmap payload.
+void ExpertWorkerService::Impl::on_local_load(sock_fd fd, const uint8_t *p, size_t n) {
+    auto refuse = [&](uint16_t st) {
+        fail(st);
+        send_frame(fd, MSG_LOCAL_LOAD_ACK, st, {});
+    };
+    Cur c{p, n};
+    const auto sid = c.u64();
+    const auto count = c.u32();
+    if (state != State::Setup || !local_mode || sid != session) {
+        refuse(ST_WRONG_STATE);
+        return;
+    }
+    if (!count || count > kLocalBatchMax || n != 12 + 4 * count) {
+        refuse(ST_BAD_REQUEST);
+        return;
+    }
+    struct Entry {
+        uint16_t l, e;
+        int32_t slot;
+        bool hit = true;
+        std::array<bool, 3> present{true, true, true};
+    };
+    std::vector<Entry> entries;
+    uint32_t previous = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto l = c.u16(), e = c.u16();
+        const uint32_t key = (uint32_t)l * manifest.n_expert + e;
+        if (l >= manifest.n_layers || e >= manifest.n_expert || !manifest.owns(l, e)) {
+            refuse(ST_NOT_OWNED);
+            return;
+        }
+        const int32_t slot = slot_of[key];
+        if ((i && key <= previous) || local_attempt[slot] || slot_filled[slot] || slot_bad[slot]) {
+            refuse(ST_DUPLICATE);
+            return;
+        }
+        previous = key;
+        entries.push_back({l, e, slot, true});
+    }
+    const auto start = mono_ns();
+    const uint64_t batch_ns = (uint64_t)opt.deadline_ms * 1000000;
+    auto cancelled = [&] {
+        if (stopping.load(std::memory_order_acquire) || local_expired() || mono_ns() - start >= batch_ns)
+            return true;
+#ifndef _WIN32
+        char byte;
+        const auto rc = ::recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (rc == 0 || rc > 0 || (rc < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+            return true;
+#endif
+        return false;
+    };
+    auto abort = [&](uint16_t st, const std::string &why) {
+        for (const auto &e : entries) {
+            slot_bad[e.slot] = 1;
+            local_attempt[e.slot] = 3;
+        }
+        counters->local_setup_ns = mono_ns() - local_start_ns;
+        logf("local setup stopped: %s (%s)", why.c_str(), status_name(st));
+        refuse(st);
+    };
+    struct Read {
+        uint32_t file;
+        uint64_t offset;
+        size_t bytes;
+        uint8_t *dst;
+    };
+    std::vector<Read> reads;
+    std::string err;
+    for (auto &e : entries) {
+        size_t dst = 0;
+        const auto &rr = local->manifest().layers[e.l];
+        for (size_t ri = 0; ri < 3; ++ri) {
+            const auto &r = rr[ri];
+            if (cancelled()) {
+                abort(ST_DEADLINE, "deadline or cancellation");
+                return;
+            }
+            const int f = local->file(r.file, err);
+            if (f == -2) {
+                abort(ST_LOCAL_INVALID, err);
+                return;
+            }
+            if (f == -1) {
+                e.hit = false;
+                e.present[ri] = false;
+            }
+        }
+        if (!e.hit) {
+            local_attempt[e.slot] = 2;
+            ++counters->local_misses;
+        }
+        for (size_t ri = 0; ri < 3; ++ri) {
+            const auto &r = rr[ri];
+            if (e.present[ri])
+                reads.push_back({r.file, r.offset + (uint64_t)e.e * r.bytes, (size_t)r.bytes,
+                                 arena.get() + slot_off[e.slot] + dst});
+            dst += r.bytes;
+        }
+    }
+    std::sort(reads.begin(), reads.end(), [](const Read &a, const Read &b) {
+        return a.file < b.file || (a.file == b.file && a.offset < b.offset);
+    });
+    for (const auto &r : reads)
+        for (size_t i = 0; i < r.bytes;) {
+            if (cancelled()) {
+                abort(ST_DEADLINE, "deadline or cancellation");
+                return;
+            }
+            const size_t bytes = std::min<size_t>(256u << 10, r.bytes - i);
+            const auto t = mono_ns();
+            const bool ok = local->read(r.file, r.offset + i, r.dst + i, bytes, err);
+            counters->local_read_ns += mono_ns() - t;
+            if (!ok) {
+                abort(ST_LOCAL_INVALID, err);
+                return;
+            }
+            counters->local_bytes += bytes;
+            i += bytes;
+        }
+    auto verify = [&](const uint8_t *data, size_t bytes, Digest128 want) {
+        const auto t = mono_ns();
+        Digest128 d{0xcbf29ce484222325ull, 0x9e3779b97f4a7c15ull};
+        for (size_t i = 0; i < bytes;) {
+            if (cancelled()) {
+                abort(ST_DEADLINE, "deadline or cancellation");
+                return false;
+            }
+            const size_t end = std::min<size_t>(bytes, i + (64u << 10));
+            for (; i < end; ++i) {
+                d.a = (d.a ^ data[i]) * 0x100000001b3ull;
+                d.b = (d.b ^ data[bytes - 1 - i]) * 0x100000001b3ull;
+            }
+        }
+        counters->local_verify_ns += mono_ns() - t;
+        if (d != want) {
+            abort(ST_DIGEST_MISMATCH, "local expert digest mismatch");
+            return false;
+        }
+        return true;
+    };
+    for (const auto &e : entries) {
+        const auto data = arena.get() + slot_off[e.slot];
+        const size_t key = (size_t)e.l * manifest.n_expert + e.e;
+        if (e.hit) {
+            if (!verify(data, fmt.bytes, local->manifest().digests[key]))
+                return;
+            local_attempt[e.slot] = 1;
+            slot_filled[e.slot] = fmt.bytes;
+            ++counters->local_hits;
+        } else {
+            size_t dst = 0;
+            for (size_t r = 0; r < 3; ++r) {
+                const auto bytes = local->manifest().layers[e.l][r].bytes;
+                if (e.present[r] && !verify(data + dst, bytes, local->manifest().role_digests[key][r]))
+                    return;
+                dst += bytes;
+            }
+        }
+    }
+    if (cancelled()) {
+        abort(ST_DEADLINE, "deadline or cancellation");
+        return;
+    }
+    counters->local_setup_ns = mono_ns() - local_start_ns;
+    std::vector<uint8_t> reply;
+    put64(reply, session);
+    put32(reply, count);
+    put64(reply, counters->local_bytes);
+    put64(reply, counters->local_hits);
+    put64(reply, counters->local_misses);
+    put64(reply, counters->local_read_ns);
+    put64(reply, counters->local_verify_ns);
+    put64(reply, counters->local_setup_ns);
+    for (const auto &e : entries)
+        reply.push_back(e.hit ? 1 : 0);
+    send_frame(fd, MSG_LOCAL_LOAD_ACK, ST_OK, reply);
 }
 
 void ExpertWorkerService::Impl::on_upload(sock_fd fd, const uint8_t* p, size_t n) {
@@ -344,6 +602,19 @@ void ExpertWorkerService::Impl::on_upload(sock_fd fd, const uint8_t* p, size_t n
         return;
     }
     const int32_t slot = slot_of[(size_t) layer * manifest.n_expert + expert];
+    if (local_mode) {
+        const auto &expected = local->manifest().digests[(size_t)layer * manifest.n_expert + expert];
+        const uint16_t st =
+            local_expired()
+                ? ST_DEADLINE
+                : (declared != expected ? ST_DIGEST_MISMATCH
+                                        : (!fallback || local_attempt[slot] != 2 ? ST_WRONG_STATE : ST_OK));
+        if (st != ST_OK) {
+            fail(st);
+            send_frame(fd, MSG_UPLOAD_ACK, st, {});
+            return;
+        }
+    }
     if (total_len != (uint32_t) fmt.bytes || chunk_len == 0 || chunk_len > opt.upload_chunk_max ||
         (uint64_t) chunk_off + chunk_len > total_len) {
         fail(ST_BAD_REQUEST);
@@ -397,6 +668,11 @@ void ExpertWorkerService::Impl::on_ready(sock_fd fd, const uint8_t* p, size_t n)
         send_frame(fd, MSG_READY_ACK, s, {});
         return;
     }
+    if (local_expired()) {
+        fail(ST_DEADLINE);
+        send_frame(fd, MSG_READY_ACK, ST_DEADLINE, {});
+        return;
+    }
     uint64_t missing = 0;
     for (size_t s = 0; s < slot_filled.size(); ++s)
         if (slot_filled[s] != (uint32_t) fmt.bytes || slot_bad[s]) ++missing;
@@ -409,6 +685,14 @@ void ExpertWorkerService::Impl::on_ready(sock_fd fd, const uint8_t* p, size_t n)
         put64(reply, missing);
         send_frame(fd, MSG_READY_ACK, ST_INCOMPLETE, reply);
         return;
+    }
+    if (local_mode) {
+        counters->local_setup_ns = mono_ns() - local_start_ns;
+        logf("local ready: read=%llu B network=%llu B hits=%llu misses=%llu read_s=%.3f verify_s=%.3f "
+             "setup_s=%.3f",
+             (unsigned long long)counters->local_bytes, (unsigned long long)counters->setup_weight_bytes,
+             (unsigned long long)counters->local_hits, (unsigned long long)counters->local_misses,
+             counters->local_read_ns / 1e9, counters->local_verify_ns / 1e9, counters->local_setup_ns / 1e9);
     }
     state = State::Ready;   // frozen: no further setup or upload is accepted on this session
     logf("session %llx ready: %llu blobs, %llu B verified", (unsigned long long) session,
@@ -581,7 +865,7 @@ void ExpertWorkerService::Impl::on_status(sock_fd fd) {
 }
 
 void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
-    for (;;) {
+    while (!stopping.load(std::memory_order_acquire)) {
         WireFrame f;
         bool malformed = false;
         if (!recv_frame(fd, f, malformed)) {
@@ -594,24 +878,38 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
             break;
         }
         switch (f.msg) {
-            case MSG_SETUP_BEGIN: on_setup_begin(fd, f.payload.data(), f.payload.size()); break;
-            case MSG_UPLOAD: on_upload(fd, f.payload.data(), f.payload.size()); break;
-            case MSG_READY: on_ready(fd, f.payload.data(), f.payload.size()); break;
-            case MSG_INFER:
-                counters->infer_in_bytes += kHeaderBytes + f.payload.size();
-                on_infer(fd, f.payload.data(), f.payload.size());
-                break;
-            case MSG_STATUS: on_status(fd); break;
-            case MSG_SHUTDOWN:
-                send_frame(fd, MSG_STATUS_ACK, ST_OK, {});
-                sock::close_fd(fd);
-                stopping.store(true, std::memory_order_release);
-                void_session();
-                return;   // run() sees stopping and returns
-            default:
-                fail(ST_PROTOCOL);
-                send_frame(fd, MSG_STATUS_ACK, ST_PROTOCOL, {});
-                break;
+        case MSG_LOCAL_SETUP:
+            on_setup_begin(fd, f.payload.data(), f.payload.size(), true);
+            break;
+        case MSG_LOCAL_LOAD:
+            on_local_load(fd, f.payload.data(), f.payload.size());
+            break;
+        case MSG_SETUP_BEGIN:
+            on_setup_begin(fd, f.payload.data(), f.payload.size());
+            break;
+        case MSG_UPLOAD:
+            on_upload(fd, f.payload.data(), f.payload.size());
+            break;
+        case MSG_READY:
+            on_ready(fd, f.payload.data(), f.payload.size());
+            break;
+        case MSG_INFER:
+            counters->infer_in_bytes += kHeaderBytes + f.payload.size();
+            on_infer(fd, f.payload.data(), f.payload.size());
+            break;
+        case MSG_STATUS:
+            on_status(fd);
+            break;
+        case MSG_SHUTDOWN:
+            send_frame(fd, MSG_STATUS_ACK, ST_OK, {});
+            sock::close_fd(fd);
+            stopping.store(true, std::memory_order_release);
+            void_session();
+            return; // run() sees stopping and returns
+        default:
+            fail(ST_PROTOCOL);
+            send_frame(fd, MSG_STATUS_ACK, ST_PROTOCOL, {});
+            break;
         }
     }
     sock::close_fd(fd);
@@ -625,6 +923,20 @@ bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
     if (impl_->opt.upload_chunk_max == 0 || impl_->opt.upload_chunk_max > kUploadChunkMax) {
         err = "setup chunk cap must be between 1 and " + std::to_string(kUploadChunkMax);
         return false;
+    }
+    if (impl_->opt.local_root.empty() != impl_->opt.local_manifest.empty() ||
+        impl_->opt.local_setup_ms <= 0) {
+        err = "local root and manifest must both be configured, with a positive setup budget";
+        return false;
+    }
+    if (!impl_->opt.local_root.empty()) {
+        if (impl_->opt.deadline_ms <= 0) {
+            err = "local setup needs a positive per-batch deadline";
+            return false;
+        }
+        impl_->local = std::make_unique<LocalSource>();
+        if (!impl_->local->open(impl_->opt.local_root, impl_->opt.local_manifest, err))
+            return false;
     }
     return sock::listen_loopback(port, impl_->listener, err);
 }

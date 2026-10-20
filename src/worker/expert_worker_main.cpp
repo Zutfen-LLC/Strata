@@ -21,10 +21,12 @@ std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop.store(true); }
 
 void usage() {
-    std::fprintf(stderr,
-                 "usage: strata-expert-worker [--port P] [--memory-budget-mib N] [--workers N] "
-                 "[--deadline-ms N] [--verbose]\n"
-                 "  binds 127.0.0.1 only; serves one loopback connection at a time\n");
+    std::fprintf(
+        stderr,
+        "usage: strata-expert-worker [--port P] [--memory-budget-mib N] [--workers N] "
+        "[--deadline-ms N] [--verbose]\n"
+        "       [--local-root DIR --local-manifest FILE] [--local-upload-fallback] [--local-setup-ms N]\n"
+        "  binds 127.0.0.1 only; serves one loopback connection at a time\n");
 }
 }  // namespace
 
@@ -60,6 +62,16 @@ int main(int argc, char** argv) {
         else if (a == "--memory-budget-mib") opt.memory_budget = (uint64_t) next("--memory-budget-mib") << 20;
         else if (a == "--workers") opt.workers = (int) next("--workers");
         else if (a == "--deadline-ms") opt.deadline_ms = (int) next("--deadline-ms");
+        else if (a == "--local-root" || a == "--local-manifest") {
+            if (i + 1 >= argc) {
+                usage();
+                return 2;
+            }
+            (a == "--local-root" ? opt.local_root : opt.local_manifest) = argv[++i];
+        } else if (a == "--local-upload-fallback")
+            opt.local_upload_fallback = true;
+        else if (a == "--local-setup-ms")
+            opt.local_setup_ms = (int)next("--local-setup-ms");
         else if (a == "--verbose") opt.verbose = 1;
         else {
             usage();
@@ -91,5 +103,11 @@ int main(int argc, char** argv) {
                  "strata-worker: stopped; setup %llu B, %llu requests, %llu failures, %llu ms cpu service\n",
                  (unsigned long long) c.setup_weight_bytes, (unsigned long long) c.requests,
                  (unsigned long long) c.failures, (unsigned long long) (c.cpu_service_ns / 1000000));
+    std::fprintf(
+        stderr,
+        "strata-worker: local bytes %llu, hits %llu, misses %llu; read %.3f s, verify %.3f s, setup %.3f s\n",
+        (unsigned long long)c.local_bytes, (unsigned long long)c.local_hits,
+        (unsigned long long)c.local_misses, c.local_read_ns / 1e9, c.local_verify_ns / 1e9,
+        c.local_setup_ns / 1e9);
     return 0;
 }
