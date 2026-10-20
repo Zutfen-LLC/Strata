@@ -102,11 +102,40 @@ void codec_checks(const GpuPlan& p){
     check(!gpu_codec::decode_reply(p,digest,r,bad,output),"nonfinite output rejected");
 }
 uint64_t raw_setup(sock_fd fd,const GpuPlan& p){
-    using namespace gpu_codec;std::vector<uint8_t> payload;put(payload,kGpuWireVersion,4);put(payload,kGpuCapabilityCuda,4);put(payload,kGpuNumericsQ8_1,4);
-    std::string err;WireFrame out;require(send(fd,GPU_HELLO,ST_OK,payload,2000,{},err)&&receive(fd,out,kGpuFrameMax,2000,{},err)&&out.status==ST_OK,err);
-    payload.clear();put(payload,171);std::vector<uint8_t> plan;require(encode_gpu_plan(p,plan,err),err);payload.insert(payload.end(),plan.begin(),plan.end());
-    require(send(fd,GPU_SETUP,ST_OK,payload,2000,{},err)&&receive(fd,out,kGpuFrameMax,2000,{},err)&&out.status==ST_OK,err);
-    Cursor c{out.payload};return c.get();
+    // local_fixture.hpp also defines put<T>(buffer, value), whose width is sizeof(T).
+    // SGW1 fields use explicit codec widths, independent of literal or host integer types.
+    std::vector<uint8_t> payload;
+    gpu_codec::put(payload,kGpuWireVersion,4);
+    gpu_codec::put(payload,kGpuCapabilityCuda,4);
+    gpu_codec::put(payload,kGpuNumericsQ8_1,4);
+    const std::vector<uint8_t> hello_bytes{1,0,0,0,1,0,0,0,1,0,0,0};
+    require(payload==hello_bytes,"SGW1 HELLO is three little-endian u32 fields at offsets 0,4,8");
+    gpu_codec::Cursor hello{payload};
+    require(hello.get(4)==kGpuWireVersion&&hello.get(4)==kGpuCapabilityCuda&&
+            hello.get(4)==kGpuNumericsQ8_1&&hello.done(),"SGW1 HELLO decodes exactly 12 bytes");
+    std::string err;WireFrame out;
+    require(gpu_codec::send(fd,GPU_HELLO,ST_OK,payload,2000,{},err)&&
+            gpu_codec::receive(fd,out,kGpuFrameMax,2000,{},err)&&out.status==ST_OK,err);
+    payload.clear();gpu_codec::put(payload,171,8);
+    const std::vector<uint8_t> nonce_bytes{0xab,0,0,0,0,0,0,0};
+    require(payload==nonce_bytes,"SGW1 SETUP nonce occupies eight little-endian bytes even for an int literal");
+    std::vector<uint8_t> plan;require(encode_gpu_plan(p,plan,err),err);
+    payload.insert(payload.end(),plan.begin(),plan.end());
+    require(payload.size()==8+plan.size()&&std::memcmp(payload.data()+8,plan.data(),plan.size())==0,
+            "SGW1 SETUP plan begins at offset 8 and has no padding or trailing bytes");
+    gpu_codec::Cursor setup{payload};
+    require(setup.get(8)==171&&setup.i==8&&setup.ok,"SGW1 SETUP nonce decoder consumes exactly eight bytes");
+    GpuPlan decoded;
+    require(decode_gpu_plan(payload.data()+8,payload.size()-8,decoded,err)&&
+            decoded.placement_id==p.placement_id,"SGW1 SETUP plan decodes from the wire offset");
+    auto short_nonce=nonce_bytes;short_nonce.resize(4);
+    short_nonce.insert(short_nonce.end(),plan.begin(),plan.end());
+    require(!decode_gpu_plan(short_nonce.data()+8,short_nonce.size()-8,decoded,err),
+            "a four-byte nonce cannot masquerade as the eight-byte SETUP prefix");
+    err.clear();
+    require(gpu_codec::send(fd,GPU_SETUP,ST_OK,payload,2000,{},err)&&
+            gpu_codec::receive(fd,out,kGpuFrameMax,2000,{},err)&&out.status==ST_OK,err);
+    gpu_codec::Cursor c{out.payload};return c.get(8);
 }
 // A deliberately dishonest peer sends invalid successful inference replies through the
 // real transport/client. Codec unit checks alone do not exercise failure latching.
