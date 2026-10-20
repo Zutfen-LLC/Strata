@@ -45,10 +45,12 @@ public:
             err="assigned experts plus exact grouped scratch/workspace and runtime reserve exceed available VRAM";return false;
         }
         if(!check(cudaStreamCreateWithFlags(&stream_,cudaStreamNonBlocking),"create stream",err) ||
-           !check(cudaMalloc(&weights_,(size_t)weights),"allocate assigned experts",err) ||
-           !check(cudaMalloc(&workspace_,work),"allocate bounded workspace",err)) {release(c);return false;}
-        c.gpu_allocated_bytes=weights+work; c.gpu_weight_bytes=weights; c.gpu_scratch_bytes=work;
-        c.gpu_allocation_count+=2; c.gpu_peak_bytes=std::max(c.gpu_peak_bytes,c.gpu_allocated_bytes);
+           !check(cudaMalloc(&weights_,(size_t)weights),"allocate assigned experts",err)) {release(c);return false;}
+        c.gpu_allocated_bytes=weights; c.gpu_weight_bytes=weights;
+        ++c.gpu_allocation_count; c.gpu_peak_bytes=std::max(c.gpu_peak_bytes,c.gpu_allocated_bytes);
+        if(!check(cudaMalloc(&workspace_,work),"allocate bounded workspace",err)) {release(c);return false;}
+        c.gpu_allocated_bytes+=work; c.gpu_scratch_bytes=work;
+        ++c.gpu_allocation_count; c.gpu_peak_bytes=std::max(c.gpu_peak_bytes,c.gpu_allocated_bytes);
         auto* next=(uint8_t*)workspace_;
         auto take=[&](size_t bytes)->void* {void* result=next;next+=align256(bytes);return result;};
         dx_=(float*)take(xbytes); dq_=take(qbytes); dout_=(float*)take(obytes); scratch_=take(scratch);
