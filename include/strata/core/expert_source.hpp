@@ -49,6 +49,7 @@ struct ExpertLayout;
 
 namespace strata::worker {
 class ExpertWorkerTier;   // inferswarm #349: the opt-in remote CPU-expert tier (worker/expert_tier.hpp)
+class GpuWorkerTier;      // fixed network CUDA tier; separate capability and numerical contract
 }
 
 namespace strata::core {
@@ -489,6 +490,9 @@ struct ExpertDispatch {
     /// holds executes there, the request goes out after the GPU's own work is published, and the
     /// already-weighted partial joins the result through `remote_opt` (helpers first, worker on top).
     strata::worker::ExpertWorkerTier* worker = nullptr;
+    // The network GPU plan is a frozen subset of the CPU partition. CPU weights stay resident, but
+    // entries assigned here execute only here for this session. Null preserves the CPU-only path.
+    strata::worker::GpuWorkerTier* gpu_worker = nullptr;
     RemoteExpertOpt* remote_opt = nullptr;   ///< the merge tables the helper tiers and the worker share
     int64_t n_expert = strata::kernels::cpu::NE;
 
@@ -648,6 +652,7 @@ struct ExpertDispatch {
     int64_t peer_entries = 0;      ///< routed entries the peer served in verify windows
     /// inferswarm #349: routed entries the remote CPU-expert worker served in verify windows (kind 3).
     int64_t worker_entries = 0;
+    int64_t gpu_worker_entries = 0;
     /// Set when `dispatch` could not produce an answer.  The loop itself has no error channel, so this is
     /// where a source failure surfaces: the driver checks it after `session_loop` returns rather than the
     /// engine computing from a half-filled `parts`.
