@@ -1,47 +1,74 @@
 // src/worker/wire_sock.cpp - inferswarm #348: the socket layer's implementation.
 #include "wire_sock.hpp"
 
+#include <algorithm>
+#include <chrono>
+#include <limits>
+
 namespace strata::worker::sock {
 namespace {
 
-bool wait_fd(sock_fd fd, bool write, int deadline_ms) {
-#ifdef _WIN32
-    // WSAPoll exists but its semantics differ across versions; select on the raw socket is the portable
-    // Winsock deadline, and this path is small enough that fd_set truncation below FD_SETSIZE never bites
-    // (one loopback socket at a time).
-    fd_set set;
-    FD_ZERO(&set);
-    FD_SET(fd, &set);
-    timeval tv{deadline_ms / 1000, (long) (deadline_ms % 1000) * 1000};
-    const int r = ::select(0, write ? nullptr : &set, write ? &set : nullptr, nullptr,
-                           deadline_ms <= 0 ? nullptr : &tv);
-    return r > 0;
-#else
-    struct pollfd p{fd, (int16_t) (write ? POLLOUT : POLLIN), 0};
-    for (;;) {
-        const int r = ::poll(&p, 1, deadline_ms);
-        if (r > 0) return true;
-        if (r == 0) return false;                    // deadline
-        if (errno == EINTR) continue;
-        return false;
+// One monotonic budget per full read/write. Neither partial progress nor EINTR renews it.
+struct Budget {
+    using Clock = std::chrono::steady_clock;
+    bool finite;
+    Clock::time_point end;
+    explicit Budget(int ms) : finite(ms > 0), end(Clock::now() + std::chrono::milliseconds(ms > 0 ? ms : 0)) {}
+    int remaining() const {
+        if (!finite) return -1;
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - Clock::now()).count();
+        if (ns <= 0) return 0;
+        return (int) std::min<int64_t>((ns + 999999) / 1000000, std::numeric_limits<int>::max());
     }
+};
+
+bool wait_fd(sock_fd fd, bool write, const Budget& budget) {
+    for (;;) {
+        const int ms = budget.remaining();
+        if (ms == 0) return false;
+#ifdef _WIN32
+        fd_set set;
+        FD_ZERO(&set);
+        FD_SET(fd, &set);
+        timeval tv{ms > 0 ? ms / 1000 : 0, ms > 0 ? (long) (ms % 1000) * 1000 : 0};
+        const int r = ::select(0, write ? nullptr : &set, write ? &set : nullptr, nullptr,
+                               ms < 0 ? nullptr : &tv);
+        if (r < 0 && WSAGetLastError() == WSAEINTR) continue;
+#else
+        struct pollfd p{fd, (int16_t) (write ? POLLOUT : POLLIN), 0};
+        const int r = ::poll(&p, 1, ms);
+        if (r < 0 && errno == EINTR) continue;
 #endif
+        return r > 0;
+    }
 }
+
+#ifdef _WIN32
+bool nonblocking(sock_fd fd) {
+    u_long mode = 1;
+    return ::ioctlsocket((SOCKET) fd, FIONBIO, &mode) == 0;
+}
+#endif
 
 }  // namespace
 
 bool send_all(sock_fd fd, const void* data, size_t n, int deadline_ms) {
+    const Budget budget(deadline_ms);
+#ifdef _WIN32
+    if (!nonblocking(fd)) return false;
+#endif
     const uint8_t* p = (const uint8_t*) data;
     size_t off = 0;
     while (off < n) {
-        if (!wait_fd(fd, true, deadline_ms)) return false;
+        if (!wait_fd(fd, true, budget)) return false;
 #ifdef _WIN32
         const int chunk = (int) (::send(fd, (const char*) (p + off), (int) (n - off), 0));
         const bool failed = chunk == SOCKET_ERROR;
+        if (failed && (WSAGetLastError() == WSAEINTR || WSAGetLastError() == WSAEWOULDBLOCK)) continue;
 #else
-        const ssize_t chunk = ::send(fd, p + off, n - off, MSG_NOSIGNAL);
+        const ssize_t chunk = ::send(fd, p + off, n - off, MSG_NOSIGNAL | MSG_DONTWAIT);
         const bool failed = chunk < 0 && errno != EINTR;
-        if (chunk < 0 && errno == EINTR) continue;
+        if (chunk < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
 #endif
         if (failed || chunk == 0) return false;
         off += (size_t) chunk;
@@ -50,17 +77,22 @@ bool send_all(sock_fd fd, const void* data, size_t n, int deadline_ms) {
 }
 
 bool recv_all(sock_fd fd, void* data, size_t n, int deadline_ms) {
+    const Budget budget(deadline_ms);
+#ifdef _WIN32
+    if (!nonblocking(fd)) return false;
+#endif
     uint8_t* p = (uint8_t*) data;
     size_t off = 0;
     while (off < n) {
-        if (!wait_fd(fd, false, deadline_ms)) return false;
+        if (!wait_fd(fd, false, budget)) return false;
 #ifdef _WIN32
         const int chunk = (int) ::recv(fd, (char*) (p + off), (int) (n - off), 0);
         const bool failed = chunk == SOCKET_ERROR;
+        if (failed && (WSAGetLastError() == WSAEINTR || WSAGetLastError() == WSAEWOULDBLOCK)) continue;
 #else
-        const ssize_t chunk = ::recv(fd, p + off, n - off, 0);
+        const ssize_t chunk = ::recv(fd, p + off, n - off, MSG_DONTWAIT);
         const bool failed = chunk < 0 && errno != EINTR;
-        if (chunk < 0 && errno == EINTR) continue;
+        if (chunk < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
 #endif
         if (failed || chunk == 0) return false;      // error, or EOF before the frame was whole
         off += (size_t) chunk;
@@ -93,7 +125,8 @@ bool listen_loopback(uint16_t& port, sock_fd& out, std::string& err) {
 }
 
 bool accept_one(sock_fd listener, sock_fd& out, int deadline_ms) {
-    if (!wait_fd(listener, false, deadline_ms)) return false;
+    const Budget budget(deadline_ms);
+    if (!wait_fd(listener, false, budget)) return false;
     out = ::accept(listener, nullptr, nullptr);
     return out != kBadFd;
 }

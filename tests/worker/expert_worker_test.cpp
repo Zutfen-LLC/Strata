@@ -84,7 +84,8 @@ std::vector<uint8_t> make_blob(uint32_t seed, const NativeFmt& f) {
 
 using BlobMap = std::map<std::pair<int, int>, std::vector<uint8_t>>;
 
-std::pair<SetupManifest, BlobMap> make_world(uint64_t model_id) {
+std::pair<SetupManifest, BlobMap> make_world(uint64_t model_id, int delay_ms = 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
     NativeFmt f;
     std::string err;
     check(strata::kernels::cpu::native_fmt(kGu, kD, kEmbd, kFf, f, err), "Q8_0/Q8_0 is a native layout");
@@ -148,8 +149,10 @@ struct Raw {
         return strata::worker::sock::send_all(fd, buf.data(), buf.size(), 2000);
     }
     bool recv_reply(uint16_t& msg, uint16_t& status, std::vector<uint8_t>& payload, int deadline = 2000) {
+        payload.clear();
         uint8_t head[16];
         if (!strata::worker::sock::recv_all(fd, head, 16, deadline)) return false;
+        if (head[0] != 'S' || head[1] != 'E' || head[2] != 'W' || head[3] != '1') return false;
         msg = (uint16_t) (head[4] | head[5] << 8);
         status = (uint16_t) (head[6] | head[7] << 8);
         uint64_t len = 0;
@@ -181,10 +184,20 @@ std::vector<uint8_t> upload_frame(uint64_t sid, int layer, int expert, uint32_t 
     return up;
 }
 
-uint64_t payload_u64(const std::vector<uint8_t>& p, size_t at) {
-    uint64_t v = 0;
+bool payload_u64(const std::vector<uint8_t>& p, size_t at, uint64_t& v) {
+    v = 0;
+    if (at > p.size() || p.size() - at < 8) return false;
     for (int b = 0; b < 8; ++b) v |= (uint64_t) p[at + b] << (8 * b);
-    return v;
+    return true;
+}
+
+bool setup_ack(Raw& raw, uint64_t& sid) {
+    uint16_t msg = 0, st = 0;
+    std::vector<uint8_t> payload;
+    const bool ok = raw.recv_reply(msg, st, payload) && msg == strata::worker::MSG_SETUP_ACK &&
+                    st == strata::worker::ST_OK && payload.size() == 20 && payload_u64(payload, 0, sid) && sid != 0;
+    check(ok, "a complete successful SETUP_ACK carries a session");
+    return ok;
 }
 
 bool same_bits(const std::vector<float>& a, const std::vector<float>& b) {
@@ -240,6 +253,12 @@ void parity_case(strata::worker::ExpertWorkerClient& cl, const SetupManifest& m,
 // ---- sections ------------------------------------------------------------------------------------
 
 void codec_tests() {
+    uint64_t value = 99;
+    for (size_t n = 0; n < 8; ++n)
+        check(!payload_u64(std::vector<uint8_t>(n), 0, value), "a short raw reply never decodes a session");
+    check(!payload_u64({}, std::numeric_limits<size_t>::max(), value), "an overflowing raw offset is refused");
+    check(payload_u64(std::vector<uint8_t>(8, 1), 0, value) && value == 0x0101010101010101ull,
+          "a complete raw session decodes");
     check(strata::worker::kInferFrameMax < 96u * 1024u, "the inference frame cap is under 96 KiB");
     check(strata::worker::kInferPayloadMax == strata::worker::kInferFixed + (size_t) 8 * 10 +
                                                   (size_t) 8 * 10 * 2 + (size_t) 8 * 10 * 4 +
@@ -582,11 +601,12 @@ void setup_rejections() {
     check(raw.conn(big.port), "raw connect");
     uint16_t msg = 0, st = 0;
     std::vector<uint8_t> payload;
-    check(strata::worker::encode_setup_begin(m, wire) &&
-              raw.send(strata::worker::MSG_SETUP_BEGIN, 0, wire.data(), wire.size()) &&
-              raw.recv_reply(msg, st, payload) && st == strata::worker::ST_OK,
-          "the raw session begins");
-    const uint64_t sid = payload_u64(payload, 0);
+    if (!strata::worker::encode_setup_begin(m, wire) ||
+        !raw.send(strata::worker::MSG_SETUP_BEGIN, 0, wire.data(), wire.size())) {
+        check(false, "the raw setup sends"); return;
+    }
+    uint64_t sid = 0;
+    if (!setup_ack(raw, sid)) return;
     auto upload_chunk = [&](int layer, int expert, uint32_t off, uint32_t len, const Digest128& d,
                             const uint8_t* data, Status want, const char* what) {
         const std::vector<uint8_t> up =
@@ -678,8 +698,8 @@ void restart_and_disconnect() {
         raw.send(strata::worker::MSG_SETUP_BEGIN, 0, begin.data(), begin.size());
         uint16_t msg = 0, st = 0;
         std::vector<uint8_t> payload;
-        check(raw.recv_reply(msg, st, payload) && st == strata::worker::ST_OK, "session begins");
-        const uint64_t sid = payload_u64(payload, 0);
+        uint64_t sid = 0;
+        if (!setup_ack(raw, sid)) return;
         const std::vector<uint8_t>& blob = blobs.at({0, 2});
         const Digest128 d = strata::worker::blob_digest(blob.data(), blob.size());
         const std::vector<uint8_t> up = upload_frame(sid, 0, 2, (uint32_t) blob.size(), 0, 4096, d,
@@ -738,17 +758,28 @@ void malformed_and_deadline() {
         uint8_t back[16];
         check(!strata::worker::sock::recv_all(raw.fd, back, 16, 3000), "an oversized frame closes");
     }
+    {   // no header at all: the accepted connection's idle budget expires, then the next client works.
+        Raw idle;
+        check(idle.conn(svc.port), "idle client connects");
+        const uint64_t start = mono_ms();
+        uint8_t head[16];
+        check(!strata::worker::sock::recv_all(idle.fd, head, sizeof head, 3000), "idle header deadline closes");
+        const uint64_t elapsed = mono_ms() - start;
+        check(elapsed >= 150 && elapsed < 2000, "idle close follows the 250 ms header budget");
+    }
     {   // a header that promises more than it sends: the deadline closes it, no hang
-        Raw raw;
-        check(raw.conn(svc.port), "raw connect 3");
-        auto [m, blobs] = make_world(3);
+        // Slow fixture preparation belongs outside an active connection's 250 ms idle budget.
+        // This fixed 400 ms pause reproduces the slower-host scheduling pattern on fast machines too.
+        auto [m, blobs] = make_world(3, 400);
         std::vector<uint8_t> begin;
         strata::worker::encode_setup_begin(m, begin);
+        Raw raw;
+        check(raw.conn(svc.port), "raw connect 3");
         check(raw.send(strata::worker::MSG_SETUP_BEGIN, 0, begin.data(), begin.size()), "setup sent");
         uint16_t msg = 0, st = 0;
         std::vector<uint8_t> payload;
-        check(raw.recv_reply(msg, st, payload) && st == strata::worker::ST_OK, "setup acked");
-        const uint64_t sid = payload_u64(payload, 0);
+        uint64_t sid = 0;
+        if (!setup_ack(raw, sid)) return;
         InferRequest r;
         r.session = sid;
         r.model_id = m.model_id;
@@ -777,13 +808,30 @@ void malformed_and_deadline() {
         const uint64_t t0 = mono_ms();
         uint8_t head[16];
         check(!strata::worker::sock::recv_all(raw.fd, head, 16, 10000), "the deadline closes the frame");
-        check(mono_ms() - t0 < 9000, "the close came from the deadline, not a hang");
+        const uint64_t elapsed = mono_ms() - t0;
+        check(elapsed >= 150 && elapsed < 2000, "the partial-payload close follows the 250 ms deadline");
+        // A closed connection voids its session. A fresh connection must reject READY from that session.
+        Raw next;
+        if (!next.conn(svc.port)) { check(false, "reconnect after the payload deadline"); return; }
+        uint8_t old_sid[8];
+        for (int b = 0; b < 8; ++b) old_sid[b] = (uint8_t) (sid >> (8 * b));
+        check(next.send(strata::worker::MSG_READY, 0, old_sid, sizeof old_sid) &&
+              next.recv_reply(msg, st, payload) && msg == strata::worker::MSG_READY_ACK &&
+              st == strata::worker::ST_WRONG_STATE, "the deadline invalidated the old session");
+        check(next.send(strata::worker::MSG_SETUP_BEGIN, 0, begin.data(), begin.size()), "fresh setup sent");
+        uint64_t fresh_sid = 0;
+        if (!setup_ack(next, fresh_sid)) return;
+        check(fresh_sid != sid, "reconnect setup creates a new generation");
     }
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--deadline-only") == 0) {
+        malformed_and_deadline();
+        return fails == 0 ? 0 : 1;
+    }
     codec_tests();
     happy_path_and_parity();
     inference_rejections();

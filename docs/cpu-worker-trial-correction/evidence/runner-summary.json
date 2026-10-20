@@ -1,0 +1,50 @@
+[
+  {
+    "case": "deadline-1",
+    "exit": 0,
+    "seconds": 1.367,
+    "cpu": 0
+  },
+  {
+    "case": "deadline-2",
+    "exit": 0,
+    "seconds": 1.62,
+    "cpu": 0
+  },
+  {
+    "case": "deadline-3",
+    "exit": 0,
+    "seconds": 1.367,
+    "cpu": 0
+  },
+  {
+    "case": "socket-1",
+    "exit": 0,
+    "seconds": 0.615,
+    "cpu": 0
+  },
+  {
+    "case": "socket-2",
+    "exit": 0,
+    "seconds": 0.615,
+    "cpu": 0
+  },
+  {
+    "case": "socket-3",
+    "exit": 0,
+    "seconds": 0.615,
+    "cpu": 0
+  },
+  {
+    "case": "expert_worker_test",
+    "exit": 0,
+    "seconds": 4.875,
+    "cpu": 0
+  },
+  {
+    "case": "expert_tier_test",
+    "exit": 0,
+    "seconds": 15.704,
+    "cpu": 0
+  }
+]

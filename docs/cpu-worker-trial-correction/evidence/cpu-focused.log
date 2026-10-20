@@ -1,0 +1,13 @@
+Test project /home/zutfen/Documents/Codex/2026-10-19/task-9/strata-correction/build-cpu
+    Start 35: expert_worker_test
+1/4 Test #35: expert_worker_test ...............   Passed    2.60 sec
+    Start 36: worker_socket_test
+2/4 Test #36: worker_socket_test ...............   Passed    0.60 sec
+    Start 37: expert_worker_e2e_test
+3/4 Test #37: expert_worker_e2e_test ...........   Passed    0.21 sec
+    Start 38: expert_tier_test
+4/4 Test #38: expert_tier_test .................   Passed   14.82 sec
+
+100% tests passed out of 4
+
+Total Test time (real) =  18.24 sec

@@ -27,7 +27,7 @@ machine, forward a port over an SSH tunnel you own (for example
 
 Options: `--port P` (0 picks a free port and prints it), `--memory-budget-mib N` (default 131072),
 `--workers N` (CPU expert-pool worker threads; 0 = the pool's default plan for the machine),
-`--deadline-ms N` (per-frame deadline, default 10000), `--verbose` (one identity/status line per
+`--deadline-ms N` (budget per full socket send/read, default 10000), `--verbose` (one identity/status line per
 request; still no payloads are logged).
 
 ## The service API
@@ -128,8 +128,8 @@ cmake --build build-worker --target expert_worker_test expert_worker_e2e_test
   correlation, not authentication - the loopback bind plus an owned tunnel is the boundary).
 - No engine integration in the worker itself: the engine side (`--remote-cpu-experts`, above) lives in
   `ExpertWorkerTier` + the dispatch/verifier glue and keeps this service untouched.
-- Windows: the socket code compiles there, but this slice was built and tested on Linux only (the e2e
-  test itself is POSIX-only). No Windows claim is made.
+- Windows: this correction's nonblocking/select path was not built or run there; validation is Linux
+  only (the e2e and socket-bound tests are POSIX-only).
 - The setup manifest declares one layout per model, so the blob LENGTH is derived once for the whole
   partition; per-blob digests ride each UPLOAD frame and are enforced when a slot completes.  A manifest
   with per-slot digest tables would be a protocol extension if a pack ever needs it.
@@ -137,8 +137,9 @@ cmake --build build-worker --target expert_worker_test expert_worker_e2e_test
 ## The engine mode (inferswarm #349): `--remote-cpu-experts HOST:PORT`
 
 The engine side is **opt-in and default-off**: `strata generate --serve --remote-cpu-experts 127.0.0.1:7431`
-(`--remote-cpu-deadline-ms N` bounds every frame; default 10000).  With the flag off, every path below is
-untouched.  The pieces:
+(`--remote-cpu-deadline-ms N` budgets each full socket send/read; default 10000).  With the flag off, every path below is
+untouched. Header and payload reads have separate budgets; connection establishment and native kernel
+execution are not preempted by this setting. The pieces:
 
 - **The tier** (`strata::worker::ExpertWorkerTier`, `strata_worker_tier`, CPU-only like the service):
   owns the client, the frozen ownership bitmap, one in-flight request on its own thread, and the failure
@@ -182,8 +183,8 @@ the worker's kernel time, never the client's wait - and inference bytes in/out).
 A self-contained Hermes recipe for the first bounded run lives in
 **[CPU_WORKER_RECIPE.md](CPU_WORKER_RECIPE.md)**.  Its shape: build the CPU-only worker on **inferswarm05**
 (`build-worker`, no GPU toolkit involved) and a CUDA `sm_86` engine on **inferswarm03** (NOT the default
-`sm_120` target of the 3060s' installer), forward the worker's loopback port over an SSH tunnel the
-engine owns, and start the engine with `--serve --remote-cpu-experts 127.0.0.1:7431`, fixed placement
+`sm_120` default), forward the worker's loopback port through controller-owned SSH connections, and
+start the engine with `--serve --remote-cpu-experts 127.0.0.1:7431`, fixed placement
 (`--adapt-every 0`, `--pcie-frac 0`, `STRATA_ROUTE_TAIL_SKIP=0`), short prompts (`--short-read`), and one
 text request at a time.  The recipe's checks freeze the model, quant, kernel/window policy, speculation
 and KV settings, and its report separates setup from request time and client wait from worker CPU

@@ -1,0 +1,42 @@
+strata cpu pool: warning: 2 CPU expert workers are configured, but this process can run only 1 CPU threads. The extra workers spin and take time from the others. Recommended: --pool-workers 1 (or leave it out: the engine picks that by itself). It still runs as configured.
+strata-worker: session 9e36b88ab08691b4: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: session 9e36b88ab08691b4 ready: 7 blobs, 36556800 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36b88d594a2266: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: session 9e36b88d594a2266 ready: 7 blobs, 36556800 B verified
+strata-worker: inference refused: stale session or identity (session 9e36b88d594a2267, model 7, partition f778d7cf15a6859d)
+strata-worker: inference refused: stale session or identity (session 9e36b88d594a2266, model 1e240, partition f778d7cf15a6859d)
+strata-worker: inference refused: stale session or identity (session 9e36b88d594a2266, model 7, partition 63)
+strata-worker: inference refused: sequence 200 is not past 201
+strata-worker: inference refused: sequence 199 is not past 201
+strata-worker: inference refused: entry 1 names expert 11, owned by the GPU side
+strata-worker: connection closed (eof or deadline)
+strata-worker: setup refused: 7 owned blobs need 36556800 B, budget 8388608 B (model 'fixture-model')
+strata-worker: setup refused: layout gu=0 d=0 is not one this worker runs (model 'fixture-model')
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36b88dea52eb3a: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: upload refused: slot (0,3) is outside this worker's partition
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 3c6f3246651d2277: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: slot (1,2): digest mismatch (31d3b98ef5bcce4/34f59b1f3a73a642 vs e772634fbc4abf21/fa7a80eaf2f8e3dd)
+strata-worker: readiness refused: 6 of 7 assigned slots missing or bad
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36b88dbf50913e: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: session 9e36b88dbf50913e ready: 7 blobs, 36556800 B verified
+strata-worker: session 3c6f32461df8f467: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: inference refused: stale session or identity (session 9e36b88dbf50913e, model 1f, partition f778d7cf15a6859d)
+strata-worker: connection closed (eof or deadline)
+strata-worker: session daa7ac189e797606: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: connection closed (eof or deadline)
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 78dc27d11c592d85: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: session 78dc27d11c592d85 ready: 7 blobs, 36556800 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: connection dropped: malformed frame
+strata-worker: connection dropped: malformed frame
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36b88cffb6cfe0: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 3c6f32475c041ff1: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: connection closed (eof or deadline)
+expert_worker_test: all checks passed

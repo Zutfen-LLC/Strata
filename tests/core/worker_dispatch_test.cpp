@@ -3,10 +3,9 @@
 // The real `expert_pool_dispatch_multi` runs a window of a synthetic 2-layer x 16-expert native Q8_0/Q8_0
 // pack (native_experts.txt in a temp dir; blobs are ggml-quantized fixtures) with the external device
 // operations faked only where necessary: the GPU plan sink is plain host memory with no publish/fetch
-// callbacks, `host_res` a host array, the "VRAM" rows are only classified (kind 0) and never computed by a
-// kernel, and RemoteExpertOpt provides the merge bracket.  (What this test does NOT inspect: the mapped
-// h_sum_/h_mask_ tables themselves - accumulate_host's indexing is exercised, its GPU-side consumption is
-// the existing helper-tier machinery, unchanged.)  The worker is the real
+// callbacks, `host_res` a host array, and the published cache groups' native rows emulated on the host.
+// Cache scratch stays poisoned until the real RemoteExpertOpt::copy_rows masks it on the device;
+// its real combine then adds the worker sum. Cache matvecs alone are emulated on the host. The worker is the real
 // in-process service on a real loopback port, driven through the real tier - the same path generate.cpp
 // wires.  Checks:
 //   * the ownership plan: cache-resident entries are kind 0, worker-partition entries never produce a
@@ -15,10 +14,8 @@
 //     the worker's already-weighted partial on top - equals the same formula over the direct references,
 //     bit for bit (local rows against the native kernels, the worker's partial against
 //     direct_native_partial);
-//   * a dead worker latches `failed` on the next window and the rows it owned stay zero (no partial
-//     commit, no stale output);
-//   * default-off: with no tier attached the same window computes every entry locally and the merged
-//     result equals the all-local reference - the untouched path, unchanged.
+//   * a dead worker latches `failed` on the next window, preventing partial commit or stale output;
+//   * default-off: with no tier attached every non-cache entry computes locally against native references.
 #include "strata/core/expert_source.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -27,10 +24,12 @@
 #include "strata/worker/expert_worker.hpp"
 
 #include "ggml.h"
+#include <cuda_runtime.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -56,6 +55,18 @@ void check(bool ok, const char* what) {
         ++fails;
     }
 }
+
+bool cuda_ok(cudaError_t status) {
+    if (status == cudaSuccess) return true;
+    check(false, cudaGetErrorString(status));
+    return false;
+}
+struct DeviceBuffer {
+    void* p = nullptr;
+    explicit DeviceBuffer(size_t bytes) { cuda_ok(cudaMalloc(&p, bytes)); }
+    ~DeviceBuffer() { if (p) cudaFree(p); }
+    template<class V> V* as() { return static_cast<V*>(p); }
+};
 
 constexpr int kLayers = 2, kExperts = 16, kEmbd = 2560, kFf = 640, kK = 10;
 
@@ -246,6 +257,7 @@ int main() {
     std::vector<int32_t> host_res((size_t) kLayers * kExperts, -1);
     for (const auto& [le, slot] : resident) host_res[(size_t) le.first * kExperts + le.second] = slot;
 
+    std::vector<int32_t> published_cache_rows;
     auto run_window = [&](ExpertWorkerTier* t, int layer, const std::vector<int32_t>& ids,
                           const std::vector<float>& w, const std::vector<float>& x, int T,
                           std::vector<float>& out_rows, std::vector<int32_t>& kinds) {
@@ -265,19 +277,57 @@ int main() {
         out_rows.assign((size_t) T * kK * kEmbd, -1.0f);
         strata::core::expert_pool_dispatch_multi(d, x.data(), ids.data(), T, kK, out_rows.data());
         opt.end();
+        published_cache_rows.assign(plan.dst.begin(), plan.dst.begin() + std::clamp(plan.counts[1], 0, T * kK));
         kinds.assign((size_t) T * kK, -3);
+        // Inspect the actual published plan, independently of our expected owner classification.
+        // Every cache occurrence must appear once, at its original token, with the right weight pointer.
+        std::vector<int> planned((size_t) T * kK, 0);
+        check(plan.counts[0] >= 0 && plan.counts[0] <= T * kK && plan.counts[2] == 0,
+              "the plan contains only bounded cache groups, no PCIe fallback");
+        for (int g = 0; g < plan.counts[0] && g < T * kK; ++g) {
+            const int a = plan.start[g], b = plan.start[g + 1];
+            check(a >= 0 && a < b && b <= plan.counts[1] && b <= T * kK, "cache group bounds");
+            if (a < 0 || a >= b || b > T * kK) continue;
+            for (int q = a; q < b; ++q) {
+                const int i = plan.dst[q];
+                check(i >= 0 && i < T * kK, "cache destination is in this window");
+                if (i < 0 || i >= T * kK) continue;
+                ++planned[i];
+                const auto it = resident.find({layer, ids[i]});
+                check(it != resident.end(), "a planned cache entry is actually resident");
+                check(plan.tok[q] == i / kK, "the cache plan preserves the token");
+                if (it != resident.end())
+                    check(plan.ptr[g] == 0x100000ull + (uint64_t) it->second * fmt.bytes,
+                          "the cache plan points to the expected expert slot");
+            }
+        }
+        check(plan.counts[0] >= 0 && plan.counts[0] <= T * kK &&
+              plan.start[std::clamp(plan.counts[0], 0, T * kK)] == plan.counts[1], "all planned cache entries are accounted for");
         for (size_t i = 0; i < kinds.size(); ++i) {
             const auto it = resident.find({layer, ids[i]});
             const bool held = it != resident.end();
             const bool owned = t != nullptr && tier.holds(layer, ids[i]);
             kinds[i] = held ? 0 : owned ? 3 : -1;
             check(!(held && owned), "no entry is two tiers' at once");
+            check(planned[i] == (held ? 1 : 0), "each cache row is planned once; local/worker rows never are");
         }
         return !d.failed;
     };
 
+    const char* batch_env = std::getenv("STRATA_DEC_BATCH");
+    const char* device_env = std::getenv("STRATA_VERIFY_DEVICE_PLAN");
+    const bool gpu_zeroes_hits = (batch_env == nullptr || std::atoi(batch_env) != 0) &&
+                                 !(device_env != nullptr && std::atoi(device_env) != 0);
+    auto check_cache_scratch = [&](const float* row) {
+        // The dispatcher deliberately leaves cache scratch untouched under dec_batch: the mapped-row
+        // copy masks plan.dst[] on the GPU. Without that copy policy the host zeroes it itself.
+        const float expected = gpu_zeroes_hits ? -1.f : 0.f;
+        check(std::all_of(row, row + kEmbd, [&](float v) { return v == expected; }),
+              "cache scratch follows the host/GPU zeroing contract (never CPU-computed)");
+    };
+
     // ---- the merged result, in the documented order, against the direct references -------------------
-    for (int T : {1, 4}) {
+    for (int T : {1, 4, 8}) {
         Rng r(500 + T);
         const std::vector<int32_t> base_ids = distinct_ids(r, T, kK);
         std::vector<float> w((size_t) T * kK), x((size_t) T * kEmbd);
@@ -318,6 +368,26 @@ int main() {
             check(ExpertWorkerService::direct_native_partial(fmt, T, kK, owned.data(), w.data(), x.data(),
                                                               entry_blobs.data(), worker_partial, err),
                   "the direct worker reference ran");
+            // Execute the actual mapped-row copy with deliberately poisoned cache scratch. It must
+            // exclude BOTH the published cache destinations and the worker's accumulated mask, while
+            // preserving every local row. Ordinary device source memory suffices to exercise indexing.
+            DeviceBuffer input(rows.size() * sizeof(float)), copied(rows.size() * sizeof(float));
+            DeviceBuffer hits(std::max<size_t>(1, published_cache_rows.size()) * sizeof(int32_t)), count(sizeof(int32_t));
+            if (fails) return 1;
+            const int32_t nhits = (int32_t) published_cache_rows.size();
+            std::vector<float> copy_input = rows;
+            for (size_t i = 0; i < kinds.size(); ++i)
+                if (kinds[i] >= 0) std::fill_n(copy_input.data() + i * kEmbd, kEmbd, -11.5f);
+            if (!cuda_ok(cudaMemcpy(input.p, copy_input.data(), rows.size() * sizeof(float), cudaMemcpyHostToDevice)) ||
+                (nhits > 0 && !cuda_ok(cudaMemcpy(hits.p, published_cache_rows.data(), nhits * sizeof(int32_t), cudaMemcpyHostToDevice))) ||
+                !cuda_ok(cudaMemcpy(count.p, &nhits, sizeof nhits, cudaMemcpyHostToDevice))) return 1;
+            opt.copy_rows(copied.as<float>(), input.as<float>(), 0, T, hits.as<int32_t>(), count.as<int32_t>(), nullptr);
+            std::vector<float> copied_rows(rows.size());
+            if (!cuda_ok(cudaMemcpy(copied_rows.data(), copied.p, copied_rows.size() * sizeof(float), cudaMemcpyDeviceToHost))) return 1;
+            for (size_t i = 0; i < kinds.size(); ++i)
+                for (int e = 0; e < kEmbd; ++e)
+                    check(copied_rows[i * kEmbd + e] == (kinds[i] >= 0 ? 0.f : rows[i * kEmbd + e]),
+                          "the real mapped-row mask zeros cache/worker rows and preserves local rows");
             // every entry has exactly one owner: cache (kind 0), worker (3) or local pool (-1).  The
             // merge this asserts is exactly the GPU-side combine's: the weighted sum over the non-worker
             // entries in entry order, plus the worker's already-weighted partial on top - computed here
@@ -335,29 +405,50 @@ int main() {
                         continue;   // its contribution is the worker partial, added once below
                     }
                     if (kinds[i] == 0) {
-                        for (int e = 0; e < kEmbd; ++e) check(row[e] == 0.f, "a fake-cache entry's row is zero");
-                        continue;   // this test's fake GPU computes nothing; the engine's would
+                        check_cache_scratch(row);
+                        // Emulate the published GPU group's native row, not its irrelevant mapped scratch.
+                        eval_entry(fmt, src.blobs.at({layer, ids[i]}).data(), x.data() + (size_t) t * kEmbd,
+                                   row_ref.data());
+                        for (int e = 0; e < kEmbd; ++e) {
+                            expect[(size_t) t * kEmbd + e] += w[i] * row_ref[e];
+                            merged[(size_t) t * kEmbd + e] += w[i] * row_ref[e];
+                        }
+                        continue;
                     }
                     // a local-pool entry: bitwise the direct native row, then weighted in entry order
                     eval_entry(fmt, src.blobs.at({layer, ids[i]}).data(), x.data() + (size_t) t * kEmbd,
                                row_ref.data());
                     check(std::memcmp(row, row_ref.data(), kEmbd * sizeof(float)) == 0,
                           "a local entry's row is bitwise the native kernels'");
-                    for (int e = 0; e < kEmbd; ++e) expect[(size_t) t * kEmbd + e] += w[i] * row[e];
-                    for (int e = 0; e < kEmbd; ++e) merged[(size_t) t * kEmbd + e] += w[i] * row[e];
+                    for (int e = 0; e < kEmbd; ++e) expect[(size_t) t * kEmbd + e] += w[i] * row_ref[e];
+                    for (int e = 0; e < kEmbd; ++e) merged[(size_t) t * kEmbd + e] += w[i] * copied_rows[i * kEmbd + e];
                 }
             check(tier.served(), "the window's reply is still held for the merge check");
             const float* actual_partial = tier.partials();
             for (size_t e = 0; e < expect.size(); ++e) expect[e] += worker_partial[e];
-            for (int t = 0; t < T; ++t)
-                for (int e = 0; e < kEmbd; ++e)
-                    merged[(size_t) t * kEmbd + e] += actual_partial[(size_t) t * kEmbd + e];
+            check(std::memcmp(actual_partial, worker_partial.data(), worker_partial.size() * sizeof(float)) == 0,
+                  "the transported worker partial is the direct reference");
+            DeviceBuffer combined(merged.size() * sizeof(float));
+            if (fails || !cuda_ok(cudaMemcpy(combined.p, merged.data(), merged.size() * sizeof(float), cudaMemcpyHostToDevice))) return 1;
+            opt.combine(combined.as<float>(), nullptr, 0, T, nullptr, 0, nullptr);
+            if (!cuda_ok(cudaMemcpy(merged.data(), combined.p, merged.size() * sizeof(float), cudaMemcpyDeviceToHost))) return 1;
             check(std::memcmp(merged.data(), expect.data(), expect.size() * sizeof(float)) == 0,
                   "the merged result is bitwise the direct references in the documented order");
             // and the worker partial must be nonzero somewhere (the worker really did work)
             bool any = false;
             for (float v : worker_partial) any = any || v != 0.f;
             check(any, "the worker's partial carried real work");
+            std::vector<float> doubled = merged, omitted = merged;
+            for (size_t e = 0; e < merged.size(); ++e) {
+                doubled[e] += worker_partial[e];
+                omitted[e] -= worker_partial[e];
+            }
+            check(std::memcmp(doubled.data(), expect.data(), expect.size() * sizeof(float)) != 0 &&
+                  std::memcmp(omitted.data(), expect.data(), expect.size() * sizeof(float)) != 0,
+                  "the fixture detects worker omission and double counting");
+            if (T > 1)
+                check(std::memcmp(worker_partial.data(), worker_partial.data() + kEmbd, kEmbd * sizeof(float)) != 0,
+                      "changed token activations make a wrong-token partial detectable");
         }
     }
 
@@ -393,14 +484,14 @@ int main() {
                           "with no tier every entry is cache or local, exactly as before");
                     const float* row = rows.data() + i * kEmbd;
                     if (kinds[i] == 0) {
-                        for (int e = 0; e < kEmbd; ++e) check(row[e] == 0.f, "a fake-cache entry's row is zero");
+                        check_cache_scratch(row);
                         continue;
                     }
                     eval_entry(fmt, src.blobs.at({layer, ids[i]}).data(), x.data() + (size_t) t * kEmbd,
                                row_ref.data());
                     check(std::memcmp(row, row_ref.data(), kEmbd * sizeof(float)) == 0,
                           "a local entry's row is bitwise the native kernels' (default off)");
-                    for (int e = 0; e < kEmbd; ++e) expect[(size_t) t * kEmbd + e] += w[i] * row[e];
+                    for (int e = 0; e < kEmbd; ++e) expect[(size_t) t * kEmbd + e] += w[i] * row_ref[e];
                 }
         }
         check(svc.svc->counters().requests > 0, "the worker saw the earlier windows");

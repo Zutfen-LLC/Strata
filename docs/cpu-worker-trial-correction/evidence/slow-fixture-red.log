@@ -1,0 +1,5 @@
+strata-worker: connection dropped: malformed frame
+strata-worker: connection dropped: malformed frame
+strata-worker: connection closed (eof or deadline)
+FAIL: setup acked
+timeout: the monitored command dumped core
