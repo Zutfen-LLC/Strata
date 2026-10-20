@@ -1450,18 +1450,29 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
-            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/hadamard.cpp)
+            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/hadamard.cpp
+            src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/router_avx2.cpp)
+# The layout dispatchers and RouterLookahead are common engine code. Their Q2/activation and BF16
+# kernels have no ggml dependency and must remain available with STRATA_NATIVE_EXPERTS=OFF too.
 target_include_directories(strata_kernels_cpu PUBLIC include)
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
 if(MSVC)
   set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
-  set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+  set_source_files_properties(src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/router_avx2.cpp
+                              PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+  set_source_files_properties(src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp
+                              PROPERTIES COMPILE_OPTIONS "/arch:AVX")
 else()
   # GCC/Clang spell it differently, and `-mavx512vnni` alone is not enough: VBMI is a separate feature bit.
   set_source_files_properties(src/kernels/cpu/expert.cpp
                               PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
-  set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  set_source_files_properties(src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/router_avx2.cpp
+                              PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  set_source_files_properties(src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
+  # Q2 AVX1 must not inherit AVX2/FMA/F16C from the build host, in ON or OFF builds.
+  set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS
+                              "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
 endif()
 # AVX-VNNI (Alder Lake, Sapphire Rapids and later): the AVX-2 expert kernels' vpdpwssd / vpdpbusd copies (q2_avx2.cpp,
 # iq_avx2.cpp; *_rows.inl), taken at run time where cpu_avxvnni_ok().  GCC and Clang compile only those functions with
@@ -1493,6 +1504,17 @@ endif()
 set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
+
+# These synthetic BF16 checks must link without ggml too; retain the native-ON utility target.
+if(STRATA_NATIVE_EXPERTS OR STRATA_BUILD_TESTS)
+  add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)
+  target_link_libraries(router_dot_parity PRIVATE strata_kernels_cpu)
+  if(STRATA_BUILD_TESTS)
+    add_test(NAME router_dot_parity COMMAND router_dot_parity)
+    add_test(NAME router_dot_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:router_dot_parity>)
+    set_tests_properties(router_dot_parity router_dot_parity_avx PROPERTIES TIMEOUT 60)
+  endif()
+endif()
 
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
 #
@@ -1557,7 +1579,7 @@ if(STRATA_NATIVE_EXPERTS)
   # one-pass static linking has no cycle to resolve)
   target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
                                            src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp
-                                           src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp
+                                           src/kernels/cpu/iq_avx1.cpp
                                            src/kernels/cpu/nvfp4_avx512.cpp src/kernels/cpu/nvfp4_avx2.cpp
                                            src/kernels/cpu/tq_cpu.cpp src/kernels/cpu/tq_avx2.cpp src/kernels/cpu/tq_avx512.cpp)
   target_include_directories(strata_kernels_cpu PRIVATE third_party/ggml)
@@ -1569,11 +1591,6 @@ if(STRATA_NATIVE_EXPERTS)
     set_source_files_properties(src/kernels/cpu/nvfp4_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
     set_source_files_properties(src/kernels/cpu/tq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
     set_source_files_properties(src/kernels/cpu/tq_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
-    # the router lookahead's AVX1 dot (older CPUs; called behind cpu_avx1_ok): no FMA, no 256-bit integer ops
-    set_source_files_properties(src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
-    # the older CPUs' Q2_0 rows and activation quantizer (q2_avx1.cpp, issue #1699): 128-bit integer lanes,
-    # no FMA/F16C, its own #error guard; called only behind cpu_avx1_ok() && !cpu_avx2_ok()
-    set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
     # the older CPUs' i-quant expert rows (iq_avx1.hpp): 128-bit SSSE3/SSE2 integer, SSE2 float, no FMA/F16C
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
   else()
@@ -1586,12 +1603,6 @@ if(STRATA_NATIVE_EXPERTS)
     set_source_files_properties(src/kernels/cpu/tq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
     set_source_files_properties(src/kernels/cpu/tq_avx512.cpp PROPERTIES COMPILE_OPTIONS
                                 "-mavx512f;-mavx512bw;-mavx512vl;-mavx512vnni;-mavx512vbmi;-mavx2;-mfma;-mf16c")
-    set_source_files_properties(src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
-    # the older CPUs' Q2_0 rows and activation quantizer (q2_avx1.cpp, issue #1699): SSE4.2 + AVX with
-    # AVX2/FMA/F16C explicitly off, so a -march=native build host cannot leak AVX2 code into the file that
-    # runs on a Sandy Bridge Xeon
-    set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS
-                                "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
     # the older CPUs' i-quant expert rows (iq_avx1.hpp): SSE4.2 + AVX with AVX2/FMA/F16C explicitly off, so a
     # -march=native build host cannot leak AVX2 code into the file that runs on a Sandy Bridge Xeon
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS
@@ -1611,16 +1622,11 @@ if(STRATA_NATIVE_EXPERTS)
     target_link_libraries(dequant_q5_1_test PRIVATE strata_artifact ggml-base)
     add_test(NAME dequant_q5_1_test COMMAND dequant_q5_1_test)
   endif()
-  # the router lookahead's dot on each rung this CPU has (AVX2, the older CPUs' AVX1) against a double reference
-  add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)
-  target_link_libraries(router_dot_parity PRIVATE strata_kernels_cpu)
   if(STRATA_BUILD_TESTS)
     add_executable(pool_tasks_test src/kernels/cpu/pool_tasks_test.cpp)
     target_link_libraries(pool_tasks_test PRIVATE strata_kernels_cpu)
     add_test(NAME pool_tasks_test COMMAND pool_tasks_test)
     set_tests_properties(pool_tasks_test PROPERTIES TIMEOUT 180)
-    add_test(NAME router_dot_parity COMMAND router_dot_parity)
-    add_test(NAME router_dot_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:router_dot_parity>)
   endif()
   # the AVX-2 expert kernels' variants (iq_avx2.cpp, q2_avx2.cpp) bit for bit against each other at 1..8 tokens and
   # against ggml-cpu's dot, on random blocks; --bench: ms per expert on one thread, the weights streamed from DRAM
@@ -2191,7 +2197,10 @@ if(STRATA_BUILD_TESTS)
     add_executable(q2_bitplane_parity src/kernels/cpu/q2_bitplane_parity.cpp)
     target_link_libraries(q2_bitplane_parity PRIVATE strata_kernels_cpu)
     add_test(NAME q2_bitplane_parity COMMAND q2_bitplane_parity)
-    set_tests_properties(q2_bitplane_parity PROPERTIES ENVIRONMENT "STRATA_Q2_BITPLANE=1")
+    set_tests_properties(q2_bitplane_parity PROPERTIES ENVIRONMENT "STRATA_Q2_BITPLANE=1" TIMEOUT 60)
+    add_test(NAME q2_bitplane_parity_avx COMMAND ${CMAKE_COMMAND} -E env
+             STRATA_Q2_BITPLANE=1 STRATA_FORCE_ISA=avx $<TARGET_FILE:q2_bitplane_parity>)
+    set_tests_properties(q2_bitplane_parity_avx PROPERTIES TIMEOUT 60)
   endif()
 
   if(STRATA_NATIVE_EXPERTS)

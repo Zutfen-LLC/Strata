@@ -1,9 +1,14 @@
 # Bounded CPU weight residency across engine sessions
 
+**79f4da0 native-OFF failed to link on 03.** OFF tests and 03 ON checks did not run. The independent
+05 fixture passes and recovered complete manifest identity are in the
+[user-attributed failure receipt](evidence/hermes-79f4da0-failure.md). The subsequent common CPU-kernel
+correction remains runtime-unvalidated; see the [dependency audit](NATIVE_OFF_AUDIT.md).
+
 **16d065e: user-reported Hermes runtime validation passed.** CPU/CUDA fixtures, exact-base compatibility
 and one full-model cold/warm restart trial are recorded in the [attributed receipt](evidence/hermes-16d065e-receipt.md).
-The later native-OFF correction remains **runtime-unvalidated**. Use the
-[narrow correction handoff](NATIVE_OFF_HERMES.md), which does not require another full-model load.
+After the failed native-OFF correction, the new common-kernel correction remains **runtime-unvalidated**.
+Use the [sequential correction handoff](NATIVE_OFF_HERMES.md), which does not require another full-model load.
 The earlier failed/interrupted coding-task history remains in [validation.md](evidence/validation.md).
 
 The worker can keep a complete verified CPU partition after an engine exits. Enable both worker
@@ -129,6 +134,8 @@ are refused with `requires STRATA_NATIVE_EXPERTS=ON` before model loading or GPU
 main preflight runs before family dispatch; Qwen3.6 also checks actual parsed options after the existing
 GGUF metadata probe, covering serve-mode argument-consumption differences.
 An attached worker pointer also fails closed before multi-token dispatch reads inputs or accesses a
-source/device. Native-ON retains its worker path. This correction is a static fix prediction until the
-[separate OFF build and ON regressions](NATIVE_OFF_HERMES.md) run. HIP remains unvalidated. SYCL uses
-separate migrated sources; this feature is not claimed there.
+source/device. Native-ON retains its worker path. The 79f4da0 build found an additional common CPU-kernel
+link gap; the [dependency correction](NATIVE_OFF_AUDIT.md) now also moves Q2/activation and BF16 router
+implementations into the common library. The [OFF and ON regression gates](NATIVE_OFF_HERMES.md) remain
+unrun for that new head. HIP remains unvalidated. SYCL has a synchronized CPU list but separate migrated
+sources; the worker feature is not claimed there.

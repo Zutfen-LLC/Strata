@@ -122,11 +122,17 @@ add_library(strata_spec STATIC ${_spec})
 target_link_libraries(strata_spec PUBLIC strata_includes)
 
 strata_resolve(_cpu src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp src/kernels/cpu/expert_layout.cpp
-                    src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/hadamard.cpp)   # hadamard.cpp: expert_layout.cpp reads hadamard.txt
+                    src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/hadamard.cpp
+                    src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/router_avx2.cpp)   # hadamard.cpp: expert_layout.cpp reads hadamard.txt
 add_library(strata_kernels_cpu STATIC ${_cpu})
 set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS
   "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
-set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+# Shared layout/router consumers need these real kernels independently of native ggml formats.
+set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/q2_avx2.cpp ${STRATA_ROOT}/src/kernels/cpu/router_avx2.cpp
+  PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
+set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/q2_avx1.cpp PROPERTIES
+  COMPILE_OPTIONS "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
 # AVX-VNNI copies of the AVX-2 expert kernels (q2_avx2.cpp, iq_avx2.cpp), taken at run time where the CPU has them
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma -mf16c")
@@ -184,8 +190,7 @@ if(STRATA_NATIVE_EXPERTS)
     add_subdirectory(${strata_llamacpp_SOURCE_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   endif()
   strata_resolve(_cpu_native src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
-                             src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/kq_avx1.cpp   # 0.1.31: the Q4_K/Q5_K/Q5_1/Q8_0 expert rows
-                             src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp   # 0.1.42: AVX1 (no AVX2) Q2_0 / i-quant rows
+                             src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/iq_avx1.cpp   # native quant-format rows
                              src/kernels/cpu/nvfp4_avx512.cpp src/kernels/cpu/nvfp4_avx2.cpp   # NVFP4 expert rows (native_expert.cpp calls them)
                              src/kernels/cpu/tq_cpu.cpp src/kernels/cpu/tq_avx2.cpp src/kernels/cpu/tq_avx512.cpp)   # Gyro trellis CPU rows (native_expert.cpp calls them; the SYCL GPU path does not run these types)
   target_sources(strata_kernels_cpu PRIVATE ${_cpu_native})
@@ -198,8 +203,7 @@ if(STRATA_NATIVE_EXPERTS)
     "-mavx512f;-mavx512bw;-mavx512vl;-mavx512vnni;-mavx512vbmi;-mavx2;-mfma;-mf16c")
   set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
   set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
-  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
-  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/q2_avx1.cpp ${STRATA_ROOT}/src/kernels/cpu/iq_avx1.cpp PROPERTIES
+  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/iq_avx1.cpp PROPERTIES
     COMPILE_OPTIONS "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
   set_property(SOURCE ${STRATA_ROOT}/src/kernels/cpu/iq_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
   target_link_libraries(strata_kernels_cpu PUBLIC ggml-cpu ggml-base)

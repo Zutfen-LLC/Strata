@@ -44,7 +44,7 @@ WIDE_OBJECTS = ("expert.cpp", "iq_avx512.cpp", "iq_avx2.cpp", "q2_avx2.cpp", "kq
 # built a table in a constructor, the compiler used AVX/FMA for it, and a Westmere / Sandy Bridge Xeon died with an
 # illegal instruction before main, with nothing in the log).  The initialisers must not exist: constexpr tables, or
 # function-local statics read behind the CPU check.
-INIT_FREE_OBJECTS = WIDE_OBJECTS + ("nvfp4_avx2.cpp", "kq_avx1.cpp", "q2_avx1.cpp", "iq_avx1.cpp")
+INIT_FREE_OBJECTS = WIDE_OBJECTS + ("nvfp4_avx2.cpp", "router_avx2.cpp", "kq_avx1.cpp", "q2_avx1.cpp", "iq_avx1.cpp")
 
 # An instruction is "wide" if it is EVEX encoded (first byte 0x62 in 64-bit mode), or one of these VEX / legacy
 # extensions that an AVX2 CPU may lack.  AVX-VNNI is VEX encoded (vpdpbusd, vpdpwssd ...).

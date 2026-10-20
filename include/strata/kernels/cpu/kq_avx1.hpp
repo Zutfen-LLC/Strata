@@ -1,6 +1,6 @@
 // include/strata/kernels/cpu/kq_avx1.hpp - the AVX1 router dot for older CPUs (from the Strata_Dirigo fork).
 //
-// bf16_rows_dot_multi (kq_avx2.cpp) is compiled with -mavx2 and uses instructions an AVX-only CPU does
+// bf16_rows_dot_multi (router_avx2.cpp) is compiled with -mavx2 and uses instructions an AVX-only CPU does
 // not have (`vpmovzxwd`, `vfmadd`), so an AVX-only host cannot call it at all.  This is the same
 // arithmetic on AVX1 instructions: 8 float lanes per token, one weight stream per row shared by all
 // `nt` tokens, one horizontal sum per (row, token).  AVX1 has no FMA, so the multiply and the add stay

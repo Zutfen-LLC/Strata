@@ -54,6 +54,8 @@ This supplied value is recorded without an independent archive read here.
 - A pasted manifest abbreviation contained nonhex `t318`; it is not a valid SHA-256. No complete
   manifest, binary or profile hash is invented in this document. Hermes must recover the complete
   values from existing small identity receipts, not guess them or hash the entire model again.
+  The later [79f4da0 receipt](hermes-79f4da0-failure.md) records user-reported recovery of the full
+  manifest SHA-256 and a fresh archive hash match; the original missing-identity history stays here.
 - The worker and tunnels had finite residency/process limits. Their current liveness is unknown.
   This task does not renew, query, unload, stop or otherwise operate those services.
 - Native-OFF builds were not covered by this receipt. HIP has not been validated; SYCL uses separate
