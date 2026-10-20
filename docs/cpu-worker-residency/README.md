@@ -1,15 +1,16 @@
 # Bounded CPU weight residency across engine sessions
 
-**79f4da0 native-OFF failed to link on 03.** OFF tests and 03 ON checks did not run. The independent
-05 fixture passes and recovered complete manifest identity are in the
-[user-attributed failure receipt](evidence/hermes-79f4da0-failure.md). The subsequent common CPU-kernel
-correction remains runtime-unvalidated; see the [dependency audit](NATIVE_OFF_AUDIT.md).
+**7992bb0d: user-reported complete native-OFF PASS; native-ON stopped at the ISA checker.**
+ON configure/build, four math and two dispatch checks passed, then `isa_guard_check` failed on the
+pre-existing unregistered TQ AVX512 object. Device-plan and all 05 checks did not run. This is **not an
+overall PASS**; see the [attributed receipt](evidence/hermes-7992bb0d-receipt.md).
+The subsequent checker-only correction is runtime-unvalidated. Use the
+[bounded continuation handoff](ISA_CHECKER_HERMES.md), which reuses verified safe outputs.
 
-**16d065e: user-reported Hermes runtime validation passed.** CPU/CUDA fixtures, exact-base compatibility
-and one full-model cold/warm restart trial are recorded in the [attributed receipt](evidence/hermes-16d065e-receipt.md).
-After the failed native-OFF correction, the new common-kernel correction remains **runtime-unvalidated**.
-Use the [sequential correction handoff](NATIVE_OFF_HERMES.md), which does not require another full-model load.
-The earlier failed/interrupted coding-task history remains in [validation.md](evidence/validation.md).
+The [79f4da0 OFF link failure](evidence/hermes-79f4da0-failure.md) and independent 05 results remain
+preserved. The [16d065e receipt](evidence/hermes-16d065e-receipt.md) records the user's earlier CPU/CUDA,
+compatibility and one full-model cold/warm trial PASS. No full-model reload is needed for the checker
+correction. Earlier failed/interrupted coding-task history remains in [validation.md](evidence/validation.md).
 
 The worker can keep a complete verified CPU partition after an engine exits. Enable both worker
 `--residency-ms 1800000` and engine `--remote-cpu-resident` with the existing trusted local manifest.
@@ -136,6 +137,6 @@ GGUF metadata probe, covering serve-mode argument-consumption differences.
 An attached worker pointer also fails closed before multi-token dispatch reads inputs or accesses a
 source/device. Native-ON retains its worker path. The 79f4da0 build found an additional common CPU-kernel
 link gap; the [dependency correction](NATIVE_OFF_AUDIT.md) now also moves Q2/activation and BF16 router
-implementations into the common library. The [OFF and ON regression gates](NATIVE_OFF_HERMES.md) remain
-unrun for that new head. HIP remains unvalidated. SYCL has a synchronized CPU list but separate migrated
+implementations into the common library. At 7992bb0d the user reports OFF passed and ON reached the
+ISA-checker failure; its [continuation gates](ISA_CHECKER_HERMES.md) remain unrun for the checker-only head. HIP remains unvalidated. SYCL has a synchronized CPU list but separate migrated
 sources; the worker feature is not claimed there.

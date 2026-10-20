@@ -1,18 +1,26 @@
 # Validation status by revision
 
+**7992bb0d293126ed0738a9b73d6c3fec7b744e78: user-reported native-OFF PASS, then native-ON ISA-checker FAIL.**
+ON configure/build and four math plus two worker dispatch tests passed. The first failure was
+`isa_guard_check` RC 8 on `tq_avx512.cpp.o` (606 instructions, first vmovq). Device-plan and all 05
+checks did not run. This revision is **not an overall PASS**. See the
+[attributed receipt](hermes-7992bb0d-receipt.md). The later checker-only head remains runtime-unvalidated;
+use its [bounded continuation](../ISA_CHECKER_HERMES.md) and [static review record](isa-checker-review.md).
+This coding task did not run or inspect that remote validation.
+
 **79f4da0e09b4f7ff0e331809316cd2fc18684b51: user-reported native-OFF CUDA link FAILED.**
 Configure passed; the 7m31s build failed at step 97/98 linking `worker_disabled_dispatch_test`.
 `strata` never linked, OFF dispatch/CLI tests did not run, and ON checks on 03 were blocked.
 The separate 05 fixture passes and recovered full identities are preserved in the
 [attributed failure receipt](hermes-79f4da0-failure.md). They do not change this verdict.
-The later common-kernel boundary correction is runtime-unvalidated; see its
-[static dependency audit](../NATIVE_OFF_AUDIT.md) and [independent reviews](common-kernel-review.md).
+The later common-kernel boundary correction was validated only as far as the 7992bb0d results above;
+its [static dependency audit](../NATIVE_OFF_AUDIT.md) and [reviews](common-kernel-review.md) remain separate.
 
 **16d065e23211f2d422c56a3497a8be200c1e1d4d: user-reported Hermes runtime validation passed.**
 The later [attributed receipt](hermes-16d065e-receipt.md) records CPU/CUDA fixtures, compatibility and one
 full-model cold/warm restart trial. This coding task did not independently execute or inspect that run.
-The first native-OFF correction then failed at 79f4da0 as recorded above. The subsequent common-kernel
-correction remains runtime-unvalidated until its [sequential remote handoff](../NATIVE_OFF_HERMES.md) passes.
+The first native-OFF correction then failed at 79f4da0, and 7992bb0d reached the ISA-checker failure.
+Their results and the unrun checker continuation are distinguished above.
 
 At the original coding handoff, 16d065e had not been built or run. The failed/interrupted local history
 below is preserved; it is not erased by the later user-run receipt. The user prohibits builds, tests,

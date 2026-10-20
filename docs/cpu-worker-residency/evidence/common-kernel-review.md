@@ -1,5 +1,8 @@
 # Common CPU-kernel boundary: independent static review
 
+This is the original source-only review. The later [7992bb0d receipt](hermes-7992bb0d-receipt.md)
+records user-reported OFF PASS and an ON ISA-checker failure; the partial result is not an overall PASS.
+
 Reviewed the working correction from `79f4da0e09b4f7ff0e331809316cd2fc18684b51` after the user's
 reported native-OFF link failure. Two independent reviewers used the code-review skill's spec and
 standards/quality axes. They audited all common CPU/core/program consumers and native-only dependencies,

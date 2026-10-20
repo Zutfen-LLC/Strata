@@ -1,10 +1,14 @@
 # Hermes: bounded common-kernel correction validation
 
+Historical 7992bb0d recipe: the user reports OFF passed and ON reached an ISA-checker failure, with
+later gates unrun. See the [receipt](evidence/hermes-7992bb0d-receipt.md) and use the
+[checker-only continuation](ISA_CHECKER_HERMES.md) instead of repeating this full build sequence.
+
 Use only the exact new `CANDIDATE` SHA from the coding handoff. **79f4da0 native-OFF failed to link**;
 OFF tests and native-ON checks on 03 did not run. Its independent 05 fixture passes and recovered
 identities are in the [attributed failure receipt](evidence/hermes-79f4da0-failure.md).
 The [16d065e full-model PASS](evidence/hermes-16d065e-receipt.md) remains separate. The subsequent
-common-kernel correction has no runtime validation. This coding task ran no configure/build/tests
+common-kernel correction had no runtime validation at its original coding handoff. This coding task ran no configure/build/tests
 and accessed neither host.
 
 Only dedicated checkouts/builds and small synthetic fixtures on 03/05 are authorized. No real-model
@@ -32,8 +36,8 @@ BASE=79f4da0e09b4f7ff0e331809316cd2fc18684b51
 MAIN=e88ee39d1d6be6e3364183af3b39b62a7ed6f211
 SAFE=16d065e23211f2d422c56a3497a8be200c1e1d4d
 [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] && test "$CANDIDATE" != "$BASE"
-test "$(git ls-remote git@github.com:Zutfen-LLC/Strata.git "refs/heads/$BRANCH" | cut -f1)" = "$CANDIDATE"
-test "$(git ls-remote git@github.com:Zutfen-LLC/Strata.git refs/heads/main | cut -f1)" = "$MAIN"
+test "$(git ls-remote https://github.com/Zutfen-LLC/Strata.git "refs/heads/$BRANCH" | cut -f1)" = "$CANDIDATE"
+test "$(git ls-remote https://github.com/Zutfen-LLC/Strata.git refs/heads/main | cut -f1)" = "$MAIN"
 ```
 
 Read 05 receipts only after the full 03 stage passes. Preserve receipts on 03 and 05 under `/home/hermes/strata-native-off-79f4da0` and controller
@@ -54,7 +58,8 @@ this cache. Resolve each source path from that build's `CMAKE_HOME_DIRECTORY`, n
 Resolve known-good `ONBUILD03` and `ONBUILD05` from successful receipts, preserving each cache's own
 source path/toolchain/options. Their source directories may differ from the OFF source.
 
-Require each source clean, canonical origin `git@github.com:Zutfen-LLC/Strata.git`, exact old HEAD as
+Require each source clean, canonical origin `https://github.com/Zutfen-LLC/Strata.git` or
+`git@github.com:Zutfen-LLC/Strata.git` (both valid), exact old HEAD as
 recorded in its receipt (79f4da0 or safe 16d065e), and MAIN/SAFE ancestry. Fetch only BRANCH, require
 `FETCH_HEAD=$CANDIDATE` and BASE ancestry, then detach at CANDIDATE without reset. If two builds share
 a source already advanced by this same run, verify its clean CANDIDATE HEAD instead of switching again.

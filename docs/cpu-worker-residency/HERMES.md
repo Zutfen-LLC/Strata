@@ -2,9 +2,9 @@
 
 **Revision-specific status:** the user reports that **16d065e23211f2d422c56a3497a8be200c1e1d4d** passed
 this CPU/CUDA fixture and full-model workflow; see the [attributed receipt](evidence/hermes-16d065e-receipt.md).
-The subsequent native-OFF correction has not been built or run. Use
-[NATIVE_OFF_HERMES.md](NATIVE_OFF_HERMES.md) for that narrow correction; do not repeat the full-model
-workflow just because source changed. The original recipe below is retained for later selected trials.
+The later 7992bb0d report has OFF PASS and an ON ISA-checker failure, with device-plan/05 gates unrun.
+Use the [checker-only continuation](ISA_CHECKER_HERMES.md); do not repeat the full-model workflow
+for this checker correction. The original recipe below is retained for later selected trials.
 Do not run builds, tests, binaries or benchmarks on Geekom.
 
 These commands are for Hermes on its controller and existing dedicated inferswarm05/03 checkouts.
@@ -23,7 +23,7 @@ From the controller verify the remote fork and branch:
 : "${CANDIDATE:?Published full 40-character SHA}"
 BRANCH=inferswarm/persistent-cpu-weight-residency
 test "${#CANDIDATE}" -eq 40
-test "$(git ls-remote git@github.com:Zutfen-LLC/Strata.git "refs/heads/$BRANCH" | cut -f1)" = "$CANDIDATE"
+test "$(git ls-remote https://github.com/Zutfen-LLC/Strata.git "refs/heads/$BRANCH" | cut -f1)" = "$CANDIDATE"
 ```
 
 On 05 supply its existing absolute `SRC`, configured absolute `BUILD`, and that same SHA/branch.
@@ -32,7 +32,10 @@ Preserve the build generator/toolchains and pinned ggml cache from the successfu
 ```sh
 cd "$SRC"
 test -z "$(git status --porcelain)"
-test "$(git remote get-url origin)" = git@github.com:Zutfen-LLC/Strata.git
+case "$(git remote get-url origin)" in
+  git@github.com:Zutfen-LLC/Strata.git|ssh://git@github.com/Zutfen-LLC/Strata.git|https://github.com/Zutfen-LLC/Strata.git|https://github.com/Zutfen-LLC/Strata) ;;
+  *) echo 'STOP: origin is not the canonical fork'; exit 1 ;;
+esac
 git fetch origin "$BRANCH"
 test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE"
 git merge-base --is-ancestor 5260f2b7c8166021d86f57e4eb80fc44b050e570 "$CANDIDATE"
