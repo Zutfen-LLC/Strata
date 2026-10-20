@@ -8,7 +8,7 @@ Reviewed base `5260f2b7c8166021d86f57e4eb80fc44b050e570` to draft `bcc5792`, the
 corrections below. Two independent reviewers inspected the diff and relevant source/docs. Neither
 reviewer edited files or ran builds, tests, binaries, benchmarks, models or host connections.
 The user expressly prohibited those actions on Geekom, overriding the repository's backend-build
-requirements for this unvalidated candidate. **NOT RUNTIME VALIDATED** remains the candidate status.
+requirements for this unvalidated candidate. At that review, **NOT RUNTIME VALIDATED** was the candidate status.
 
 ## Standards and quality
 
@@ -68,4 +68,5 @@ compatibility or real-host residency/GPU behavior.
 
 Quality: four actionable findings across initial/follow-up review, all resolved in source. Spec: three
 findings, all resolved in source. No material finding remains open in either static review. This is
-not a runtime PASS; all final-source build, fixture, compatibility and real-host checks remain pending.
+not a runtime PASS; at that coding handoff all final-source runtime checks were pending. The later
+user-reported 16d065e results are recorded in the attributed receipt, not inferred from static review.

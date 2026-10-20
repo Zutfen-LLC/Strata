@@ -90,9 +90,10 @@ still needs measurement. No arena-release diagnosis of that earlier report is cl
 
 LOCAL_SETUP local-v1 flag bit 1 (`2`) explicitly requests persistent residency. Bit 0 remains the
 missing-only upload permission. On this flag only, LOCAL_SETUP_ACK appends `hit:u32, reused_bytes:u64`
-to its old 28 bytes (40 bytes total). A disabled/new worker refuses this flag; by static inspection the exact-base worker also refuses it.
-Cross-version runtime validation remains pending on 05;
-the client fails closed without fallback. With the flag absent, SETUP, LOCAL_SETUP, UPLOAD, READY,
+to its old 28 bytes (40 bytes total). A disabled/new worker and the exact-base worker refuse this flag;
+the client fails closed without fallback. The user reports cross-version checks passed at 16d065e
+using the actual base worker and legacy source client; see the [receipt](evidence/hermes-16d065e-receipt.md).
+The later correction head has not been run. With the flag absent, SETUP, LOCAL_SETUP, UPLOAD, READY,
 INFER and STATUS keep their existing wire layouts. A configured TTL alone does not retain legacy
 sessions. A legacy setup cannot silently replace an already persistent cache; unload first.
 
@@ -115,14 +116,18 @@ positive reused bytes, zero loaded/verified deltas and zero network weight delta
 inference. A live PID alone proves nothing.
 
 [Retained failed/interrupted validation and independent static reviews](evidence/validation.md) use generated Q8_0 fixtures and
-real worker binaries. No full-model numerical parity, CUDA/HIP/SYCL build, GPU release on real hardware,
-SATA throughput or full-size RSS measurement is claimed by this candidate.
+real worker binaries. The later [user-attributed 16d065e receipt](evidence/hermes-16d065e-receipt.md)
+records CPU/CUDA and real-host GPU-release observations. The new native-OFF correction has no build or
+runtime validation. No independent full-model numerical parity, HIP/SYCL validation, SATA throughput or
+full-size RSS measurement is claimed.
 
 ## Native experts disabled
 
 `STRATA_NATIVE_EXPERTS=OFF` remains supported. The shared CUDA/HIP engine excludes worker calls,
 construction and reports when the worker libraries are absent. All six `--remote-cpu-*` worker options
-are refused before model-header dispatch or GPU setup with `requires STRATA_NATIVE_EXPERTS=ON`.
+are refused with `requires STRATA_NATIVE_EXPERTS=ON` before model loading or GPU initialization. The
+main preflight runs before family dispatch; Qwen3.6 also checks actual parsed options after the existing
+GGUF metadata probe, covering serve-mode argument-consumption differences.
 An attached worker pointer also fails closed before multi-token dispatch reads inputs or accesses a
 source/device. Native-ON retains its worker path. This correction is a static fix prediction until the
 [separate OFF build and ON regressions](NATIVE_OFF_HERMES.md) run. HIP remains unvalidated. SYCL uses

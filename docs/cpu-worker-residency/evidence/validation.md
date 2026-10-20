@@ -58,4 +58,6 @@ repeat of the full model. No correction-head build or execution has been perform
 
 [Independent static review record](review.md) contains both reports and source dispositions.
 No material finding remained open in those original static reviews. At that coding handoff runtime
-checks were pending; the later 16d065e receipt is recorded separately. The correction needs fresh checks. Static review does not establish compilation or execution correctness.
+checks were pending; the later 16d065e receipt is recorded separately. The correction needs fresh
+checks. The correction's [independent review and dispositions](native-off-review.md) are recorded
+separately. Static review does not establish compilation or execution correctness.

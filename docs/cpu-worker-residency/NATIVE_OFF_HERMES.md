@@ -11,11 +11,15 @@ or tunnels, change drivers, merge, launch broad CI, or start a network GPU worke
 The static P2 prediction was that `STRATA_NATIVE_EXPERTS=OFF` leaves shared dispatcher calls to worker
 symbols whose libraries CMake omits. Startup also constructed the tier and reporting referenced it.
 This correction guards the worker include, ownership queries, requests, joins, construction and reports.
-A disabled build refuses all six worker CLI options before model-header dispatch or GPU setup, and
-refuses an externally attached worker before dispatch accesses source/activation/device state.
+A disabled build refuses all six worker CLI options before model loading or GPU initialization, and
+refuses an externally attached worker before dispatch accesses source/activation/device state. The
+main preflight runs before family dispatch. Qwen3.6's own parser also refuses actual worker flags after
+the existing GGUF metadata probe, because serve-mode unknown-option consumption differs from the main
+parser. Its engine construction, model payload loading and GPU setup have not started at refusal.
 Native-ON retains the worker path. CUDA and shared HIP sources are affected; HIP is untested. SYCL has
 separate migrated sources and is not claimed to contain this feature.
 
+The [independent static review record](evidence/native-off-review.md) records findings and dispositions.
 The worker service, client, wire protocol and resident lifecycle are unchanged from tested 16d065e.
 The needed checks are an actual native-OFF engine link/refusal check plus native-ON dispatch and small
 worker regressions. A new 103 GiB load or full-model trial is not required by this diff.
@@ -82,8 +86,13 @@ does not pull `strata_worker_tier` or `strata_expert_worker`. The dispatch test 
 engine without worker libraries and uses an opaque worker pointer and null input/source/pool to check
 fail-closed refusal before access; it performs no inference. The CLI test launches the actual OFF
 engine with each of the six options, alone and with absent model/pack paths, expecting exit 2 and the
-specific `requires STRATA_NATIVE_EXPERTS=ON` diagnostic. Normal help/version must still work.
-No model files, worker connection or GPU allocation is needed for these refusal cases.
+specific `requires STRATA_NATIVE_EXPERTS=ON` diagnostic. It also checks that option-shaped pack,
+synthetic token-file, dump and two-argument layer-range values are consumed as values, with normal
+help/version still working. The arity-only early scan covers the main and Qwen3.6 parser value options;
+review that list whenever either parser adds a value-taking option. A tensor-free synthetic GGUF
+header additionally selects Qwen3.6 and checks all six actual worker flags in serve mode after an option
+whose arity differs between parsers. No real model files, worker connection or GPU allocation is needed
+for these refusal cases.
 
 ## 2. Native-ON regressions on 03 and 05
 

@@ -2244,8 +2244,39 @@ int main(int argc, char** argv) {
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 #ifndef STRATA_NATIVE_EXPERTS
-    // The worker libraries are absent. Refuse before model-header dispatch or GPU setup,
-    // including a worker modifier supplied without --remote-cpu-experts.
+    // Preflight worker options before model-header dispatch or GPU setup. Respect the value
+    // consumption of both parsers (including Qwen3.6), so a path may start with "--remote-cpu-".
+    // Qwen3.6 also checks its actual parsed options before engine setup: serve mode ignores unknowns
+    // with different arities, so a union preflight alone cannot disambiguate every command line.
+    // Keep this arity-only list in step with next() in this file and qwen35/q36_engine.cu.
+    static constexpr const char* value_options[] = {
+        "--gpu", "--pack", "--tokens", "--tokens-file", "--max-new", "--max-context", "--rope-scaling",
+        "--rope-scale", "--rope-freq-base", "--rope-freq-scale", "--yarn-orig-ctx", "--yarn-ext-factor",
+        "--yarn-attn-factor", "--yarn-beta-fast", "--yarn-beta-slow", "--seed", "--top-k", "--top-p",
+        "--temperature", "--dump-logits", "--logits-stride", "--dump-residual", "--dump-mixed",
+        "--dump-layers", "--dump-halves", "--dump-routing", "--ple-gguf", "--ple-io", "--ple-row-cache",
+        "--ple-inflight", "--ple-delay-us", "--kv", "--kv-resident", "--native", "--native-head-gguf",
+        "--embd-gguf", "--native-dense-gguf", "--pool-workers", "--pool-tasks", "--host-core",
+        "--aux-cpus", "--pool-affinity", "--expert-cache", "--expert-cache-device1",
+        "--expert-cache-device2", "--expert-cache-device3", "--expert-cache-remote-placement",
+        "--vram-reserve-mib", "--vram-reserve-later-mib", "--prefill", "--prefill-pipe",
+        "--vram-segment-mib", "--prefill-until", "--dump-final-r", "--spec", "--batch", "--slots",
+        "--batch-groups", "--spec-oracle", "--spec-corrupt", "--spec-follow", "--window-hashes", "--mtp",
+        "--mtp-window", "--pcie-frac", "--adapt-every", "--adapt-decay", "--adapt-min-gain",
+        "--adapt-async", "--spec-min-p", "--layer-split", "--split-device", "--pcie-mode",
+        "--prompt-cache", "--conversation-cache-mib", "--conversation-cache-slots",
+        "--conversation-cache-min-free-mib", "--conversation-cache-min-tokens",
+        "--conversation-cache-park-gain", "--session-min-free-mib", "--memory-limit-mib",
+        "--prompt-cache-every", "--prompt-cache-root", "--turn-token", "--tail-role-token", "--short-read",
+        "--pipeline-windows", "--suffix-draft", "--mtp-max-t", "--lookup-chain", "--lookup-chain-min",
+        "--mtp-hnorm", "--mtp-q4", "--mtp-draft-vocab", "--control-vector", "--control-vector-scaled",
+        "--cvec-mode", "--cvec-dir", "--eos-ids", "--adapt-swaps", "--peer-device", "--peer-reserve-mib",
+        "--peer-slots", "--peer-adapt-swaps", "--peer-prefill-rows", "--expert-profile",
+        "--expert-profile-save", "--expert-profile-save-every", "--shared-expert-arena",
+        "--resident-budget-gib", "--model", "--ctx", "--chunk", "--n", "--force", "--emb",
+        "--dump-full-logits", "--bench-pp", "--bench-tg", "--draft-vocab", "--expert-vram",
+        "--cpu-threads", "--expert-slots", "--hybrid-rows",
+    };
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--remote-cpu-experts" || a == "--remote-cpu-local-manifest" ||
@@ -2254,6 +2285,13 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata: %s requires STRATA_NATIVE_EXPERTS=ON; this build excludes the remote CPU-expert worker\n",
                          a.c_str());
             return 2;
+        }
+        if (a == "--help" || a == "-h" || a == "--version" || a == "-V" || a == "--families") break;
+        if (a == "--control-vector-layer-range") i += std::min(2, argc - i - 1);
+        else {
+            for (const char* option : value_options) {
+                if (a == option) { if (i + 1 < argc) ++i; break; }
+            }
         }
     }
 #endif

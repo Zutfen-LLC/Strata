@@ -123,7 +123,8 @@ and invalid TTL values. New binary processes use two pool workers; default test 
 capped at two. Fixture cleanup cannot signal other tasks by using a negative or group PID.
 
 **Stop and return this fixture/build report now.** These checks were user-reported passed at 16d065e.
-Do not transfer that result to an untested correction head; validate its selected regression scope. Sections 2 onward are a later full-model validation window, gated on
+Do not transfer that result to an untested correction head; validate its selected regression scope.
+Sections 2 onward are a later full-model validation window, gated on
 this result and selection of that window. They must not be launched just to complete this code handoff.
 
 ### Later gated CUDA fixture check on 03
@@ -300,5 +301,6 @@ to arena release without evidence. Do not leave an unbounded worker or tunnel af
 
 Report cold/warm setup phases, bytes reused/loaded/verified/network, session ids, complete partition,
 requests/CPU service, engine GPU release, exact source/binary/manifest/index/profile identities, reserves,
-unload/expiry/exit evidence and all exit codes. Mark CUDA/full-size memory/full-model behavior untested
-until this recipe runs. The coding task has not run it.
+unload/expiry/exit evidence and all exit codes. Attribute each result to its actual revision; leave
+new-revision CUDA/full-size memory/full-model checks untested unless performed. The user-reported 16d065e receipt is separate. The coding task has
+not executed this recipe.
