@@ -11,7 +11,7 @@ namespace {
 uint64_t now_ms(){return(uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 }
 GpuWorkerTier::~GpuWorkerTier(){close();}
-void GpuWorkerTier::close(){sock_fd fd=(sock_fd)fd_;sock::close_fd(fd);fd_=~(uintptr_t)0;ready_=false;posted_=served_=false;reply_.partials.clear();}
+void GpuWorkerTier::close(){sock_fd fd=(sock_fd)fd_;sock::close_fd(fd);fd_=~(uintptr_t)0;ready_=false;posted_=served_=false;reply_.partials.clear();cancelled_={};setup_end_=0;}
 bool GpuWorkerTier::fail(const std::string& why,std::string& err){
     err=why;why_=why;dead_=true;++stats_.failures;close();return false;
 }
@@ -20,8 +20,17 @@ bool GpuWorkerTier::exchange(uint16_t msg,const std::vector<uint8_t>& p,uint16_t
     int budget=deadline_ms_;
     if(setup_end_){const auto now=now_ms();if(now>=setup_end_)return fail("CUDA setup exceeded total deadline",err);
         budget=(int)std::min<uint64_t>((uint64_t)budget,setup_end_-now);}
-    if(fd_==~(uintptr_t)0 || !gpu_codec::send(fd_,msg,ST_OK,p,budget,cancel,err) ||
-       !gpu_codec::receive(fd_,reply,kGpuFrameMax,budget,cancel,err))return fail("CUDA exchange failed: "+err,err);
+    if(fd_==~(uintptr_t)0 || !gpu_codec::send(fd_,msg,ST_OK,p,budget,cancel,err))
+        return fail("CUDA exchange failed: "+err,err);
+    int response_wait=0;
+    if(setup_end_){
+        const auto now=now_ms();if(now>=setup_end_)return fail("CUDA setup exceeded total deadline",err);
+        const auto remaining=setup_end_-now;
+        budget=(int)std::min<uint64_t>((uint64_t)deadline_ms_,remaining);
+        if(msg==GPU_SETUP || msg==GPU_READY)response_wait=(int)std::min<uint64_t>(INT32_MAX,remaining);
+    }
+    if(!gpu_codec::receive(fd_,reply,kGpuFrameMax,budget,cancel,err,response_wait))
+        return fail("CUDA exchange failed: "+err,err);
     if(reply.msg!=want || reply.status!=ST_OK)return fail("CUDA worker rejected operation or negotiation: "+std::string(status_name(reply.status)),err);
     return true;
 }

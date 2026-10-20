@@ -18,6 +18,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <thread>
 
@@ -59,6 +60,41 @@ void row_reference(const cpu::NativeFmt& f, const uint8_t* b, const float* x, fl
     cpu::native_gu_rows(f, b, &a, 1, &h, 0, FF);
     cpu::native_quant_h(f, h, hq.data());
     const void* q = hq.data(); cpu::native_down_rows(f, b, &q, 1, &out, 0, H);
+}
+// Independent numerical golden: GGML dequantization and double dot accumulation, as in
+// native_expert_parity.cpp. It does not use the native CPU or grouped CUDA dot kernels.
+void float_row_reference(const cpu::NativeFmt& f, const uint8_t* b, const float* x, float* out) {
+    const auto* traits = ggml_get_type_traits(GGML_TYPE_Q8_0);
+    std::vector<float> row(H), down(FF), hidden(FF);
+    for (int j = 0; j < FF; ++j) {
+        traits->to_float(b + j * f.gu_row, row.data(), H);
+        double gate = 0, up = 0;
+        for (int h = 0; h < H; ++h) gate += (double)row[h] * x[h];
+        traits->to_float(b + f.up_off + j * f.gu_row, row.data(), H);
+        for (int h = 0; h < H; ++h) up += (double)row[h] * x[h];
+        hidden[j] = (float)(gate / (1.0 + std::exp(-gate)) * up);
+    }
+    for (int h = 0; h < H; ++h) {
+        traits->to_float(b + f.down_off + h * f.d_row, down.data(), FF);
+        double sum = 0;
+        for (int j = 0; j < FF; ++j) sum += (double)down[j] * hidden[j];
+        out[h] = (float)sum;
+    }
+}
+void numerical_metrics(const std::vector<float>& got, const std::vector<float>& reference,
+                       double tolerance, double max_tolerance, const char* label) {
+    if (!check(!got.empty() && got.size() == reference.size(), "mixed numerical result shape")) return;
+    double error = 0, norm = 0, square = 0, max_abs = 0;
+    for (size_t i = 0; i < got.size(); ++i) {
+        if (!check(std::isfinite(got[i]) && std::isfinite(reference[i]), "mixed result is finite")) return;
+        const double delta = std::fabs((double)got[i] - reference[i]);
+        error += delta; norm += std::fabs((double)reference[i]); square += delta * delta;
+        max_abs = std::max(max_abs, delta);
+    }
+    const double relative = error / (norm + 1e-30);
+    std::printf("NUMERICS %s rel_L1=%.9g max_abs=%.9g RMSE=%.9g tolerance=%.9g max_tolerance=%.9g\n",
+                label, relative, max_abs, std::sqrt(square / got.size()), tolerance, max_tolerance);
+    check(relative <= tolerance && max_abs <= max_tolerance, label);
 }
 class Source final : public strata::core::ExpertSource {
 public:
@@ -235,6 +271,23 @@ int main() {
     if (!gpu(cudaMemcpy(base.data(), merged.p, base.size()*sizeof(float), cudaMemcpyDeviceToHost))) return 1;
     check(std::memcmp(base.data(), expected.data(), base.size()*sizeof(float)) == 0,
           "actual merge includes local/GPU04/CPU05 exactly once in declared order");
+    numerical_metrics(base, expected, 1e-6, 1e-5, "mixed merge versus same-owner results");
+    std::vector<float> float_reference(T * H);
+    double component_l1 = 0, reference_l1 = 0;
+    for (int i = 0; i < T * K; ++i) {
+        float_row_reference(f, source.blobs[(size_t)ids[i]].data(), x.data() + (i / K) * H, row.data());
+        for (int h = 0; h < H; ++h) {
+            const float contribution = weights[i] * row[h];
+            float_reference[(i / K) * H + h] += contribution;
+            component_l1 += std::fabs((double)contribution);
+        }
+    }
+    for (float value : float_reference) reference_l1 += std::fabs((double)value);
+    std::printf("NUMERICS mixed cancellation_ratio=%.9g component_L1=%.9g reference_L1=%.9g "
+                "(primary rows emulated; network CUDA and merge real)\n",
+                component_l1 / (reference_l1 + 1e-30), component_l1, reference_l1);
+    numerical_metrics(base, float_reference, 3e-2, std::numeric_limits<double>::infinity(),
+                      "mixed result versus dequantized float reference");
     // Failure must not advance CPU serving or commit an earlier partial. The sync GPU post detects
     // the lost peer before CPU post; the engine's failed latch rejects the affected request.
     WorkerStatusInfo before_loss, after_loss;

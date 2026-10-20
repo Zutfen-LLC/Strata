@@ -135,8 +135,10 @@ digest/length/duplicate/out-of-range failures, no-follow path containment, exclu
 cache ownership, atomic publication, disk refusal preserving old assets, and explicit
 cleanup all need successful assertions. Retained disk is independently bounded.
 Protocol acceptance: explicit CUDA/numerics negotiation; READY-before-load refusal;
-capacity refusal; stale plan/session/sequence, malformed/nonfinite/duplicate reply
-rejection; simulated GPU/executor loss latches failure with no CPU retry. Label fake
+delayed READY succeeds within the total setup budget even beyond a short frame
+budget, and total setup expiry refuses READY. Capacity refusal; stale plan/session/
+sequence, malformed/nonfinite/duplicate replies through both codecs and the actual
+client failure latch; simulated GPU/executor loss latches failure with no CPU retry. Label fake
 executor results as such. Record assigned/cache/transferred/staging counters.
 
 ## 3. 04: actual RTX 3090 network CUDA fixtures

@@ -121,7 +121,10 @@ socket does not time out while weights transfer. Status probes do not renew the 
 residency TTL. Expiry or loss cancels GPU setup; the configured TTL must cover setup
 and the intended session. This does not resize or replace the CPU arena.
 The service is one connection and one request at a time, with bounded setup and frame
-deadlines. Kernel execution and ordinary filesystem system calls cannot be preempted
+deadlines. Cache verification and GPU residency may exceed a short frame budget:
+SETUP and READY reply waits use the remaining total setup budget. Connect, negotiation,
+uploads and inference retain their short frame budgets. The server charges assigned
+cache verification to the same total setup budget. Kernel execution and ordinary filesystem system calls cannot be preempted
 by those deadlines; Hermes uses an owned outer process timeout. The listener binds
 loopback; use existing trusted SSH forwards for cross-host access, not a new firewall
 or public listener.

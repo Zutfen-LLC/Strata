@@ -30,6 +30,7 @@ public:
     bool posted()const{return posted_;}
     bool served()const{return served_;}
     const float* partials()const{return reply_.partials.data();}
+    size_t partial_count()const{return reply_.partials.size();}
     bool status(GpuCounters&,std::string&);
     void report(std::string&)const;
     struct Stats {

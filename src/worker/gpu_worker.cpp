@@ -103,6 +103,7 @@ bool GpuWorkerService::dispatch(const WireFrame& in, WireFrame& out, std::string
     if (!negotiated_) return refuse(ST_WRONG_STATE,"CUDA HELLO required");
     if (in.msg == GPU_SETUP) {
         if (setup_ || in.payload.size() <= 8) return refuse(ST_WRONG_STATE,"frozen setup already exists");
+        setup_ = true; setup_started_ = now_ms();
         const auto nonce = c.get();
         GpuPlan proposed;
         if (!nonce || !decode_gpu_plan(in.payload.data()+8,in.payload.size()-8,proposed,err))
@@ -112,7 +113,8 @@ bool GpuWorkerService::dispatch(const WireFrame& in, WireFrame& out, std::string
             return refuse(ST_STALE_SESSION,"operator placement/model/layout mismatch");
         if (!cache_.prepare(options_.plan,missing_,err)) {out.status=ST_OVER_BUDGET;return false;}
         cache_stats();
-        setup_ = true; setup_started_ = now_ms();
+        if(stop_.load() || now_ms()-setup_started_ >= (uint64_t)options_.setup_ms)
+            return refuse(ST_DEADLINE,"CUDA cache verification completed after setup budget or stop");
         // Nonce plus process monotonic timestamp/serial gives new bindings on reconnect; no session reuse.
         session_ = nonce ^ now_ns() ^ (++session_serial_ * 0x9e3779b97f4a7c15ull);
         if (!session_) session_ = ++session_serial_;

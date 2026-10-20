@@ -9,7 +9,10 @@
 namespace {
 struct FakeExecutor final : GpuExecutor {
     bool capacity=false,loss=false;
+    int prepare_delay_ms=0,prepare_calls=0;
     bool prepare(const GpuPlan& p,uint64_t,GpuCache& cache,GpuCounters& c,std::string& err)override{
+        ++prepare_calls;
+        if(prepare_delay_ms)std::this_thread::sleep_for(std::chrono::milliseconds(prepare_delay_ms));
         if(capacity){err="synthetic available VRAM below required allocation/reserve";return false;}
         std::vector<uint8_t> b;for(const auto& a:p.assets)if(!cache.read(a,b,err))return false;
         c.gpu_weight_bytes=p.assigned_bytes();c.gpu_scratch_bytes=1024;c.gpu_allocated_bytes=p.assigned_bytes()+1024;
@@ -26,7 +29,8 @@ struct GpuService {
     GpuService(GpuWorkerOptions options,std::unique_ptr<GpuExecutor> executor):service(std::move(options),std::move(executor)){
         std::string err;require(service.listen(port,err),err);thread=std::thread([&]{service.run();});
     }
-    ~GpuService(){service.stop();thread.join();}
+    void stop(){service.stop();if(thread.joinable())thread.join();}
+    ~GpuService(){stop();}
 };
 GpuPlan plan_for(const Fixture& f,bool addition=false){
     GpuPlan p;std::string err;
@@ -41,6 +45,12 @@ GpuWorkerTier::Open open_for(const Fixture& f,const GpuPlan& plan,uint16_t port,
     GpuWorkerTier::Open o;o.plan=plan;o.port=port;o.deadline_ms=5000;o.setup_ms=30000;
     o.fetch=[&f,&fetches](int64_t l,int64_t e,uint8_t* dst,uint32_t n){++fetches;
         const auto& b=f.blobs[(size_t)l*2+e];if(n!=b.size())return false;std::memcpy(dst,b.data(),n);return true;};return o;
+}
+void populate_cache(const Fixture& f,const GpuWorkerOptions& options){
+    GpuCache cache;std::vector<uint8_t> missing;std::string err;
+    require(cache.open(options.cache_root,options.cache_budget,err)&&cache.prepare(options.plan,missing,err),err);
+    for(const auto& a:options.plan.assets){const auto& bytes=f.blobs[(size_t)a.layer*2+a.expert];
+        require(cache.publish(a,bytes.data(),bytes.size(),err),err);}
 }
 InferRequest request_for(const GpuPlan& p,uint64_t session=123){
     InferRequest r;r.session=session;r.model_id=p.model_id;r.partition_id=p.placement_id.a;r.sequence=1;
@@ -98,8 +108,99 @@ uint64_t raw_setup(sock_fd fd,const GpuPlan& p){
     require(send(fd,GPU_SETUP,ST_OK,payload,2000,{},err)&&receive(fd,out,kGpuFrameMax,2000,{},err)&&out.status==ST_OK,err);
     Cursor c{out.payload};return c.get();
 }
+// A deliberately dishonest peer sends invalid successful inference replies through the
+// real transport/client. Codec unit checks alone do not exercise failure latching.
+struct MalformedPeer {
+    enum Mode { truncated,duplicated,wrong_binding,nonfinite,wrong_sequence };
+    sock_fd listener=kBadFd;uint16_t port=0;std::thread thread;
+    bool completed=false,retry_frame=false;std::string failure;
+    MalformedPeer(const GpuPlan& plan,Mode mode){
+        std::string err;require(sock::listen_loopback(port,listener,err),err);
+        thread=std::thread([&,plan,mode]{
+            sock_fd peer=kBadFd;
+            try{
+                require(sock::accept_one(listener,peer,2000),"malformed peer accept deadline");
+                constexpr uint64_t session=919;
+                const uint16_t expected[]={GPU_HELLO,GPU_SETUP,GPU_READY,GPU_STATUS,GPU_INFER};
+                for(uint16_t msg:expected){
+                    WireFrame frame;std::string why;
+                    require(gpu_codec::receive(peer,frame,kGpuFrameMax,2000,{},why)&&frame.msg==msg,why);
+                    std::vector<uint8_t> response;
+                    if(msg==GPU_HELLO){
+                        gpu_codec::put(response,kGpuWireVersion,4);gpu_codec::put(response,kGpuCapabilityCuda,4);
+                        gpu_codec::put(response,kGpuNumericsQ8_1,4);gpu_codec::put(response,kUploadChunkMax,4);
+                    }else if(msg==GPU_SETUP){
+                        response=gpu_codec::binding(session,plan);gpu_codec::put(response,plan.assets.size(),4);
+                        response.insert(response.end(),plan.assets.size(),0);
+                    }else if(msg==GPU_READY)response=gpu_codec::binding(session,plan);
+                    else if(msg==GPU_STATUS){
+                        GpuCounters counters;counters.assigned_bytes=counters.cached_bytes=counters.gpu_weight_bytes=plan.assigned_bytes();
+                        counters.gpu_allocated_bytes=plan.assigned_bytes()+1024;
+                        response=gpu_codec::binding(session,plan);gpu_codec::put(response,1,4);
+                        const auto values=gpu_codec::counters(counters);response.insert(response.end(),values.begin(),values.end());
+                    }else{
+                        InferRequest request;require(gpu_codec::decode_request(plan,frame.payload,request),"malformed peer request decode");
+                        InferReply reply;reply.session=session;reply.sequence=request.sequence;
+                        reply.partials.assign((size_t)request.T*plan.n_embd,0.5f);
+                        if(mode==nonfinite)reply.partials[0]=std::numeric_limits<float>::quiet_NaN();
+                        if(mode==wrong_sequence)++reply.sequence;
+                        response=gpu_codec::encode_reply(plan,blob_digest(frame.payload),reply);
+                        if(mode==truncated)response.pop_back();
+                        if(mode==duplicated){const auto copy=response;response.insert(response.end(),copy.begin(),copy.end());}
+                        if(mode==wrong_binding)response[16]^=1;
+                    }
+                    const bool sent=gpu_codec::send(peer,msg+1,ST_OK,response,2000,{},why);
+                    // An oversized duplicate is rejected from its header; the client may
+                    // close before the dishonest peer finishes sending that payload.
+                    if(!sent&&msg==GPU_INFER&&mode==duplicated){completed=true;sock::close_fd(peer);return;}
+                    require(sent,why);
+                }
+                // The client must close immediately; a second post must not send another frame.
+                WireFrame extra;std::string why;
+                retry_frame=gpu_codec::receive(peer,extra,kGpuFrameMax,500,{},why);
+                completed=true;
+            }catch(const std::exception& e){failure=e.what();}
+            sock::close_fd(peer);
+        });
+    }
+    void join(){if(thread.joinable())thread.join();sock::close_fd(listener);}
+    ~MalformedPeer(){join();}
+};
+void malformed_peer_checks(const Fixture& f,const GpuPlan& plan){
+    for(auto mode:{MalformedPeer::truncated,MalformedPeer::duplicated,MalformedPeer::wrong_binding,
+                  MalformedPeer::nonfinite,MalformedPeer::wrong_sequence}){
+        MalformedPeer peer(plan,mode);GpuWorkerTier tier;int fetches=0;std::string err;
+        require(tier.open(open_for(f,plan,peer.port,fetches),err),err);
+        const auto r=request_for(plan);std::vector<int32_t> ids(r.ids.begin(),r.ids.end());
+        check(!tier.post(r.layer,r.activations.data(),ids.data(),r.weights.data(),r.mask.data(),r.T,r.K,err)&&
+            tier.dead()&&!tier.served()&&!tier.posted()&&tier.partial_count()==0,
+            "malformed network reply kills tier and clears partials");
+        check(!tier.post(r.layer,r.activations.data(),ids.data(),r.weights.data(),r.mask.data(),r.T,r.K,err),
+            "dead CUDA tier refuses repeat post");
+        peer.join();
+        check(peer.completed&&peer.failure.empty()&&!peer.retry_frame,"failed CUDA request sends no invisible retry frame");
+        check(fetches==0,"malformed peer fixture transfers no expert weights");
+    }
+}
+void setup_budget_checks(const Fixture& f,const GpuPlan& plan){
+    for(int mode=0;mode<3;++mode){
+        auto options=options_for(f,plan,"cache-budget-"+std::to_string(mode));populate_cache(f,options);
+        if(mode==1)options.setup_ms=50;
+        auto executor=std::make_unique<FakeExecutor>();executor->prepare_delay_ms=200;
+        const auto* observed=executor.get();GpuService service(options,std::move(executor));
+        GpuWorkerTier tier;int fetches=0;std::string err;auto open=open_for(f,plan,service.port,fetches);
+        open.deadline_ms=100;open.setup_ms=mode==2?50:2000;
+        const bool opened=tier.open(open,err);
+        if(mode==0)check(opened&&tier.ready(),"READY wait may exceed frame deadline within total setup budget");
+        else check(!opened&&tier.dead()&&!tier.ready(),"server/client whole setup deadline never exposes READY");
+        tier.close();service.stop();
+        check(fetches==0,"delayed setup uses verified cached fixtures");
+        if(mode==0)check(observed->prepare_calls==1,"delayed READY executor reached before setup result");
+        check(service.service.counters().gpu_allocated_bytes==0,"setup stop releases GPU allocations before counter read");
+    }
+}
 void lifecycle(const Fixture& f,const GpuPlan& p){
-    codec_checks(p);std::string err;
+    codec_checks(p);malformed_peer_checks(f,p);setup_budget_checks(f,p);std::string err;
     {
         auto executor=std::make_unique<FakeExecutor>();GpuService service(options_for(f,p,"cache-main"),std::move(executor));
         int fetches=0;GpuWorkerTier cold;require(cold.open(open_for(f,p,service.port,fetches),err),err);
@@ -148,6 +249,17 @@ void cuda_checks(const Fixture& f,const GpuPlan& p){
         int n=0;GpuWorkerTier tier;require(tier.open(open_for(f,p,service.port,n),err),err);network=run_tier(tier,p);
         GpuCounters counters;require(tier.status(counters,err),err);check(counters.entries==4&&counters.requests==1,"actual CUDA worker executed all assigned entries");
         std::string report;tier.report(report);std::printf("%s\n",report.c_str());tier.close();
+    }
+    {
+        // The successful real CUDA case above establishes a usable device first. This
+        // impossible reserve reaches the actual allocator's available-VRAM refusal.
+        auto options=options_for(f,p,"cache-cuda-overcapacity");options.runtime_reserve=UINT64_MAX;
+        GpuService service(options,create_cuda_gpu_executor(0));GpuWorkerTier tier;int n=0;
+        check(!tier.open(open_for(f,p,service.port,n),err)&&tier.dead()&&!tier.ready(),
+            "actual CUDA available-VRAM refusal never exposes READY");
+        service.stop();const auto& counters=service.service.counters();
+        check(counters.gpu_allocation_count==0&&counters.gpu_weight_bytes==0&&counters.gpu_allocated_bytes==0,
+            "actual overcapacity refuses before weight/workspace allocation");
     }
     // Same device/kernel path as reference, independently loaded and called without wire transport.
     const auto options=options_for(f,p,"cache-direct");GpuCache cache;std::vector<uint8_t> missing;

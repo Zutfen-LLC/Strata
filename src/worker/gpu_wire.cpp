@@ -30,12 +30,23 @@ bool send(uintptr_t fd, uint16_t msg, uint16_t status, const std::vector<uint8_t
     return true;
 }
 bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
-             const std::function<bool()>& cancel, std::string& err) {
+             const std::function<bool()>& cancel, std::string& err, int response_wait_ms) {
+    if(ms<=0){err="CUDA frame requires a positive I/O deadline";return false;}
     std::vector<uint8_t> h(kHeaderBytes);
+    size_t first = 0;
+    // SETUP/READY may hash or load the entire assigned set. Waiting for their first
+    // response byte uses the remaining whole-setup budget; once a frame begins,
+    // its remaining header and payload retain the short total frame-I/O budget.
+    if (response_wait_ms > 0) {
+        if (!sock::recv_all_controlled((sock_fd)fd,h.data(),1,response_wait_ms,cancel)) {
+            err="CUDA setup response missing, disconnected or total setup deadline"; return false;
+        }
+        first=1;
+    }
     const auto began=std::chrono::steady_clock::now();
     auto remaining=[&] { return ms-(int)std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now()-began).count(); };
-    if (ms <= 0 || !sock::recv_all_controlled((sock_fd)fd, h.data(), h.size(), ms, cancel)) {
+    if (ms <= 0 || !sock::recv_all_controlled((sock_fd)fd, h.data()+first, h.size()-first, ms, cancel)) {
         err = "CUDA worker reply missing, disconnected or deadline"; return false;
     }
     Cursor c{h};
