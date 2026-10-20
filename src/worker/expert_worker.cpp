@@ -215,7 +215,7 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
     size_t cap = 0;
     switch (f.msg) {
         case MSG_SETUP_BEGIN: cap = kSetupFrameMax - kHeaderBytes; break;
-        case MSG_UPLOAD: cap = kUploadFrameMax - kHeaderBytes; break;
+        case MSG_UPLOAD: cap = kUploadHeadBytes + opt.upload_chunk_max; break;
         case MSG_INFER: cap = kInferPayloadMax; break;
         case MSG_SETUP_ACK: cap = 64; break;
         case MSG_UPLOAD_ACK: cap = 32; break;
@@ -303,7 +303,7 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t* p, siz
     std::vector<uint8_t> reply;
     put64(reply, session);
     put64(reply, (uint64_t) f.bytes);
-    put32(reply, kUploadChunkMax);
+    put32(reply, opt.upload_chunk_max);
     send_frame(fd, MSG_SETUP_ACK, ST_OK, reply);
 }
 
@@ -344,7 +344,7 @@ void ExpertWorkerService::Impl::on_upload(sock_fd fd, const uint8_t* p, size_t n
         return;
     }
     const int32_t slot = slot_of[(size_t) layer * manifest.n_expert + expert];
-    if (total_len != (uint32_t) fmt.bytes || chunk_len == 0 || chunk_len > kUploadChunkMax ||
+    if (total_len != (uint32_t) fmt.bytes || chunk_len == 0 || chunk_len > opt.upload_chunk_max ||
         (uint64_t) chunk_off + chunk_len > total_len) {
         fail(ST_BAD_REQUEST);
         send_frame(fd, MSG_UPLOAD_ACK, ST_BAD_REQUEST, {});
@@ -622,6 +622,10 @@ ExpertWorkerService::ExpertWorkerService(WorkerOptions options) : impl_(std::mak
 ExpertWorkerService::~ExpertWorkerService() = default;
 
 bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
+    if (impl_->opt.upload_chunk_max == 0 || impl_->opt.upload_chunk_max > kUploadChunkMax) {
+        err = "setup chunk cap must be between 1 and " + std::to_string(kUploadChunkMax);
+        return false;
+    }
     return sock::listen_loopback(port, impl_->listener, err);
 }
 

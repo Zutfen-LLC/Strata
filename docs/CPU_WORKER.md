@@ -60,7 +60,7 @@ Rules that matter to a caller:
   uniform native layout (gate/up type, down type, n_embd, n_ff) and the ownership bitmap; the worker
   accepts only layouts it has fixture-tested - today **Q8_0 gate/up with Q8_0 down** - and refuses an
   assigned set larger than its memory budget. Blobs upload as bounded in-order chunks (default cap
-  64 KiB) into a worker-owned arena sized exactly to the assigned set; a slot is verified against the
+  1 MiB of data, excluding headers) into a worker-owned arena sized exactly to the assigned set; a slot is verified against the
   declared 128-bit digest when its last byte lands. Chunks must start at the slot's current fill point.
   `READY` succeeds only when every assigned slot is present and verified, and freezes the session.
 - **Inference.** The frame carries identity (session, model id, partition id, sequence), the layer, T ≤ 8
@@ -100,7 +100,9 @@ so any caller - the tests, and #349's engine integration - compares against the 
 
 `strata::worker::ExpertWorkerClient` (`include/strata/worker/expert_client.hpp`) implements the whole
 flow: `connect_host`, `setup`, `upload` (whole blob, chunked internally), `mark_ready`, `infer`,
-`status`, `shutdown`, `close`. Every call is one frame and its reply; a refusal returns false with
+`status`, `shutdown`, `close`. Setup validates the exact ACK and a data cap in 1..1,048,576 B;
+upload honors smaller advertised caps and validates each ACK's session and next offset.
+Each upload chunk is one frame and its reply; a refusal returns false with
 `last_status()` set to the typed code.
 
 ## Minimal local reproduction
@@ -189,3 +191,10 @@ start the engine with `--serve --remote-cpu-experts 127.0.0.1:7431`, fixed place
 text request at a time.  The recipe's checks freeze the model, quant, kernel/window policy, speculation
 and KV settings, and its report separates setup from request time and client wait from worker CPU
 service.
+
+## Larger setup chunks
+
+The experimental setup optimization, measured small benchmark, bounded compatibility checks and
+exact incremental 05/03 build/smoke commands are in
+[the setup-chunk handoff](cpu-worker-setup-chunks/README.md). It uses the existing SETUP_ACK cap;
+inference frames retain their separate bound. No physical network or full-model speedup is claimed.

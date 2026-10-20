@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 namespace strata::worker {
 namespace {
@@ -108,6 +109,10 @@ void push_u16(std::vector<uint8_t>& o, uint16_t v) {
 }  // namespace
 
 bool ExpertWorkerClient::setup(const SetupManifest& m, std::string& err) {
+    session_ = 0;
+    blob_bytes_ = 0;
+    chunk_cap_ = 0;
+    n_embd_ = 0;
     std::vector<uint8_t> payload;
     if (!encode_setup_begin(m, payload)) {
         err = "the manifest is outside the protocol's bounds";
@@ -122,9 +127,19 @@ bool ExpertWorkerClient::setup(const SetupManifest& m, std::string& err) {
         return false;
     }
     size_t i = 0;
-    session_ = cur_u64(f.payload.data(), f.payload.size(), i);
-    blob_bytes_ = (uint32_t) cur_u64(f.payload.data(), f.payload.size(), i);
-    chunk_cap_ = cur_u32(f.payload.data(), f.payload.size(), i);
+    const uint64_t session = cur_u64(f.payload.data(), f.payload.size(), i);
+    const uint64_t bytes = cur_u64(f.payload.data(), f.payload.size(), i);
+    const uint32_t cap = cur_u32(f.payload.data(), f.payload.size(), i);
+    if (f.payload.size() != 20 || session == 0 || bytes == 0 ||
+        bytes > std::numeric_limits<uint32_t>::max() || cap == 0 || cap > kUploadChunkMax) {
+        err = "invalid setup reply: session, blob length or data chunk cap";
+        last_status_ = ST_PROTOCOL;
+        close();
+        return false;
+    }
+    session_ = session;
+    blob_bytes_ = (uint32_t) bytes;
+    chunk_cap_ = cap;
     n_embd_ = m.n_embd;
     return true;
 }
@@ -143,9 +158,9 @@ bool ExpertWorkerClient::upload(int layer, int expert, const uint8_t* blob, uint
     uint32_t off = 0;
     while (off < blob_bytes) {
         const uint32_t chunk =
-            (uint32_t) std::min<size_t>(chunk_cap_ - kUploadHeadBytes, blob_bytes - off);
+            std::min(chunk_cap_, blob_bytes - off);
         std::vector<uint8_t> p;
-        p.reserve(48 + chunk);
+        p.reserve(kUploadHeadBytes + chunk);
         push_u64(p, session_);
         push_u16(p, (uint16_t) layer);
         push_u16(p, (uint16_t) expert);
@@ -161,6 +176,15 @@ bool ExpertWorkerClient::upload(int layer, int expert, const uint8_t* blob, uint
         last_status_ = f.status;
         if (f.status != ST_OK) {
             err = std::string("upload refused at byte ") + std::to_string(off) + ": " + status_name(f.status);
+            return false;
+        }
+        size_t i = 0;
+        const uint64_t sid = cur_u64(f.payload.data(), f.payload.size(), i);
+        const uint32_t filled = cur_u32(f.payload.data(), f.payload.size(), i);
+        if (f.payload.size() != 12 || sid != session_ || filled != off + chunk) {
+            err = "upload reply does not match the session or next offset";
+            last_status_ = ST_PROTOCOL;
+            close();
             return false;
         }
         off += chunk;
@@ -251,11 +275,15 @@ bool ExpertWorkerClient::shutdown(std::string& err) {
 }
 
 void ExpertWorkerClient::close() {
-    if (!fd_ok(fd_)) return;
-    sock_fd fd = (sock_fd) fd_;
-    sock::close_fd(fd);
+    if (fd_ok(fd_)) {
+        sock_fd fd = (sock_fd) fd_;
+        sock::close_fd(fd);
+    }
     fd_ = ~(uintptr_t) 0;
     session_ = 0;
+    blob_bytes_ = 0;
+    chunk_cap_ = 0;
+    n_embd_ = 0;
 }
 
 }  // namespace strata::worker

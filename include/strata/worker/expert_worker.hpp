@@ -30,6 +30,7 @@ struct WorkerOptions {
     int workers = 0;      ///< ExpertPool worker threads (0: the pool's default plan for this machine)
     int deadline_ms = 10000;   ///< per-frame send/recv deadline
     int verbose = 0;      ///< 1: log each request's identity/status line (still no payloads)
+    uint32_t upload_chunk_max = kUploadChunkMax;   ///< advertised data cap, 1..kUploadChunkMax
 };
 
 /// #348 scope 8: what the service counts.  Identities and statuses are logged; prompts, activations and

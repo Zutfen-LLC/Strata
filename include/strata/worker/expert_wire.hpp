@@ -78,7 +78,7 @@ inline constexpr int kMaxNEmbd = strata::kernels::cpu::H;  ///< 2560
 inline constexpr int kMaxNFf = strata::kernels::cpu::FF;   ///< 640 (the pool's split buffers)
 inline constexpr int kMaxLayers = 96;
 inline constexpr int kMaxExperts = 1024;
-inline constexpr uint32_t kUploadChunkMax = 64u * 1024u;   ///< payload bytes per UPLOAD chunk
+inline constexpr uint32_t kUploadChunkMax = 1024u * 1024u;   ///< data bytes per UPLOAD, excluding headers
 /// The UPLOAD frame's fixed part: session(8) layer(2) expert(2) total(4) off(4) len(4) digest(16).
 inline constexpr size_t kUploadHeadBytes = 40;
 

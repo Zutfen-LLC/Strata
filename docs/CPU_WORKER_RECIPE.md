@@ -1,5 +1,9 @@
 # Remote CPU-expert correction: Hermes retest and asset preparation
 
+For the additive setup-chunk candidate based on tested `96576b32`, use the exact incremental
+checkout/build/small-smoke commands in [the setup-chunk handoff](cpu-worker-setup-chunks/README.md).
+Those commands supersede section 1 for that candidate; the asset and runtime constraints below remain.
+
 Candidate branch: `inferswarm/two-host-trial-correction` in
 [Zutfen-LLC/Strata](https://github.com/Zutfen-LLC/Strata). Base:
 `17ecafca61065444b54c97a0d1b0bae4280769b0`, including worker
@@ -276,11 +280,12 @@ timeout --signal=TERM --kill-after=15s 7200 "$BUILD05/strata-expert-worker" \
 ```
 
 Keep it in an owned foreground SSH session or record the PID of its owned wrapper. Setup can take many
-minutes while individual 64 KiB chunks remain within their I/O budgets.103 GiB at 100 MiB/s is at least 17.6 min,
+minutes while individual bounded chunks remain within their I/O budgets.103 GiB at 100 MiB/s is at least 17.6 min,
 plus digest, copy and controller-forward overhead. Upload is stop-and-wait: the 3400-cache /
 102.9945 GiB illustration needs 1694080
 64 KiB upload/ACK exchanges. At 1 ms per exchange that adds about 28.2 min; at 5 ms,141 min, before bandwidth
-and hashing costs. These are estimates, not measured RTTs. The example runtime wrappers cap the whole
+and hashing costs. The additive setup-chunk candidate reduces this to 105880 exchanges at 1 MiB
+(about 1.76/8.82 min at the same assumed 1/5 ms); see its measured small benchmark above. These are estimates, not measured RTTs. The example runtime wrappers cap the whole
 window at 2 h; approve it only if the actual path estimate plus reserve fits. Otherwise report the concrete
 setup-time blocker before running; do not raise frame deadlines blindly to hide idle stalls.
 

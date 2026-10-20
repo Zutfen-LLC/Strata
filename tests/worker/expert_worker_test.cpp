@@ -14,6 +14,7 @@
 
 #include "ggml.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -249,6 +250,8 @@ void parity_case(strata::worker::ExpertWorkerClient& cl, const SetupManifest& m,
           (std::string(what) + ": reference computed").c_str());
     check(same_bits(got.partials, want), (std::string(what) + ": bitwise equality").c_str());
 }
+
+#include "setup_chunk_checks.hpp"
 
 // ---- sections ------------------------------------------------------------------------------------
 
@@ -832,6 +835,15 @@ int main(int argc, char** argv) {
         malformed_and_deadline();
         return fails == 0 ? 0 : 1;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--setup-bench") == 0) {
+        for (int delay_ms : {0, 1})
+            for (uint32_t cap : {65536u, 512u*1024, 1024u*1024}) setup_cap_parity(cap, delay_ms, true);
+        return fails == 0 ? 0 : 1;
+    }
+    setup_ack_controls();
+    setup_upload_controls();
+    for (uint32_t cap : {65536u, 512u*1024, 1024u*1024}) setup_cap_parity(cap, 0, false);
+    if (argc == 2 && std::strcmp(argv[1], "--setup-only") == 0) return fails == 0 ? 0 : 1;
     codec_tests();
     happy_path_and_parity();
     inference_rejections();
