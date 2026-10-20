@@ -10,6 +10,38 @@ Python, execute test binaries/benchmarks, or load a model there, including throu
 subprocesses/reviewers. Do not alter drivers, installations, firewall, routing,
 security settings, resource limits or existing services anywhere. Do not use 02.
 
+## Reported first attempt and continuation
+
+The user reports candidate `57384717c2ba73252436a9510c386bc7b94b1d6f` failed the
+first 05 build after 168 seconds at `tests/worker/gpu_worker_test.cpp:105`:
+three unqualified codec writes were hidden by the fixture's two-argument `put<T>`.
+The adjacent nonce write also encoded four bytes instead of the required eight.
+This is a candidate fixture source defect, not a host/toolchain/environment failure.
+The additive correction qualifies the writes and asserts exact SGW1 field widths,
+offsets and decode expectations. It has not been compiled or executed by Codex.
+
+No tests ran in that attempt; 04, 03 and cross-host stages are **NOT RUN**. The user
+reports 18 recipe targets existed, candidate/tree/main and the clean ggml pin were
+verified, and 05 guards showed 123.8 GiB available RAM and 49 GiB disk. These are
+historical prerequisites, not results for the corrected candidate or a substitute
+for fresh resource guards. The shared 05 source remains clean at `466b01d`; the
+dedicated failed build is preserved. No owned processes/services were contacted.
+
+Preserve these user-reported evidence locations unchanged:
+
+* Controller: `/home/zutfen/strata-val-57384717-controller/REPORT.md` and
+  `05-evidence.tar.gz`, reported SHA-256
+  `e0e03d8b15e8a843f606c24e0d3e83ad7b77f37b3ddae2b5ca304c82770516e3`.
+* 05: `/home/hermes/strata-val-57384717-05/REPORT.md` and its failed build/logs.
+
+Codex could not access those evidence files locally and has not independently
+inspected their contents. Hermes must inspect and cite the actual receipts before
+reusing their build/source provenance. Write a new append-only retry evidence
+directory. Keep the old failure and all earlier residency/native-OFF/ISA evidence.
+
+Continue in strict order **05 -> 04 -> 03 -> cross-host**, stopping at the first
+failure. Every previously unrun test gate still requires actual execution.
+
 ## 0. Preserve and pin
 
 Roles: 05 is CPU worker compatibility and selective-assets/protocol fixtures;
@@ -20,6 +52,7 @@ behavior only; real CUDA and dispatcher checks must pass independently.
 Preserve every previous CPU residency/native-OFF/ISA receipt and every running
 service, source tree and successful build directory. Use new dedicated clean source
 worktrees, separate ON/OFF build directories, and new evidence/cache directories.
+The verified dedicated failed 05 build may be reused incrementally as described below.
 Do not reset, rebase, clean, amend or force push. Never overwrite evidence.
 
 On the controller resolve the canonical source from existing receipts. Accept only
@@ -28,23 +61,68 @@ clean tracked/untracked state and record HEAD, branch, remote, and worktree list
 Read branch and main refs without changing them; verify branch equals CANDIDATE and
 base is its ancestor. Main must still be the stated base; if it has drifted, stop and
 report the commits for assessment. Fetch only the candidate branch into dedicated
-sources, verify FETCH_HEAD exactly, and detach new worktrees at that SHA. Do not
-change the old residency checkout.
+sources and verify FETCH_HEAD exactly. Use new detached worktrees for fresh builds;
+the verified failed 05 source may instead advance to that exact candidate after the
+reuse checks below. Do not change the shared old residency checkout.
 
 Prerequisites already installed: git, Bash, timeout, CMake/CTest, the retained C++
 compiler, CUDA toolkit matching the existing validated sm_86 setup, `nvidia-smi`,
 Python 3 for the existing CLI/ISA checks, nm/objdump, sha256sum, and retained ggml
 source at `3cf03257f219afbe7334045ff7c6a06ac68c627d`. Verify source/cache/compiler
-provenance against retained receipts. Set `STRATA_GGML_DIR` to that existing checkout
-and `FETCHCONTENT_FULLY_DISCONNECTED=ON`. Missing dependencies/provenance are blockers;
-do not install, download or silently select a different compiler/source.
+provenance against retained receipts where they exist. 04 has no historical Strata
+receipts: establish and record an honest initial source/toolchain/device/service
+baseline there instead of inventing prior validation. Set `STRATA_GGML_DIR` to the
+verified pinned checkout and `FETCHCONTENT_FULLY_DISCONNECTED=ON`.
 
-For each host set absolute `SRC`, `RUN`, `BUILD`, `GGML_SRC`; require RUN and BUILD
-absent and create them separately. On 03 also set fresh `OFFBUILD`. All must be under
-the operator's existing validation root, outside previous source/build/evidence paths.
+The user already approved one preparation exception: Hermes may transfer the existing,
+verified clean ggml `3cf03257f219afbe7334045ff7c6a06ac68c627d` source from a validated
+host to a new directory on 04 through existing trusted transport. The user reports
+04 GPU/toolkit/transport checks were completed, but this transfer was **NOT PERFORMED**.
+Transfer source only, with self-contained Git identity/object availability; include
+no credentials, build outputs, model assets or external object-store dependency.
+Inventory the export, record the exact commit/tree/clean state and transport archive
+hash before transfer, and verify matching hash plus commit/tree/clean state after
+transfer on 04 before configuring. Never copy credentials or the source host's Git
+configuration into the export. Preserve the donor checkout and use a fresh destination.
+Record export/checkout byte counts and require destination disk headroom for both
+plus the build reserve. Cap each export/transfer/verification command at 600 seconds
+inside the 04 stage's outer budget; preserve any failed transfer's receipt.
+Start the 04 stage's 5400-second clock and its new RUN before source export/transfer;
+initialize the bounded receipt helper below before this preparation, not afterward.
+This exception permits no external downloads, installations or network/security changes.
+Missing or unverifiable source/provenance remains a blocker.
+
+For each host set absolute `SRC`, `RUN`, `BUILD`, `GGML_SRC`; require RUN absent and
+create it separately. BUILD must be new unless it is the verified dedicated failed
+05 build. On 03 also set fresh `OFFBUILD`. Use the operator's existing validation
+root. New paths must be outside previous source/build/evidence paths; the verified
+failed 05 source and build are the narrow reuse exceptions. Keep the new RUN separate.
 Record `hostname`, UTC times, `git show -s --format=fuller HEAD`, clean status, full
 origin, compiler/toolkit versions, GGML SHA, build commands/cache and binary SHA-256s
 in `$RUN/identity.txt`. Use the same candidate on all hosts; label each receipt 03/04/05.
+
+For incremental reuse on 05, resolve the failed source/build paths from the actual
+receipts and `CMAKE_HOME_DIRECTORY`, not guessed paths. Require a clean dedicated
+source at the failed candidate (or an already verified corrected candidate), canonical
+origin, the recorded compiler/generator/options/ggml pin, and matching cache/input
+provenance. Preserve cache and build-manifest copies in the new RUN before updating
+the dedicated source to CANDIDATE without reset. Do not touch the shared `466b01d`
+checkout. Save `git diff --name-status` and source hashes from the failed candidate
+to CANDIDATE; the code correction is confined to the fixture source, with documentation
+updates. CMake and production inputs must match unless a later reviewed correction
+explicitly changes them.
+
+Run a bounded serial incremental build of all required targets using that unchanged
+configuration. Do not discard the build or require a clean rebuild merely because
+checkout mtimes changed. Save each target's pre/post binary hash and compile/link
+command/input provenance. Confirm dependency tracking recompiles the corrected
+fixture for each target using it and the target build succeeds before execution.
+Unchanged binaries may be reused only with proven matching complete input/config
+provenance; never execute an old failed-candidate test image containing the defective
+fixture or a binary from an incomplete/unverified rebuild. If tracking cannot prove
+the inputs, stop and report the precise target; use a separately justified targeted
+rebuild or fresh build, not a blanket clean. Archive new logs without overwriting old
+ones. Reconfigure only if a verified configuration/input change requires it.
 
 ## 1. Bounds and command receipts
 
@@ -100,7 +178,10 @@ replace external VRAM/RSS evidence. Fast sampling does not establish an exact RS
 
 ## 2. 05: CPU compatibility, asset/cache and protocol fixtures
 
-Configure a new CPU-only native-ON build with retained toolchain options:
+Use the verified failed CPU-only native-ON build incrementally when its provenance
+matches. In that case skip the configure command below, preserve its configuration
+and run the build command with new logs. Otherwise use a new build with retained
+toolchain options; do not guess missing provenance:
 
 ```sh
 run configure 2700 cmake -S "$SRC" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release \
@@ -117,14 +198,35 @@ run cpu-compat 180 ctest --test-dir "$BUILD" -V -j1 --no-tests=error -R '^worker
 run cpu-tier 180 ctest --test-dir "$BUILD" -V -j1 --no-tests=error -R '^expert_tier_test$'
 ```
 
-For actual old/new SEW1 compatibility, use a separately retained, verified exact-base
-worker/client source and binary, or build the base in a new directory under this
-same serial bound. Configure a separate candidate compatibility build with
-`STRATA_WORKER_COMPAT_BASE=$BASESRC` and `STRATA_WORKER_COMPAT_BIN=$BASEBIN`, both
-proven from merged main. The CMake checks require both. Build and run
-`worker_legacy_client_test` and `worker_current_client_old_worker_test` serially,
-180 seconds each; save both directions and exact source/binary identities. Do not
-claim old/new compatibility from only candidate-to-candidate tests.
+Reconcile the two compatibility baselines explicitly; they are distinct gates:
+
+* The user reports retained historical base
+  `5260f2b7c8166021d86f57e4eb80fc44b050e570` has matched provenance on 05. Preserve
+  and use that valid evidence for the historical SEW1/local-v1 old/new tests that
+  CMake originally describes. If the failed candidate build already points its
+  `STRATA_WORKER_COMPAT_BASE` and `STRATA_WORKER_COMPAT_BIN` to this exact baseline,
+  keep those settings. Build/run `worker_legacy_client_test` and
+  `worker_current_client_old_worker_test` serially, 180 seconds each, and label both
+  receipts **historical 5260f2b7 compatibility**. Neither test ran in the failed attempt.
+* Merged main `34a59d83a51bdb3f0299d65306740bd357818715` remains the feature base
+  and the separately requested immediate-pre-feature binary comparison. The retained
+  `5260f2b7` binary is not this main binary. If an exact-main worker/client source and
+  binary with verified provenance is unavailable, build the main CPU worker in a
+  separate owned baseline directory under the same serial/resource/time limits.
+  Use a separate candidate compatibility build with
+  `STRATA_WORKER_COMPAT_BASE=$MAIN_BASESRC` and
+  `STRATA_WORKER_COMPAT_BIN=$MAIN_BASEBIN`; build/run the same two compatibility
+  targets with separate **merged-main compatibility** receipts, 180 seconds each.
+  Do not toggle the historical failed build's configuration merely to replace its
+  valid baseline. A new main baseline build is for missing comparison evidence,
+  not an mtime-driven clean rebuild of the candidate.
+
+For each pair require both CMake settings, exact source/binary/input identities and
+successful target builds before running. Preserve prior historical receipts. Do not
+silently substitute either baseline, call historical results merged-main results, or
+claim either direction from candidate-to-candidate checks. Report any unavailable or
+unexecuted comparison as **NOT RUN**; it prevents claiming the complete requested
+compatibility gate passed. Stop at that missing prerequisite before later host stages.
 
 Asset acceptance: only selected three-role ranges read; source bytes equal missing
 blob payloads; no whole shard/layer reads/downloads. Cold transfer equals assigned

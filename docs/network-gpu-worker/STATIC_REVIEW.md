@@ -2,8 +2,9 @@
 
 Base: `34a59d83a51bdb3f0299d65306740bd357818715` (merged PR #1).
 Initial reviewed candidate: `afe1f47074303825d78a0537eae34058a709f909`.
-Corrected code candidate: `9b0c7b124b7353ca5fc47c467580a4709e6132e3`.
-This receipt is a later documentation-only commit; it does not change reviewed code.
+First corrected code candidate: `9b0c7b124b7353ca5fc47c467580a4709e6132e3`.
+The original receipt was a later documentation-only commit. The continuation below
+records the subsequent reported compile failure and its new static correction review.
 
 Two independent review agents inspected the initial diff and then the additive
 correction. They were given the full user specification, AGENTS.md, CONTRIBUTING.md,
@@ -68,7 +69,46 @@ the ISA checker and historical residency evidence have no diff against the base.
 No history was rewritten. The first three additive commits separate assets, worker
 and routing; later commits contain documentation and static-review fixes.
 
-All build/test/benchmark/model-load results are **not run**. No performance, full-
+At original publication Codex had run no builds/tests/benchmarks/model loads. The
+subsequent user-reported first 05 build failure is recorded below; no tests were
+reported run. No performance, full-
 model parity, HIP/SYCL/Windows or real-model acceptance is claimed. The PR remains a
 draft for the bounded [Hermes fixture gate](HERMES.md). A real-model 03+04+05 window
 requires separate authorization after fixtures pass. Do not merge at this gate.
+
+## Reported compile failure and bounded fixture correction
+
+The user reports the first actual build of published candidate
+`57384717c2ba73252436a9510c386bc7b94b1d6f` failed on 05 after 168 seconds, at three
+calls in `tests/worker/gpu_worker_test.cpp:105`. Anonymous-namespace `put<T>` in
+`local_fixture.hpp` hides the codec overload during unqualified lookup. Static
+inspection also confirms adjacent `put(payload,171)` selected a four-byte int write,
+while the service reads an eight-byte SETUP nonce and a plan starting at offset 8.
+This source defect was missed by the earlier static reviews. Their findings were
+not compilation proof; this receipt does not convert the reported failure into PASS.
+
+Additive test-only correction `872085fda95035455cf87c19b15b426b3971a8e8` qualifies
+all three HELLO writes as `gpu_codec::put(...,4)` and the nonce as
+`gpu_codec::put(...,171,8)`. Its unexecuted assertions check the exact 12 HELLO bytes
+and u32 offsets, exact eight nonce bytes, plan offset/length and decode, and rejection
+of the old four-byte prefix. Adjacent new fixture writers were audited: the remaining
+GPU fixture writes already use explicit codec qualification and four-byte schema
+fields. The unrelated GGUF fixture template and production protocols are unchanged.
+
+Independent spec and quality reviewers inspected this exact correction and adjacent
+writers using read-only static inspection. Both reported the name-lookup/width defect
+addressed and no additional static blockers. Neither configured, compiled, executed
+tests/Python/binaries or performed remote operations. Corrected compilation and every
+test gate remain unverified pending Hermes.
+They also inspected the revised continuation recipe. Its reused 05 source/build
+exception and the start of the 04 stage clock before source preparation were clarified.
+
+User-reported evidence: controller
+`/home/zutfen/strata-val-57384717-controller/REPORT.md` and `05-evidence.tar.gz`,
+reported SHA-256 `e0e03d8b15e8a843f606c24e0d3e83ad7b77f37b3ddae2b5ca304c82770516e3`;
+05 `/home/hermes/strata-val-57384717-05/REPORT.md`. These paths were not available
+locally to Codex; their contents were not independently inspected. No tests ran;
+04/03/cross-host stages are NOT RUN. Preserve the failed build, original logs and
+valid historical `5260f2b7` compatibility provenance. The revised handoff permits
+verified incremental reuse, separates historical and merged-main compatibility,
+and includes the already approved pinned ggml source-only preparation on 04.
