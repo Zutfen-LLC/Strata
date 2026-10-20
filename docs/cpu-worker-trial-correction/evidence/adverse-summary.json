@@ -1,0 +1,56 @@
+[
+  {
+    "case": "deadline",
+    "run": 1,
+    "exit": 0,
+    "seconds": 1.267,
+    "cpu": 0
+  },
+  {
+    "case": "socket",
+    "run": 1,
+    "exit": 0,
+    "seconds": 0.616,
+    "cpu": 0
+  },
+  {
+    "case": "deadline",
+    "run": 2,
+    "exit": 0,
+    "seconds": 1.367,
+    "cpu": 0
+  },
+  {
+    "case": "socket",
+    "run": 2,
+    "exit": 0,
+    "seconds": 0.615,
+    "cpu": 0
+  },
+  {
+    "case": "deadline",
+    "run": 3,
+    "exit": 0,
+    "seconds": 1.367,
+    "cpu": 0
+  },
+  {
+    "case": "socket",
+    "run": 3,
+    "exit": 0,
+    "seconds": 0.615,
+    "cpu": 0
+  },
+  {
+    "case": "expert_worker_test",
+    "exit": 0,
+    "seconds": 3.924,
+    "cpu": 0
+  },
+  {
+    "case": "expert_tier_test",
+    "exit": 0,
+    "seconds": 15.347,
+    "cpu": 0
+  }
+]

@@ -1,0 +1,3 @@
+FAIL: trickled bytes cannot renew the read budget
+FAIL: a writable poll cannot lead to an unbounded blocking send
+worker_socket_test: read=400ms write=998ms failures=2

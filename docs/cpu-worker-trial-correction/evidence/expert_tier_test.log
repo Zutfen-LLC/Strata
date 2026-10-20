@@ -1,0 +1,17 @@
+strata-worker: session 863fa0cc9e4ba8a8: model 'tier-fixture' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: session 863fa0cc9e4ba8a8 ready: 7 blobs, 36556800 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 863fa8af5a15e096: model 'tier-fixture' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: session 863fa8af5a15e096 ready: 7 blobs, 36556800 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 863fa94f3bcc9e87: model 'tier-fixture' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: session 863fa94f3bcc9e87 ready: 7 blobs, 36556800 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 863fabe2608df9a0: model 'tier-fixture' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: session 863fabe2608df9a0 ready: 7 blobs, 36556800 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: setup refused: 7 owned blobs need 36556800 B, budget 1048576 B (model 'tier-fixture')
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 863fa0c47dd3b503: model 'tier-fixture' quant 'Q8_0' 3x16 gu=8 d=8, 0 owned blobs of 5222400 B
+strata-worker: connection closed (eof or deadline)
+expert_tier_test: all checks passed

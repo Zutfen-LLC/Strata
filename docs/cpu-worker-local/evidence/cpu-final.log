@@ -1,0 +1,17 @@
+Test project /home/zutfen/Documents/Codex/2026-10-19/task-11/strata-local/build-cpu
+    Start 35: expert_worker_test
+1/6 Test #35: expert_worker_test ...............   Passed    3.80 sec
+    Start 36: worker_socket_test
+2/6 Test #36: worker_socket_test ...............   Passed    0.56 sec
+    Start 37: expert_worker_e2e_test
+3/6 Test #37: expert_worker_e2e_test ...........   Passed    0.21 sec
+    Start 38: worker_local_test
+4/6 Test #38: worker_local_test ................   Passed    1.38 sec
+    Start 39: worker_local_binary_test
+5/6 Test #39: worker_local_binary_test .........   Passed    0.35 sec
+    Start 40: expert_tier_test
+6/6 Test #40: expert_tier_test .................   Passed   14.78 sec
+
+100% tests passed out of 6
+
+Total Test time (real) =  21.09 sec

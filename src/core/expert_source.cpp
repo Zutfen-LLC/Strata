@@ -4,8 +4,12 @@
 #include "strata/core/on_device.hpp"
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
+#include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#ifdef STRATA_NATIVE_EXPERTS
+#include "strata/worker/expert_tier.hpp"
+#endif
 #include "strata/artifact/gguf_reader.hpp"
 
 #include "strata/core/pinned.hpp"
@@ -4221,6 +4225,12 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
         d.fail_layer = d.layers;
         return;
     }
+    if (d.worker != nullptr) {   // inferswarm #349: fail closed - an unsupported mode reached this path
+        d.failed = true;
+        d.fail = "the single-token expert path does not serve the remote CPU-expert worker";
+        d.fail_layer = d.layers;
+        return;
+    }
     if (k > (int64_t) d.jobs.size()) d.jobs.resize((size_t) k);
 
     d.src->begin_layer(d.layers, ids, k);
@@ -4349,6 +4359,16 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                                 float* out) {
     using namespace strata::kernels::cpu;
     if (d.failed) return;
+#ifndef STRATA_NATIVE_EXPERTS
+    // A caller cannot attach a worker to a build that does not link its implementation.
+    // Refuse before lookahead, source reads, GPU planning or any partial output.
+    if (d.worker != nullptr) {
+        d.failed = true;
+        d.fail = "the remote CPU-expert worker requires STRATA_NATIVE_EXPERTS=ON";
+        d.fail_layer = d.layers;
+        return;
+    }
+#endif
     if (n_tok < 1 || n_tok > MAXT) {
         d.failed = true;
         d.fail = "a verify window has more tokens than the multi-token expert kernel takes";
@@ -4396,7 +4416,16 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // ---- plan v0.3 P6: the GPU's share, decided and published FIRST so the GPU starts while the CPU works.
     // Distinct experts in routing order; resident ones and the last pcie_num/256 of the missed ones go to the GPU.
     const int64_t n = n_tok * k;
-    int32_t kind[kMaxWindowEntries];       // per entry: -1 CPU, 0 VRAM, 1 PCIe
+    int32_t kind[kMaxWindowEntries];       // per entry: -1 CPU, 0 VRAM, 1 PCIe, 2 peer/helper, 3 the remote CPU worker
+    // A worker-owned expert is never a local miss or part of the PCIe share.
+    auto worker_holds = [&](int32_t e) {
+#ifdef STRATA_NATIVE_EXPERTS
+        return d.worker != nullptr && d.worker->holds(d.layers, e);
+#else
+        (void)e;
+        return false;
+#endif
+    };
     if (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap) {
         int64_t distinct[kMaxWindowEntries], first_of[kMaxWindowEntries];
         int nd = 0, nmiss = 0;
@@ -4417,16 +4446,17 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 distinct[nd++] = i;
                 const int32_t e = ids[i];
                 if (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0 &&
-                    !(d.peer != nullptr && d.peer->has(d.layers, e)) && !helper_holds(e)) ++nmiss;
+                    !(d.peer != nullptr && d.peer->has(d.layers, e)) && !helper_holds(e) && !worker_holds(e)) ++nmiss;
             }
         }
         // STRATA_ROUTE_TAIL_SKIP=R (default 7 on CUDA serve, =0 off; changes the output): a missed expert that EVERY token of the window routes
         // only at rank >= R (the smallest weights of the top-10) is neither copied nor computed; its contribution is
         // zero, without renormalisation (the others keep the weight the router gave them).  Less PCIe and CPU work.
+        // #349: never with the remote CPU worker - its partition is frozen and every expert keeps an owner.
         const int tail_rank = tail_skip_rank();
         bool skip_d[kMaxWindowEntries];
         for (int q = 0; q < nd; ++q) skip_d[q] = false;
-        if (tail_rank > 0 && d.peer == nullptr && d.remote_count == 0) {
+        if (tail_rank > 0 && d.peer == nullptr && d.remote_count == 0 && d.worker == nullptr) {
             int minr[kMaxWindowEntries];
             for (int q = 0; q < nd; ++q) minr[q] = 99;
             for (int64_t i = 0; i < n; ++i) {
@@ -4475,6 +4505,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     kd = 2;                        // multi-GPU: the second GPU computes it
                 } else if (helper_holds(e)) {
                     // left to the helper: kind -1 until RemoteExperts::begin() claims the row (see above)
+                } else if (worker_holds(e)) {
+                    kd = 3;                        // #349: the remote CPU-expert worker executes it
                 } else if (d.fs != nullptr && d.fs->take(d.layers, e, ptr)) {
                     kd = 0;                        // Foresight: a landed swap-space slot holds it - a GPU group like a hit
                 } else {
@@ -4533,7 +4565,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             const int32_t e = ids[i];
             kind[i] = (e >= 0 && e < d.n_expert && d.host_res != nullptr &&
                        d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) ? 0
-                    : (e >= 0 && e < d.n_expert && d.peer != nullptr && d.peer->has(d.layers, e)) ? 2 : -1;
+                    : (e >= 0 && e < d.n_expert && d.peer != nullptr && d.peer->has(d.layers, e)) ? 2
+                    : (e >= 0 && e < d.n_expert && worker_holds(e)) ? 3 : -1;
         }
     }
     if (d.peer != nullptr) {                 // multi-GPU: start the second GPU's share before the CPU's own work
@@ -4555,6 +4588,38 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             for (int64_t i = 0; i < n; ++i) if (d.remote[r]->owns(i)) kind[i] = 2;
         }
     }
+#ifdef STRATA_NATIVE_EXPERTS
+    // inferswarm #349: the remote CPU worker's request goes out HERE - after the GPU's plan is published,
+    // the peer is launched and every helper tier has begun, and before the local CPU's own work - so the
+    // round trip overlaps it.  The frame carries this group's activations, ids, routing weights (the same
+    // slice the verifier published to remote_opt->begin) and the ownership mask; nothing is sent when the
+    // worker owns no entry of the window.
+    static thread_local std::vector<uint8_t> worker_mask;   // #349: shared by the post here and the finish below
+    static thread_local std::string worker_error;
+    bool worker_sent = false;
+    if (d.worker != nullptr) {
+        bool any = false;
+        for (int64_t i = 0; i < n; ++i) any = any || kind[i] == 3;
+        if (any) {
+            if (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr) {
+                d.failed = true;
+                d.fail = "the remote CPU-expert worker needs the verifier's routing weights (remote_opt)";
+                d.fail_layer = d.layers;
+                return;
+            }
+            worker_mask.assign((size_t) n, 0);
+            for (int64_t i = 0; i < n; ++i) worker_mask[(size_t) i] = kind[i] == 3 ? 1 : 0;
+            if (!d.worker->post(d.layers, x_f, ids, d.remote_opt->cur_weights(), worker_mask.data(), (int) n_tok,
+                                (int) k, worker_error)) {
+                d.failed = true;
+                d.fail = worker_error.c_str();
+                d.fail_layer = d.layers;
+                return;
+            }
+            worker_sent = d.worker->posted();
+        }
+    }
+#endif // STRATA_NATIVE_EXPERTS: no worker requests in the disabled build
     static const bool dec_batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
     // the GPU's copy_rows_from_mapped zeroes the rows it computed itself (dec_batch); STRATA_VERIFY_DEVICE_PLAN's
     // copy_or_zero_from_mapped copies every row, so there the host still zeroes them
@@ -4645,6 +4710,11 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             if (kind[i] == -2) {            // STRATA_ROUTE_TAIL_SKIP: a skipped tail expert contributes zero
                 std::memset(row, 0, (size_t) H * sizeof(float));
                 ++d.tail_skipped;
+                continue;
+            }
+            if (kind[i] == 3) {             // #349: the remote CPU worker executes it; the partial joins the
+                std::memset(row, 0, (size_t) H * sizeof(float));   // result through remote_opt (a zero row here,
+                ++d.worker_entries;                            // so the GPU's weighted combine adds nothing for it)
                 continue;
             }
             if (kind[i] >= 0) {             // CUDA0, PCIe, or a remote/peer result staged into this row below
@@ -4754,6 +4824,22 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
     }
+#ifdef STRATA_NATIVE_EXPERTS
+    if (d.worker != nullptr) {   // #349: join the worker's reply (its round trip overlapped the work above)
+        // a failure ANYWHERE between the post and here returned early; the tier's own post() joins any
+        // leftover request before its next use, and the destructor joins the last one, so no window can
+        // commit on top of a reply that never arrived.  The partial joins the merge AFTER every helper
+        // tier's - the documented order, deterministic run to run.
+        if (!d.worker->finish(worker_error)) {
+            d.failed = true;
+            d.fail = worker_error.c_str();
+            d.fail_layer = d.layers;
+            return;
+        }
+        if (worker_sent && d.remote_opt != nullptr)
+            d.remote_opt->accumulate_host(d.worker->partials(), worker_mask.data(), (int) n_tok, (int) k);
+    }
+#endif // STRATA_NATIVE_EXPERTS
     if (d.peer != nullptr) {                 // multi-GPU: the second GPU's rows, into the same mapped rows
         std::string perr;
         if (!d.peer->finish(out, perr)) {

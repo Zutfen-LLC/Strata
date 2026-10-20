@@ -1,0 +1,54 @@
+Test project <candidate-worktree>/build-cpu
+    Start 40: worker_residency_test
+1/1 Test #40: worker_residency_test ............***Failed   12.54 sec
+worker-manifest: layer 1/2; expert bytes read 10444800
+worker-manifest: layer 2/2; expert bytes read 20889600
+FAIL exception: connect failed, cancelled or timed out
+PASS resident response equals direct native bits for fresh activations
+PASS cold binary load verifies complete arena once inside exact budget
+PASS disconnect clears session while keeping accounted immutable weights
+PASS exact reconnect after 11 seconds hits cache with fresh session
+PASS cache hit still requires fresh READY before inference
+PASS resident cache cannot be overwritten by LOCAL_LOAD
+PASS resident cache cannot be overwritten by UPLOAD
+PASS old session inference rejected
+PASS resident response equals direct native bits for fresh activations
+PASS new activations produce fresh results after reconnect
+PASS replay sequence remains rejected in fresh session
+PASS resident response equals direct native bits for fresh activations
+PASS A/B/A result identity survives fresh session
+PASS cache hit has zero reread/hash and no duplicate arena
+PASS resident binary sends zero network weight bytes
+RESIDENCY cold_loaded=20889600 cold_verified=20889600 hit=1 reused=20889600 loaded_delta=0 verified_delta=0 network=0 session=3c6ceacab2f74381 resident=20889600 peak=20889600 allocations=1
+PASS model/manifest/partition/layout/ownership/geometry mismatch fails closed
+PASS mismatch invalidates session and retains single frozen cache
+PASS model/manifest/partition/layout/ownership/geometry mismatch fails closed
+PASS mismatch invalidates session and retains single frozen cache
+PASS model/manifest/partition/layout/ownership/geometry mismatch fails closed
+PASS mismatch invalidates session and retains single frozen cache
+PASS model/manifest/partition/layout/ownership/geometry mismatch fails closed
+PASS mismatch invalidates session and retains single frozen cache
+PASS model/manifest/partition/layout/ownership/geometry mismatch fails closed
+PASS mismatch invalidates session and retains single frozen cache
+PASS model/manifest/partition/layout/ownership/geometry mismatch fails closed
+PASS mismatch invalidates session and retains single frozen cache
+PASS legacy setup cannot silently replace resident binding
+PASS real tier skips file reads, payload hashes, fetch and upload on resident hit
+TIER 4 blobs / 0.02 GiB verified in 0.0 s; 0 requests, 0 entries; request wall 0.0 ms, of which waited 0.0 ms; setup network=0 B local=0 B hits=0 misses=0; phases connect/setup=1.0 ms local=0.0 ms (read=0.0 verify=0.0) fetch/upload=0.0 ms ready=0.0 ms; cache_hit=1 reused=20889600 B session=22f4beb421b7eb4f
+PASS explicit unload synchronously releases all weights and session
+PASS replacement after unload allocates once
+PASS protocol shutdown exits RC 0 within two seconds with resident cache
+PASS shutdown reports arena release and completed pool destruction before summaries
+PASS disconnected idle expiry releases arena without a connection
+PASS expired cache reloads and verifies afresh
+PASS expiry cancels idle socket wait independently of I/O deadline
+worker_residency_test: 1 failures
+
+
+0% tests passed, 1 tests failed out of 1
+
+Total Test time (real) =  12.55 sec
+
+The following tests FAILED:
+	 40 - worker_residency_test (Failed)
+Errors while running CTest

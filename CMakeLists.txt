@@ -639,6 +639,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME expert_profile_version_test COMMAND expert_profile_version_test)
     set_tests_properties(expert_profile_version_test PROPERTIES TIMEOUT 60)
   endif()
+  if(STRATA_BUILD_TESTS AND NOT STRATA_NATIVE_EXPERTS)
+    # Native-OFF is supported: link the real shared CUDA/HIP dispatcher without worker libraries.
+    add_executable(worker_disabled_dispatch_test tests/core/worker_disabled_dispatch_test.cpp)
+    target_link_libraries(worker_disabled_dispatch_test PRIVATE strata_engine)
+    add_test(NAME worker_disabled_dispatch_test COMMAND worker_disabled_dispatch_test)
+    set_tests_properties(worker_disabled_dispatch_test PROPERTIES TIMEOUT 15)
+  endif()
   if(STRATA_BUILD_TESTS AND STRATA_NATIVE_EXPERTS)
     # native_experts.txt v2-v4 (the real packs' copies and the per-role shard column) and the arena filled from
     # synthetic GGUF shards at the real expert dimensions
@@ -646,6 +653,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(expert_layout_test PRIVATE strata_engine)
     add_test(NAME expert_layout_test COMMAND expert_layout_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/native_experts)
     set_tests_properties(expert_layout_test PROPERTIES TIMEOUT 60)
+    # inferswarm #349: the REAL expert_pool_dispatch_multi against the REAL worker service (in-process,
+    # loopback) with the device operations faked only where necessary - the plan sink is host memory, the
+    # merge tables are RemoteExpertOpt's real mapped ones (so it needs a usable CUDA runtime).  Not built
+    # by a CPU-only configure; run it wherever a CUDA toolkit is available.
+    if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+      add_executable(worker_dispatch_test tests/core/worker_dispatch_test.cpp)
+      target_link_libraries(worker_dispatch_test PRIVATE strata_engine strata_worker_tier)
+      add_test(NAME worker_dispatch_test COMMAND worker_dispatch_test)
+      add_test(NAME worker_dispatch_host_zero_test COMMAND ${CMAKE_COMMAND} -E env STRATA_DEC_BATCH=0 $<TARGET_FILE:worker_dispatch_test>)
+      set_tests_properties(worker_dispatch_test worker_dispatch_host_zero_test PROPERTIES TIMEOUT 900)
+    endif()
     # #326: a native pack's BF16 (--compat-bf16) PLE key stays in the arena; a quantized key row loads as before
     add_executable(native_dense_ple_key_test tests/core/native_dense_ple_key_test.cpp)
     target_link_libraries(native_dense_ple_key_test PRIVATE strata_engine)
@@ -1432,18 +1450,29 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
-            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/hadamard.cpp)
+            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/hadamard.cpp
+            src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/router_avx2.cpp)
+# The layout dispatchers and RouterLookahead are common engine code. Their Q2/activation and BF16
+# kernels have no ggml dependency and must remain available with STRATA_NATIVE_EXPERTS=OFF too.
 target_include_directories(strata_kernels_cpu PUBLIC include)
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
 if(MSVC)
   set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
-  set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+  set_source_files_properties(src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/router_avx2.cpp
+                              PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+  set_source_files_properties(src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp
+                              PROPERTIES COMPILE_OPTIONS "/arch:AVX")
 else()
   # GCC/Clang spell it differently, and `-mavx512vnni` alone is not enough: VBMI is a separate feature bit.
   set_source_files_properties(src/kernels/cpu/expert.cpp
                               PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
-  set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  set_source_files_properties(src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/router_avx2.cpp
+                              PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  set_source_files_properties(src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
+  # Q2 AVX1 must not inherit AVX2/FMA/F16C from the build host, in ON or OFF builds.
+  set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS
+                              "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
 endif()
 # AVX-VNNI (Alder Lake, Sapphire Rapids and later): the AVX-2 expert kernels' vpdpwssd / vpdpbusd copies (q2_avx2.cpp,
 # iq_avx2.cpp; *_rows.inl), taken at run time where cpu_avxvnni_ok().  GCC and Clang compile only those functions with
@@ -1475,6 +1504,17 @@ endif()
 set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
+
+# These synthetic BF16 checks must link without ggml too; retain the native-ON utility target.
+if(STRATA_NATIVE_EXPERTS OR STRATA_BUILD_TESTS)
+  add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)
+  target_link_libraries(router_dot_parity PRIVATE strata_kernels_cpu)
+  if(STRATA_BUILD_TESTS)
+    add_test(NAME router_dot_parity COMMAND router_dot_parity)
+    add_test(NAME router_dot_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:router_dot_parity>)
+    set_tests_properties(router_dot_parity router_dot_parity_avx PROPERTIES TIMEOUT 60)
+  endif()
+endif()
 
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
 #
@@ -1539,7 +1579,7 @@ if(STRATA_NATIVE_EXPERTS)
   # one-pass static linking has no cycle to resolve)
   target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
                                            src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp
-                                           src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp
+                                           src/kernels/cpu/iq_avx1.cpp
                                            src/kernels/cpu/nvfp4_avx512.cpp src/kernels/cpu/nvfp4_avx2.cpp
                                            src/kernels/cpu/tq_cpu.cpp src/kernels/cpu/tq_avx2.cpp src/kernels/cpu/tq_avx512.cpp)
   target_include_directories(strata_kernels_cpu PRIVATE third_party/ggml)
@@ -1551,11 +1591,6 @@ if(STRATA_NATIVE_EXPERTS)
     set_source_files_properties(src/kernels/cpu/nvfp4_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
     set_source_files_properties(src/kernels/cpu/tq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
     set_source_files_properties(src/kernels/cpu/tq_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
-    # the router lookahead's AVX1 dot (older CPUs; called behind cpu_avx1_ok): no FMA, no 256-bit integer ops
-    set_source_files_properties(src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
-    # the older CPUs' Q2_0 rows and activation quantizer (q2_avx1.cpp, issue #1699): 128-bit integer lanes,
-    # no FMA/F16C, its own #error guard; called only behind cpu_avx1_ok() && !cpu_avx2_ok()
-    set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
     # the older CPUs' i-quant expert rows (iq_avx1.hpp): 128-bit SSSE3/SSE2 integer, SSE2 float, no FMA/F16C
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
   else()
@@ -1568,12 +1603,6 @@ if(STRATA_NATIVE_EXPERTS)
     set_source_files_properties(src/kernels/cpu/tq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
     set_source_files_properties(src/kernels/cpu/tq_avx512.cpp PROPERTIES COMPILE_OPTIONS
                                 "-mavx512f;-mavx512bw;-mavx512vl;-mavx512vnni;-mavx512vbmi;-mavx2;-mfma;-mf16c")
-    set_source_files_properties(src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
-    # the older CPUs' Q2_0 rows and activation quantizer (q2_avx1.cpp, issue #1699): SSE4.2 + AVX with
-    # AVX2/FMA/F16C explicitly off, so a -march=native build host cannot leak AVX2 code into the file that
-    # runs on a Sandy Bridge Xeon
-    set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS
-                                "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
     # the older CPUs' i-quant expert rows (iq_avx1.hpp): SSE4.2 + AVX with AVX2/FMA/F16C explicitly off, so a
     # -march=native build host cannot leak AVX2 code into the file that runs on a Sandy Bridge Xeon
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS
@@ -1593,16 +1622,11 @@ if(STRATA_NATIVE_EXPERTS)
     target_link_libraries(dequant_q5_1_test PRIVATE strata_artifact ggml-base)
     add_test(NAME dequant_q5_1_test COMMAND dequant_q5_1_test)
   endif()
-  # the router lookahead's dot on each rung this CPU has (AVX2, the older CPUs' AVX1) against a double reference
-  add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)
-  target_link_libraries(router_dot_parity PRIVATE strata_kernels_cpu)
   if(STRATA_BUILD_TESTS)
     add_executable(pool_tasks_test src/kernels/cpu/pool_tasks_test.cpp)
     target_link_libraries(pool_tasks_test PRIVATE strata_kernels_cpu)
     add_test(NAME pool_tasks_test COMMAND pool_tasks_test)
     set_tests_properties(pool_tasks_test PROPERTIES TIMEOUT 180)
-    add_test(NAME router_dot_parity COMMAND router_dot_parity)
-    add_test(NAME router_dot_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:router_dot_parity>)
   endif()
   # the AVX-2 expert kernels' variants (iq_avx2.cpp, q2_avx2.cpp) bit for bit against each other at 1..8 tokens and
   # against ggml-cpu's dot, on random blocks; --bench: ms per expert on one thread, the weights streamed from DRAM
@@ -1630,6 +1654,117 @@ if(STRATA_NATIVE_EXPERTS)
     add_test(NAME q8k_quant_parity COMMAND q8k_quant_parity)
     add_test(NAME q8k_quant_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:q8k_quant_parity>)
   endif()
+
+  # inferswarm #348: the resident CPU-expert worker - a loopback service that holds one model's CPU-owned
+  # expert blobs in a memory-budgeted arena and computes their weighted partial sums with the native CPU
+  # kernels above.  CPU-only by construction (strata_kernels_cpu; no CUDA/HIP/SYCL target or toolkit is
+  # involved), built here inside STRATA_NATIVE_EXPERTS because its arithmetic is ggml-cpu's.  The engine
+  # integration (#349) links this same library from the GPU side.
+  add_library(strata_expert_worker STATIC src/worker/expert_wire.cpp src/worker/expert_worker.cpp
+              src/worker/expert_client.cpp src/worker/wire_sock.cpp src/worker/local_source.cpp)
+  target_include_directories(strata_expert_worker PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_include_directories(strata_expert_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+  target_link_libraries(strata_expert_worker PUBLIC strata_kernels_cpu)
+  if(WIN32)
+    target_link_libraries(strata_expert_worker PUBLIC ws2_32)
+  endif()
+  add_executable(strata-expert-worker src/worker/expert_worker_main.cpp)
+  target_include_directories(strata-expert-worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+  target_link_libraries(strata-expert-worker PRIVATE strata_expert_worker)
+  add_executable(strata-worker-manifest src/worker/local_manifest_main.cpp)
+  target_link_libraries(strata-worker-manifest PRIVATE strata_expert_worker)
+  if(STRATA_BUILD_TESTS)
+    # the focused worker checks: codec bounds, arena/session rejections, and direct-versus-transport
+    # native execution over a real loopback socket (Q8_0 packed fixtures, bitwise equality)
+    add_executable(expert_worker_test tests/worker/expert_worker_test.cpp)
+    target_include_directories(expert_worker_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+    target_link_libraries(expert_worker_test PRIVATE strata_expert_worker)
+    add_test(NAME expert_worker_test COMMAND expert_worker_test)
+    set_tests_properties(expert_worker_test PROPERTIES TIMEOUT 600)
+    # the minimal local reproduction: the real binary on a real loopback port (docs/CPU_WORKER.md).
+    # POSIX-only on purpose (fork/execv); the Windows socket path is built but not yet test-covered.
+    if(NOT WIN32)
+      add_executable(worker_socket_test tests/worker/worker_socket_test.cpp)
+      target_include_directories(worker_socket_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+      target_link_libraries(worker_socket_test PRIVATE strata_expert_worker)
+      add_test(NAME worker_socket_test COMMAND worker_socket_test)
+      set_tests_properties(worker_socket_test PROPERTIES TIMEOUT 15)
+      add_executable(expert_worker_e2e_test tests/worker/expert_worker_e2e_test.cpp)
+      target_link_libraries(expert_worker_e2e_test PRIVATE strata_expert_worker)
+      target_compile_definitions(expert_worker_e2e_test PRIVATE STRATA_WORKER_BIN="$<TARGET_FILE:strata-expert-worker>")
+      add_test(NAME expert_worker_e2e_test COMMAND expert_worker_e2e_test)
+      set_tests_properties(expert_worker_e2e_test PROPERTIES TIMEOUT 300)
+    endif()
+  endif()
+
+  # inferswarm #349: the ENGINE side of the worker - the opt-in tier the dispatch drives (setup streaming,
+  # one in-flight request, the already-weighted partial the verifier's merge consumes).  CPU-only like the
+  # service above, so its whole lifecycle is testable without a GPU toolkit; the CUDA engine links it from
+  # strata_engine (below) and only moves pointers between it and the verifier's buffers.
+  add_library(strata_worker_tier STATIC src/worker/expert_tier.cpp)
+  target_include_directories(strata_worker_tier PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_worker_tier PUBLIC strata_expert_worker)
+  # the engine (a GPU-backend target, defined above) drives the tier from its dispatch; this is the one
+  # place the worker code meets a CUDA/HIP build
+  if(TARGET strata_engine)
+    target_link_libraries(strata_engine PUBLIC strata_worker_tier)
+  endif()
+  if(STRATA_BUILD_TESTS)
+    # the focused engine-side checks: lifecycle against the real in-process service on a real loopback
+    # socket (Q8_0 fixtures), transported-vs-direct parity through the tier's own request construction,
+    # zero-work windows, sequence handling, the no-local-dereference property and the failure latch
+    if(NOT WIN32)
+      add_executable(worker_local_test tests/worker/worker_local_test.cpp)
+      target_include_directories(worker_local_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+      target_link_libraries(worker_local_test PRIVATE strata_worker_tier)
+      add_test(NAME worker_local_test COMMAND worker_local_test)
+      add_test(NAME worker_local_binary_test COMMAND worker_local_test --binary $<TARGET_FILE:strata-expert-worker>)
+      add_executable(worker_residency_test tests/worker/worker_residency_test.cpp)
+      target_include_directories(worker_residency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+      target_link_libraries(worker_residency_test PRIVATE strata_worker_tier)
+      target_compile_definitions(worker_residency_test PRIVATE STRATA_WORKER_BIN="$<TARGET_FILE:strata-expert-worker>")
+      add_dependencies(worker_residency_test strata-expert-worker)
+      add_test(NAME worker_residency_test COMMAND worker_residency_test)
+      set_tests_properties(worker_residency_test PROPERTIES TIMEOUT 90)
+      add_executable(worker_compat_test tests/worker/worker_compat_test.cpp)
+      target_include_directories(worker_compat_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+      target_link_libraries(worker_compat_test PRIVATE strata_expert_worker)
+      target_compile_definitions(worker_compat_test PRIVATE STRATA_WORKER_BIN="$<TARGET_FILE:strata-expert-worker>")
+      add_dependencies(worker_compat_test strata-expert-worker)
+      add_test(NAME worker_compat_test COMMAND worker_compat_test)
+      set_tests_properties(worker_compat_test PROPERTIES TIMEOUT 90)
+      # Explicit opt-in exact-base wire checks. Build the old binary separately first.
+      # Never run a second build implicitly or connect to a pre-existing worker.
+      set(STRATA_WORKER_COMPAT_BASE "" CACHE PATH "exact 5260f2b source checkout for old-client wire tests")
+      set(STRATA_WORKER_COMPAT_BIN "" CACHE FILEPATH "worker binary built from that exact base")
+      if(STRATA_WORKER_COMPAT_BASE AND STRATA_WORKER_COMPAT_BIN)
+        if(NOT EXISTS "${STRATA_WORKER_COMPAT_BASE}/src/worker/expert_client.cpp" OR
+           NOT EXISTS "${STRATA_WORKER_COMPAT_BIN}")
+          message(FATAL_ERROR "worker compatibility checks need the exact-base checkout and its built worker")
+        endif()
+        add_executable(worker_legacy_client_test tests/worker/worker_compat_test.cpp
+                       "${STRATA_WORKER_COMPAT_BASE}/src/worker/expert_client.cpp")
+        target_include_directories(worker_legacy_client_test BEFORE PRIVATE
+          "${STRATA_WORKER_COMPAT_BASE}/include" "${STRATA_WORKER_COMPAT_BASE}/src/worker")
+        target_link_libraries(worker_legacy_client_test PRIVATE strata_expert_worker)
+        target_compile_definitions(worker_legacy_client_test PRIVATE STRATA_COMPAT_OLD_CLIENT=1
+          STRATA_WORKER_BIN="$<TARGET_FILE:strata-expert-worker>")
+        add_dependencies(worker_legacy_client_test strata-expert-worker)
+        add_test(NAME worker_legacy_client_test COMMAND worker_legacy_client_test)
+        add_test(NAME worker_current_client_old_worker_test
+          COMMAND worker_compat_test --peer "${STRATA_WORKER_COMPAT_BIN}")
+        set_tests_properties(worker_legacy_client_test worker_current_client_old_worker_test PROPERTIES TIMEOUT 90)
+      elseif(STRATA_WORKER_COMPAT_BASE OR STRATA_WORKER_COMPAT_BIN)
+        message(FATAL_ERROR "set both STRATA_WORKER_COMPAT_BASE and STRATA_WORKER_COMPAT_BIN")
+      endif()
+      set_tests_properties(worker_local_test worker_local_binary_test PROPERTIES TIMEOUT 120)
+    endif()
+    add_executable(expert_tier_test tests/worker/expert_tier_test.cpp)
+    target_link_libraries(expert_tier_test PRIVATE strata_worker_tier)
+    add_test(NAME expert_tier_test COMMAND expert_tier_test)
+    set_tests_properties(expert_tier_test PROPERTIES TIMEOUT 600)
+  endif()
+
   set(_strata_mmq_types q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)
   # APR: the agention llama.cpp fork has MMQ instances for its trellis expert types (f62fdead0); any other ggml
   # tree leaves them to the FP16 prompt path
@@ -2062,7 +2197,10 @@ if(STRATA_BUILD_TESTS)
     add_executable(q2_bitplane_parity src/kernels/cpu/q2_bitplane_parity.cpp)
     target_link_libraries(q2_bitplane_parity PRIVATE strata_kernels_cpu)
     add_test(NAME q2_bitplane_parity COMMAND q2_bitplane_parity)
-    set_tests_properties(q2_bitplane_parity PROPERTIES ENVIRONMENT "STRATA_Q2_BITPLANE=1")
+    set_tests_properties(q2_bitplane_parity PROPERTIES ENVIRONMENT "STRATA_Q2_BITPLANE=1" TIMEOUT 60)
+    add_test(NAME q2_bitplane_parity_avx COMMAND ${CMAKE_COMMAND} -E env
+             STRATA_Q2_BITPLANE=1 STRATA_FORCE_ISA=avx $<TARGET_FILE:q2_bitplane_parity>)
+    set_tests_properties(q2_bitplane_parity_avx PROPERTIES TIMEOUT 60)
   endif()
 
   if(STRATA_NATIVE_EXPERTS)

@@ -1,0 +1,70 @@
+{
+  "files": {
+    "adverse-summary.json": {
+      "bytes": 764,
+      "sha256": "6c8813ebe7ff993e74f66d359e9b0fde2652c6299dac8bef2c08477381bf1967"
+    },
+    "cpu-focused.log": {
+      "bytes": 567,
+      "sha256": "15689482f791dfec209ab312688067b8ed7282921085b096d602e298ceebe400"
+    },
+    "deadline-1.log": {
+      "bytes": 491,
+      "sha256": "79badd7690b22a6e35c037014588f15d08b3998da869ebe74644eba6f9cfbb6b"
+    },
+    "deadline-2.log": {
+      "bytes": 491,
+      "sha256": "87db0b449261fb37aeeae8a5707d78ce23516d7d70414a89a4da7c130f5d4fd5"
+    },
+    "deadline-3.log": {
+      "bytes": 491,
+      "sha256": "b0366bc4bd4fb1edc098107881454a18f779417ffa148772429adfc464349c6a"
+    },
+    "expert_tier_test.log": {
+      "bytes": 1332,
+      "sha256": "a4e0dee91a012f5249e02239d5bd3948949d17eebb7ca67f3f3ed17071cb966c"
+    },
+    "expert_worker_test.log": {
+      "bytes": 3666,
+      "sha256": "f5ceefcc323daa4499e5f783324d302c09e3bd1072cb661fd79ed3eeaff7a350"
+    },
+    "runner-summary.json": {
+      "bytes": 691,
+      "sha256": "6ad3f3f0a3e7cc9bda4135b284972616bfd65d63d75abb6d78f96b45cd2bedff"
+    },
+    "slow-fixture-green.log": {
+      "bytes": 491,
+      "sha256": "11dec553285e12ec982548963a93786b15b6ef042f48b5f3c5eb106044599771"
+    },
+    "slow-fixture-red.log": {
+      "bytes": 214,
+      "sha256": "28ae790513fad60f34bebfadd54bf4e687afbaf844862ac78b6bdfbb74db4721"
+    },
+    "socket-1.log": {
+      "bytes": 54,
+      "sha256": "1d4fdf1ff1a1133bd25a9cc677a339a968eef9c11ac24222489559d4e5bb43ba"
+    },
+    "socket-2.log": {
+      "bytes": 54,
+      "sha256": "1d4fdf1ff1a1133bd25a9cc677a339a968eef9c11ac24222489559d4e5bb43ba"
+    },
+    "socket-3.log": {
+      "bytes": 54,
+      "sha256": "1d4fdf1ff1a1133bd25a9cc677a339a968eef9c11ac24222489559d4e5bb43ba"
+    },
+    "socket-green.log": {
+      "bytes": 54,
+      "sha256": "1d4fdf1ff1a1133bd25a9cc677a339a968eef9c11ac24222489559d4e5bb43ba"
+    },
+    "socket-red.log": {
+      "bytes": 168,
+      "sha256": "ff93e8c430e06274d8a3f8032775b35748134b899736389955eea788303877f7"
+    }
+  },
+  "environment": {
+    "host": "geekom",
+    "platform": "Linux-7.2.9-2-cachyos-x86_64-with-glibc2.44",
+    "compiler": "c++ (GCC) 16.2.1 20260810",
+    "ggml": "3cf03257f219afbe7334045ff7c6a06ac68c627d"
+  }
+}

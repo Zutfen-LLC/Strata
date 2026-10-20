@@ -1,0 +1,7 @@
+strata-worker: connection dropped: malformed frame
+strata-worker: connection dropped: malformed frame
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36b9e82f034ec8: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 3c6f33238cc420c7: model 'fixture-model' quant 'Q8_0' 3x16 gu=8 d=8, 7 owned blobs of 5222400 B
+strata-worker: connection closed (eof or deadline)

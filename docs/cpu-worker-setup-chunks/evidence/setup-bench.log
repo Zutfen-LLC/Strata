@@ -1,0 +1,24 @@
+strata-worker: session 9e36bdba93e97a92: model '' quant '' 1x1 gu=8 d=8, 1 owned blobs of 5222400 B
+strata-worker: session 9e36bdba93e97a92 ready: 1 blobs, 5222400 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36bdbd7f5518e4: model '' quant '' 1x1 gu=8 d=8, 1 owned blobs of 5222400 B
+strata-worker: session 9e36bdbd7f5518e4 ready: 1 blobs, 5222400 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36bdbd6d31c5d0: model '' quant '' 1x1 gu=8 d=8, 1 owned blobs of 5222400 B
+strata-worker: session 9e36bdbd6d31c5d0 ready: 1 blobs, 5222400 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36bdbd67962d2e: model '' quant '' 1x1 gu=8 d=8, 1 owned blobs of 5222400 B
+strata-worker: session 9e36bdbd67962d2e ready: 1 blobs, 5222400 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36bdbd491c21e6: model '' quant '' 1x1 gu=8 d=8, 1 owned blobs of 5222400 B
+strata-worker: session 9e36bdbd491c21e6 ready: 1 blobs, 5222400 B verified
+strata-worker: connection closed (eof or deadline)
+strata-worker: session 9e36bdbd36f7e18a: model '' quant '' 1x1 gu=8 d=8, 1 owned blobs of 5222400 B
+strata-worker: session 9e36bdbd36f7e18a ready: 1 blobs, 5222400 B verified
+strata-worker: connection closed (eof or deadline)
+setup_bench cap=65536 bytes=5222400 chunks=80 acks=80 tail=45056 upload_wire_bytes=5229120 max_payload=65576 ack_delay_ms=0 setup_wall_s=0.028272
+setup_bench cap=524288 bytes=5222400 chunks=10 acks=10 tail=503808 upload_wire_bytes=5223240 max_payload=524328 ack_delay_ms=0 setup_wall_s=0.019726
+setup_bench cap=1048576 bytes=5222400 chunks=5 acks=5 tail=1028096 upload_wire_bytes=5222820 max_payload=1048616 ack_delay_ms=0 setup_wall_s=0.021894
+setup_bench cap=65536 bytes=5222400 chunks=80 acks=80 tail=45056 upload_wire_bytes=5229120 max_payload=65576 ack_delay_ms=1 setup_wall_s=0.108525
+setup_bench cap=524288 bytes=5222400 chunks=10 acks=10 tail=503808 upload_wire_bytes=5223240 max_payload=524328 ack_delay_ms=1 setup_wall_s=0.030402
+setup_bench cap=1048576 bytes=5222400 chunks=5 acks=5 tail=1028096 upload_wire_bytes=5222820 max_payload=1048616 ack_delay_ms=1 setup_wall_s=0.025198

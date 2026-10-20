@@ -47,10 +47,15 @@ namespace strata::kernels::cpu {
 struct ExpertLayout;
 }
 
+namespace strata::worker {
+class ExpertWorkerTier;   // inferswarm #349: the opt-in remote CPU-expert tier (worker/expert_tier.hpp)
+}
+
 namespace strata::core {
 
 class PeerExperts;   // multi-GPU: the second GPU's expert tier (peer_experts.hpp)
 class RemoteExperts;
+class RemoteExpertOpt;
 struct LoadStats;
 
 namespace detail {
@@ -479,6 +484,12 @@ struct ExpertDispatch {
     RouterLookahead* lookahead = nullptr;   ///< CS-T: warms the next layer's predicted file-tier experts
     RemoteExperts* remote[3] = {}; ///< optional CUDA1..3 tiers for otherwise CPU-served rows
     int remote_count = 0;
+    /// inferswarm #349: the opt-in remote CPU-expert worker tier (default null = off, and then every
+    /// worker hook below is a dead branch).  Its partition is frozen at setup: every expert no GPU tier
+    /// holds executes there, the request goes out after the GPU's own work is published, and the
+    /// already-weighted partial joins the result through `remote_opt` (helpers first, worker on top).
+    strata::worker::ExpertWorkerTier* worker = nullptr;
+    RemoteExpertOpt* remote_opt = nullptr;   ///< the merge tables the helper tiers and the worker share
     int64_t n_expert = strata::kernels::cpu::NE;
 
     /// Counters, for the driver to report rather than for control flow.
@@ -635,6 +646,8 @@ struct ExpertDispatch {
     /// Multi-GPU: the second GPU's tier.  Its experts are computed there instead of on the CPU (kind 2).
     PeerExperts* peer = nullptr;
     int64_t peer_entries = 0;      ///< routed entries the peer served in verify windows
+    /// inferswarm #349: routed entries the remote CPU-expert worker served in verify windows (kind 3).
+    int64_t worker_entries = 0;
     /// Set when `dispatch` could not produce an answer.  The loop itself has no error channel, so this is
     /// where a source failure surfaces: the driver checks it after `session_loop` returns rather than the
     /// engine computing from a half-filled `parts`.
