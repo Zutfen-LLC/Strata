@@ -14,7 +14,7 @@ Resident weights have their own lifetime. Session identity, sequence history, se
 request buffers belong to a connection. EOF, frame timeout and every new setup invalidate that session.
 A new engine must negotiate a fresh session and READY even on a hit. Old session ids and repeated
 request sequences remain errors. Inference framing, kernels, arithmetic and merge order are unchanged.
-The worker does not retain prompts, activations or results between requests.
+Each request supplies fresh activations and produces fresh results; none are reused across requests.
 
 Reuse requires a complete successful persistent READY and exact equality of the full 128-bit trusted
 local-manifest identity, model id, quantization/layout/geometry, partition id and every ownership bit.
@@ -40,14 +40,17 @@ remains the access boundary. A worker process restart always starts empty.
 ## Bounds and control
 
 `--residency-ms N` accepts 0 (disabled) or 1..86400000 ms (one day). Idle age starts at successful READY
-and restarts after successful inference completes. It does **not** restart on disconnect, status,
+and restarts after a successful inference reply completes. It does **not** restart on disconnect, status,
 refusal, or setup negotiation. A successful new READY starts a new idle window. The lifetime includes
 connected idle time. The old default 10000 ms full socket read/send deadline still applies: an idle
 engine connection may close at ten seconds, while its verified weights remain available to a new engine.
 The tier still fails closed on that loss; it does not retry inference silently.
 
 The listener sweeps expiry every 100 ms. A connected idle read checks stop, setup expiry and residency
-expiry at most every 50 ms. Expiry invalidates any session and unloads the arena; the service remains
+expiry at most every 50 ms. Telemetry/setup/refusal sends also observe idle expiry, so a nonreading
+peer cannot extend it to the I/O deadline. Successful inference execution and its reply stay under
+the existing active-request rules; idle age restarts after that reply completes. Expiry invalidates any
+session and unloads the arena; the service remains
 available for a cold setup. Native computation is not interrupted by idle expiry. It completes under
 the existing execution contract and starts a new idle window. Socket deadlines and whole local setup
 budgets are distinct, unchanged in length; regular-file OS calls and native kernels are not forcibly
@@ -85,7 +88,8 @@ still needs measurement. No arena-release diagnosis of that earlier report is cl
 
 LOCAL_SETUP local-v1 flag bit 1 (`2`) explicitly requests persistent residency. Bit 0 remains the
 missing-only upload permission. On this flag only, LOCAL_SETUP_ACK appends `hit:u32, reused_bytes:u64`
-to its old 28 bytes (40 bytes total). A disabled/new worker or the tested old worker refuses this flag;
+to its old 28 bytes (40 bytes total). A disabled/new worker refuses this flag; by static inspection the exact-base worker also refuses it.
+Cross-version runtime validation remains pending on 05;
 the client fails closed without fallback. With the flag absent, SETUP, LOCAL_SETUP, UPLOAD, READY,
 INFER and STATUS keep their existing wire layouts. A configured TTL alone does not retain legacy
 sessions. A legacy setup cannot silently replace an already persistent cache; unload first.

@@ -107,7 +107,7 @@ The retained failure was `connect failed, cancelled or timed out` after expiry a
 inspection found repeated log filenames allowing stale-port discovery; the source now creates each log
 uniquely before fork. It also found a cleanup path that could signal PID -1 after reaping an unsuccessful
 child. All child signals are now guarded by positive unreaped ownership, including after a wait.
-The first residency stage must pass `failed child is reaped and cannot be signalled again`, then all
+The first residency stage must pass `failed child is reaped and cannot be signalled again`, then the partial-line parser and slow telemetry reader cases plus all
 later stages must complete with **zero failures**, a new child log per launch and clean owned process
 exits. Preserve the printed synthetic fixture directories and logs on failure; do not rerun for a PASS.
 The earlier negative-PID defect is a plausible desktop-disruption cause, not a confirmed diagnosis.

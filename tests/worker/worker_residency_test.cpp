@@ -44,6 +44,11 @@ std::vector<float> parity(ExpertWorkerClient& c, const Fixture& f, float x, uint
     return reply.partials;
 }
 void harness_cleanup(Fixture& f) {
+    check(!Binary::listening_port("listening on 127.0.0.1:") &&
+          !Binary::listening_port("listening on 127.0.0.1:7") &&
+          !Binary::listening_port("listening on 127.0.0.1:70000 (") &&
+          Binary::listening_port("listening on 127.0.0.1:7431 (budget") == 7431,
+          "partial/invalid listening lines are rejected without exceptions");
     // An owned worker killed after startup is reaped as a failed child. Destruction must
     // then do nothing; the old bool-return cleanup accidentally signalled PID -1 here.
     Binary b(f);
@@ -140,6 +145,36 @@ void lifecycle(Fixture& f) {
     check(log.find("shutdown: CPU pool joined; resident=0 B")!=std::string::npos,
           "shutdown reports arena release and completed pool destruction before summaries");
 }
+void slow_status_reader(Fixture& f) {
+    Binary b(f,1000);
+    ExpertWorkerClient c; conn(c,b); complete(c,f); c.close();
+    struct OwnedSocket {
+        sock_fd fd = kBadFd;
+        ~OwnedSocket() { sock::close_fd(fd); }
+    } slow;
+    std::string err;
+    require(sock::connect_numeric_controlled("127.0.0.1", b.port, 1000, {}, slow.fd, err),err);
+    int receive_limit = 4096;
+    require(::setsockopt(slow.fd,SOL_SOCKET,SO_RCVBUF,&receive_limit,sizeof receive_limit)==0,"small receive buffer");
+    std::vector<uint8_t> frame, flood;
+    encode_frame(frame,MSG_CACHE_STATUS,ST_OK,nullptr,0);
+    flood.reserve(4u<<20);
+    for (size_t i=0;i<(4u<<20)/frame.size();++i) flood.insert(flood.end(),frame.begin(),frame.end());
+    // Leave telemetry replies unread. Backpressure may stop this bounded request write early.
+    sock::send_all(slow.fd,flood.data(),flood.size(),200);
+    pause_ms(1300);
+    // The arena must expire before this peer disconnects. Once empty, the service may
+    // still be sending telemetry to this one allowed connection, so close it before querying.
+    std::ifstream in(b.log);
+    const std::string log((std::istreambuf_iterator<char>(in)),{});
+    check(log.find("reason=expiry")!=std::string::npos,
+          "nonreading telemetry peer cannot defer idle expiry until its I/O deadline");
+    sock::close_fd(slow.fd);
+    conn(c,b);
+    auto expired=info(c);
+    check(!expired.resident_bytes && !expired.complete && expired.expirations==1,
+          "idle expiry releases weights while telemetry peer stops reading replies");
+}
 void expiry_and_failure(Fixture& f) {
     std::string err;
     {
@@ -187,6 +222,7 @@ int main() {
         Fixture f;
         std::puts("STAGE harness cleanup"); harness_cleanup(f);
         std::puts("STAGE persistent lifecycle"); lifecycle(f);
+        std::puts("STAGE slow telemetry reader"); slow_status_reader(f);
         std::puts("STAGE expiry, failed setup, disabled mode"); expiry_and_failure(f);
     }
     catch (const std::exception& e) { std::fprintf(stderr,"FAIL exception: %s\n",e.what()); ++failures; }

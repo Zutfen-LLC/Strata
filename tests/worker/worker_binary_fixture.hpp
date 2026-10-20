@@ -1,6 +1,8 @@
 #pragma once
 #include "local_fixture.hpp"
 #include <fcntl.h>
+#include <charconv>
+#include <stdexcept>
 namespace {
 void pause_ms(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 struct Binary {
@@ -35,20 +37,39 @@ struct Binary {
             _exit(127);
         }
         ::close(fd);
-        for (int i = 0; i < 500 && !port; ++i) {
-            std::ifstream in(log); std::string line;
-            while (std::getline(in, line)) {
-                auto at = line.find("listening on 127.0.0.1:");
-                if (at != std::string::npos) port = std::stoi(line.substr(at + 23));
+        try {
+            for (int i = 0; i < 500 && !port; ++i) {
+                std::ifstream in(log);
+                std::string line;
+                while (std::getline(in, line)) {
+                    // A writer can expose a partial final line. Wait for its newline first.
+                    if (in.eof()) break;
+                    port = listening_port(line);
+                    if (port) break;
+                }
+                if (!port) pause_ms(10);
             }
-            if (!port) pause_ms(10);
-        }
-        if (!port) {
+            require(port, "binary listening");
+        } catch (...) {
             signal_child(SIGKILL);
             reap();
             print_log();
+            throw; // a throwing constructor does not run ~Binary()
         }
-        require(port, "binary listening");
+    }
+    Binary(const Binary&) = delete;
+    Binary& operator=(const Binary&) = delete;
+    static uint16_t listening_port(const std::string& line) {
+        const std::string prefix = "listening on 127.0.0.1:";
+        const auto at = line.find(prefix);
+        if (at == std::string::npos) return 0;
+        const char* first = line.data() + at + prefix.size();
+        const char* end = line.data() + line.size();
+        unsigned value = 0;
+        const auto parsed = std::from_chars(first, end, value);
+        if (parsed.ec != std::errc{} || value == 0 || value > 65535 || parsed.ptr == end || *parsed.ptr != ' ')
+            return 0;
+        return (uint16_t)value;
     }
     // Never signal a process group or all user processes. Only the unreaped positive child
     // PID belongs to this harness; wait_exit() clears it even for a failed/signal exit.

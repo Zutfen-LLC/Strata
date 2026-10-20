@@ -312,8 +312,12 @@ bool ExpertWorkerService::Impl::send_frame(sock_fd fd, uint16_t msg, uint16_t st
     if (payload.size() > kMaxFrameBytes) return false;
     std::vector<uint8_t> buf;
     encode_frame(buf, msg, status, payload.data(), payload.size());
-    return sock::send_all_controlled(fd, buf.data(), buf.size(), opt.deadline_ms,
-                                     [&] { return stopping.load(std::memory_order_acquire); });
+    // An admitted inference reply is active work: its existing I/O deadline still applies.
+    // Telemetry/setup/refusal replies must not pin idle weights behind a slow reader.
+    const bool active_reply = msg == MSG_INFER_ACK && status == ST_OK;
+    return sock::send_all_controlled(fd, buf.data(), buf.size(), opt.deadline_ms, [&] {
+        return stopping.load(std::memory_order_acquire) || (!active_reply && resident_expired());
+    });
 }
 
 void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, size_t n, bool use_local) {
@@ -837,7 +841,8 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n)
     // every reply path goes through here: status + payload, sent and counted as reply bytes
     auto reply = [&](uint16_t status, const std::vector<uint8_t>& payload) {
         counters->infer_out_bytes += kHeaderBytes + payload.size();
-        send_frame(fd, MSG_INFER_ACK, status, payload);
+        if (send_frame(fd, MSG_INFER_ACK, status, payload) && status == ST_OK && resident_complete)
+            idle_since_ns = mono_ns(); // idle starts after the successful request's reply completes
     };
     if (state == State::Empty) {
         fail(ST_WRONG_STATE);
@@ -916,7 +921,6 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n)
         reply(ST_NOT_OWNED, {});
         return;
     }
-    if (resident_complete) idle_since_ns = mono_ns();
     last_sequence = r.sequence;
     have_sequence = true;
     if (opt.verbose > 0)

@@ -36,6 +36,8 @@ explanation for the desktop disruption; the retained logs do not prove the actua
 The source now gates every child signal on pid > 0, separates reap/exit status from ownership, and checks
 ownership again after waiting. A failed child clears ownership and destruction cannot signal it again.
 The new harness_cleanup regression exercises a reaped unsuccessful child before other lifecycle cases.
+Review also corrected partial-line startup parsing/constructor cleanup, and idle expiry while telemetry
+replies are blocked. Successful inference reply deadlines remain distinct from idle expiry.
 Do not execute any pre-fix worker_residency_test binary. Hermes must compile the published source first.
 
 ## Validation to run on inferswarm05
@@ -47,4 +49,6 @@ retain unique child logs, source/binary identity, process exits and the correcte
 
 ## Independent static reviews
 
-Pending. These will report source findings and dispositions, never a runtime PASS.
+[Independent static review record](review.md) contains both reports and source dispositions.
+No material finding remains open in those static reviews; all final-source runtime checks remain
+pending. Static review does not establish compilation or execution correctness.
