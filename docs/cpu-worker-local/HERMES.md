@@ -1,5 +1,8 @@
 # Hermes controller recipe: worker-local candidate
 
+For CPU weights that survive engine exit, use [the bounded residency recipe](../cpu-worker-residency/HERMES.md).
+This older recipe intentionally cleans up the worker after its session. It does not test persistent reuse.
+
 Use this recipe from the dedicated controller with its existing access to **inferswarm03** and
 **inferswarm05**. Do not add host trust, install packages, rebuild old llama.cpp workers, change drivers,
 reset unrelated checkouts or run broad CI. Keep the first failure and stop dependent work.
@@ -90,7 +93,7 @@ and stops on signal or budget expiry. It does not allocate the full worker parti
 : "${RUN05:?Owned absolute log directory on inferswarm05}"
 ROOT05=$(dirname -- "$SHARD05")
 test ! -e "$PREP05/local.manifest"
-/usr/bin/time -v timeout --signal=TERM --kill-after=15s 1215 \
+time timeout --signal=TERM --kill-after=15s 1215 \
   "$BUILD/strata-worker-manifest" "$PREP05" "$SHARD05" "$PREP05/local.manifest" \
   48 512 1200 --prepare > "$RUN05/manifest.out" 2> "$RUN05/manifest.log"
 sha256sum "$PREP05/native_experts.txt" "$PREP05/local.manifest" > "$RUN05/manifest.sha256"
@@ -161,11 +164,11 @@ print('GEN 4 ' + ','.join(map(str, ids)))
 print('QUIT')
 PY
 STRATA_ROUTE_TAIL_SKIP=0 STRATA_LOOKAHEAD=0 STRATA_LOOKAHEAD_STATS=0 STRATA_FS_SLOTS=0 \
-  timeout --signal=TERM --kill-after=15s 1200 "$BUILD/strata" generate --serve \
+  timeout --signal=TERM --kill-after=15s 1200 "$BUILD/strata" --serve \
   --native "$SHARD03" --pack "$PACK03" --gpu 0,1 --mmap-experts \
   --remote-cpu-experts 127.0.0.1:7431 --remote-cpu-deadline-ms 10000 \
   --remote-cpu-local-manifest "$MANIFEST03" --remote-cpu-setup-ms 600000 \
-  --expert-cache "$PRIMARY_SLOTS" --expert-cache-per-layer --expert-profile data/expert-profile.bin \
+  --expert-cache "$PRIMARY_SLOTS" --expert-cache-per-layer --expert-profile "$SRC/data/expert-profile.bin" \
   --expert-cache-device1 auto --remote-expert-opt \
   --adapt-every 0 --adapt-swaps 0 --pcie-frac 0 --short-read 64 --prefill 64 \
   --spec 2 --suffix-draft 0 --lookup-chain 0 --max-context 1024 \

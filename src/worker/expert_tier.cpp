@@ -48,6 +48,11 @@ ExpertWorkerTier::~ExpertWorkerTier() {
 bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     if (dead_) { err = "the remote CPU-expert worker tier is dead: " + dead_why_; return false; }
     if (ready_) { err = "the remote CPU-expert worker tier is already open"; return false; }
+    if (in.resident && !in.local) {
+        err = "persistent weight reuse requires a trusted local manifest";
+        return false;
+    }
+    st_ = {};
     if (in.fetch == nullptr && (!in.local || in.local_fallback)) {
         err = "the remote CPU-expert tier needs a blob fetcher";
         return false;
@@ -115,7 +120,7 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
         return false;
     }
     const bool setup_ok =
-        in.local ? client_.setup_local(m, in.local->identity, in.local_fallback, err) : client_.setup(m, err);
+        in.local ? client_.setup_local(m, in.local->identity, in.local_fallback, err, in.resident) : client_.setup(m, err);
     if (!setup_ok) {
         err = std::string("the remote CPU-expert worker refused setup (") + status_name(client_.last_status()) +
               "): " + err;
@@ -150,7 +155,10 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
         st_.fetch_upload_ms += (double)(mono_ms() - t);
         return true;
     };
-    for (int l = 0; l < in.n_layers; ++l) {
+    st_.cache_hit = client_.cache_hit();
+    st_.reused_bytes = client_.reused_bytes();
+    st_.session = client_.session();
+    for (int l = 0; !st_.cache_hit && l < in.n_layers; ++l) {
         std::vector<std::pair<uint16_t, uint16_t>> slots;
         for (int e = 0; e < in.n_expert; ++e)
             if (m.owns(l, e))
@@ -329,7 +337,7 @@ bool ExpertWorkerTier::status(WorkerStatusInfo& out, std::string& err) {
 void ExpertWorkerTier::report(std::string& out) const {
     char buf[1024];
     std::snprintf(buf, sizeof buf,
-                  "%s%llu blobs / %.2f GiB verified in %.1f s; %llu requests, %llu entries; "
+                  "%s%llu blobs / %.2f GiB ready in %.1f s; %llu requests, %llu entries; "
                   "request wall %.1f ms, of which waited %.1f ms",
                   dead_ ? "DEAD after its last failure; " : "", (unsigned long long) st_.setup_blobs,
                   (double) st_.setup_weight_bytes / 1073741824.0, st_.setup_ms / 1e3,
@@ -343,6 +351,9 @@ void ExpertWorkerTier::report(std::string& out) const {
                   (unsigned long long)st_.local_hits, (unsigned long long)st_.local_misses,
                   st_.connect_setup_ms, st_.local_ms, st_.local_read_ns / 1e6, st_.local_verify_ns / 1e6,
                   st_.fetch_upload_ms, st_.ready_ms);
+    out += buf;
+    std::snprintf(buf, sizeof buf, "; cache_hit=%d reused=%llu B session=%llx", st_.cache_hit,
+                  (unsigned long long)st_.reused_bytes, (unsigned long long)st_.session);
     out += buf;
 }
 

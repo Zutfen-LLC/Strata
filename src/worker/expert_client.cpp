@@ -75,7 +75,7 @@ bool ExpertWorkerClient::recv_frame(uint16_t want_msg, WireFrame& f, std::string
     size_t cap = 0;
     switch (f.msg) {
     case MSG_LOCAL_SETUP_ACK:
-        cap = 32;
+        cap = 40;
         break;
     case MSG_LOCAL_LOAD_ACK:
         cap = 256;
@@ -92,6 +92,8 @@ bool ExpertWorkerClient::recv_frame(uint16_t want_msg, WireFrame& f, std::string
     case MSG_INFER_ACK:
         cap = kReplyPayloadMax;
         break;
+    case MSG_UNLOAD_ACK:
+    case MSG_CACHE_STATUS_ACK:
     case MSG_STATUS_ACK:
         cap = 128;
         break;
@@ -155,13 +157,15 @@ void push_u16(std::vector<uint8_t>& o, uint16_t v) {
 bool ExpertWorkerClient::setup(const SetupManifest& m, std::string& err) {
     return setup_impl(m, nullptr, false, err);
 }
-bool ExpertWorkerClient::setup_local(const SetupManifest &m, Digest128 id, bool fallback, std::string &err) {
-    return setup_impl(m, &id, fallback, err);
+bool ExpertWorkerClient::setup_local(const SetupManifest &m, Digest128 id, bool fallback, std::string &err, bool resident) {
+    return setup_impl(m, &id, fallback, err, resident);
 }
 bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id, bool fallback,
-                                    std::string &err) {
+                                    std::string &err, bool resident) {
     local_ = false;
     local_stats_ = {};
+    cache_hit_ = false;
+    reused_bytes_ = 0;
     session_ = 0;
     blob_bytes_ = 0;
     chunk_cap_ = 0;
@@ -174,7 +178,7 @@ bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id,
     if (id) {
         std::vector<uint8_t> head;
         push_u32(head, kLocalVersion);
-        push_u32(head, fallback ? 1 : 0);
+        push_u32(head, (fallback ? 1 : 0) | (resident ? kLocalResident : 0));
         push_u64(head, id->a);
         push_u64(head, id->b);
         head.insert(head.end(), payload.begin(), payload.end());
@@ -201,7 +205,10 @@ bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id,
     const uint32_t cap = cur_u32(f.payload.data(), f.payload.size(), i);
     const uint32_t version = id ? cur_u32(f.payload.data(), f.payload.size(), i) : 0;
     const uint32_t batch = id ? cur_u32(f.payload.data(), f.payload.size(), i) : 0;
-    if (f.payload.size() != (id ? 28u : 20u) ||
+    const uint32_t hit = resident ? cur_u32(f.payload.data(), f.payload.size(), i) : 0;
+    const uint64_t reused = resident ? cur_u64(f.payload.data(), f.payload.size(), i) : 0;
+    if (f.payload.size() != (resident ? 40u : id ? 28u : 20u) ||
+        hit > 1 || (resident && reused != (hit ? m.owned_count() * bytes : 0)) ||
         (id && (version != kLocalVersion || batch != kLocalBatchMax)) || session == 0 || bytes == 0 ||
         bytes > std::numeric_limits<uint32_t>::max() || cap == 0 || cap > kUploadChunkMax) {
         err = "invalid setup reply: session, blob length or data chunk cap";
@@ -209,6 +216,8 @@ bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id,
         close();
         return false;
     }
+    cache_hit_ = hit;
+    reused_bytes_ = reused;
     session_ = session;
     blob_bytes_ = (uint32_t) bytes;
     chunk_cap_ = cap;
@@ -410,6 +419,49 @@ bool ExpertWorkerClient::status(WorkerStatusInfo& out, std::string& err) {
     return true;
 }
 
+bool ExpertWorkerClient::cache_status(WorkerCacheInfo& out, std::string& err) {
+    if (!send_frame(MSG_CACHE_STATUS, ST_OK, {}, err)) return false;
+    WireFrame f;
+    if (!recv_frame(MSG_CACHE_STATUS_ACK, f, err)) return false;
+    last_status_ = f.status;
+    size_t i = 0;
+    const auto* p = f.payload.data();
+    const auto n = f.payload.size();
+    if (f.status != ST_OK || n != 100 || cur_u32(p, n, i) != 1) {
+        err = "invalid cache status reply";
+        return false;
+    }
+    out.state = cur_u32(p, n, i);
+    out.session = cur_u64(p, n, i);
+    out.resident_bytes = cur_u64(p, n, i);
+    out.idle_remaining_ms = cur_u64(p, n, i);
+    out.cache_hits = cur_u64(p, n, i);
+    out.reused_bytes = cur_u64(p, n, i);
+    out.loaded_bytes = cur_u64(p, n, i);
+    out.verified_bytes = cur_u64(p, n, i);
+    out.peak_arena_bytes = cur_u64(p, n, i);
+    out.arena_allocations = cur_u64(p, n, i);
+    out.expirations = cur_u64(p, n, i);
+    out.unloads = cur_u64(p, n, i);
+    out.complete = cur_u32(p, n, i) == 1;
+    return true;
+}
+
+bool ExpertWorkerClient::unload(std::string& err) {
+    if (!send_frame(MSG_UNLOAD, ST_OK, {}, err)) return false;
+    WireFrame f;
+    if (!recv_frame(MSG_UNLOAD_ACK, f, err)) return false;
+    last_status_ = f.status;
+    if (f.status != ST_OK || !f.payload.empty()) {
+        err = "unload refused";
+        return false;
+    }
+    session_ = 0;
+    cache_hit_ = false;
+    reused_bytes_ = 0;
+    return true;
+}
+
 bool ExpertWorkerClient::shutdown(std::string& err) {
     if (!send_frame(MSG_SHUTDOWN, ST_OK, {}, err)) return false;
     WireFrame f;
@@ -423,6 +475,8 @@ void ExpertWorkerClient::close() {
         sock::close_fd(fd);
     }
     fd_ = ~(uintptr_t) 0;
+    cache_hit_ = false;
+    reused_bytes_ = 0;
     local_ = false;
     setup_cancelled_ = {};
     session_ = 0;

@@ -31,7 +31,8 @@ public:
     /// id and the worker's chunk cap are remembered for the upload/infer calls.
     bool setup(const SetupManifest& m, std::string& err);
 
-    bool setup_local(const SetupManifest &m, Digest128 manifest, bool fallback, std::string &err);
+    /// resident negotiates complete verified reuse; unsupported peers fail without upload fallback.
+    bool setup_local(const SetupManifest &m, Digest128 manifest, bool fallback, std::string &err, bool resident = false);
     // Hits are in request order. A zero means ENOENT and permits upload only if negotiated.
     bool load_local(const std::vector<std::pair<uint16_t, uint16_t>> &slots, std::vector<uint8_t> &hits,
                     std::string &err);
@@ -53,12 +54,16 @@ public:
     bool infer(const InferRequest& r, InferReply& reply, std::string& err);
 
     bool status(WorkerStatusInfo& out, std::string& err);
+    bool cache_status(WorkerCacheInfo& out, std::string& err);
+    bool unload(std::string& err);
+    bool cache_hit() const { return cache_hit_; }
+    uint64_t reused_bytes() const { return reused_bytes_; }
 
     /// Asks the worker to stop (MSG_SHUTDOWN); mainly a test/tool knob.
     bool shutdown(std::string& err);
 
     /// Closes the connection.  A disconnect voids the worker-side session: call setup() again, never
-    /// infer().
+    /// infer(). Verified weights may survive only with opt-in bounded residency.
     void close();
 
     uint64_t session() const { return session_; }
@@ -66,7 +71,7 @@ public:
     uint16_t last_status() const { return last_status_; }
 
 private:
-  bool setup_impl(const SetupManifest &m, const Digest128 *identity, bool fallback, std::string &err);
+  bool setup_impl(const SetupManifest &m, const Digest128 *identity, bool fallback, std::string &err, bool resident = false);
   bool send_frame(uint16_t msg, uint16_t st, const std::vector<uint8_t> &payload, std::string &err);
   bool recv_frame(uint16_t want_msg, WireFrame &f, std::string &err);
 
@@ -77,6 +82,8 @@ private:
   uint32_t chunk_cap_ = kUploadChunkMax;
   uint16_t n_embd_ = 0;
   std::function<bool()> setup_cancelled_;
+  bool cache_hit_ = false;
+  uint64_t reused_bytes_ = 0;
   bool local_ = false;
   LocalStats local_stats_;
   uint16_t last_status_ = ST_OK;

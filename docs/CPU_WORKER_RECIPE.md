@@ -205,7 +205,7 @@ On 03, with approved source shard and fresh pack directory:
 : "${SHARD1:?First copied and verified Q8 shard on inferswarm03}"
 : "${PACK:?New approved pack directory on the model filesystem}"
 test ! -e "$PACK"
-/usr/bin/time -v python3 tools/iq_pack.py --gguf "$SHARD1" --out "$PACK" > pack-prepare.log 2>&1
+time python3 tools/iq_pack.py --gguf "$SHARD1" --out "$PACK" > pack-prepare.log 2>&1
 # If preflight established that dense rounding is required, approval must name --compat-bf16;
 # include that flag in the single preparation command above and retain conversions.json.
 test ! -e "$PACK/experts.bin"
@@ -319,10 +319,10 @@ print('GEN 4 ' + ','.join(map(str, ids)))
 print('QUIT')
 PY
 STRATA_ROUTE_TAIL_SKIP=0 STRATA_LOOKAHEAD=0 STRATA_LOOKAHEAD_STATS=0 STRATA_FS_SLOTS=0 \
-  timeout --signal=TERM --kill-after=15s 7200 "$BUILD03/strata" generate --serve \
+  timeout --signal=TERM --kill-after=15s 7200 "$BUILD03/strata" --serve \
   --native "$SHARD1" --pack "$PACK" --gpu 0,1 --mmap-experts \
   --remote-cpu-experts 127.0.0.1:7431 --remote-cpu-deadline-ms 10000 \
-  --expert-cache "$PRIMARY_SLOTS" --expert-cache-per-layer --expert-profile data/expert-profile.bin \
+  --expert-cache "$PRIMARY_SLOTS" --expert-cache-per-layer --expert-profile "$SRC/data/expert-profile.bin" \
   --expert-cache-device1 auto --remote-expert-opt \
   --adapt-every 0 --adapt-swaps 0 --pcie-frac 0 --short-read 64 --prefill 64 \
   --spec 2 --suffix-draft 0 --lookup-chain 0 --max-context 1024 < trial-input.txt > engine.out 2> engine.log

@@ -138,7 +138,7 @@ cmake --build build-worker --target expert_worker_test expert_worker_e2e_test
 
 ## The engine mode (inferswarm #349): `--remote-cpu-experts HOST:PORT`
 
-The engine side is **opt-in and default-off**: `strata generate --serve --remote-cpu-experts 127.0.0.1:7431`
+The engine side is **opt-in and default-off**: `strata --serve --remote-cpu-experts 127.0.0.1:7431`
 (`--remote-cpu-deadline-ms N` budgets each full socket send/read; default 10000).  With the flag off, every path below is
 untouched. Header and payload reads have separate budgets; connection establishment and native kernel
 execution are not preempted by this setting. The pieces:
@@ -204,3 +204,10 @@ inference frames retain their separate bound. No physical network or full-model 
 The negotiated local setup candidate can read assigned experts from an operator-configured copy of
 the GGUF shards. See [the local source contract](cpu-worker-local/README.md) and
 [the Hermes controller recipe](cpu-worker-local/HERMES.md). The default upload path is unchanged.
+
+## Session-independent residency (default off)
+
+A complete trusted local partition can now survive engine exit for an explicit bounded idle window.
+See [the lifecycle and compatibility contract](cpu-worker-residency/README.md) and
+[the ready-to-use Hermes recipe](cpu-worker-residency/HERMES.md). Without the new flags, the
+session-scoped behavior described above remains in force.

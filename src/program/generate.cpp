@@ -561,6 +561,7 @@ struct Options {
     int remote_cpu_deadline_ms = 10000;
     std::string remote_cpu_local_manifest;
     bool remote_cpu_local_fallback = false;
+    bool remote_cpu_resident = false;
     int remote_cpu_setup_ms = 600000;
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
@@ -1004,6 +1005,7 @@ void usage() {
                  "                       adaptive tiers, resident RAM mirrors, tail skipping).\n"
                  "  --remote-cpu-local-manifest FILE  opt-in trusted slice manifest; needs configured local worker\n"
                  "  --remote-cpu-local-fallback  allow upload for absent local experts (worker must allow it)\n"
+                 "  --remote-cpu-resident  opt-in persistent worker cache; needs local manifest and worker TTL\n"
                  "  --remote-cpu-setup-ms N  whole local setup budget (default 600000)\n"
                  "  --remote-cpu-deadline-ms N  per-frame deadline to the worker (default 10000)\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
@@ -2487,6 +2489,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--remote-cpu-local-manifest") o.remote_cpu_local_manifest=next("--remote-cpu-local-manifest");
         else if (a == "--remote-cpu-local-fallback") o.remote_cpu_local_fallback=true;
+        else if (a == "--remote-cpu-resident") o.remote_cpu_resident=true;
         else if (a == "--remote-cpu-setup-ms") o.remote_cpu_setup_ms=std::atoi(next("--remote-cpu-setup-ms"));
         else if (a == "--remote-cpu-deadline-ms")
             o.remote_cpu_deadline_ms = std::max(100, std::atoi(next("--remote-cpu-deadline-ms")));
@@ -3227,8 +3230,8 @@ int main(int argc, char** argv) {
     // configuration whose execution path it does not implement, rather than silently running a different
     // one: the modes below are the ones the integration was framed for (see docs/CPU_WORKER.md).
     if ((!o.remote_cpu_local_manifest.empty() && !o.remote_cpu_experts) ||
-        (o.remote_cpu_local_fallback && o.remote_cpu_local_manifest.empty()) || o.remote_cpu_setup_ms<=0) {
-        std::fprintf(stderr,"strata generate: local manifest needs --remote-cpu-experts; fallback needs a manifest; setup budget must be positive\n"); return 2;
+        ((o.remote_cpu_local_fallback || o.remote_cpu_resident) && o.remote_cpu_local_manifest.empty()) || o.remote_cpu_setup_ms<=0) {
+        std::fprintf(stderr,"strata generate: local manifest needs --remote-cpu-experts; fallback/residency needs a manifest; setup budget must be positive\n"); return 2;
     }
     if (!o.remote_cpu_local_manifest.empty() && (!o.mmap_experts || o.native_preset.empty())) {
         std::fprintf(stderr, "strata generate: local worker sources require --mmap-experts and --native GGUF reference slices\n");
@@ -6622,6 +6625,7 @@ int main(int argc, char** argv) {
                          std::chrono::duration<double>(Clock::now() - manifest_start).count());
             wopen.local=&local_manifest;
             wopen.local_fallback=o.remote_cpu_local_fallback;
+            wopen.resident=o.remote_cpu_resident;
             wopen.setup_ms=o.remote_cpu_setup_ms;
         }
         const auto wt0 = Clock::now();

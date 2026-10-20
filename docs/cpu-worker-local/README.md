@@ -74,7 +74,9 @@ assigned experts present, no engine blob fetch, payload hash or weight upload oc
 
 READY still requires every assigned expert to be complete and verified. Local corruption poisons the
 batch; only a new setup session can retry. Inference framing, arithmetic, ownership, sequence checks,
-merge order and failure latching are unchanged. Disconnect and restart void the arena and readiness.
+merge order and failure latching are unchanged. By default disconnect and restart void the arena and readiness.
+The separate [bounded residency option](../cpu-worker-residency/README.md) allows a complete partition
+to survive disconnect with a fresh session negotiation; a process restart still starts empty.
 
 Local setup has a 600000 ms whole-session budget by default on each end (`--local-setup-ms` on the
 worker, `--remote-cpu-setup-ms` on the engine). The existing 10000 ms I/O setting also bounds each batch.

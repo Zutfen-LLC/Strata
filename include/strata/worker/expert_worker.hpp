@@ -10,7 +10,8 @@
 // exposed only after EVERY owned slot is present and verified, and freezes the session; inference frames
 // carry ids, weights and activations - never weight bytes or pointers - and only execute slots this worker
 // owns.  A disconnect voids the session; the next connection re-runs SETUP_BEGIN (a restart is a new
-// session, and old session ids are refused).
+// session, and old session ids are refused). Opt-in residency retains only a complete verified local
+// weight partition; a compatible new LOCAL_SETUP can bind it with fresh session state and READY.
 #pragma once
 
 #include "strata/kernels/cpu/expert.hpp"
@@ -33,6 +34,7 @@ struct WorkerOptions {
     std::string local_root, local_manifest; // both empty by default; operator paths only
     bool local_upload_fallback = false;
     int local_setup_ms = 600000; // whole local setup budget, in addition to per-batch I/O budget
+    int residency_ms = 0; ///< opt-in idle TTL, 1..86400000 ms; 0 preserves session-scoped weights
     uint32_t upload_chunk_max = kUploadChunkMax;   ///< advertised data cap, 1..kUploadChunkMax
 };
 
@@ -47,6 +49,9 @@ struct WorkerCounters {
     uint64_t requests = 0;             ///< MSG_INFER handled (accepted or rejected)
     uint64_t failures = 0;             ///< frames rejected or connections dropped mid-frame
     uint64_t cpu_service_ns = 0;       ///< time spent inside the native kernels (setup excluded)
+    uint64_t cache_hits = 0, reused_bytes = 0, loaded_bytes = 0, verified_bytes = 0;
+    uint64_t resident_bytes = 0, peak_arena_bytes = 0, arena_allocations = 0;
+    uint64_t cache_expirations = 0, cache_unloads = 0;
     uint16_t last_error = ST_OK;
 };
 

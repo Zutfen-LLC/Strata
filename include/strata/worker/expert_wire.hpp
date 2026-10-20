@@ -51,6 +51,10 @@ enum MsgType : uint16_t {
     MSG_LOCAL_SETUP_ACK = 13,
     MSG_LOCAL_LOAD = 14,   ///< owned slots only; paths remain operator configuration
     MSG_LOCAL_LOAD_ACK = 15,
+    MSG_CACHE_STATUS = 16, ///< separate extension; legacy STATUS stays byte-identical
+    MSG_CACHE_STATUS_ACK = 17,
+    MSG_UNLOAD = 18,       ///< empty; invalidates session and frees arena before ACK
+    MSG_UNLOAD_ACK = 19,
     MSG_SHUTDOWN = 11,     ///< c->s: polite stop (a test/tool knob; the engine just closes)
 };
 
@@ -73,7 +77,11 @@ enum Status : uint16_t {
     ST_INTERNAL = 14,
     ST_LOCAL_INVALID = 15, ///< configured local file is present but invalid; never an upload miss
     ST_LOCAL_UNAVAILABLE = 16, ///< local mode is not configured or its version is unsupported
+    ST_CACHE_MISMATCH = 17, ///< resident binding differs; explicit unload or expiry required
 };
+
+inline constexpr uint32_t kLocalResident = 2; // LOCAL_SETUP flag, opt-in on both peers
+inline constexpr int kMaxResidencyMs = 86400000; // one day, no unbounded retention
 
 // ---- compiled bounds --------------------------------------------------------
 // The worker's own caps, from the geometry the CPU pool is compiled for (expert.hpp: H, FF, MAXT) plus the
@@ -172,6 +180,14 @@ struct WorkerStatusInfo {
     uint64_t requests = 0, failures = 0, cpu_service_ns = 0;
     uint16_t last_error = ST_OK;
     uint8_t ready = 0;
+};
+
+struct WorkerCacheInfo {
+    uint64_t session = 0, resident_bytes = 0, idle_remaining_ms = 0;
+    uint64_t cache_hits = 0, reused_bytes = 0, loaded_bytes = 0, verified_bytes = 0;
+    uint64_t peak_arena_bytes = 0, arena_allocations = 0, expirations = 0, unloads = 0;
+    uint32_t state = 0; // 0 empty session, 1 setup, 2 ready
+    bool complete = false; // independently resident and verified
 };
 
 // ---- payload codecs (little-endian, bounds-checked) --------------------------

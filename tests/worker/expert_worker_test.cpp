@@ -121,7 +121,10 @@ struct Svc {
     std::unique_ptr<strata::worker::ExpertWorkerService> svc;
     uint16_t port = 0;
     std::thread th;
-    explicit Svc(strata::worker::WorkerOptions o = {}) : opt(o), svc(std::make_unique<strata::worker::ExpertWorkerService>(o)) {}
+    explicit Svc(strata::worker::WorkerOptions o = {}) : opt(o) {
+        if (opt.workers == 0) opt.workers = 2;
+        svc = std::make_unique<strata::worker::ExpertWorkerService>(opt);
+    }
     bool start() {
         std::string err;
         if (!svc->listen(port, err)) { std::fprintf(stderr, "FAIL: listen: %s\n", err.c_str()); ++fails; return false; }

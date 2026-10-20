@@ -113,7 +113,10 @@ struct Svc {
     std::unique_ptr<strata::worker::ExpertWorkerService> svc;
     uint16_t port = 0;
     std::thread th;
-    explicit Svc(WorkerOptions o = {}) : svc(std::make_unique<strata::worker::ExpertWorkerService>(o)) {}
+    explicit Svc(WorkerOptions o = {}) {
+        if (o.workers == 0) o.workers = 2; // synthetic checks must not consume a host-wide pool
+        svc = std::make_unique<strata::worker::ExpertWorkerService>(o);
+    }
     bool start() {
         std::string err;
         if (!svc->listen(port, err)) { std::fprintf(stderr, "FAIL: listen: %s\n", err.c_str()); ++fails; return false; }

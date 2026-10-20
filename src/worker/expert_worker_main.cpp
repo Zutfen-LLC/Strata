@@ -24,7 +24,7 @@ void usage() {
     std::fprintf(
         stderr,
         "usage: strata-expert-worker [--port P] [--memory-budget-mib N] [--workers N] "
-        "[--deadline-ms N] [--verbose]\n"
+        "[--deadline-ms N] [--verbose] [--residency-ms N]\n"
         "       [--local-root DIR --local-manifest FILE] [--local-upload-fallback] [--local-setup-ms N]\n"
         "  binds 127.0.0.1 only; serves one loopback connection at a time\n");
 }
@@ -72,6 +72,16 @@ int main(int argc, char** argv) {
             opt.local_upload_fallback = true;
         else if (a == "--local-setup-ms")
             opt.local_setup_ms = (int)next("--local-setup-ms");
+        else if (a == "--residency-ms") {
+            if (i + 1 >= argc) { usage(); return 2; }
+            char* end = nullptr;
+            const auto value = std::strtoll(argv[++i], &end, 10);
+            if (!*argv[i] || *end || value < 0 || value > strata::worker::kMaxResidencyMs) {
+                std::fprintf(stderr, "strata-worker: residency must be 0..86400000 ms\n");
+                return 2;
+            }
+            opt.residency_ms = (int)value;
+        }
         else if (a == "--verbose") opt.verbose = 1;
         else {
             usage();
@@ -109,5 +119,12 @@ int main(int argc, char** argv) {
         (unsigned long long)c.local_bytes, (unsigned long long)c.local_hits,
         (unsigned long long)c.local_misses, c.local_read_ns / 1e9, c.local_verify_ns / 1e9,
         c.local_setup_ns / 1e9);
+    std::fprintf(stderr, "strata-worker: cache hits=%llu reused=%llu loaded=%llu verified=%llu "
+                         "resident=%llu peak=%llu allocations=%llu expirations=%llu unloads=%llu\n",
+                 (unsigned long long)c.cache_hits, (unsigned long long)c.reused_bytes,
+                 (unsigned long long)c.loaded_bytes, (unsigned long long)c.verified_bytes,
+                 (unsigned long long)c.resident_bytes, (unsigned long long)c.peak_arena_bytes,
+                 (unsigned long long)c.arena_allocations, (unsigned long long)c.cache_expirations,
+                 (unsigned long long)c.cache_unloads);
     return 0;
 }

@@ -15,7 +15,6 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
-#include <mutex>
 
 namespace strata::worker {
 namespace {
@@ -153,7 +152,6 @@ struct ExpertWorkerService::Impl {
     WorkerCounters* counters = nullptr;
     sock_fd listener = kBadFd;
     std::atomic<bool> stopping{false};
-    std::mutex listen_mu;
 
     enum class State { Empty, Setup, Ready };
     State state = State::Empty;
@@ -183,19 +181,46 @@ struct ExpertWorkerService::Impl {
         counters->last_error = status;
     }
 
+    // Session identity/replay/setup controls are never retained across connections.
+    // Weight storage below survives ONLY after a complete persistent READY.
+    bool persistent_session = false, resident_complete = false, cache_binding = false;
+    Digest128 resident_identity{};
+    uint64_t idle_since_ns = 0;
+
+    bool resident_expired() const {
+        return resident_complete && mono_ns() - idle_since_ns >= (uint64_t)opt.residency_ms * 1000000;
+    }
+    void unload_weights(const char* reason) {
+        if (arena_bytes) logf("cache unload: reason=%s bytes=%llu", reason, (unsigned long long)arena_bytes);
+        resident_complete = false;
+        resident_identity = {};
+        idle_since_ns = 0;
+        arena.reset();
+        arena_bytes = counters->resident_bytes = 0;
+        slot_off.clear();
+        slot_filled.clear();
+        slot_bad.clear();
+        slot_of.clear();
+        manifest = {};
+        fmt = {};
+    }
     void void_session() {
         state = State::Empty;
         local_mode = false;
         local_attempt.clear();
         if (local)
             local->close_files();
-        arena.reset();
-        arena_bytes = 0;
-        slot_off.clear();
-        slot_filled.clear();
-        slot_bad.clear();
-        slot_of.clear();
+        persistent_session = cache_binding = false;
+        session = model_id = partition_id = last_sequence = 0;
         have_sequence = false;
+        if (!resident_complete) unload_weights("session-end");
+    }
+
+    void expire_resident() {
+        if (!resident_expired()) return;
+        ++counters->cache_expirations;
+        void_session();
+        unload_weights("expiry");
     }
 
     // ---- frame io ----
@@ -212,6 +237,7 @@ struct ExpertWorkerService::Impl {
     void on_ready(sock_fd fd, const uint8_t* p, size_t n);
     void on_infer(sock_fd fd, const uint8_t* p, size_t n);
     void on_status(sock_fd fd);
+    void on_cache_status(sock_fd fd);
     void serve_connection(sock_fd fd);
     bool execute(const InferRequest& r, std::vector<float>& partials, std::string& err);
 };
@@ -219,7 +245,9 @@ struct ExpertWorkerService::Impl {
 bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malformed) {
     malformed = false;
     uint8_t head[kHeaderBytes];
-    if (!sock::recv_all(fd, head, sizeof head, opt.deadline_ms)) return false;
+    const auto cancelled = [&] { return stopping.load(std::memory_order_acquire) || resident_expired() ||
+               (persistent_session && state == State::Setup && local_expired()); };
+    if (!sock::recv_all_controlled(fd, head, sizeof head, opt.deadline_ms, cancelled)) return false;
     const uint32_t magic = (uint32_t) head[0] | (uint32_t) head[1] << 8 | (uint32_t) head[2] << 16 |
                            (uint32_t) head[3] << 24;
     f.msg = (uint16_t) (head[4] | head[5] << 8);
@@ -259,6 +287,10 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
     case MSG_INFER_ACK:
         cap = kReplyPayloadMax;
         break;
+    case MSG_CACHE_STATUS:
+    case MSG_UNLOAD:
+        cap = 0;
+        break;
     case MSG_STATUS:
         cap = 16;
         break;
@@ -271,7 +303,7 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
     }
     if (magic != kWireMagic || len > cap) { malformed = true; return false; }
     f.payload.resize((size_t) len);
-    if (len > 0 && !sock::recv_all(fd, f.payload.data(), f.payload.size(), opt.deadline_ms)) return false;
+    if (len > 0 && !sock::recv_all_controlled(fd, f.payload.data(), f.payload.size(), opt.deadline_ms, cancelled)) return false;
     return true;
 }
 
@@ -280,25 +312,29 @@ bool ExpertWorkerService::Impl::send_frame(sock_fd fd, uint16_t msg, uint16_t st
     if (payload.size() > kMaxFrameBytes) return false;
     std::vector<uint8_t> buf;
     encode_frame(buf, msg, status, payload.data(), payload.size());
-    return sock::send_all(fd, buf.data(), buf.size(), opt.deadline_ms);
+    return sock::send_all_controlled(fd, buf.data(), buf.size(), opt.deadline_ms,
+                                     [&] { return stopping.load(std::memory_order_acquire); });
 }
 
 void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, size_t n, bool use_local) {
+    expire_resident();
+    void_session(); // even a refused setup invalidates the old session, never the verified cache
     const uint16_t ack = use_local ? MSG_LOCAL_SETUP_ACK : MSG_SETUP_ACK;
     Digest128 identity{};
-    bool want_fallback = false;
+    bool want_fallback = false, want_resident = false;
     if (use_local) {
-        void_session();
         Cur c{p, n};
         const auto version = c.u32(), flags = c.u32();
         identity = {c.u64(), c.u64()};
-        if (n < 24 || version != kLocalVersion || flags > 1 || !local ||
-            (flags && !opt.local_upload_fallback)) {
+        if (n < 24 || version != kLocalVersion || flags > 3 || !local ||
+            ((flags & 1) && !opt.local_upload_fallback) ||
+            ((flags & kLocalResident) && opt.residency_ms == 0)) {
             fail(ST_LOCAL_UNAVAILABLE);
             send_frame(fd, ack, ST_LOCAL_UNAVAILABLE, {});
             return;
         }
-        want_fallback = flags == 1;
+        want_fallback = flags & 1;
+        want_resident = flags & kLocalResident;
         p += 24;
         n -= 24;
     }
@@ -307,6 +343,21 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, siz
         fail(ST_BAD_REQUEST);
         send_frame(fd, ack, ST_BAD_REQUEST, {});
         return;
+    }
+    if (resident_complete) {
+        SetupManifest candidate = m, frozen = manifest;
+        candidate.nonce = frozen.nonce = 0;
+        std::memset(candidate.model_name, 0, sizeof candidate.model_name);
+        std::memset(frozen.model_name, 0, sizeof frozen.model_name); // log label, not identity
+        std::vector<uint8_t> a, b;
+        const bool same = want_resident && identity == resident_identity &&
+                          encode_setup_begin(candidate, a) && encode_setup_begin(frozen, b) && a == b;
+        if (!same) {
+            fail(ST_CACHE_MISMATCH);
+            logf("cache mismatch: retained %llu B; unload or wait for expiry", (unsigned long long)arena_bytes);
+            send_frame(fd, ack, ST_CACHE_MISMATCH, {});
+            return;
+        }
     }
     if (use_local && (local->manifest().identity != identity || !local->manifest().matches(m))) {
         fail(ST_LOCAL_INVALID);
@@ -347,24 +398,36 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, siz
         counters->local_bytes = counters->local_hits = counters->local_misses = 0;
         counters->local_read_ns = counters->local_verify_ns = counters->local_setup_ns = 0;
     }
-    manifest = m;
-    fmt = f;
+    persistent_session = want_resident;
+    cache_binding = resident_complete;
+    if (!cache_binding) {
+        manifest = m;
+        resident_identity = identity;
+        fmt = f;
+        slot_of.assign((size_t) m.n_layers * m.n_expert, -1);
+        slot_off.clear();
+        for (int l = 0; l < m.n_layers; ++l)
+            for (int e = 0; e < m.n_expert; ++e)
+                if (m.owns(l, e)) {
+                    slot_of[(size_t) l * m.n_expert + e] = (int32_t) slot_off.size();
+                    slot_off.push_back((uint64_t) slot_off.size() * f.bytes);
+                }
+        slot_filled.assign(slot_off.size(), 0);
+        slot_bad.assign(slot_off.size(), 0);
+        local_attempt.assign(slot_off.size(), 0);
+        if (need > 0) {
+            arena.reset(new uint8_t[need]);   // exactly the assigned set: the budget was checked above
+            arena_bytes = need;
+            counters->resident_bytes = need;
+            counters->peak_arena_bytes = std::max(counters->peak_arena_bytes, need);
+            ++counters->arena_allocations;
+        }
+    }
     model_id = m.model_id;
     partition_id = m.partition_id;
-    slot_of.assign((size_t) m.n_layers * m.n_expert, -1);
-    slot_off.clear();
-    for (int l = 0; l < m.n_layers; ++l)
-        for (int e = 0; e < m.n_expert; ++e)
-            if (m.owns(l, e)) {
-                slot_of[(size_t) l * m.n_expert + e] = (int32_t) slot_off.size();
-                slot_off.push_back((uint64_t) slot_off.size() * f.bytes);
-            }
-    slot_filled.assign(slot_off.size(), 0);
-    slot_bad.assign(slot_off.size(), 0);
-    local_attempt.assign(slot_off.size(), 0);
-    if (need > 0) {
-        arena.reset(new uint8_t[need]);   // exactly the assigned set: the budget was checked above
-        arena_bytes = need;
+    if (cache_binding) {
+        ++counters->cache_hits;
+        counters->reused_bytes += arena_bytes;
     }
     ++session_serial;
     session = m.nonce ^ (mono_ns() << 1) ^ (session_serial * 0x9e3779b97f4a7c15ull);
@@ -380,6 +443,13 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, siz
     if (use_local) {
         put32(reply, kLocalVersion);
         put32(reply, kLocalBatchMax);
+        if (want_resident) {
+            put32(reply, cache_binding ? 1 : 0);
+            put64(reply, cache_binding ? arena_bytes : 0);
+            logf("cache setup: hit=%d reused=%llu B resident=%llu B session=%llx", cache_binding,
+                 (unsigned long long)(cache_binding ? arena_bytes : 0),
+                 (unsigned long long)arena_bytes, (unsigned long long)session);
+        }
     }
     send_frame(fd, ack, ST_OK, reply);
 }
@@ -394,7 +464,7 @@ void ExpertWorkerService::Impl::on_local_load(sock_fd fd, const uint8_t *p, size
     Cur c{p, n};
     const auto sid = c.u64();
     const auto count = c.u32();
-    if (state != State::Setup || !local_mode || sid != session) {
+    if (state != State::Setup || !local_mode || cache_binding || sid != session) {
         refuse(ST_WRONG_STATE);
         return;
     }
@@ -504,6 +574,7 @@ void ExpertWorkerService::Impl::on_local_load(sock_fd fd, const uint8_t *p, size
                 return;
             }
             counters->local_bytes += bytes;
+            counters->loaded_bytes += bytes;
             i += bytes;
         }
     auto verify = [&](const uint8_t *data, size_t bytes, Digest128 want) {
@@ -515,6 +586,7 @@ void ExpertWorkerService::Impl::on_local_load(sock_fd fd, const uint8_t *p, size
                 return false;
             }
             const size_t end = std::min<size_t>(bytes, i + (64u << 10));
+            counters->verified_bytes += end - i;
             for (; i < end; ++i) {
                 d.a = (d.a ^ data[i]) * 0x100000001b3ull;
                 d.b = (d.b ^ data[bytes - 1 - i]) * 0x100000001b3ull;
@@ -589,7 +661,7 @@ void ExpertWorkerService::Impl::on_upload(sock_fd fd, const uint8_t* p, size_t n
         send_frame(fd, MSG_UPLOAD_ACK, ST_BAD_REQUEST, {});
         return;
     }
-    if (state != State::Setup || sid != session) {
+    if (state != State::Setup || cache_binding || sid != session) {
         fail(state == State::Empty ? ST_WRONG_STATE : ST_STALE_SESSION);
         send_frame(fd, MSG_UPLOAD_ACK, state == State::Empty ? ST_WRONG_STATE : ST_STALE_SESSION, {});
         return;
@@ -641,8 +713,10 @@ void ExpertWorkerService::Impl::on_upload(sock_fd fd, const uint8_t* p, size_t n
     std::memcpy(arena.get() + slot_off[(size_t) slot] + chunk_off, p + c.i, chunk_len);
     slot_filled[(size_t) slot] += chunk_len;
     counters->setup_weight_bytes += chunk_len;
+    counters->loaded_bytes += chunk_len;
     uint16_t status = ST_OK;
     if (slot_filled[(size_t) slot] == total_len) {
+        counters->verified_bytes += total_len;
         const Digest128 got = blob_digest(arena.get() + slot_off[(size_t) slot], total_len);
         if (got != declared) {
             logf("slot (%u,%u): digest mismatch (%llx/%llx vs %llx/%llx)", layer, expert,
@@ -662,7 +736,7 @@ void ExpertWorkerService::Impl::on_upload(sock_fd fd, const uint8_t* p, size_t n
 void ExpertWorkerService::Impl::on_ready(sock_fd fd, const uint8_t* p, size_t n) {
     Cur c{p, n};
     const uint64_t sid = c.u64();
-    if (state != State::Setup || sid != session) {
+    if (n != 8 || state != State::Setup || sid != session) {
         const uint16_t s = state == State::Empty ? ST_WRONG_STATE : ST_STALE_SESSION;
         fail(s);
         send_frame(fd, MSG_READY_ACK, s, {});
@@ -693,6 +767,11 @@ void ExpertWorkerService::Impl::on_ready(sock_fd fd, const uint8_t* p, size_t n)
              (unsigned long long)counters->local_bytes, (unsigned long long)counters->setup_weight_bytes,
              (unsigned long long)counters->local_hits, (unsigned long long)counters->local_misses,
              counters->local_read_ns / 1e9, counters->local_verify_ns / 1e9, counters->local_setup_ns / 1e9);
+    }
+    if (persistent_session) {
+        resident_complete = true;
+        idle_since_ns = mono_ns();
+        local->close_files();
     }
     state = State::Ready;   // frozen: no further setup or upload is accepted on this session
     logf("session %llx ready: %llu blobs, %llu B verified", (unsigned long long) session,
@@ -837,6 +916,7 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n)
         reply(ST_NOT_OWNED, {});
         return;
     }
+    if (resident_complete) idle_since_ns = mono_ns();
     last_sequence = r.sequence;
     have_sequence = true;
     if (opt.verbose > 0)
@@ -864,6 +944,21 @@ void ExpertWorkerService::Impl::on_status(sock_fd fd) {
     send_frame(fd, MSG_STATUS_ACK, ST_OK, reply);
 }
 
+void ExpertWorkerService::Impl::on_cache_status(sock_fd fd) {
+    std::vector<uint8_t> reply;
+    put32(reply, 1); // cache status extension version
+    put32(reply, (uint32_t)state);
+    put64(reply, session);
+    put64(reply, arena_bytes);
+    const auto elapsed = resident_complete ? (mono_ns() - idle_since_ns) / 1000000 : 0;
+    put64(reply, resident_complete && elapsed < (uint64_t)opt.residency_ms ? opt.residency_ms - elapsed : 0);
+    for (auto v : {counters->cache_hits, counters->reused_bytes, counters->loaded_bytes,
+                   counters->verified_bytes, counters->peak_arena_bytes, counters->arena_allocations,
+                   counters->cache_expirations, counters->cache_unloads}) put64(reply, v);
+    put32(reply, resident_complete ? 1 : 0);
+    send_frame(fd, MSG_CACHE_STATUS_ACK, ST_OK, reply);
+}
+
 void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
     while (!stopping.load(std::memory_order_acquire)) {
         WireFrame f;
@@ -877,6 +972,7 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
             }
             break;
         }
+        expire_resident();
         switch (f.msg) {
         case MSG_LOCAL_SETUP:
             on_setup_begin(fd, f.payload.data(), f.payload.size(), true);
@@ -897,6 +993,15 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
             counters->infer_in_bytes += kHeaderBytes + f.payload.size();
             on_infer(fd, f.payload.data(), f.payload.size());
             break;
+        case MSG_CACHE_STATUS:
+            on_cache_status(fd);
+            break;
+        case MSG_UNLOAD:
+            void_session();
+            unload_weights("explicit");
+            ++counters->cache_unloads;
+            send_frame(fd, MSG_UNLOAD_ACK, ST_OK, {});
+            break;
         case MSG_STATUS:
             on_status(fd);
             break;
@@ -913,13 +1018,22 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
         }
     }
     sock::close_fd(fd);
+    expire_resident();
     void_session();   // a disconnect voids the session: the next connection restarts with SETUP_BEGIN
 }
 
 ExpertWorkerService::ExpertWorkerService(WorkerOptions options) : impl_(std::make_unique<Impl>(options, &counters_)) {}
-ExpertWorkerService::~ExpertWorkerService() = default;
+ExpertWorkerService::~ExpertWorkerService() {
+    stop();
+    sock::close_fd(impl_->listener);
+}
 
 bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
+    if (impl_->opt.residency_ms < 0 || impl_->opt.residency_ms > kMaxResidencyMs ||
+        (impl_->opt.residency_ms && impl_->opt.deadline_ms <= 0)) {
+        err = "residency must be 0..86400000 ms, with a positive I/O deadline";
+        return false;
+    }
     if (impl_->opt.upload_chunk_max == 0 || impl_->opt.upload_chunk_max > kUploadChunkMax) {
         err = "setup chunk cap must be between 1 and " + std::to_string(kUploadChunkMax);
         return false;
@@ -943,20 +1057,24 @@ bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
 
 void ExpertWorkerService::run() {
     while (!impl_->stopping.load(std::memory_order_acquire)) {
+        impl_->expire_resident();
         sock_fd fd = kBadFd;
-        {
-            std::lock_guard<std::mutex> g(impl_->listen_mu);
-            if (impl_->listener == kBadFd) return;
-        }
+        if (impl_->listener == kBadFd) break;
         if (!sock::accept_one(impl_->listener, fd, 100)) continue;
         impl_->serve_connection(fd);
     }
+    impl_->void_session();
+    impl_->unload_weights("shutdown");
+    sock::close_fd(impl_->listener);
+    logf("shutdown: arena released; joining CPU pool");
+    impl_->pool.reset();
+    logf("shutdown: CPU pool joined; resident=0 B");
 }
 
 void ExpertWorkerService::stop() {
     impl_->stopping.store(true, std::memory_order_release);
-    std::lock_guard<std::mutex> g(impl_->listen_mu);
-    sock::close_fd(impl_->listener);
+    // accept polls every 100 ms; controlled active I/O observes stop every 50 ms.
+    // Only run() closes sockets, so a stop cannot race descriptor reuse.
 }
 
 }  // namespace strata::worker
