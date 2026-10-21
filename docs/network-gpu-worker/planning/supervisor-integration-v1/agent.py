@@ -253,6 +253,8 @@ def serve(config, channel):
             elif action != "HEARTBEAT":
                 raise CoverageError("unknown-controller-action")
     except BaseException as exc:
+        if getattr(exc, "cleanup", None) is not None:
+            last_cleanup = exc.cleanup
         reason = type(exc).__name__ + ":" + str(exc)
     finally:
         try:

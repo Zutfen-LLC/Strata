@@ -12,10 +12,19 @@ import sys
 import time
 
 from resource_guard import CoverageError, GuardStop, EVENT_KEYS, headroom, signature
-from resource_telemetry import OwnedProcess, required, read_text
+from resource_telemetry import OwnedProcess, OwnedTree, required, read_text
 from linux_owned import identity
 from policy import MIB
 from runtime import Job, collect, packet
+
+
+def parent_sample(ns):
+    own = OwnedProcess.pin(os.getpid(), expected=identity(os.getpid(), ns), namespace_receipt=ns)
+    tree = OwnedTree(own)
+    try:
+        return collect(tree, ns)
+    finally:
+        tree.close()
 
 
 class ProbeGuard:
@@ -63,12 +72,9 @@ def run(config):
     resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
     resource.setrlimit(resource.RLIMIT_FSIZE, (8 * MIB, 8 * MIB))
     ns = config["namespaces"]
-    own = OwnedProcess.pin(os.getpid(), expected=identity(os.getpid(), ns), namespace_receipt=ns)
-    try:
-        from resource_telemetry import OwnedTree
-        baseline = collect(OwnedTree(own), ns)
-    finally:
-        own.close()
+    baseline = parent_sample(ns)
+    parent_guard = ProbeGuard(baseline)
+    parent_guard.check("ROLE_PROBE", baseline)
     end = time.monotonic() + 45
     for name in ("natural_exit", "monitor_exit", "monitor_stall"):
         directory = root / name
@@ -87,16 +93,24 @@ def run(config):
                 "import time; print('HARMLESS_CHILD_STARTED_V1', flush=True); time.sleep(" + str(seconds) + ")"]
         input_fd = os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC)
         job = None
-        observed_failure = False
+        failure_reason = None
+        next_parent_sample = 0
         try:
             job = Job(key, argv, {"PATH": "/usr/bin:/bin", "LANG": "C"}, input_fd, ns,
                       ProbeGuard(baseline), NoOuter(), min(end, time.monotonic() + 20),
                       str(directory), monitor_behavior=behavior)
             while True:
+                if time.monotonic() >= next_parent_sample:
+                    parent_guard.check("ROLE_PROBE", parent_sample(ns))
+                    next_parent_sample = time.monotonic() + 2
                 try:
                     rc = job.poll()
-                except CoverageError:
-                    observed_failure = True
+                except CoverageError as exc:
+                    failure_reason = str(exc)
+                    allowed = {"monitor_exit": {"control-eof", "monitor-exited"},
+                               "monitor_stall": {"monitor-stalled"}}
+                    if failure_reason not in allowed.get(name, set()):
+                        raise
                     break
                 if rc is not None:
                     if rc != 0:
@@ -107,10 +121,12 @@ def run(config):
             os.close(input_fd)
             if job is not None:
                 cleanup = job.stop("probe-completion", grace=1)
+                cleanup["observed_fault"] = failure_reason
                 (directory / "cleanup.json").write_text(json.dumps(cleanup, sort_keys=True) + "\n")
                 if not cleanup["complete"] or not all(pid in cleanup["reaped"] for pid in job.children):
                     raise CoverageError("probe-incomplete-true-parent-reaping")
-        if observed_failure != (name != "natural_exit"):
+        parent_guard.check("ROLE_PROBE", parent_sample(ns))
+        if (failure_reason is not None) != (name != "natural_exit"):
             raise CoverageError("probe-expected-failure-mismatch:" + name)
         if time.monotonic() >= end:
             raise CoverageError("probe-overall-wall-bound")

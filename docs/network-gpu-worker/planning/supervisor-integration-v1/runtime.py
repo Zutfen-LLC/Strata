@@ -107,6 +107,12 @@ def child_exec(gate, parent, argv, env, input_fd, out_fd, err_fd):
     os.execve(argv[0], argv, env)  # Exact approved environment; inherit no overrides.
 
 
+class PartialLaunch(CoverageError):
+    def __init__(self, cause, cleanup):
+        super().__init__("partial-launch:" + type(cause).__name__ + ":" + str(cause))
+        self.cleanup = cleanup
+
+
 class Job:
     """The watchdog is the actual parent of BOTH workload and monitor."""
     def __init__(self, key, argv, env, stdin_fd, namespaces, guard, outer, deadline,
@@ -120,6 +126,7 @@ class Job:
         self.channel = None
         self.exec_gate = None
         self.transient_fds = set()
+        self.fd_errors = []
         self.transient_sockets = []
         self.stop_result = None
         self.deadline = deadline
@@ -130,9 +137,9 @@ class Job:
         verify_initial_namespaces(namespaces)
         try:
             self._start(argv, env, stdin_fd, guard, outer, monitor_behavior)
-        except BaseException:
-            self.stop("partial-launch")
-            raise
+        except BaseException as exc:
+            cleanup = self.stop("partial-launch")
+            raise PartialLaunch(exc, cleanup) from exc
 
     def _start(self, argv, env, stdin_fd, guard, outer, monitor_behavior):
         gate_r, gate_w = os.pipe2(os.O_CLOEXEC)
@@ -196,7 +203,11 @@ class Job:
         self.transient_fds.discard(fd)  # Invalidate before close; no reused-FD retry.
         if fd == self.exec_gate:
             self.exec_gate = None
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError as exc:
+            self.fd_errors.append(type(exc).__name__)
+            raise
 
     def poll(self):
         now = time.monotonic()
@@ -259,7 +270,7 @@ class Job:
     def stop(self, reason, *, grace=15):
         if self.stop_result is not None:
             return self.stop_result
-        errors = []
+        errors = list(self.fd_errors)
         for fd in list(self.transient_fds):
             try:
                 self.close_fd(fd)
@@ -338,11 +349,13 @@ class Job:
                 item.close()
             except OSError:
                 result["complete"] = False
+                errors.append("owned-descriptor-close-failed")
         for sock in self.transient_sockets:
             try:
                 sock.close()
             except OSError:
                 result["complete"] = False
+                errors.append("owned-socket-close-failed")
         self.transient_sockets.clear()
         self.stop_result = result
         return result

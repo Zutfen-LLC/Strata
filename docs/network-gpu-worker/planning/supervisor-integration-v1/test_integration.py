@@ -1,5 +1,6 @@
 """Synthetic sources only. No live process, socket, GPU, service or model."""
 import copy
+from contextlib import ExitStack
 import json
 import signal
 import struct
@@ -209,6 +210,7 @@ class OwnershipTests(unittest.TestCase):
         job.items = {101: job.root, 102: job.monitor}
         job.children = {101, 102}
         job.reaped, job.transient_fds, job.transient_sockets = {}, set(), []
+        job.fd_errors = []
         job.exec_gate, job.stop_result, job.deadline = None, None, 100
         job.adopt = Mock()
         return job
@@ -264,9 +266,41 @@ class OwnershipTests(unittest.TestCase):
                 patch("runtime.os.pipe2", return_value=(10, 11)), \
                 patch("runtime.os.open", side_effect=[12, OSError("fixture")]), \
                 patch.object(runtime.Job, "stop", stop):
-            with self.assertRaises(OSError):
+            with self.assertRaises(runtime.PartialLaunch):
                 runtime.Job(("r", "ROLE_ENGINE_A", "B0"), ["/generic/bin"], {}, 1, {}, None, None, 100, "/generic/run")
         self.assertEqual(captured, [("partial-launch", {10, 11, 12})])
+        for stage in ("first_fork", "root_pin", "second_fork", "monitor_pin", "monitor_release"):
+            with self.subTest(stage=stage), ExitStack() as stack:
+                tracked = []
+                writes = []
+                def stopped(job, reason):
+                    tracked.append((set(job.transient_fds), set(job.children)))
+                    return {"complete": True}
+                stack.enter_context(patch("runtime.subreaper"))
+                stack.enter_context(patch("runtime.verify_initial_namespaces"))
+                stack.enter_context(patch("runtime.os.pipe2", side_effect=[(10, 11), (14, 15)]))
+                stack.enter_context(patch("runtime.os.open", side_effect=[12, 13]))
+                stack.enter_context(patch("runtime.os.close"))
+                forks = [OSError("fixture")] if stage == "first_fork" else \
+                        [101, OSError("fixture")] if stage == "second_fork" else [101, 102]
+                stack.enter_context(patch("runtime.os.fork", side_effect=forks))
+                root, monitor = Mock(), Mock()
+                pins = [OSError("fixture")] if stage == "root_pin" else \
+                       [root, OSError("fixture")] if stage == "monitor_pin" else [root, monitor]
+                stack.enter_context(patch("runtime.pin_child", side_effect=pins))
+                stack.enter_context(patch("runtime.promote_exec", side_effect=lambda item, _: item))
+                stack.enter_context(patch("runtime.socket.socketpair", return_value=(Mock(), Mock())))
+                def write(fd, value):
+                    writes.append(value)
+                    raise OSError("fixture")
+                stack.enter_context(patch("runtime.os.write", side_effect=write))
+                stack.enter_context(patch.object(runtime.Job, "stop", stopped))
+                with self.assertRaises(runtime.PartialLaunch):
+                    runtime.Job(("r", "ROLE_ENGINE_A", "B0"), ["/generic/bin"], {}, 1,
+                                {}, None, None, 100, "/generic/run")
+                self.assertEqual(len(tracked), 1)
+                self.assertIn(11, tracked[0][0])
+                self.assertNotIn(b"G", writes)
 
     def test_fd_invalidated_even_when_close_fails(self):
         job = self.job()
