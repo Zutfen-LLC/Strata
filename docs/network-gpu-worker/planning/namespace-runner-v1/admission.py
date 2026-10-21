@@ -25,8 +25,11 @@ def strict_json(raw):
                 raise ValueError("duplicate-key")
             result[key] = value
         return result
-    return json.loads(raw, object_pairs_hook=unique,
-                      parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite-json")))
+    try:
+        return json.loads(raw, object_pairs_hook=unique,
+                          parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite-json")))
+    except RecursionError:
+        raise ValueError("json-nesting-limit") from None
 
 
 def regular_bytes(path, cap, check=lambda: None, *, allow_empty=False):

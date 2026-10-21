@@ -46,6 +46,24 @@ class RunnerTests(unittest.TestCase):
         with patch("admission.os.stat", side_effect=AssertionError("live forbidden")):
             value = admission.live_admission(None, {}, 0)
         self.assertEqual(value["reason"], "receipt-required")
+        args = SimpleNamespace(mode="synthetic-then-live", manifest_sha256="a" * 64,
+                               interpreter_sha256="b" * 64, receipt=None,
+                               approved_receipt_sha256=None, approved_source_id=None,
+                               expected_host_id=None, expected_machine_id_sha256=None)
+        evidence, budget = Mock(), Mock()
+        budget.limited.side_effect = [nullcontext(), nullcontext()]
+        report = {"stages": []}
+        def passed(*_):
+            result = {"status": "PASS", "runner_fixtures": "PASS", "integration_44": "PASS"}
+            report["stages"].append(result)
+            return result
+        with patch("runner.artifact_admission", return_value={"executable": "/generic/python", "executable_identity": (1, 2)}), \
+                patch("runner.stage", side_effect=passed) as stage, \
+                patch("admission.os.stat", side_effect=AssertionError("live forbidden")):
+            self.assertEqual(runner.execute(args, evidence, budget, report), "BLOCKED_LIVE")
+        self.assertEqual(stage.call_count, 1)
+        self.assertEqual(report["stages"][0]["integration_44"], "PASS")
+        self.assertEqual(report["live_result"]["status"], "BLOCKED")
 
     def test_untrusted_receipt_probes_no_live_facts(self):
         with patch("admission.regular_bytes", side_effect=AssertionError("read forbidden")):
@@ -61,6 +79,9 @@ class RunnerTests(unittest.TestCase):
     def test_duplicate_json_keys_rejected(self):
         with self.assertRaises(ValueError):
             admission.strict_json(b'{"key":1,"key":2}')
+        with patch("admission.json.loads", side_effect=RecursionError()):
+            with self.assertRaisesRegex(ValueError, "nesting"):
+                admission.strict_json(b"[]")
 
     def test_valid_externally_pinned_receipt(self):
         raw, pins = self.receipt()

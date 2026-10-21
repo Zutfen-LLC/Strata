@@ -20,6 +20,7 @@ class Child:
     def __init__(self, argv, executable_identity):
         self.pid = self.pidfd = self.procfd = self.gate = None
         self.fds, self.streams = set(), {}
+        self.fd_errors = []
         self.reaped = False
         self.rc = None
         self.identity = None
@@ -82,7 +83,11 @@ class Child:
         self.fds.discard(fd)
         if fd == self.gate:
             self.gate = None
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError as exc:
+            self.fd_errors.append(type(exc).__name__)
+            raise
 
     def alive(self):
         if self.pidfd is None:
@@ -122,7 +127,7 @@ class Child:
     def stop(self, deadline):
         if self.cleanup is not None:
             return self.cleanup
-        errors = []
+        errors = list(self.fd_errors)
         if self.gate is not None:
             try:
                 self.close_fd(self.gate)  # Unreleased child gets EOF, never exec.
@@ -168,6 +173,7 @@ class Child:
                     except OSError as exc:
                         errors.append(type(exc).__name__)
         self.cleanup = {"pid": self.pid, "identity": self.identity, "reaped": self.reaped,
+                        "spawn_start_mono": self.started, "cleanup_end_observed_mono": time.monotonic(),
                         "rc": self.rc, "errors": errors,
                         "complete": not errors and (self.pid is None or self.reaped)}
         return self.cleanup

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "role": "ROLE_CPU_C",
+  "host_identity": "REPLACE_WITH_INDEPENDENTLY_APPROVED_PRIVATE_HOST_ID",
+  "machine_id_sha256": "REPLACE_WITH_SHA256_OF_EXACT_MACHINE_ID_FILE_BYTES",
+  "boot_id": "REPLACE_WITH_APPROVED_CURRENT_BOOT_UUID",
+  "issued_utc": "REPLACE_WITH_UTC_YYYY-MM-DDTHH:MM:SSZ",
+  "source_id": "REPLACE_WITH_INDEPENDENTLY_APPROVED_PRIVATE_SOURCE_ID",
+  "method": "TEMPLATE ONLY. Not authentic or trusted. Administrator must establish initial-host namespaces independently.",
+  "namespaces": {
+    "pid": ["REPLACE_WITH_NONNEGATIVE_DEV", "REPLACE_WITH_NONNEGATIVE_INODE"],
+    "mnt": ["REPLACE_WITH_NONNEGATIVE_DEV", "REPLACE_WITH_NONNEGATIVE_INODE"],
+    "cgroup": ["REPLACE_WITH_NONNEGATIVE_DEV", "REPLACE_WITH_NONNEGATIVE_INODE"]
+  }
+}

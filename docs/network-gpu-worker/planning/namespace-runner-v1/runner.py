@@ -72,9 +72,14 @@ class Evidence:
             raise Blocked("path", "absolute-canonical-new-evidence-root-required")
         os.mkdir(self.root, 0o700)
         self.fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        st = os.fstat(self.fd)
-        if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
-            raise Blocked("path", "private-owned-evidence-directory-required")
+        try:
+            st = os.fstat(self.fd)
+            if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
+                raise Blocked("path", "private-owned-evidence-directory-required")
+        except BaseException:
+            fd, self.fd = self.fd, None
+            os.close(fd)
+            raise
 
     def write(self, name, raw):
         self.budget.check()
@@ -166,9 +171,17 @@ def artifact_admission(manifest_digest, interpreter_digest, budget):
         raise Blocked("ownership", "local-pid-view-or-pidfd-signal")
     fd = os.pidfd_open(os.getpid(), 0)
     os.close(fd)
+    limits = {}
+    for name, which, cap in (("address_space", resource.RLIMIT_AS, 256 * 1048576),
+                             ("cpu_seconds", resource.RLIMIT_CPU, 30),
+                             ("file_bytes", resource.RLIMIT_FSIZE, 8 * 1048576)):
+        soft, hard = resource.getrlimit(which)
+        if hard != resource.RLIM_INFINITY and hard < cap:
+            raise Blocked("protection", "existing-hard-limit-too-small:" + name)
+        limits[name] = {"existing_soft": soft, "existing_hard": hard, "child_cap": cap}
     return {"executable": str(executable), "executable_identity": (st.st_dev, st.st_ino),
             "interpreter_sha256": interpreter_digest, "manifest_sha256": manifest_digest,
-            "python": sys.version, "uid": os.getuid(), "files": len(found)}
+            "python": sys.version, "uid": os.getuid(), "files": len(found), "limits": limits}
 
 
 def classify(kind, rc, stdout, cleanup):
@@ -221,7 +234,7 @@ def stage(kind, argv, identity, evidence, budget, report):
             if rc is not None and not child.streams:
                 record["exit_observed"] = stamp()
                 break
-    except (OSError, ValueError, Deadline) as exc:
+    except (OSError, ValueError, Deadline, MemoryError) as exc:
         failure = type(exc).__name__ + ":" + str(exc)
         if getattr(exc, "cleanup", None) is not None:
             record["cleanup"] = exc.cleanup
@@ -324,7 +337,7 @@ def main():
         evidence = Evidence(args.evidence_root, budget)
         evidence.json("REPORT.json", report)
         report["status"] = execute(args, evidence, budget, report)
-    except (OSError, ValueError, Deadline) as exc:
+    except (OSError, ValueError, Deadline, MemoryError) as exc:
         report["status"] = "BLOCKED" if isinstance(exc, (Blocked, Deadline)) else "FAIL"
         report["reason"] = type(exc).__name__ + ":" + str(exc)
     finally:
