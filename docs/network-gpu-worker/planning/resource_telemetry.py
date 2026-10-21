@@ -24,6 +24,10 @@ class CoverageError(ValueError):
     """A required observation or ownership proof cannot be evaluated."""
 
 
+class ProcessExited(CoverageError):
+    """A held pidfd confirms exit; never inferred from an unreadable entry."""
+
+
 @dataclass(frozen=True)
 class Observation:
     value: object = None
@@ -220,30 +224,53 @@ class OwnedProcess:
         verify_initial_namespaces(namespace_receipt)
         if pid <= 1:
             raise CoverageError("unsafe-pid")
-        pid_fd = os.pidfd_open(pid, 0)
-        proc_fd = None
         try:
+            pid_fd = os.pidfd_open(pid, 0)
+        except ProcessLookupError:
+            if parent is None:
+                raise
+            parent.verify()
+            return None  # No process instance exists at this lookup; signal nothing.
+        proc_fd = None
+        retained = False
+        try:
+            if select.select([pid_fd], [], [], 0)[0]:
+                raise ProcessExited("discovered-process-exited")
             proc_fd = os.open("/proc/" + str(pid), os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-            actual_pid, ppid, start = parse_stat(read_text("stat", proc_fd))
+            stat = read_text("stat", proc_fd)
+            if stat.status == "unavailable" and stat.reason in ("ENOENT", "ESRCH") and \
+                    select.select([pid_fd], [], [], 0)[0]:
+                raise ProcessExited("discovered-process-exited-before-stat")
+            actual_pid, ppid, start = parse_stat(stat)
+            if actual_pid != pid:
+                raise CoverageError("process-identity-mismatch")
+            if parent is not None:
+                parent.verify()
+                if ppid != parent.identity.pid:
+                    raise CoverageError("child-parent-mismatch")
             exe = os.stat("exe", dir_fd=proc_fd)
             identity = Identity(actual_pid, start, exe.st_dev, exe.st_ino)
             verify_initial_namespaces(namespace_receipt, proc_fd)
             item = cls(identity, proc_fd, pid_fd, namespace_receipt)
             if actual_pid != pid or (expected is not None and identity != expected):
                 raise CoverageError("process-identity-mismatch")
-            if parent is not None:
-                parent.verify()
-                if ppid != parent.identity.pid:
-                    raise CoverageError("child-parent-mismatch")
             item.verify()
+            retained = True
             return item
-        except BaseException:
-            try:
-                if proc_fd is not None:
-                    os.close(proc_fd)
-            finally:
-                os.close(pid_fd)
+        except (ProcessExited, OSError) as exc:
+            terminal = isinstance(exc, ProcessExited) or (exc.errno in (errno.ENOENT, errno.ESRCH) and
+                exc.filename in ("/proc/" + str(pid), "exe", "ns/cgroup", "ns/mnt", "ns/pid"))
+            if parent is not None and terminal and select.select([pid_fd], [], [], 0)[0]:
+                parent.verify()
+                return None  # Proven exit, not permission/identity/schema failure.
             raise
+        finally:
+            if not retained:
+                try:
+                    if proc_fd is not None:
+                        os.close(proc_fd)
+                finally:
+                    os.close(pid_fd)
 
     def alive(self):
         if self.pid_fd is None:
@@ -252,21 +279,35 @@ class OwnedProcess:
 
     def verify(self, executable=True):
         if not self.alive():
-            raise CoverageError("owned-process-exited")
-        pid, _, start = parse_stat(read_text("stat", self.proc_fd))
+            raise ProcessExited("owned-process-exited")
+        stat = read_text("stat", self.proc_fd)
+        if stat.status == "unavailable" and stat.reason in ("ENOENT", "ESRCH") and not self.alive():
+            raise ProcessExited("owned-process-exited-during-stat")
+        pid, _, start = parse_stat(stat)
         if (pid, start) != (self.identity.pid, self.identity.start_ticks):
             raise CoverageError("owned-process-identity-changed")
         if executable:
-            exe = os.stat("exe", dir_fd=self.proc_fd)
+            try:
+                exe = os.stat("exe", dir_fd=self.proc_fd)
+            except OSError as exc:
+                if exc.errno in (errno.ENOENT, errno.ESRCH) and not self.alive():
+                    raise ProcessExited("owned-process-exited-during-exe") from None
+                raise
             if (exe.st_dev, exe.st_ino) != (self.identity.exe_device, self.identity.exe_inode):
                 raise CoverageError("owned-process-executable-changed")
         if not self.alive():
-            raise CoverageError("owned-process-exited")
+            raise ProcessExited("owned-process-exited")
 
     def read(self, name):
         self.verify()
         value = read_text(name, self.proc_fd)
-        self.verify()
+        try:
+            self.verify()
+        except ProcessExited:
+            if value.status != "ok" and not (value.status == "unavailable" and
+                                               value.reason in ("ENOENT", "ESRCH")):
+                required(value, "process-read:" + name)  # Preserve genuine read failures.
+            raise
         return value
 
     def status(self):
@@ -307,7 +348,6 @@ class OwnedProcess:
                 for scan in range(1, MAX_CHILD_SCANS + 1):
                     path, after, vanished = base, (), []
                     before = tasks()
-                    current = {}
                     for task in before:
                         path = base + "/" + task + "/children"
                         value = read_text(task + "/children", task_fd)
@@ -317,8 +357,7 @@ class OwnedProcess:
                         raw = required(value, "children")
                         if any(not re.fullmatch(r"[0-9]{1,10}", p) or int(p) <= 1 for p in raw.split()):
                             raise CoverageError("children-schema")
-                        current[task] = tuple(sorted(set(map(int, raw.split()))))
-                        children.update(current[task])
+                        children.update(map(int, raw.split()))
                         if len(children) > MAX_PROCESSES:
                             raise CoverageError("children-cap")
                     self.verify()
@@ -335,19 +374,22 @@ class OwnedProcess:
                     if before != after or vanished:
                         previous = None
                         continue
-                    # Two complete matching per-task maps reconcile reparenting
-                    # across reads. Churn never grants empty/partial coverage.
-                    if current == previous:
+                    # Stable complete task coverage does not require child-map
+                    # quiescence. Reconcile every observed child by identity below.
+                    if before == previous:
                         return sorted(children)
-                    previous = current
+                    previous = before
                 raise CoverageError("unresolved-task-children-coverage:scans=" + str(MAX_CHILD_SCANS))
             finally:
                 os.close(task_fd)
         except (CoverageError, OSError) as exc:
+            terminal = isinstance(exc, ProcessExited) or (isinstance(exc, OSError) and
+                       exc.errno in (errno.ENOENT, errno.ESRCH) and not self.alive())
             detail = str(exc)
             if isinstance(exc, OSError):
                 detail = errno.errorcode.get(exc.errno, "IO") + ":" + detail
-            raise CoverageError("owned-children:pid=" + str(self.identity.pid) +
+            error = ProcessExited if terminal else CoverageError
+            raise error("owned-children:pid=" + str(self.identity.pid) +
                                 ":start_ticks=" + str(self.identity.start_ticks) +
                                 ":exe_device=" + str(self.identity.exe_device) +
                                 ":exe_inode=" + str(self.identity.exe_inode) +
@@ -384,17 +426,46 @@ class OwnedTree:
         self.root = root
         self.items = {root.identity.pid: root}
 
+    def retire_exited(self):
+        for pid, item in list(self.items.items()):
+            if item is not self.root and not item.alive():
+                del self.items[pid]
+                item.close()
+
     def refresh(self):
         verify_initial_namespaces(self.root.namespace_receipt, self.root.proc_fd)
+        self.root.verify()
+        self.retire_exited()
         queue = [p for p in self.items.values() if p.alive()]
         for parent in queue:
-            for pid in parent.children():
+            if self.items.get(parent.identity.pid) is not parent:
+                continue  # A prior iteration retired this confirmed exited handle.
+            try:
+                children = parent.children()
+            except ProcessExited:
+                if parent is self.root or parent.alive():
+                    raise
+                continue
+            for pid in children:
                 if pid in self.items:
-                    self.items[pid].verify()
+                    try:
+                        self.items[pid].verify()
+                        continue
+                    except ProcessExited:
+                        if self.items[pid] is self.root or self.items[pid].alive():
+                            raise
+                        self.retire_exited()
+                try:
+                    child = OwnedProcess.pin(pid, parent=parent)
+                except (CoverageError, OSError) as exc:
+                    raise CoverageError("owned-child-pin:pid=" + str(pid) + ":parent=" +
+                                        repr(parent.identity) + ":" + type(exc).__name__ + ":" + str(exc)) from None
+                if child is None:
                     continue
+                self.retire_exited()
                 if len(self.items) >= MAX_PROCESSES:
+                    child.close()
                     raise CoverageError("owned-process-cap")
-                child = OwnedProcess.pin(pid, parent=parent)
                 self.items[pid] = child
                 queue.append(child)
         self.root.verify()

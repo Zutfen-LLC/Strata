@@ -170,12 +170,13 @@ class ProcfsRaceTests(unittest.TestCase):
         class Bindings(dict):
             def __missing__(self, key):
                 return "/generic/" + key
-        for phase in ("B1", "G0", "G1"):
+        self.assertEqual(commands.requests("G0"), commands.requests("B0"))
+        for phase in ("B1", "G1"):
             self.assertEqual(commands.requests(phase), full)
         self.assertEqual(sum(commands.requests(p).count(b"GEN 64 ")
-                             for p in ("B0", "B1", "G0", "G1")), 10)
-        self.assertLessEqual(1 + 10, 12)
-        self.assertEqual(64 + 10 * 64, 704)
+                             for p in ("B0", "B1", "G0", "G1")), 8)
+        self.assertLessEqual(2 + 8, 11)
+        self.assertEqual(128 + 8 * 64, 640)
         for phase, cap in (("B0", 1200), ("B1", 600), ("G0", 1800), ("G1", 900)):
             _, env, actual_cap = commands.product("ROLE_ENGINE_A", phase, Bindings())
             self.assertEqual(env["STRATA_DUMP_FIRST_LOGITS"], "/generic/RUN_A/" + phase + ".first-logits")

@@ -262,7 +262,7 @@ class OwnershipTests(unittest.TestCase):
             item.alive.return_value = True
             item.send.side_effect = lambda sig, p=item: setattr(p.alive, "return_value", sig != signal.SIGKILL)
         with patch("runtime.time.monotonic", Clock(step=.1)), patch("runtime.time.sleep"), \
-                patch("runtime.OwnedTree", side_effect=lambda p: Mock(refresh=lambda: [p])), \
+                patch("runtime.OwnedTree", side_effect=lambda p: Mock(items={p.identity.pid: p}, refresh=lambda: [p])), \
                 patch("runtime.os.waitpid", side_effect=[(101, 0), (102, 0), ChildProcessError()]):
             result = job.stop("cancel", grace=0)
         self.assertTrue(result["complete"])

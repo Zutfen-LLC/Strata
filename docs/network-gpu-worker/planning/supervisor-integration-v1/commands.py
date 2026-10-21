@@ -10,10 +10,10 @@ B0_REQUESTS = b"GEN 64 9419\nQUIT\n"
 
 
 def requests(phase):
-    """B0 startup smoke; retain complete, identical comparison streams."""
+    """B0/G0 startup/cache smoke; retain complete B1/G1 comparison streams."""
     if phase not in ENGINE_CAPS:
         raise CoverageError("request-phase-mismatch")
-    return B0_REQUESTS if phase == "B0" else REQUESTS
+    return B0_REQUESTS if phase in ("B0", "G0") else REQUESTS
 
 
 def product(role, phase, b):

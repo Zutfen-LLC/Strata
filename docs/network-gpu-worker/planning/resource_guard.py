@@ -4,6 +4,7 @@ Library integration seam, not an integrated patch to an unavailable driver.
 No workload launch, numeric PID kill, network operation or placement changes.
 """
 from dataclasses import asdict
+import errno
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import signal
 import time
 
 from resource_telemetry import (CoverageError, DiagnosticBaselines, Observation,
+                                ProcessExited,
                                 host_sample, read_text, required, counters,
                                 verify_initial_namespaces)
 
@@ -99,7 +101,12 @@ def verify_namespaces(process, expected):
     # expected is a PRIVATE trusted receipt for the INITIAL host namespaces.
     # Equality to a container's PID 1 alone does not establish this prerequisite.
     for kind in ("cgroup", "mnt", "pid"):
-        actual = namespace_identity("ns/" + kind, process.proc_fd)
+        try:
+            actual = namespace_identity("ns/" + kind, process.proc_fd)
+        except OSError as exc:
+            if exc.errno in (errno.ENOENT, errno.ESRCH) and not process.alive():
+                raise ProcessExited("owned-process-exited-during-namespace-read") from None
+            raise
         monitor = namespace_identity("/proc/self/ns/" + kind)
         if actual != tuple(expected[kind]) or monitor != tuple(expected[kind]):
             raise CoverageError("initial-host-namespace-proof-required:" + kind)
@@ -238,16 +245,30 @@ def capture(tree, worker_identity, namespace_receipt):
     if worker is None:
         raise CoverageError("worker-not-in-owned-tree")
     sample = host_sample()
-    sample["processes"] = [p.status() for p in items]
+    sample["cgroup"] = cgroup_snapshot(worker, namespace_receipt)
+    sample["processes"] = []
+    for process in items:
+        try:
+            row = capture_process(process, namespace_receipt, sample["cgroup"]["membership"])
+        except ProcessExited:
+            if process is tree.root or process is worker:
+                raise
+            continue
+        sample["processes"].append(row)
     sample["worker_memory_bytes"] = next(p["memory_bytes"] for p in sample["processes"]
                                          if p["identity"]["pid"] == worker_identity.pid)
-    sample["cgroup"] = cgroup_snapshot(worker, namespace_receipt)
-    for process in items:
-        verify_namespaces(process, namespace_receipt)
-        if str(membership(process.read("cgroup"))) != sample["cgroup"]["membership"]:
-            raise CoverageError("owned-tree-spans-cgroups")
-        process.verify()
+    tree.root.verify()
     return sample
+
+
+def capture_process(process, namespace_receipt, cgroup_membership):
+    """One live owned row; only a held-pidfd-confirmed exit is terminal."""
+    row = process.status()
+    verify_namespaces(process, namespace_receipt)
+    if str(membership(process.read("cgroup"))) != cgroup_membership:
+        raise CoverageError("owned-descendant-outside-covered-group")
+    process.verify()
+    return row
 
 
 class Journal:

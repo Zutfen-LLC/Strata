@@ -11,9 +11,9 @@ import signal
 import socket
 import time
 
-from resource_guard import (CoverageError, GuardStop, Journal, cgroup_snapshot,
+from resource_guard import (CoverageError, GuardStop, Journal, capture_process, cgroup_snapshot,
                             membership, verify_namespaces)
-from resource_telemetry import (DiagnosticBaselines, Identity, OwnedProcess, OwnedTree,
+from resource_telemetry import (DiagnosticBaselines, Identity, OwnedProcess, OwnedTree, ProcessExited,
                                 host_sample, verify_initial_namespaces)
 from linux_owned import identity, parent_death, pin_child, promote_exec, subreaper
 from policy import ReleaseGate, RoleGuard, Stamp
@@ -22,14 +22,19 @@ from policy import ReleaseGate, RoleGuard, Stamp
 def collect(tree, namespaces):
     items = tree.refresh()
     sample = host_sample()
-    sample["processes"] = [item.status() for item in items]
+    sample["cgroup"] = cgroup_snapshot(tree.root, namespaces)
+    sample["processes"] = []
+    for item in items:
+        try:
+            row = capture_process(item, namespaces, sample["cgroup"]["membership"])
+        except ProcessExited:
+            if item is tree.root:
+                raise
+            continue
+        sample["processes"].append(row)
     sample["worker_memory_bytes"] = next(p["memory_bytes"] for p in sample["processes"]
                                          if p["identity"]["pid"] == tree.root.identity.pid)
-    sample["cgroup"] = cgroup_snapshot(tree.root, namespaces)
-    for item in items:
-        verify_namespaces(item, namespaces)
-        if str(membership(item.read("cgroup"))) != sample["cgroup"]["membership"]:
-            raise CoverageError("owned-descendant-outside-covered-group")
+    tree.root.verify()
     return sample
 
 
@@ -269,13 +274,36 @@ class Job:
                                namespace_receipt=self.namespaces)
         try:
             for pid in own.children():
-                if pid not in self.items and pid not in self.reaped:
-                    if os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
-                        continue  # Exited child will be genuinely waitpid-reaped below.
-                    if len(self.items) >= 16:
-                        raise CoverageError("owned-adopted-process-cap")
-                    item = pin_child(pid, self.namespaces)
-                    self.items[pid] = item
+                old = self.items.get(pid)
+                if old is not None and old.alive():
+                    try:
+                        old.verify()
+                        continue
+                    except ProcessExited:
+                        if old.alive():
+                            raise
+                try:
+                    exited = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                except ChildProcessError:
+                    continue  # No longer our child; never signal a reused foreign PID.
+                if exited is not None:
+                    continue  # The actual waitpid reaper below owns this zombie.
+                item = OwnedProcess.pin(pid, parent=own)
+                if item is None:
+                    continue  # Exited between waitid and pin; no fabricated identity.
+                if old is None and len(self.items) >= 16:
+                    item.close()
+                    raise CoverageError("owned-adopted-process-cap")
+                reused = old is not None or pid in self.reaped
+                self.items[pid] = item
+                if reused:
+                    self.reaped.pop(pid, None)
+                if old is not None:
+                    old.close()
+                if reused:
+                    # Track the new proven direct child for cleanup, but do not
+                    # overwrite a historical PID-only reap receipt as success.
+                    raise CoverageError("owned-adopted-pid-reuse:" + repr(item.identity))
         finally:
             own.close()
 
@@ -301,16 +329,28 @@ class Job:
         # Discover bounded descendants before stopping their parents. Failure is
         # reported incomplete; no arbitrary PID or group kill fills the gap.
         for item in list(self.items.values()):
+            tree = None
             try:
                 if live(item):
                     tree = OwnedTree(item)
-                    for child in tree.refresh():
-                        if child.identity.pid not in self.items:
-                            self.items[child.identity.pid] = child
-                        elif child is not item:
-                            child.close()
+                    tree.refresh()
+            except ProcessExited as exc:
+                if live(item):
+                    errors.append(type(exc).__name__ + ":" + str(exc)[:2048])
             except BaseException as exc:
                 errors.append(type(exc).__name__ + ":" + str(exc)[:2048])
+            finally:
+                if tree is not None:
+                    # Retain partial discovery too: a parent may exit after some
+                    # descendants were pinned. They still need safe cleanup.
+                    for child in tree.items.values():
+                        try:
+                            if child.identity.pid not in self.items:
+                                self.items[child.identity.pid] = child
+                            elif child is not item:
+                                child.close()
+                        except BaseException as exc:
+                            errors.append(type(exc).__name__ + ":" + str(exc)[:2048])
         for item in self.items.values():
             try:
                 item.send(signal.SIGTERM)
