@@ -29,12 +29,12 @@ def strict_json(raw):
                       parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite-json")))
 
 
-def regular_bytes(path, cap, check=lambda: None):
+def regular_bytes(path, cap, check=lambda: None, *, allow_empty=False):
     """Exact bounded bytes, no symlink/FIFO/device; detect in-read replacement."""
     fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= cap:
+        if not stat.S_ISREG(before.st_mode) or not (0 if allow_empty else 1) <= before.st_size <= cap:
             raise Blocked("malformed", "regular-file-size")
         result = bytearray()
         while len(result) <= cap:
@@ -57,18 +57,48 @@ def observe(label, action, required=True):
     try:
         return {"name": label, "required": required, "status": "ok", "value": action()}
     except PermissionError as exc:
-        return {"name": label, "required": required, "status": "permission-denied", "errno": exc.errno}
+        return {"name": label, "required": required, "status": "permission-denied", "errno": exc.errno,
+                "path": str(exc.filename)[:512] if exc.filename else None}
     except FileNotFoundError as exc:
-        return {"name": label, "required": required, "status": "missing", "errno": exc.errno}
+        return {"name": label, "required": required, "status": "missing", "errno": exc.errno,
+                "path": str(exc.filename)[:512] if exc.filename else None}
     except OSError as exc:
-        return {"name": label, "required": required, "status": "os-error", "errno": exc.errno}
+        return {"name": label, "required": required, "status": "os-error", "errno": exc.errno,
+                "path": str(exc.filename)[:512] if exc.filename else None}
     except (ValueError, UnicodeError) as exc:
         return {"name": label, "required": required, "status": getattr(exc, "status", "malformed"),
                 "detail": str(exc)}
 
 
+def proc_text(path, cap, check=lambda: None):
+    """Proc pseudo-files may report size zero; bound actual content instead."""
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Blocked("malformed", "proc-file-type")
+        parts = bytearray()
+        while len(parts) <= cap:
+            check()
+            chunk = os.read(fd, min(4096, cap + 1 - len(parts)))
+            if not chunk:
+                break
+            parts.extend(chunk)
+        if not 0 < len(parts) <= cap:
+            raise Blocked("malformed", "proc-text-length")
+        return bytes(parts).decode("ascii").strip()
+    finally:
+        os.close(fd)
+
+
 def hex_digest(value):
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def machine_digest(check):
+    raw = regular_bytes("/etc/machine-id", 128, check)
+    if re.fullmatch(r"[0-9a-f]{32}", raw.decode("ascii").strip()) is None:
+        raise Blocked("malformed", "live-machine-id")
+    return hashlib.sha256(raw).hexdigest()  # Exact file bytes, including newline.
 
 
 def parse_receipt(raw, pins, now):
@@ -133,8 +163,8 @@ def live_admission(receipt_path, pins, now, check=lambda: None):
     if parsed["status"] != "ok":
         result["reason"] = parsed["status"]
         return result
-    facts = [observe("machine-id", lambda: hashlib.sha256(regular_bytes("/etc/machine-id", 128, check).strip()).hexdigest()),
-             observe("boot-id", lambda: regular_bytes("/proc/sys/kernel/random/boot_id", 128, check).decode("ascii").strip())]
+    facts = [observe("machine-id", lambda: machine_digest(check)),
+             observe("boot-id", lambda: proc_text("/proc/sys/kernel/random/boot_id", 128, check))]
     for kind in ("pid", "mnt", "cgroup"):
         def pair(kind=kind):
             check()
