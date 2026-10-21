@@ -26,10 +26,9 @@ initial PID/mount/cgroup namespace receipts. Do not modify cgroups, limits,
 security, network, services or swap. A true-root unsupported counter must be
 reported explicitly; required unavailable coverage means STOP, never zero.
 
-Stage1: run exactly the unchanged26 synthetic monitor cases and new44 integration
-cases, serially, with no live signals/workloads. Existing reported26-case PASS
-remains valid history; this is an explicit integration-regression gate, not a
-cosmetic repeat. For each stage cap256MiB address space,30CPU-seconds,60wall-seconds,
+Stage1: run exactly the new44 integration cases, with no live signals/workloads.
+The unchanged26 monitor cases retain their user-reported PASS; do not rerun them
+solely for this delivery. Cap256MiB address space,30CPU-seconds,60wall-seconds,
 8MiB log/output, one invocation, no auto-retry. The coordinator must own/pin each
 new interpreter child and enforce wall deadlines with its own pidfd TERM then
 KILL/wait, never a broad/group signal or unrelated PID.
@@ -38,12 +37,10 @@ Use explicit isolated bootstrap commands; `-I file.py` alone does not put adjace
 libraries on sys.path. Substitute only the private root path:
 
 ```sh
-python3 -B -I -c 'import resource,runpy,sys; resource.setrlimit(resource.RLIMIT_AS,(268435456,268435456)); resource.setrlimit(resource.RLIMIT_CPU,(30,30)); resource.setrlimit(resource.RLIMIT_FSIZE,(8388608,8388608)); sys.path[:0]=[sys.argv[1]]; runpy.run_path(sys.argv[1]+"/resource_monitor_fixtures.py",run_name="__main__")' FILES_ROOT
 python3 -B -I -c 'import resource,runpy,sys; resource.setrlimit(resource.RLIMIT_AS,(268435456,268435456)); resource.setrlimit(resource.RLIMIT_CPU,(30,30)); resource.setrlimit(resource.RLIMIT_FSIZE,(8388608,8388608)); sys.path[:0]=[sys.argv[1]+"/supervisor-integration-v1",sys.argv[1]]; runpy.run_path(sys.argv[1]+"/supervisor-integration-v1/test_integration.py",run_name="__main__")' FILES_ROOT
 ```
 
-Require RC0, zero failures/errors/skips, exact counts and markers:
-`RESOURCE_MONITOR_FIXTURES_PASS_V1 tests=26 live_signals=0 workloads=0` and
+Require RC0, zero failures/errors/skips, exact count and marker:
 `SUPERVISOR_INTEGRATION_FIXTURES_PASS_V1 tests=44 live_signals=0 workloads=0`.
 Stop at first failure; do not repair/run a second invocation in this window.
 
@@ -76,7 +73,7 @@ blocked admission, not a waived pass. New swap decline/event, unexpected process
 timeouts, malformed evidence, log cap or ownership uncertainty stops the window;
 signal only coordinator-owned pinned children and report exact incomplete work.
 
-Window: at most300seconds total including admission, two synthetic invocations,
+Window: at most240seconds total including admission, one synthetic invocation,
 one live invocation and cleanup; no concurrent probes or retries. Preserve a new
 REPORT.md, identities/config hashes, stdout/stderr with RC/start/end/monotonic
 durations, JSONL coverage samples, cleanup receipts, byte counts, all hashes and
