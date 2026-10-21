@@ -145,14 +145,14 @@ def counter_delta(current, baseline):
 
 
 class DiagnosticBaselines:
-    """One admission anchor and a separate previous sample; never re-anchor."""
+    """First-observation anchor and previous sample; never silently re-anchor."""
     def __init__(self, sample):
         self.initial = sample["vmstat_pages"]
         self.previous = self.initial
 
     def annotate(self, sample):
         current = sample["vmstat_pages"]
-        sample["vmstat_since_admission_pages"] = {
+        sample["vmstat_since_observation_start_pages"] = {
             k: counter_delta(current[k], self.initial[k]) for k in self.initial}
         sample["vmstat_interval_pages"] = {
             k: counter_delta(current[k], self.previous[k]) for k in self.initial}
@@ -182,15 +182,41 @@ def parse_stat(text):
         raise CoverageError("malformed-process-stat") from None
 
 
+def verify_initial_namespaces(expected, proc_fd=None):
+    if not isinstance(expected, dict) or set(expected) != {"cgroup", "mnt", "pid"}:
+        raise CoverageError("initial-host-namespace-receipt-required")
+    for kind in ("cgroup", "mnt", "pid"):
+        wanted = expected[kind]
+        if not isinstance(wanted, (tuple, list)) or len(wanted) != 2 or \
+                any(type(v) is not int or v < 0 for v in wanted):
+            raise CoverageError("namespace-receipt-schema")
+        own = os.stat("/proc/self/ns/" + kind)
+        if (own.st_dev, own.st_ino) != tuple(wanted):
+            raise CoverageError("initial-host-namespace-mismatch:" + kind)
+        if proc_fd is not None:
+            other = os.stat("ns/" + kind, dir_fd=proc_fd)
+            if (other.st_dev, other.st_ino) != tuple(wanted):
+                raise CoverageError("owned-process-namespace-mismatch:" + kind)
+
+
 class OwnedProcess:
     """Both proc directory FD and pidfd refer to the pinned process instance."""
-    def __init__(self, identity, proc_fd, pid_fd):
+    def __init__(self, identity, proc_fd, pid_fd, namespace_receipt=None):
         self.identity, self.proc_fd, self.pid_fd = identity, proc_fd, pid_fd
+        self.namespace_receipt = namespace_receipt
 
     @classmethod
-    def pin(cls, pid, expected=None, parent=None):
-        if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+    def pin(cls, pid, expected=None, parent=None, namespace_receipt=None):
+        if not callable(getattr(os, "pidfd_open", None)) or \
+                not callable(getattr(signal, "pidfd_send_signal", None)):
             raise CoverageError("pidfd-required")
+        if parent is not None:
+            namespace_receipt = parent.namespace_receipt
+        elif not isinstance(expected, Identity) or expected.pid != pid:
+            raise CoverageError("supervisor-root-identity-receipt-required")
+        # Must precede pidfd/proc pinning and child enumeration: both numeric
+        # PID views must name the same initial host process namespace.
+        verify_initial_namespaces(namespace_receipt)
         if pid <= 1:
             raise CoverageError("unsafe-pid")
         pid_fd = os.pidfd_open(pid, 0)
@@ -200,7 +226,8 @@ class OwnedProcess:
             actual_pid, ppid, start = parse_stat(read_text("stat", proc_fd))
             exe = os.stat("exe", dir_fd=proc_fd)
             identity = Identity(actual_pid, start, exe.st_dev, exe.st_ino)
-            item = cls(identity, proc_fd, pid_fd)
+            verify_initial_namespaces(namespace_receipt, proc_fd)
+            item = cls(identity, proc_fd, pid_fd, namespace_receipt)
             if actual_pid != pid or (expected is not None and identity != expected):
                 raise CoverageError("process-identity-mismatch")
             if parent is not None:
@@ -210,21 +237,30 @@ class OwnedProcess:
             item.verify()
             return item
         except BaseException:
-            if proc_fd is not None:
-                os.close(proc_fd)
-            os.close(pid_fd)
+            try:
+                if proc_fd is not None:
+                    os.close(proc_fd)
+            finally:
+                os.close(pid_fd)
             raise
 
     def alive(self):
+        if self.pid_fd is None:
+            raise CoverageError("owned-process-handle-closed")
         return not select.select([self.pid_fd], [], [], 0)[0]
 
-    def verify(self):
+    def verify(self, executable=True):
         if not self.alive():
             raise CoverageError("owned-process-exited")
         pid, _, start = parse_stat(read_text("stat", self.proc_fd))
-        exe = os.stat("exe", dir_fd=self.proc_fd)
-        if Identity(pid, start, exe.st_dev, exe.st_ino) != self.identity or not self.alive():
+        if (pid, start) != (self.identity.pid, self.identity.start_ticks):
             raise CoverageError("owned-process-identity-changed")
+        if executable:
+            exe = os.stat("exe", dir_fd=self.proc_fd)
+            if (exe.st_dev, exe.st_ino) != (self.identity.exe_device, self.identity.exe_inode):
+                raise CoverageError("owned-process-executable-changed")
+        if not self.alive():
+            raise CoverageError("owned-process-exited")
 
     def read(self, name):
         self.verify()
@@ -242,7 +278,12 @@ class OwnedProcess:
         task_fd = os.open("task", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
                           dir_fd=self.proc_fd)
         try:
-            tasks = os.listdir(task_fd)
+            tasks = []
+            with os.scandir(task_fd) as entries:
+                for entry in entries:
+                    tasks.append(entry.name)
+                    if len(tasks) > MAX_TASKS:
+                        raise CoverageError("task-enumeration-cap")
             if len(tasks) > MAX_TASKS or any(not t.isdigit() for t in tasks):
                 raise CoverageError("task-enumeration-cap-or-schema")
             children = set()
@@ -262,13 +303,24 @@ class OwnedProcess:
         # Never fall back to os.kill(pid), kill-by-port or process-group signals.
         if not self.alive():
             return "already-exited"
-        self.verify()
+        # An unexpected exec still belongs to this pidfd/start-time instance;
+        # reject its samples but permit safe cleanup of the owned task.
+        self.verify(executable=False)
         signal.pidfd_send_signal(self.pid_fd, sig, None, 0)
         return "sent"
 
     def close(self):
-        os.close(self.proc_fd)
-        os.close(self.pid_fd)
+        errors = []
+        for name in ("proc_fd", "pid_fd"):
+            fd = getattr(self, name)
+            setattr(self, name, None)  # Invalidate before close; never retry a reused FD.
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError as exc:
+                    errors.append(exc)
+        if errors:
+            raise OSError("owned-descriptor-close-failed") from errors[0]
 
 
 class OwnedTree:
@@ -277,6 +329,7 @@ class OwnedTree:
         self.items = {root.identity.pid: root}
 
     def refresh(self):
+        verify_initial_namespaces(self.root.namespace_receipt, self.root.proc_fd)
         queue = [p for p in self.items.values() if p.alive()]
         for parent in queue:
             for pid in parent.children():
@@ -292,8 +345,14 @@ class OwnedTree:
         return [p for p in self.items.values() if p.alive()]
 
     def close(self):
+        errors = []
         for item in self.items.values():
-            item.close()
+            try:
+                item.close()
+            except OSError as exc:
+                errors.append(exc)
+        if errors:
+            raise OSError("owned-tree-close-failed") from errors[0]
 
 
 def host_sample(proc_root=Path("/proc")):

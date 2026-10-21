@@ -23,13 +23,14 @@ def main():
         for obj, name in ((os, "kill"), (os, "pidfd_open"), (signal, "pidfd_send_signal"),
                           (subprocess, "Popen"), (telemetry, "read_text"),
                           (guard, "read_text"), (guard, "host_sample"),
-                          (guard, "namespace_identity")):
+                          (guard, "namespace_identity"), (telemetry, "verify_initial_namespaces"),
+                          (guard, "verify_initial_namespaces")):
             stack.enter_context(patch.object(obj, name, side_effect=forbidden, create=True))
         result = unittest.TextTestRunner(verbosity=2).run(suite)
-    if not result.wasSuccessful() or result.testsRun != 21 or result.skipped:
+    if not result.wasSuccessful() or result.testsRun != 26 or result.skipped:
         print("RESOURCE_MONITOR_FIXTURES_FAIL_V1")
         return 1
-    print("RESOURCE_MONITOR_FIXTURES_PASS_V1 tests=21 live_signals=0 workloads=0")
+    print("RESOURCE_MONITOR_FIXTURES_PASS_V1 tests=26 live_signals=0 workloads=0")
     return 0
 
 

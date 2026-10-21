@@ -13,7 +13,8 @@ import signal
 import time
 
 from resource_telemetry import (CoverageError, DiagnosticBaselines, Observation,
-                                host_sample, ok, read_text, required, counters)
+                                host_sample, read_text, required, counters,
+                                verify_initial_namespaces)
 
 MIB = 1048576
 GIB = 1024 * MIB
@@ -97,7 +98,7 @@ def namespace_identity(name, dir_fd=None):
 def verify_namespaces(process, expected):
     # expected is a PRIVATE trusted receipt for the INITIAL host namespaces.
     # Equality to a container's PID 1 alone does not establish this prerequisite.
-    for kind in ("cgroup", "mnt"):
+    for kind in ("cgroup", "mnt", "pid"):
         actual = namespace_identity("ns/" + kind, process.proc_fd)
         monitor = namespace_identity("/proc/self/ns/" + kind)
         if actual != tuple(expected[kind]) or monitor != tuple(expected[kind]):
@@ -177,8 +178,11 @@ def signature(snapshot):
 
 class CpuGuard:
     """Immutable launch baseline. New instance only for a separately admitted session."""
-    def __init__(self, sample):
-        self.swap_baseline = self.swap_values(sample)[1]
+    def __init__(self, sample, admission_swapfree_bytes=None):
+        total, free = self.swap_values(sample)
+        self.swap_baseline = free if admission_swapfree_bytes is None else admission_swapfree_bytes
+        if type(self.swap_baseline) is not int or not 0 <= self.swap_baseline <= total:
+            raise CoverageError("original-admission-swapfree-schema")
         self.cgroup_baseline = sample["cgroup"]
         self.check_memory(sample, CPU_ADMISSION_BYTES)
         self.check_rss(sample)
@@ -228,6 +232,7 @@ class CpuGuard:
 
 
 def capture(tree, worker_identity, namespace_receipt):
+    verify_initial_namespaces(namespace_receipt, tree.root.proc_fd)
     items = tree.refresh()
     worker = next((p for p in items if p.identity == worker_identity), None)
     if worker is None:
@@ -262,31 +267,48 @@ class Journal:
         self.bytes += len(raw)
 
     def close(self):
-        os.close(self.fd)
+        fd, self.fd = self.fd, None
+        if fd is not None:
+            os.close(fd)
 
 
 def stop_owned(tree, grace_seconds=15, clock=time.monotonic, pause=time.sleep):
     """TERM wrapper first, then pinned children; never signal a replacement PID."""
     outcomes = []
     items = list(tree.items.values())
+    liveness_errors = set()
+
+    def live(item):
+        try:
+            return item.alive()
+        except Exception as exc:
+            if item.identity.pid not in liveness_errors:
+                outcomes.append((item.identity.pid, "LIVENESS", type(exc).__name__))
+                liveness_errors.add(item.identity.pid)
+            return True  # Unknown is not proof of exit; still attempt safe pidfd cleanup.
+
     for item in items:
         try:
             outcomes.append((item.identity.pid, "TERM", item.send(signal.SIGTERM)))
-        except (CoverageError, OSError) as exc:
+        except Exception as exc:
             outcomes.append((item.identity.pid, "TERM", type(exc).__name__))
     end = clock() + max(0, min(15, grace_seconds))
-    while any(p.alive() for p in items) and clock() < end:
+    while any(live(p) for p in items) and clock() < end:
         pause(min(0.1, max(0, end - clock())))
     for item in items:
-        if item.alive():
+        if live(item):
             try:
                 outcomes.append((item.identity.pid, "KILL", item.send(signal.SIGKILL)))
-            except (CoverageError, OSError) as exc:
+            except Exception as exc:
                 outcomes.append((item.identity.pid, "KILL", type(exc).__name__))
+    for item in items:
+        outcomes.append((item.identity.pid, "EXIT_OBSERVATION",
+                         "unconfirmed" if live(item) else "pidfd-exited-not-reaped"))
     return outcomes
 
 
-def monitor(tree, worker_identity, namespace_receipt, hard_deadline, journal):
+def monitor(tree, worker_identity, namespace_receipt, hard_deadline, journal, *,
+            admission_swapfree_bytes=None, admission_monotonic=None):
     """Blocking library seam. Supervisor must gate SETUP on ADMITTED marker.
 
     hard_deadline is the earliest ORIGINAL worker/trial/phase cap, in this
@@ -298,16 +320,22 @@ def monitor(tree, worker_identity, namespace_receipt, hard_deadline, journal):
     reason = "coverage-failure"
     coverage_status = "failed"
     try:
+        if type(admission_swapfree_bytes) is not int or admission_swapfree_bytes < 0 or \
+                not isinstance(admission_monotonic, (int, float)) or \
+                not math.isfinite(admission_monotonic) or not admission_monotonic <= started:
+            raise CoverageError("original-admission-baseline-receipt-required")
         if not isinstance(hard_deadline, (int, float)) or not math.isfinite(hard_deadline) or \
-                not started + 15 < hard_deadline <= started + 7200:
+                not started + 15 < hard_deadline <= admission_monotonic + 7200:
             raise CoverageError("invalid-original-hard-deadline")
         cleanup_deadline = hard_deadline
         initial = capture(tree, worker_identity, namespace_receipt)
-        guard = CpuGuard(initial)
+        guard = CpuGuard(initial, admission_swapfree_bytes)
         diagnostics = DiagnosticBaselines(initial)
         if time.monotonic() - started >= SAMPLE_SECONDS:
             raise CoverageError("admission-overran-two-seconds")
-        journal.emit("RESOURCE_MONITOR_ADMITTED_V1", monotonic=started, sample=initial)
+        journal.emit("RESOURCE_MONITOR_ADMITTED_V1", monotonic=started, sample=initial,
+                     admission_monotonic=admission_monotonic,
+                     swapfree_baseline_bytes=guard.swap_baseline)
         next_sample = started + SAMPLE_SECONDS
         while True:
             now = time.monotonic()
@@ -325,16 +353,21 @@ def monitor(tree, worker_identity, namespace_receipt, hard_deadline, journal):
             if time.monotonic() - began >= SAMPLE_SECONDS:
                 raise CoverageError("sample-overran-two-seconds")
             next_sample = began + SAMPLE_SECONDS
-    except (CoverageError, OSError, ValueError) as exc:
+    except Exception as exc:
         reason = type(exc).__name__ + ":" + str(exc)
         coverage_status = "covered" if isinstance(exc, GuardStop) else "failed"
     finally:
         # Always attempt owned cleanup even if collection, logging or caller fails.
-        outcomes = stop_owned(tree, min(15, max(0, cleanup_deadline - time.monotonic())))
         try:
+            try:
+                outcomes = stop_owned(tree, min(15, max(0, cleanup_deadline - time.monotonic())))
+            except Exception as exc:
+                outcomes = [("cleanup", "unconfirmed", type(exc).__name__)]
             journal.emit("RESOURCE_MONITOR_STOP_V1", reason=reason, coverage_status=coverage_status,
-                         outcomes=outcomes)
+                         cleanup_status="requires-supervisor-confirmation", outcomes=outcomes)
         finally:
-            journal.close()
-            tree.close()
+            try:
+                journal.close()
+            finally:
+                tree.close()
     return reason

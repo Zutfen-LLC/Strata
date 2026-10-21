@@ -29,7 +29,7 @@ class TelemetryTests(unittest.TestCase):
                          "malformed")
         self.assertEqual(t.counter_delta(t.ok(1), t.ok(2)).reason, "counter-decreased")
 
-    def test_admission_and_interval_are_separate(self):
+    def test_first_observation_and_interval_are_separate(self):
         def sample(value):
             return {"vmstat_pages": {"pswpout": value}}
         base = t.DiagnosticBaselines(sample(t.ok(10)))
@@ -37,13 +37,13 @@ class TelemetryTests(unittest.TestCase):
         base.annotate(first)
         second = sample(t.ok(17))
         base.annotate(second)
-        self.assertEqual(second["vmstat_since_admission_pages"]["pswpout"], t.ok(7))
+        self.assertEqual(second["vmstat_since_observation_start_pages"]["pswpout"], t.ok(7))
         self.assertEqual(second["vmstat_interval_pages"]["pswpout"], t.ok(4))
         missing = sample(t.Observation())
         base.annotate(missing)
         final = sample(t.ok(19))
         base.annotate(final)
-        self.assertEqual(final["vmstat_since_admission_pages"]["pswpout"], t.ok(9))
+        self.assertEqual(final["vmstat_since_observation_start_pages"]["pswpout"], t.ok(9))
         self.assertEqual(final["vmstat_interval_pages"]["pswpout"].status, "unavailable")
 
     def test_psi_diagnostic_schema(self):
@@ -88,8 +88,36 @@ class TelemetryTests(unittest.TestCase):
     def test_missing_pidfd_blocks_without_fallback(self):
         with patch.object(t.os, "pidfd_open", None, create=True):
             # A noncallable exported interface is also unavailable.
-            with self.assertRaises((t.CoverageError, TypeError)):
+            with self.assertRaises(t.CoverageError):
                 t.OwnedProcess.pin(41)
+
+    def test_namespace_refusal_precedes_pidfd_pin_and_proc_access(self):
+        with patch.object(t.os, "pidfd_open", create=True) as pin, \
+             patch.object(t.signal, "pidfd_send_signal", create=True), \
+             patch.object(t, "verify_initial_namespaces", side_effect=t.CoverageError("pid-view")), \
+             patch.object(t.os, "open") as opened:
+            with self.assertRaises(t.CoverageError):
+                t.OwnedProcess.pin(41, expected=t.Identity(41, 900, 1, 2), namespace_receipt={})
+            pin.assert_not_called()
+            opened.assert_not_called()
+
+    def test_idempotent_close_attempts_both_and_all_owners(self):
+        proc = t.OwnedProcess(t.Identity(41, 900, 1, 2), 101, 102)
+        with patch.object(t.os, "close", side_effect=[OSError("fixture"), None]) as close:
+            with self.assertRaises(OSError):
+                proc.close()
+            proc.close()
+            self.assertEqual([c.args[0] for c in close.call_args_list], [101, 102])
+        self.assertIsNone(proc.proc_fd)
+        self.assertIsNone(proc.pid_fd)
+        first, second = Mock(), Mock()
+        first.identity.pid, second.identity.pid = 41, 42
+        first.close.side_effect = OSError("fixture")
+        tree = t.OwnedTree(first)
+        tree.items[42] = second
+        with self.assertRaises(OSError):
+            tree.close()
+        second.close.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ def row(path, current=0, maximum=None, high=None):
 
 def group():
     return {"membership": "/parent/leaf", "mount": g.full_mount(mount_info()),
-            "namespace_receipt": {"cgroup": (1, 2), "mnt": (1, 3)},
+            "namespace_receipt": {"cgroup": (1, 2), "mnt": (1, 3), "pid": (1, 4)},
             "coverage": "required-covered",
             "rows": [row("/CGROUP_ROOT/parent/leaf"), row("/CGROUP_ROOT/parent")]}
 
@@ -38,8 +38,8 @@ class GuardTests(unittest.TestCase):
         guard.check(sample(6 * g.GIB - 65536 * 1024))
         with self.assertRaisesRegex(t.CoverageError, "greater-than-64MiB"):
             guard.check(sample(6 * g.GIB - 65536 * 1024 - 1))
-        # Reported triggering decline is 82176 KiB = 80.25 MiB.
-        self.assertEqual((6214112 - 6131936) / 1024, 80.25)
+        # Synthetic net decline: 82176 KiB = 80.25 MiB.
+        self.assertEqual(82176 / 1024, 80.25)
         with self.assertRaisesRegex(t.CoverageError, "greater-than-64MiB"):
             guard.check(sample(6 * g.GIB - 82176 * 1024))
 
@@ -159,8 +159,9 @@ class GuardTests(unittest.TestCase):
 
     def test_initial_namespace_proof_not_just_pid1(self):
         process = SimpleNamespace(proc_fd=77)
-        expected = {"cgroup": (1, 2), "mnt": (1, 3)}
-        with patch.object(g, "namespace_identity", side_effect=[(1, 2), (1, 2), (1, 3), (1, 3)]):
+        expected = {"cgroup": (1, 2), "mnt": (1, 3), "pid": (1, 4)}
+        with patch.object(g, "namespace_identity", side_effect=[(1, 2), (1, 2), (1, 3), (1, 3),
+                                                              (1, 4), (1, 4)]):
             g.verify_namespaces(process, expected)
         with patch.object(g, "namespace_identity", return_value=(9, 9)):
             with self.assertRaises(t.CoverageError):
@@ -197,7 +198,33 @@ class GuardTests(unittest.TestCase):
         result = g.stop_owned(tree, grace_seconds=0)
         root.send.assert_called_once_with(g.signal.SIGTERM)
         child.send.assert_called_once_with(g.signal.SIGTERM)
-        self.assertEqual([r[0] for r in result], [41, 42])
+        self.assertEqual({r[0] for r in result}, {41, 42})
+
+    def test_cleanup_liveness_and_close_failures_do_not_skip_other_owners(self):
+        broken = Mock(identity=SimpleNamespace(pid=41))
+        other = Mock(identity=SimpleNamespace(pid=42))
+        broken.alive.side_effect = OSError("closed handle")
+        other.alive.return_value = False
+        tree = SimpleNamespace(items={41: broken, 42: other})
+        result = g.stop_owned(tree, grace_seconds=0)
+        other.send.assert_called_once_with(g.signal.SIGTERM)
+        self.assertIn((41, "EXIT_OBSERVATION", "unconfirmed"), result)
+        owner_tree, journal = Mock(), Mock()
+        journal.close.side_effect = OSError("fixture")
+        with patch.object(g.time, "monotonic", return_value=100), \
+             patch.object(g, "stop_owned", side_effect=OSError("fixture")):
+            with self.assertRaises(OSError):
+                g.monitor(owner_tree, None, {}, 0, journal,
+                          admission_swapfree_bytes=6 * g.GIB, admission_monotonic=90)
+            owner_tree.close.assert_called_once()
+            self.assertEqual(journal.emit.call_args.args[0], "RESOURCE_MONITOR_STOP_V1")
+
+    def test_pid_namespace_failure_precedes_child_discovery(self):
+        tree = Mock()
+        with patch.object(g, "verify_initial_namespaces", side_effect=t.CoverageError("pid-view")):
+            with self.assertRaises(t.CoverageError):
+                g.capture(tree, None, {})
+            tree.refresh.assert_not_called()
 
     def test_failed_admission_and_bad_deadline_stop_without_admitted_marker(self):
         for deadline in (0, float("nan"), "bad", 130):
@@ -205,11 +232,25 @@ class GuardTests(unittest.TestCase):
             with patch.object(g.time, "monotonic", return_value=100), \
                  patch.object(g, "capture", side_effect=t.CoverageError("missing-events")), \
                  patch.object(g, "stop_owned", return_value=[]) as stop:
-                g.monitor(tree, None, {}, deadline, journal)
+                g.monitor(tree, None, {}, deadline, journal,
+                          admission_swapfree_bytes=6 * g.GIB, admission_monotonic=90)
                 stop.assert_called_once()
                 self.assertEqual(journal.emit.call_args.args[0], "RESOURCE_MONITOR_STOP_V1")
                 self.assertEqual(journal.emit.call_count, 1)
                 tree.close.assert_called_once()
+
+    def test_attach_keeps_original_baseline_and_original_deadline(self):
+        with self.assertRaisesRegex(t.CoverageError, "greater-than-64MiB"):
+            g.CpuGuard(sample(6 * g.GIB - 65 * g.MIB), 6 * g.GIB)
+        for baseline, admission, deadline in ((None, 90, 130), (6 * g.GIB, None, 130),
+                                               (6 * g.GIB, 90, 7291)):
+            tree, journal = Mock(), Mock()
+            with patch.object(g.time, "monotonic", return_value=100), \
+                 patch.object(g, "capture") as capture, patch.object(g, "stop_owned", return_value=[]):
+                g.monitor(tree, None, {}, deadline, journal,
+                          admission_swapfree_bytes=baseline, admission_monotonic=admission)
+                capture.assert_not_called()
+                self.assertEqual(journal.emit.call_args.args[0], "RESOURCE_MONITOR_STOP_V1")
 
 
 if __name__ == "__main__":
