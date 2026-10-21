@@ -1,6 +1,6 @@
 # GPU-RESERVE-WARNING-V1
 
-Current execution continuation: [PERIODIC-OBSERVATION-V1-20261021](PERIODIC-OBSERVATION-V1-20261021.md).
+Current execution continuation: [GPU-COMPLETION-V1-20261021](GPU-COMPLETION-V1-20261021.md).
 It supersedes the focused check, all-phases A/B/A requirement and time/usage
 ledger below after the reported interrupted inference runs. The local
 runtime warning policy in this document is unchanged.

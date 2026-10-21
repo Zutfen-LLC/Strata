@@ -5,10 +5,12 @@ source at `ad921e0f09fa340bc138cc230202c1b7a6e0674d`. Its monitor libraries orig
 at `a3b706deae4101e90592bed58701df20f9bd4da2`, with the correction linked below. It is not a
 byte-for-byte patch to the historical shell drivers. See [SOURCE-COVERAGE.md](SOURCE-COVERAGE.md).
 
-Current continuation: [PERIODIC-OBSERVATION-V1-20261021](../namespace-runner-v1/PERIODIC-OBSERVATION-V1-20261021.md).
-It observes tasks/children without set convergence and preserves identity-safe
-tracking. B0/G0 use one A smoke request; B1/G1 use matching A/B streams.
-Effective phase waits/lifetimes clip to the remaining allowance. It supersedes historical
+Current continuation: [GPU-COMPLETION-V1-20261021](../namespace-runner-v1/GPU-COMPLETION-V1-20261021.md).
+It runs only G0/G1 in a newly authorized 2700-second window, with prior successful
+B0/B1 files as baseline inputs and the retained partial GPU cache as resumed
+state. Historical time/usage are retained. Completion jobs use 1800000 ms GPU
+setup, 2700-second engine/GPU maxima and 2700000 ms fresh CPU idle maximum,
+all clipped by the same window/cleanup/lease limits. It supersedes historical
 execution gates and time/usage balances below, with one new focused mocked entry
 on ROLE_CPU_C followed automatically by the already authorized trial on PASS.
 The author ran no tests, Python source, builds, model or fleet operations.
@@ -34,6 +36,7 @@ change the implementation or extend the expired model-run approval.
 | runtime.py | Parent-owned blocked exec, separate monitor, watchdog and subreaper |
 | linux_owned.py | Initial-namespace identity, direct-child pinning, one pinned exec |
 | commands.py | Historical product CLI, exact request bytes, isolated environment |
+| gpu_completion.py | Specific GPU-only window, retained-baseline contract and resumed-cache accounting |
 | outer.py | UUID-bound GPU management reads, actual cache-filesystem checks |
 | cache_status.py | Public SEW1 read-only idle-TTL adapter, one-second total I/O bound |
 | agent.py | Host-local guardian, challenge lease, phase receipts, finite retention |
@@ -41,6 +44,7 @@ change the implementation or extend the expired model-run approval.
 | test_integration.py | Synthetic fixtures; no live workloads or signals |
 | test_procfs_task_race.py | Nine focused mocked cases for task reconciliation, failures and amended request bytes; NOT RUN here |
 | test_procfs_child_churn.py | Twelve focused mocked lifecycle, safety, cleanup and request cases; NOT RUN here |
+| test_gpu_completion.py | Eight changed-behavior completion cases; NOT RUN here |
 | live_probe.py | Future separately approved three-case harmless-child probe |
 
 ## Role policies and unchanged workload envelope
@@ -188,6 +192,24 @@ to reap a detached guardian; after proxy exit, initial PID 1 reaps it. Failure
 always stops owned CPU work. No CPU arena currently exists by assumption.
 
 ## Private binding contract — no real mapping belongs in GitHub
+
+For GPU completion set `gpu_completion: true` in controller and all three agent
+configs, `retain: false` in controller, and `retention_approved: false` in agents.
+Use updated `launch(config)` or the documented all-owner `Controller` invocation;
+default `coordinated(...)` still selects the historical full schedule. Controller
+`baseline` binds the accepted canonical archive identity, implementation/plan and
+five existing B0/B1 output/logit files with hashes. Only these small files are
+read; no archive/model rescan. Successful prior B receipts are inputs, never
+fabricated current phase events. Complete output/numerical acceptance remains
+the existing evidence workflow. See the active amendment for the exact schema.
+
+Completion G0 reuses the existing real cache directory. It is not an empty-cache
+cold benchmark. Product SETUP validates assigned entries and supplies its missing
+bitmap; counters must reconcile validated reuse plus new assigned payload to
+the plan. G1 requires full reuse and zero weight transfer. `cache_accounting()`
+checks these actual parsed counters; it does not validate cache files itself.
+Missing/unsafe roots or entries, disk-budget refusal and other guards remain
+fatal. All substantive resource policies and periodic-observation code remain.
 
 Agent JSON requires `role`, unique `run_id`, new absolute `run_root`,
 `implementation` (exact bf51f09e full SHA), `binary_sha256`, `namespaces`,

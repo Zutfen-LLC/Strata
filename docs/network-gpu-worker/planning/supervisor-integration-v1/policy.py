@@ -145,17 +145,20 @@ class ReleaseGate:
 
 
 class TrialOrder:
-    def __init__(self):
+    def __init__(self, phases=PHASES):
+        if tuple(phases) not in (PHASES, ("G0", "G1")):
+            raise CoverageError("unsupported-trial-schedule")
+        self.phases = tuple(phases)
         self.next = 0
         self.failed = False
 
     def permit(self, phase, cpu_covered, gpu_covered):
-        if self.failed or self.next >= 4 or PHASES[self.next] != phase or not cpu_covered or \
+        if self.failed or self.next >= len(self.phases) or self.phases[self.next] != phase or not cpu_covered or \
                 (phase.startswith("G") and not gpu_covered):
             raise CoverageError("phase-release-refused")
 
     def finish(self, phase, rc, cleaned):
-        if self.next >= 4 or PHASES[self.next] != phase or rc != 0 or not cleaned:
+        if self.next >= len(self.phases) or self.phases[self.next] != phase or rc != 0 or not cleaned:
             self.failed = True
             raise GuardStop("phase-failed-no-dependent-launch")
         self.next += 1

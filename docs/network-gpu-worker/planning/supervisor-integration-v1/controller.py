@@ -13,6 +13,8 @@ import time
 from resource_guard import CoverageError, GuardStop
 from linux_owned import parent_death
 from policy import ENGINE_CAPS, GPU_CAPS, TrialOrder, bounded_job_deadline
+from agent import verified_file
+import gpu_completion as completion
 
 
 def close_all(owners):
@@ -176,12 +178,20 @@ class Peer:
 
 
 class Controller:
-    def __init__(self, peers, *, retain=False, clock=time.monotonic, start=None):
+    def __init__(self, peers, *, retain=False, clock=time.monotonic, start=None,
+                 gpu_completion=False, baseline=None):
         self.peers = peers
         self.clock = clock
         self.start = clock() if start is None else start
-        self.deadline = self.start + 5400
-        self.order = TrialOrder()
+        if type(gpu_completion) is not bool or (gpu_completion and retain):
+            raise CoverageError("bounded-completion-mode-or-retention")
+        self.gpu_completion = gpu_completion
+        self.baseline = completion.validate_baseline(baseline, verified_file) if gpu_completion else None
+        self.engine_caps = completion.ENGINE_CAPS if gpu_completion else ENGINE_CAPS
+        self.gpu_caps = completion.GPU_CAPS if gpu_completion else GPU_CAPS
+        self.phases = tuple(self.engine_caps)
+        self.deadline = self.start + (completion.WINDOW_S if gpu_completion else 5400)
+        self.order = TrialOrder(self.phases)
         self.retain = retain
         self.success_at = None
 
@@ -219,20 +229,23 @@ class Controller:
         # transit allowance remain real. No full-maximum-envelope admission.
         return bounded_job_deadline(now, now + cap, self.deadline - 45 - 5) - now
 
+    def start_phase(self, peer, phase):
+        peer.queue("START", phase=phase, **({"gpu_completion": True} if self.gpu_completion else {}))
+
     def run(self):
         cpu, engine, gpu = (self.peers[r] for r in ("ROLE_CPU_C", "ROLE_ENGINE_A", "ROLE_GPU_B"))
         try:
             cpu_cap = self.phase_cap(7200)
-            cpu.queue("START", phase="CPU")
+            self.start_phase(cpu, "CPU")
             self.wait(cpu.role, "LISTENING_COVERED", "CPU", min(450, cpu_cap))
-            for phase in ("B0", "B1", "G0", "G1"):
+            for phase in self.phases:
                 if phase.startswith("G"):
-                    gpu_cap = self.phase_cap(GPU_CAPS[phase])
-                    gpu.queue("START", phase=phase)
+                    gpu_cap = self.phase_cap(self.gpu_caps[phase])
+                    self.start_phase(gpu, phase)
                     self.wait(gpu.role, "LISTENING_COVERED", phase, min(30, gpu_cap))
                 self.order.permit(phase, cpu.covered, gpu.covered)
-                engine_cap = self.phase_cap(ENGINE_CAPS[phase])
-                engine.queue("START", phase=phase)
+                engine_cap = self.phase_cap(self.engine_caps[phase])
+                self.start_phase(engine, phase)
                 done = self.wait(engine.role, "DONE", phase, engine_cap)
                 self.order.finish(phase, done["rc"], done["cleanup"]["complete"])
                 if phase == "G1":
@@ -258,7 +271,14 @@ class Controller:
                 cpu.queue("FINISH")
                 final = self.wait(cpu.role, "FINAL", cap=5)
                 require_cleanup(final, final=True)
-            return {"complete": True, "retained_cpu": self.retain}
+            result = {"complete": True, "retained_cpu": self.retain}
+            if self.gpu_completion:
+                result.update(completed_phases=list(self.phases), gpu_completion=True,
+                              baseline_archive_sha256=self.baseline["archive_sha256"],
+                              historical_active_s=completion.HISTORICAL_ACTIVE_S,
+                              window_start_mono=self.start, window_deadline_mono=self.deadline,
+                              new_request_allowance=3, new_token_allowance=192)
+            return result
         except BaseException:
             # A live peer will receive CANCEL on its next fresh challenge. If
             # the controller/transport has failed, EOF or its five-second lease
@@ -329,6 +349,8 @@ def launch(config):
             forwards.append(Forward(argv))
         for role, argv in config["peers"].items():
             peers[role] = Peer(role, config["run_id"], argv)
-        return Controller(peers, retain=config.get("retain", False), start=start).run()
+        return Controller(peers, retain=config.get("retain", False), start=start,
+                          gpu_completion=config.get("gpu_completion", False),
+                          baseline=config.get("baseline")).run()
     finally:
         close_all([*peers.values(), *forwards])

@@ -24,6 +24,7 @@ from outer import OuterGuards
 from policy import (ENGINE_CAPS, GPU_CAPS, Stamp, duration, accounting_deadline,
                     bounded_job_deadline)
 from runtime import Job, Session, packet, receive
+import gpu_completion as completion
 
 IMPLEMENTATION = "bf51f09e286a7a5ce89fbff67b3ee07cb044a5e5"
 PLAN_SHA = "a51c6e4acc74cd84f5333d3b13b4cd58abf1ddf6276b59fd757fa815f8045578"
@@ -97,6 +98,9 @@ def verified_file(path, expected, cap):
 
 def serve(config, channel):
     role, run_id = config["role"], config["run_id"]
+    completion_mode = config.get("gpu_completion", False)
+    if type(completion_mode) is not bool:
+        raise CoverageError("bounded-completion-mode")
     if role not in ("ROLE_CPU_C", "ROLE_ENGINE_A", "ROLE_GPU_B"):
         raise CoverageError("role-config")
     if config.get("implementation") != IMPLEMENTATION or \
@@ -126,7 +130,8 @@ def serve(config, channel):
     sequence = 0
     global_limit = float("inf")
     expected_phase = 0
-    phase_list = ("CPU",) if role == "ROLE_CPU_C" else tuple(ENGINE_CAPS if role == "ROLE_ENGINE_A" else GPU_CAPS)
+    phase_list = ("CPU",) if role == "ROLE_CPU_C" else completion.PHASES if completion_mode else \
+        tuple(ENGINE_CAPS if role == "ROLE_ENGINE_A" else GPU_CAPS)
     listen_deadline = None
     listener_sent = False
     reason = "finished"
@@ -188,7 +193,7 @@ def serve(config, channel):
                     request.get("nonce") != challenge or time.monotonic() >= challenge_end:
                 raise CoverageError("stale-controller-request")
             # Fresh challenge bounds transit age; durations, never raw remote clocks.
-            remaining = duration(request["remaining_s"], 5400)
+            remaining = duration(request["remaining_s"], completion.WINDOW_S if completion_mode else 5400)
             if remaining <= 20:
                 raise CoverageError("insufficient-controller-budget")
             global_limit = min(global_limit, time.monotonic() + remaining - 5)
@@ -205,11 +210,13 @@ def serve(config, channel):
                     raise CoverageError("unfinished-session")
                 return
             if action == "START":
+                if request.get("gpu_completion", False) is not completion_mode:
+                    raise CoverageError("controller-agent-completion-mode-mismatch")
                 phase = request.get("phase")
                 if job is not None or pending_cleanup is not None or expected_phase >= len(phase_list) or phase != phase_list[expected_phase]:
                     raise CoverageError("phase-order-or-duplicate-start")
                 session.admit()  # Fresh admission; frozen first-run baseline/events.
-                argv, env, cap = product(role, phase, config["bindings"])
+                argv, env, cap = product(role, phase, config["bindings"], gpu_completion=completion_mode)
                 verified_file(argv[0], config["binary_sha256"], 256 * 1048576)
                 if role != "ROLE_CPU_C":
                     plan = config["bindings"]["GPU_PLAN_A" if role == "ROLE_ENGINE_A" else "GPU_PLAN_B"]
@@ -218,7 +225,7 @@ def serve(config, channel):
                 outer.check(admitted_outer, admission=True, phase=phase)
                 if outer.baseline is None and role != "ROLE_CPU_C":
                     outer.baseline = admitted_outer["gpu_free_bytes"]
-                outer.admit_cache(phase)
+                outer.admit_cache(phase, resume=completion_mode)
                 directory = root + "/" + phase
                 os.mkdir(directory, 0o700)
                 input_r, input_w = os.pipe2(os.O_CLOEXEC)
@@ -235,7 +242,8 @@ def serve(config, channel):
                     os.close(input_r)
                 journal.emit("ADMISSION_LAUNCH_V1", admission=vars(session.admission),
                              launch=vars(launch), deadline=deadline,
-                             swapfree_bytes=session.guard.swap_baseline, key=job.key)
+                             swapfree_bytes=session.guard.swap_baseline, key=job.key,
+                             gpu_completion=completion_mode)
                 listen_deadline = launch.mono + (450 if role == "ROLE_CPU_C" else 30)
                 listener_sent = False
             elif action == "STOP":
@@ -254,7 +262,7 @@ def serve(config, channel):
                                     "phase": phase, "cleanup": result},
                                    accounting_deadline(time.monotonic(), original_deadline, global_limit))
             elif action == "RETAIN":
-                if role != "ROLE_CPU_C" or job is None or not config.get("retention_approved") or \
+                if completion_mode or role != "ROLE_CPU_C" or job is None or not config.get("retention_approved") or \
                         request.get("completed_phases") != ["B0", "B1", "G0", "G1"]:
                     raise CoverageError("retention-not-approved-or-trial-incomplete")
                 age = duration(request["success_age_s"] + 5, 5400)

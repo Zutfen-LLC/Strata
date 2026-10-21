@@ -137,12 +137,12 @@ class OuterGuards:
             if admission and (free[0] - 4096 * MIB - 256 * MIB - 1598720) // 5222400 < 3289:
                 raise GuardStop("fixed-gpu-plan-does-not-fit")
 
-    def admit_cache(self, phase):
+    def admit_cache(self, phase, *, resume=False):
         if self.role != "ROLE_GPU_B":
             return
-        if phase == "G0":
+        if phase == "G0" and not resume:
             os.mkdir(self.cache, 0o700)  # No overwrite or deletion of prior assets.
-        elif phase != "G1" or not self.cache.is_dir() or self.cache.is_symlink():
+        elif phase not in ("G0", "G1") or not self.cache.is_dir() or self.cache.is_symlink():
             raise CoverageError("warm-cache-binding-invalid")
 
     def returned(self):
