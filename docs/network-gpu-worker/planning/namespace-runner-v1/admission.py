@@ -69,6 +69,12 @@ def observe(label, action, required=True):
         return {"name": label, "required": required, "status": "os-error", "errno": exc.errno,
                 "path": str(exc.filename)[:512] if exc.filename else None}
     except (ValueError, UnicodeError) as exc:
+        # Unchanged resource_telemetry.required() exposes failed reads as
+        # label:unavailable:EACCES/EPERM instead of retaining the OSError.
+        code = re.search(r":unavailable:(EACCES|EPERM)(?:$|:)", str(exc))
+        if code:
+            return {"name": label, "required": required, "status": "permission-denied",
+                    "errno": 13 if code[1] == "EACCES" else 1, "detail": str(exc)}
         return {"name": label, "required": required, "status": getattr(exc, "status", "malformed"),
                 "detail": str(exc)}
 

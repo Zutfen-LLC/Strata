@@ -75,6 +75,8 @@ class RunnerTests(unittest.TestCase):
             value = admission.live_admission("/generic/receipt", {k: "pin" for k in ("digest", "host", "source", "machine")}, 0)
         self.assertEqual(value["observations"][0]["status"], "permission-denied")
         self.assertEqual(value["status"], "BLOCKED")
+        value = admission.observe("wrapped-required-read", Mock(side_effect=ValueError("memory.current:unavailable:EACCES")))
+        self.assertEqual((value["status"], value["errno"]), ("permission-denied", 13))
 
     def test_duplicate_json_keys_rejected(self):
         with self.assertRaises(ValueError):
