@@ -1,10 +1,12 @@
 # Sanitized fixed-worker planning artifacts
 
-These four files are planning delivery artifacts, not a new tested implementation. The implementation remains `bf51f09e286a7a5ce89fbff67b3ee07cb044a5e5`, tree `8e0cc2eda89f17a63182d1b273140288a1418b47`, based on main `34a59d83a51bdb3f0299d65306740bd357818715`. PR #2 stays draft/unmerged. The dedicated artifact commit is identified by the immutable retrieval handoff; its extra commit contains only this directory.
+This directory contains planning/harness delivery artifacts, not a new tested engine implementation. The implementation remains `bf51f09e286a7a5ce89fbff67b3ee07cb044a5e5`, tree `8e0cc2eda89f17a63182d1b273140288a1418b47`, based on main `34a59d83a51bdb3f0299d65306740bd357818715`. PR #2 stays draft/unmerged. Artifact history changes only this directory.
+
+The original four-file publication is pinned at `a6ede26d536e20f1f9b7db5a9601e23f3b995060`. Its planner, metadata handoff and execution budget remain unchanged as historical records. Current resource-monitor amendment v1 adds standalone replacement source and authored synthetic fixtures, NOT EXECUTED. The reported later placement is frozen; do not run the old planner again. See [amendment](RESOURCE-MONITOR-AMENDMENT-v1.md), [future synthetic handoff](HERMES-RESOURCE-MONITOR-v1.md) and [static review](RESOURCE-MONITOR-STATIC-REVIEW-v1.md). Faithful integration awaits sanitized original driver functions; no trial retry is authorized.
 
 - [Planner](METADATA-PLANNER-bf51f09e.py): sanitized comments and neutral output labels; selection, format validation, digest and plan-encoding logic are retained. It has not been executed for this publication.
-- [Metadata handoff](METADATA-HANDOFF-bf51f09e.md): one separately approved bounded metadata computation, then STOP for exact execution approval.
-- [Execution budget](EXECUTION-BUDGET-bf51f09e.md): authoritative proposed limits and candidate CLI templates; no runtime authority or PASS claim.
+- [Metadata handoff](METADATA-HANDOFF-bf51f09e.md): historical bounded metadata procedure; the later frozen plan is not to be recomputed.
+- [Execution budget](EXECUTION-BUDGET-bf51f09e.md): unchanged historical limits/CLI templates. Its old approval does not authorize a retry; monitor semantics are clarified by the separately named amendment.
 
 Publication/retrieval authorizes no planner, Python, configure, build, test, benchmark, model operation, worker launch, merge or remote-service control. Static source/sanitization review is not runtime validation. No operational bindings, private receipts, generated ownership results or model assets are included. Keep all such material private.
 
@@ -48,7 +50,7 @@ Output labels primary_A/helper_A identify the engine's local sets; assigned_B is
 
 ## Small-file retrieval and integrity
 
-The narrow delivery exception permits authenticated retrieval of ONLY README.md and the three linked files from this directory at the exact immutable artifact commit. Use existing authorized GitHub authentication; fetch files individually, at most 16 KiB each and 64 KiB total. No repository clone, branch checkout, dependency/source/model download, installation, credential setup or runtime authority is included. Stop on a hash/size/identity mismatch. Retrieval ends after verification unless a separate metadata-computation approval exists.
+The original narrow delivery exception applies to the four original files at their pinned publication: at most16 KiB each/64 KiB total. The new monitor handoff proposes separately approved retrieval/fixture validation of its explicitly named ten-file set, at most64 KiB/file/256 KiB total. Use existing authorized GitHub authentication and exact immutable revisions. Neither route permits a repository clone, branch checkout, engine/dependency/model download, installation, credential setup or model/runtime authority. Stop on hash/size/identity mismatch; no moving-branch imports or automatic retry.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
@@ -56,4 +58,4 @@ The narrow delivery exception permits authenticated retrieval of ONLY README.md 
 | METADATA-HANDOFF-bf51f09e.md | 7437 | `80b4a90b84369919878fdc1b449dcbd926796909ebb1c66b7aa1fad220476884` |
 | EXECUTION-BUDGET-bf51f09e.md | 15063 | `8801a57e48c290b9f9e78e0f27556d1bfa90f5ea17e1f296a8d56b48e15c8085` |
 
-The retrieval handoff supplies this README's own hash/size to avoid a circular self-hash. Sanitation changes the planner's source hash and artifact labels; the pinned implementation's reported fixture evidence does not become evidence that this artifact was executed. Exact assignment IDs/plan hashes remain uncomputed until the separately approved metadata procedure succeeds.
+The publication handoff supplies the checksum file's own SHA/size to avoid a circular self-hash. `SHA256SUMS.resource-monitor-v1` binds this README and the eight other monitor files. Historical four-file hashes still apply at their pinned revision. The pinned implementation's reported fixture evidence is distinct from the new unexecuted monitor sources. The later reported plan hash/counts appear in the amendment as user-reported evidence; they were not recomputed here. Keep all generated owner lists and operational bindings private.
