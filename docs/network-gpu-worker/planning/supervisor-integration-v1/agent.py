@@ -20,8 +20,11 @@ from resource_telemetry import required, read_text
 from cache_status import idle_deadline
 from commands import product, REQUESTS
 from outer import OuterGuards
-from policy import ENGINE_CAPS, GPU_CAPS, Stamp, duration
+from policy import ENGINE_CAPS, GPU_CAPS, Stamp, duration, accounting_deadline
 from runtime import Job, Session, packet, receive
+
+IMPLEMENTATION = "bf51f09e286a7a5ce89fbff67b3ee07cb044a5e5"
+PLAN_SHA = "a51c6e4acc74cd84f5333d3b13b4cd58abf1ddf6276b59fd757fa815f8040578"
 
 
 def owned_listener(process, port):
@@ -77,18 +80,26 @@ def serve(config, channel):
     role, run_id = config["role"], config["run_id"]
     if role not in ("ROLE_CPU_C", "ROLE_ENGINE_A", "ROLE_GPU_B"):
         raise CoverageError("role-config")
+    if config.get("implementation") != IMPLEMENTATION or \
+            (role != "ROLE_CPU_C" and config["bindings"].get("EXPECTED_GPU_PLAN_A_SHA") != PLAN_SHA):
+        raise CoverageError("frozen-candidate-and-plan-required")
     os.setsid()
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     cancelled = [False]
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: cancelled.__setitem__(0, True))
     root = config["run_root"]
+    if not Path(root).is_absolute():
+        raise CoverageError("absolute-new-private-run-root-required")
     os.mkdir(root, 0o700)
     journal = Journal(root + "/watchdog.jsonl")
     outer = OuterGuards(role, config.get("gpu_tool"), config.get("gpu_query_ids", ()),
-                        config["bindings"].get("CACHE_B"))
+                        config["bindings"].get("CACHE_B"),
+                        config["bindings"].get("GPU_SELECT_A" if role == "ROLE_ENGINE_A" else "GPU_SELECT_B"))
     session = Session(run_id, role, uuid.uuid4().hex, config["namespaces"], outer)
     job = None
+    pending_cleanup = None
+    next_return_sample = 0
     detached = False
     challenge = None
     challenge_end = 0
@@ -99,6 +110,8 @@ def serve(config, channel):
     phase_list = ("CPU",) if role == "ROLE_CPU_C" else tuple(ENGINE_CAPS if role == "ROLE_ENGINE_A" else GPU_CAPS)
     listen_deadline = None
     listener_sent = False
+    reason = "finished"
+    last_cleanup = None
     try:
         while True:
             now = time.monotonic()
@@ -107,14 +120,18 @@ def serve(config, channel):
             if job is not None:
                 rc = job.poll()
                 if rc is not None:
+                    packet(channel, {"kind": "CLEANING", "run_id": run_id, "role": role,
+                                     "phase": job.key[2]})
                     result = job.stop("workload-exit")
+                    last_cleanup = result
                     journal.emit("JOB_REAPED_V1", phase=job.key[2], rc=rc, cleanup=result)
-                    packet(channel, {"kind": "DONE", "run_id": run_id, "role": role,
-                                     "phase": job.key[2], "rc": rc, "cleanup": result})
+                    phase, original_deadline = job.key[2], job.deadline
                     job = None
                     if rc != 0 or not result["complete"] or role != "ROLE_ENGINE_A":
                         raise CoverageError("unexpected-workload-exit-or-incomplete-cleanup")
-                    expected_phase += 1
+                    pending_cleanup = ({"kind": "DONE", "run_id": run_id, "role": role,
+                                        "phase": phase, "rc": rc, "cleanup": result},
+                                       accounting_deadline(time.monotonic(), original_deadline, global_limit))
                 elif job.gate.released and role != "ROLE_ENGINE_A" and not listener_sent:
                     port = int(config["bindings"]["CPU_PORT_C" if role == "ROLE_CPU_C" else "GPU_PORT_B"])
                     if owned_listener(job.root, port):
@@ -123,6 +140,18 @@ def serve(config, channel):
                         listener_sent = True
                     elif now > listen_deadline:
                         raise CoverageError("owned-listener-never-ready")
+            if pending_cleanup is not None and now >= next_return_sample:
+                receipt, return_until = pending_cleanup
+                if time.monotonic() >= return_until:
+                    raise CoverageError("gpu-return-accounting-timeout")
+                returned = outer.returned()
+                if role == "ROLE_CPU_C" or returned:
+                    journal.emit("CLEANUP_BASELINE_RESTORED_V1", phase=receipt["phase"])
+                    packet(channel, receipt)
+                    pending_cleanup = None
+                    expected_phase += 1
+                else:
+                    next_return_sample = time.monotonic() + 2
             if detached:
                 time.sleep(0.05)
                 continue
@@ -137,7 +166,7 @@ def serve(config, channel):
                 continue
             request = receive(channel)
             if request.get("run_id") != run_id or request.get("sequence") != sequence or \
-                    request.get("nonce") != challenge or now >= challenge_end:
+                    request.get("nonce") != challenge or time.monotonic() >= challenge_end:
                 raise CoverageError("stale-controller-request")
             # Fresh challenge bounds transit age; durations, never raw remote clocks.
             remaining = duration(request["remaining_s"], 5400)
@@ -149,9 +178,13 @@ def serve(config, channel):
             sequence += 1
             if action == "CANCEL":
                 raise CoverageError("controller-cancel")
+            if action == "FINISH":
+                if job is not None or pending_cleanup is not None or expected_phase != len(phase_list):
+                    raise CoverageError("unfinished-session")
+                return
             if action == "START":
                 phase = request.get("phase")
-                if job is not None or expected_phase >= len(phase_list) or phase != phase_list[expected_phase]:
+                if job is not None or pending_cleanup is not None or expected_phase >= len(phase_list) or phase != phase_list[expected_phase]:
                     raise CoverageError("phase-order-or-duplicate-start")
                 session.admit()  # Fresh admission; frozen first-run baseline/events.
                 argv, env, cap = product(role, phase, config["bindings"])
@@ -159,7 +192,10 @@ def serve(config, channel):
                 if role != "ROLE_CPU_C":
                     plan = config["bindings"]["GPU_PLAN_A" if role == "ROLE_ENGINE_A" else "GPU_PLAN_B"]
                     verified_file(plan, config["bindings"]["EXPECTED_GPU_PLAN_A_SHA"], 4 * 1048576)
-                outer.check(outer.sample(), admission=True, phase=phase)
+                admitted_outer = outer.sample()
+                outer.check(admitted_outer, admission=True, phase=phase)
+                if outer.baseline is None and role != "ROLE_CPU_C":
+                    outer.baseline = admitted_outer["gpu_free_bytes"]
                 outer.admit_cache(phase)
                 directory = root + "/" + phase
                 os.mkdir(directory, 0o700)
@@ -184,13 +220,17 @@ def serve(config, channel):
                 if job is None:
                     raise CoverageError("stop-without-owned-job")
                 phase = job.key[2]
+                original_deadline = job.deadline
+                packet(channel, {"kind": "CLEANING", "run_id": run_id, "role": role,
+                                 "phase": phase})
                 result = job.stop("phase-stop")
+                last_cleanup = result
                 job = None
-                expected_phase += 1
-                packet(channel, {"kind": "STOPPED", "run_id": run_id, "role": role,
-                                 "phase": phase, "cleanup": result})
                 if not result["complete"]:
                     raise CoverageError("incomplete-stop")
+                pending_cleanup = ({"kind": "STOPPED", "run_id": run_id, "role": role,
+                                    "phase": phase, "cleanup": result},
+                                   accounting_deadline(time.monotonic(), original_deadline, global_limit))
             elif action == "RETAIN":
                 if role != "ROLE_CPU_C" or job is None or not config.get("retention_approved") or \
                         request.get("completed_phases") != ["B0", "B1", "G0", "G1"]:
@@ -212,10 +252,17 @@ def serve(config, channel):
                 detached = True  # EOF/controller exit cannot undo this finite grant.
             elif action != "HEARTBEAT":
                 raise CoverageError("unknown-controller-action")
+    except BaseException as exc:
+        reason = type(exc).__name__ + ":" + str(exc)
     finally:
         try:
+            result = last_cleanup or {"complete": True, "reaped": {}, "errors": []}
             if job is not None:
-                journal.emit("WATCHDOG_CLEANUP_V1", cleanup=job.stop("agent-exit"))
+                result = job.stop("agent-exit")
+            journal.emit("WATCHDOG_FINAL_V1", reason=reason, cleanup=result, detached=detached)
+            if not detached:
+                packet(channel, {"kind": "FINAL", "run_id": run_id, "role": role,
+                                 "reason": reason, "cleanup": result})
         finally:
             journal.close()
             channel.close()
@@ -238,11 +285,18 @@ def main():
     # Parent proxy uses no signal/group cleanup. EOF reaches independent guardian;
     # a committed retention daemon is subsequently reaped by initial PID 1.
     buffer = bytearray()
+    final_seen = False
     try:
         while True:
             ready = select.select([0, parent], [], [], 1)[0]
             if parent in ready:
-                value = receive(parent)
+                try:
+                    value = receive(parent)
+                except CoverageError:
+                    if final_seen:
+                        return
+                    raise
+                final_seen = final_seen or value.get("kind") == "FINAL"
                 raw = (json.dumps(value) + "\n").encode("ascii")
                 if os.write(1, raw) != len(raw):
                     raise CoverageError("proxy-short-write")

@@ -26,13 +26,22 @@ def decode(header, payload):
     return remaining
 
 
-def read_exact(sock, count):
+def remaining_timeout(sock, deadline, clock=time.monotonic):
+    remaining = deadline - clock()
+    if remaining <= 0:
+        raise CoverageError("cache-status-total-timeout")
+    sock.settimeout(remaining)
+
+
+def read_exact(sock, count, deadline, clock=time.monotonic):
     parts = bytearray()
     while len(parts) < count:
+        remaining_timeout(sock, deadline, clock)
         chunk = sock.recv(count - len(parts))
         if not chunk:
             raise CoverageError("short-cache-status")
         parts.extend(chunk)
+    remaining_timeout(sock, deadline, clock)
     return bytes(parts)
 
 
@@ -41,14 +50,16 @@ def idle_deadline(port, owned_process, admission, completion, domain, *, engines
         raise CoverageError("idle-only-owned-listener-required")
     owned_process.verify()
     start = Stamp(domain, time.monotonic(), time.time())
+    deadline = start.mono + 1
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.5)
+        remaining_timeout(sock, deadline)
         sock.connect(("127.0.0.1", port))
+        remaining_timeout(sock, deadline)
         sock.sendall(struct.pack("<IHHQ", MAGIC, 16, 0, 0))
-        header = read_exact(sock, 16)
+        header = read_exact(sock, 16, deadline)
         if struct.unpack("<IHHQ", header) != (MAGIC, 17, 0, 100):
             raise CoverageError("cache-status-header")
-        remaining = decode(header, read_exact(sock, 100))
+        remaining = decode(header, read_exact(sock, 100, deadline))
     owned_process.verify()
     if time.monotonic() - start.mono > 1:
         raise CoverageError("cache-status-total-timeout")

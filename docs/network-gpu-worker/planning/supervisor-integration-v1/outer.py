@@ -14,13 +14,15 @@ from policy import GIB, MIB
 
 def gpu_free(tool, device_ids):
     if not Path(tool).is_absolute() or not device_ids or \
-            any(not re.fullmatch(r"[0-9]+", v) for v in device_ids):
+            len(set(device_ids)) != len(device_ids) or \
+            any(not re.fullmatch(r"GPU-[0-9a-fA-F-]{36}", v) for v in device_ids):
         raise CoverageError("explicit-selected-device-bindings-required")
     parent = os.getpid()
     process = subprocess.Popen([tool, "--id=" + ",".join(device_ids),
-                                "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                                "--query-gpu=uuid,memory.free", "--format=csv,noheader,nounits"],
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, close_fds=True,
+                               env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
                                preexec_fn=lambda: parent_death(parent))
     # This unreaped direct child cannot be replaced by a reused numeric PID.
     fd = None
@@ -45,12 +47,22 @@ def gpu_free(tool, device_ids):
         out, err = (bytes(v) for v in streams.values())
         if process.returncode:
             raise CoverageError("gpu-management-failed")
-        rows = out.decode("ascii").splitlines()
-        if len(rows) != len(device_ids) or any(not row.strip().isdigit() for row in rows):
+        rows = [row.split(",") for row in out.decode("ascii").splitlines()]
+        if len(rows) != len(device_ids) or any(len(row) != 2 for row in rows):
             raise CoverageError("gpu-management-schema")
-        return [int(row) * MIB for row in rows]
+        found = {}
+        for uuid, free in rows:
+            uuid, free = uuid.strip(), free.strip()
+            if uuid not in device_ids or uuid in found or not free.isdigit():
+                raise CoverageError("gpu-management-identity")
+            found[uuid] = int(free) * MIB
+        return [found[uuid] for uuid in device_ids]
     finally:
         try:
+            if fd is None:
+                # pidfd_open failed before any wait/poll: own unreaped child,
+                # constructor-only cleanup; no PID reuse is possible here.
+                process.kill()
             if process.poll() is None and fd is not None:
                 signal.pidfd_send_signal(fd, signal.SIGKILL, None, 0)
             process.wait(timeout=1)
@@ -62,9 +74,13 @@ def gpu_free(tool, device_ids):
 
 
 class OuterGuards:
-    def __init__(self, role, tool=None, device_ids=(), cache=None):
+    def __init__(self, role, tool=None, device_ids=(), cache=None, selection=None):
         self.role, self.tool, self.device_ids = role, tool, tuple(device_ids)
         self.cache = Path(cache) if cache else None
+        self.baseline = None
+        if role != "ROLE_CPU_C" and (len(self.device_ids) != (2 if role == "ROLE_ENGINE_A" else 1) or
+                                     selection != ",".join(self.device_ids)):
+            raise CoverageError("guard-workload-device-binding")
 
     def sample(self):
         if self.role == "ROLE_CPU_C":
@@ -106,3 +122,15 @@ class OuterGuards:
             os.mkdir(self.cache, 0o700)  # No overwrite or deletion of prior assets.
         elif phase != "G1" or not self.cache.is_dir() or self.cache.is_symlink():
             raise CoverageError("warm-cache-binding-invalid")
+
+    def returned(self):
+        """Selected devices must return to their admitted free-memory baseline.
+
+        The historical 11-second gaps remain; this adds a required verification,
+        without altering placement or freeing anybody else's allocations.
+        """
+        if self.role == "ROLE_CPU_C" or self.baseline is None:
+            return True
+        current = self.sample()
+        self.check(current)
+        return all(now >= old for now, old in zip(current["gpu_free_bytes"], self.baseline))

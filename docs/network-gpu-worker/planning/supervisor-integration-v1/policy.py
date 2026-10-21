@@ -99,6 +99,10 @@ def retention_deadline(admission, completion, idle_query_start, remaining_ms, do
                idle_query_start.mono + remaining_ms / 1000)
 
 
+def accounting_deadline(now, original, global_limit):
+    return min(now + 30, original, global_limit - 15)
+
+
 class ReleaseGate:
     """No stale readiness, late heartbeat or partial launch can release exec."""
     def __init__(self, run_id, role, phase, now, deadline):

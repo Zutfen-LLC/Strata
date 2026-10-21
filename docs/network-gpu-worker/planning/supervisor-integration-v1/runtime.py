@@ -58,7 +58,18 @@ def monitor_child(root, namespaces, guard, outer, phase, journal_path, channel, 
     try:
         while True:
             started = time.monotonic()
-            sample = collect(tree, namespaces)
+            if not root.alive():
+                packet(channel, {"kind": "EXITED", "key": key})
+                return
+            try:
+                sample = collect(tree, namespaces)
+            except BaseException:
+                if root.alive():
+                    raise
+                # Terminal sampling is distinct from a completed sample that
+                # violated a guard. A preceding REFUSED is never rewritten.
+                packet(channel, {"kind": "EXITED", "key": key})
+                return
             extra = outer.sample()
             if baseline is None:
                 baseline = DiagnosticBaselines(sample)
@@ -93,7 +104,7 @@ def child_exec(gate, parent, argv, env, input_fd, out_fd, err_fd):
     os.dup2(out_fd, 1)
     os.dup2(err_fd, 2)
     # All control descriptors are CLOEXEC; a workload never keeps lease FDs.
-    os.execve(argv[0], argv, {**os.environ, **env})
+    os.execve(argv[0], argv, env)  # Exact approved environment; inherit no overrides.
 
 
 class Job:
@@ -108,6 +119,9 @@ class Job:
         self.root = self.monitor = None
         self.channel = None
         self.exec_gate = None
+        self.transient_fds = set()
+        self.transient_sockets = []
+        self.stop_result = None
         self.deadline = deadline
         self.last_sequence = -1
         self.gate = ReleaseGate(*self.key, time.monotonic(), deadline)
@@ -122,9 +136,12 @@ class Job:
 
     def _start(self, argv, env, stdin_fd, guard, outer, monitor_behavior):
         gate_r, gate_w = os.pipe2(os.O_CLOEXEC)
+        self.transient_fds.update((gate_r, gate_w))
         self.exec_gate = gate_w
         out = os.open(self.directory + "/workload.out", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        self.transient_fds.add(out)
         err = os.open(self.directory + "/workload.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        self.transient_fds.add(err)
         parent = os.getpid()
         pid = os.fork()
         if pid == 0:
@@ -134,14 +151,16 @@ class Job:
             except BaseException:
                 os._exit(126)
         self.children.add(pid)
-        os.close(gate_r)
-        os.close(out)
-        os.close(err)
+        self.close_fd(gate_r)
+        self.close_fd(out)
+        self.close_fd(err)
         self.root = promote_exec(pin_child(pid, self.namespaces), argv[0])
         self.items[pid] = self.root
         parent_socket, child_socket = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        self.transient_sockets.extend((parent_socket, child_socket))
         self.channel = parent_socket
         monitor_r, monitor_w = os.pipe2(os.O_CLOEXEC)
+        self.transient_fds.update((monitor_r, monitor_w))
         pid = os.fork()
         if pid == 0:
             try:
@@ -162,21 +181,34 @@ class Job:
             finally:
                 os._exit(0)
         self.children.add(pid)
-        os.close(monitor_r)
+        self.close_fd(monitor_r)
         child_socket.close()
+        self.transient_sockets.remove(child_socket)
         try:
             self.monitor = pin_child(pid, self.namespaces)
             self.items[pid] = self.monitor
             os.write(monitor_w, b"M")
         finally:
-            os.close(monitor_w)
+            self.close_fd(monitor_w)
         self.gate.watchdog = True  # Parent-owned pidfds and wait ownership now proven.
+
+    def close_fd(self, fd):
+        self.transient_fds.discard(fd)  # Invalidate before close; no reused-FD retry.
+        if fd == self.exec_gate:
+            self.exec_gate = None
+        os.close(fd)
 
     def poll(self):
         now = time.monotonic()
-        self.gate.check(now)
-        if self.channel in select.select([self.channel], [], [], 0)[0]:
+        terminal = False
+        # Drain preceding guard failures before accepting terminal process exit.
+        for _ in range(32):
+            if self.channel not in select.select([self.channel], [], [], 0)[0]:
+                break
             message = receive(self.channel)
+            if message.get("kind") == "EXITED" and tuple(message.get("key", ())) == self.key:
+                terminal = True
+                break
             seq, at = message.get("sequence"), message.get("mono")
             if message.get("kind") != "COVERED" or tuple(message.get("key", ())) != self.key or \
                     type(seq) is not int or seq != self.last_sequence + 1 or \
@@ -187,12 +219,14 @@ class Job:
             if not self.gate.released:
                 self.gate.release(self.key, now)
                 os.write(self.exec_gate, b"G")
-                os.close(self.exec_gate)
-                self.exec_gate = None
-        if not self.monitor.alive():
-            raise CoverageError("monitor-exited")
+                self.close_fd(self.exec_gate)
         if not self.root.alive():
             return self.reap(self.root.identity.pid)
+        if terminal:
+            raise CoverageError("false-terminal-monitor-observation")
+        self.gate.check(now)
+        if not self.monitor.alive():
+            raise CoverageError("monitor-exited")
         return None
 
     def reap(self, pid):
@@ -205,17 +239,42 @@ class Job:
         self.reaped[got] = os.waitstatus_to_exitcode(status)
         return self.reaped[got]
 
+    def adopt(self):
+        # This dedicated host guardian creates only this Job's children. Once
+        # their parent exits, subreaper adoption is proven by waitid in pin_child.
+        own = OwnedProcess.pin(os.getpid(), expected=identity(os.getpid(), self.namespaces),
+                               namespace_receipt=self.namespaces)
+        try:
+            for pid in own.children():
+                if pid not in self.items and pid not in self.reaped:
+                    if os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                        continue  # Exited child will be genuinely waitpid-reaped below.
+                    if len(self.items) >= 16:
+                        raise CoverageError("owned-adopted-process-cap")
+                    item = pin_child(pid, self.namespaces)
+                    self.items[pid] = item
+        finally:
+            own.close()
+
     def stop(self, reason, *, grace=15):
-        if self.exec_gate is not None:
-            os.close(self.exec_gate)
-            self.exec_gate = None
+        if self.stop_result is not None:
+            return self.stop_result
         errors = []
+        for fd in list(self.transient_fds):
+            try:
+                self.close_fd(fd)
+            except OSError as exc:
+                errors.append(type(exc).__name__)
         def live(item):
             try:
                 return item.alive()
             except BaseException as exc:
                 errors.append(type(exc).__name__)
                 return True
+        try:
+            self.adopt()
+        except BaseException as exc:
+            errors.append(type(exc).__name__)
         # Discover bounded descendants before stopping their parents. Failure is
         # reported incomplete; no arbitrary PID or group kill fills the gap.
         for item in list(self.items.values()):
@@ -234,7 +293,7 @@ class Job:
                 item.send(signal.SIGTERM)
             except BaseException as exc:
                 errors.append(type(exc).__name__)
-        end = min(self.deadline, time.monotonic() + max(0, min(grace, 15)))
+        end = min(self.deadline - 1, time.monotonic() + max(0, min(grace, 14)))
         while time.monotonic() < end:
             if all(not live(item) for item in self.items.values()):
                 break
@@ -249,24 +308,43 @@ class Job:
         reap_end = min(self.deadline, time.monotonic() + 1)
         while time.monotonic() < reap_end:
             try:
+                self.adopt()
+                for item in self.items.values():
+                    if live(item):
+                        item.send(signal.SIGKILL)
+            except BaseException as exc:
+                errors.append(type(exc).__name__)
+            try:
                 pid, status = os.waitpid(-1, os.WNOHANG)
             except ChildProcessError:
                 break
+            except OSError as exc:
+                errors.append(type(exc).__name__)
+                break
             if pid:
                 self.reaped[pid] = os.waitstatus_to_exitcode(status)
-            elif all(pid in self.reaped for pid in self.children | set(self.items)):
+            elif all(pid in self.reaped for pid in self.children) and \
+                    all(not live(item) for item in self.items.values()):
                 break
             else:
                 time.sleep(0.02)
+        exited = [pid for pid, item in self.items.items() if not live(item)]
         result = {"reason": reason, "reaped": self.reaped.copy(), "errors": errors,
-                  "complete": not errors and all(pid in self.reaped for pid in self.children | set(self.items))}
+                  "exited_descendants_not_reaped_here": [pid for pid in exited if pid not in self.reaped],
+                  "complete": not errors and all(pid in self.reaped for pid in self.children) and
+                  len(exited) == len(self.items)}
         for item in self.items.values():
             try:
                 item.close()
             except OSError:
                 result["complete"] = False
-        if self.channel is not None:
-            self.channel.close()
+        for sock in self.transient_sockets:
+            try:
+                sock.close()
+            except OSError:
+                result["complete"] = False
+        self.transient_sockets.clear()
+        self.stop_result = result
         return result
 
 

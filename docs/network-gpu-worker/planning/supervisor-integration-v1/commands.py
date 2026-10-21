@@ -9,7 +9,8 @@ REQUESTS = b"GEN 64 9419\nGEN 64 14773,6353\nGEN 64 9419\nQUIT\n"
 
 
 def product(role, phase, b):
-    env = {"OMP_NUM_THREADS": "2"}
+    env = {"OMP_NUM_THREADS": "2", "PATH": "/usr/bin:/bin", "LANG": "C",
+           "LC_ALL": "C", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
     if role == "ROLE_CPU_C" and phase == "CPU":
         argv = [b["BIN_CPU_C"], "--port", b["CPU_PORT_C"], "--workers", "2",
                 "--memory-budget-mib", "105870", "--deadline-ms", "10000",
@@ -27,6 +28,7 @@ def product(role, phase, b):
     env.update(STRATA_IO_PF_THREADS="2", STRATA_ROUTE_TAIL_SKIP="0", STRATA_LOOKAHEAD="0",
                STRATA_LOOKAHEAD_STATS="0", STRATA_FS_SLOTS="0",
                STRATA_DUMP_FIRST_LOGITS=b["RUN_A"] + "/" + phase + ".first-logits")
+    env["CUDA_VISIBLE_DEVICES"] = b["GPU_SELECT_A"]
     argv = [b["BIN_ENGINE_A"], "--serve", "--native", b["NATIVE_SHARD_A"], "--pack",
             b["NATIVE_PACK_A"], "--gpu", b["GPU_SELECT_A"], "--mmap-experts", "--greedy",
             "--pool-workers", "2", "--remote-cpu-experts", b["ENDPOINT_CPU_C_ON_A"],
