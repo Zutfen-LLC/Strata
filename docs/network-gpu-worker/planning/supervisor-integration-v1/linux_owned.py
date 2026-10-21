@@ -1,5 +1,6 @@
 """Linux owned-child primitives; no operation occurs at import."""
 import ctypes
+import errno
 import os
 import signal
 
@@ -53,7 +54,12 @@ class ExecProcess(OwnedProcess):
         super().verify(executable=False)
         if not executable:
             return
-        st = os.stat("exe", dir_fd=self.proc_fd)
+        try:
+            st = os.stat("exe", dir_fd=self.proc_fd)
+        except OSError as exc:
+            if exc.errno in (errno.ENOENT, errno.ESRCH):
+                self.reconcile_missing("exe")
+            raise
         actual = (st.st_dev, st.st_ino)
         before = (self.identity.exe_device, self.identity.exe_inode)
         if actual == self.target_exe:

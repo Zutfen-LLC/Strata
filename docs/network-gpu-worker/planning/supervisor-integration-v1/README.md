@@ -5,15 +5,17 @@ source at `ad921e0f09fa340bc138cc230202c1b7a6e0674d`. Its monitor libraries orig
 at `a3b706deae4101e90592bed58701df20f9bd4da2`, with the correction linked below. It is not a
 byte-for-byte patch to the historical shell drivers. See [SOURCE-COVERAGE.md](SOURCE-COVERAGE.md).
 
-Current continuation: [GPU-COMPLETION-V1-20261021](../namespace-runner-v1/GPU-COMPLETION-V1-20261021.md).
-It runs only G0/G1 in a newly authorized 2700-second window, with prior successful
-B0/B1 files as baseline inputs and the retained partial GPU cache as resumed
-state. Historical time/usage are retained. Completion jobs use 1800000 ms GPU
-setup, 2700-second engine/GPU maxima and 2700000 ms fresh CPU idle maximum,
-all clipped by the same window/cleanup/lease limits. It supersedes historical
-execution gates and time/usage balances below, with one new focused mocked entry
-on ROLE_CPU_C followed automatically by the already authorized trial on PASS.
-The author ran no tests, Python source, builds, model or fleet operations.
+Current continuation: [G1-EXIT-RECONCILIATION-V1-20261021](../namespace-runner-v1/G1-EXIT-RECONCILIATION-V1-20261021.md).
+It runs G1 only in a new 1200-second window with actual retained B0/B1 and
+product-complete G0 files as references. G0 supervisor acceptance remains FAILED.
+Historical 5744.2 seconds and 9 requests / 576 charged tokens are retained;
+only two G1 requests / 128 tokens remain. CPU loads cold; GPU validates the same
+complete cache with zero new weight transfer. Engine/GPU maxima and fresh CPU
+idle maximum follow the window, clipped by existing cleanup/lease limits.
+Missing owned proc entries receive a bounded identity/pidfd check and, for an
+unresolved root hint, actual true-parent reaping. Absence alone never proves exit.
+The agent module-shadowing fix is published. One focused entry on inferswarm05
+automatically continues G1 on PASS. Author ran no Python, tests, builds or fleet work.
 
 No new Python, syntax check, fixture, live probe, build, product executable or
 model was executed by the author or reviewers. The user reported the original
@@ -45,6 +47,7 @@ change the implementation or extend the expired model-run approval.
 | test_procfs_task_race.py | Nine focused mocked cases for task reconciliation, failures and amended request bytes; NOT RUN here |
 | test_procfs_child_churn.py | Twelve focused mocked lifecycle, safety, cleanup and request cases; NOT RUN here |
 | test_gpu_completion.py | Eight changed-behavior completion cases; NOT RUN here |
+| test_g1_exit.py | Twelve terminal-race, shadowing and G1-only focused cases; NOT RUN here |
 | live_probe.py | Future separately approved three-case harmless-child probe |
 
 ## Role policies and unchanged workload envelope

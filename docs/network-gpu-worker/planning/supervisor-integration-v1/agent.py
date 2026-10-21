@@ -266,17 +266,17 @@ def serve(config, channel):
                         request.get("completed_phases") != ["B0", "B1", "G0", "G1"]:
                     raise CoverageError("retention-not-approved-or-trial-incomplete")
                 age = duration(request["success_age_s"] + 5, 5400)
-                completion = Stamp(session.domain, time.monotonic() - age, time.time())
+                completion_stamp = Stamp(session.domain, time.monotonic() - age, time.time())
                 port = int(config["bindings"]["CPU_PORT_C"])
                 if not owned_listener(job.root, port):
                     raise CoverageError("retention-listener-ownership")
-                job.deadline = idle_deadline(port, job.root, session.admission, completion,
+                job.deadline = idle_deadline(port, job.root, session.admission, completion_stamp,
                                              session.domain, engines_closed=True)
                 job.gate.deadline = job.deadline
                 if time.monotonic() >= job.deadline - 15:
                     raise CoverageError("retention-already-expiring")
                 journal.emit("RETENTION_COMMITTED_V1", deadline=job.deadline,
-                             completion=vars(completion), original_admission=vars(session.admission))
+                             completion=vars(completion_stamp), original_admission=vars(session.admission))
                 packet(channel, {"kind": "RETENTION_COMMITTED", "run_id": run_id, "role": role,
                                  "bounded": True})
                 detached = True  # EOF/controller exit cannot undo this finite grant.

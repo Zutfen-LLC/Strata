@@ -13,7 +13,7 @@ import time
 
 from resource_guard import (CoverageError, GuardStop, Journal, capture_process, cgroup_snapshot,
                             membership, verify_namespaces)
-from resource_telemetry import (DiagnosticBaselines, Identity, OwnedProcess, OwnedTree, ProcessExited,
+from resource_telemetry import (DiagnosticBaselines, ExitPending, Identity, OwnedProcess, OwnedTree, ProcessExited,
                                 host_sample, verify_initial_namespaces)
 from linux_owned import identity, parent_death, pin_child, promote_exec, subreaper
 from policy import ReleaseGate, RoleGuard, Stamp
@@ -68,12 +68,18 @@ def monitor_child(root, namespaces, guard, outer, phase, journal_path, channel, 
                 return
             try:
                 sample = collect(tree, namespaces)
-            except BaseException:
-                if root.alive():
-                    raise
-                # Terminal sampling is distinct from a completed sample that
-                # violated a guard. A preceding REFUSED is never rewritten.
+            except ProcessExited:
                 packet(channel, {"kind": "EXITED", "key": key})
+                return
+            except ExitPending as exc:
+                if (exc.identity.pid, exc.identity.start_ticks) != (root.identity.pid, root.identity.start_ticks):
+                    raise
+                journal.emit("INTEGRATION_EXIT_PENDING_V1", key=key,
+                             identity=asdict(exc.identity), path=exc.path)
+                # This is not an exit claim or coverage grant. Only the true
+                # guardian's bounded waitpid reconciliation can finish the job.
+                packet(channel, {"kind": "EXIT_PENDING", "key": key,
+                                 "pid": exc.identity.pid, "start_ticks": exc.identity.start_ticks})
                 return
             extra = outer.sample()
             if baseline is None:
@@ -101,15 +107,14 @@ def monitor_child(root, namespaces, guard, outer, phase, journal_path, channel, 
             sequence += 1
             time.sleep(max(0, started + 2 - time.monotonic()))
     except BaseException as exc:
+        journal.emit("INTEGRATION_MONITOR_REFUSED_V1", key=key,
+                     reason=type(exc).__name__ + ":" + str(exc))
+        packet(channel, {"kind": "REFUSED", "key": key, "reason": type(exc).__name__})
+    finally:
         try:
-            journal.emit("INTEGRATION_MONITOR_REFUSED_V1", key=key,
-                         reason=type(exc).__name__ + ":" + str(exc))
-            packet(channel, {"kind": "REFUSED", "key": key, "reason": type(exc).__name__})
+            journal.close()
         finally:
-            try:
-                journal.close()
-            finally:
-                tree.close()
+            tree.close()
 
 
 def child_exec(gate, parent, argv, env, input_fd, out_fd, err_fd):
@@ -237,6 +242,11 @@ class Job:
             if message.get("kind") == "EXITED" and tuple(message.get("key", ())) == self.key:
                 terminal = True
                 break
+            if message.get("kind") == "EXIT_PENDING" and tuple(message.get("key", ())) == self.key and \
+                    (message.get("pid"), message.get("start_ticks")) == \
+                    (self.root.identity.pid, self.root.identity.start_ticks):
+                terminal = True
+                break
             seq, at = message.get("sequence"), message.get("mono")
             if message.get("kind") != "COVERED" or tuple(message.get("key", ())) != self.key or \
                     type(seq) is not int or seq != self.last_sequence + 1 or \
@@ -248,10 +258,8 @@ class Job:
                 self.gate.release(self.key, now)
                 os.write(self.exec_gate, b"G")
                 self.close_fd(self.exec_gate)
-        if not self.root.alive():
-            return self.reap(self.root.identity.pid)
-        if terminal:
-            raise CoverageError("false-terminal-monitor-observation")
+        if terminal or not self.root.alive():
+            return self.terminal_result(self.root)
         self.gate.check(now)
         if not self.monitor.alive():
             raise CoverageError("monitor-exited")
@@ -267,6 +275,27 @@ class Job:
         self.reaped[got] = os.waitstatus_to_exitcode(status)
         return self.reaped[got]
 
+    def terminal_result(self, item):
+        """Only actual direct-child wait status resolves a terminal hint."""
+        pid = item.identity.pid
+        if pid not in self.children:
+            raise CoverageError("terminal-wait-not-direct-child")
+        rc = self.reap(pid)
+        if rc is None:
+            select.select([item.pid_fd], [], [], min(0.1, max(0, self.deadline - time.monotonic())))
+            rc = self.reap(pid)
+        if rc is None:
+            raise CoverageError("terminal-wait-unconfirmed:" + repr(item.identity))
+        return rc
+
+    def reconcile_item_exit(self, item):
+        if item.identity.pid in self.children:
+            self.terminal_result(item)
+        else:
+            select.select([item.pid_fd], [], [], min(0.1, max(0, self.deadline - time.monotonic())))
+            if item.alive():
+                raise CoverageError("owned-terminal-exit-unconfirmed:" + repr(item.identity))
+
     def adopt(self):
         # This dedicated host guardian creates only this Job's children. Once
         # their parent exits, subreaper adoption is proven by waitid in pin_child.
@@ -275,20 +304,31 @@ class Job:
         try:
             for pid in own.children():
                 old = self.items.get(pid)
-                if old is not None and old.alive():
+                if old is not None and pid not in self.reaped and old.alive():
                     try:
                         old.verify()
                         continue
                     except ProcessExited:
                         if old.alive():
                             raise
+                    except ExitPending:
+                        if os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                            raise
+                        if self.reap(pid) is None:
+                            raise CoverageError("adopted-terminal-reap-unconfirmed")
+                        continue
                 try:
                     exited = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
                 except ChildProcessError:
                     continue  # No longer our child; never signal a reused foreign PID.
                 if exited is not None:
                     continue  # The actual waitpid reaper below owns this zombie.
-                item = OwnedProcess.pin(pid, parent=own)
+                try:
+                    item = OwnedProcess.pin(pid, parent=own)
+                except ExitPending:
+                    if os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                        continue  # Actual zombie; the existing waitpid loop will reap.
+                    raise
                 if item is None:
                     continue  # Exited between waitid and pin; no fabricated identity.
                 if old is None and len(self.items) >= 16:
@@ -317,6 +357,8 @@ class Job:
             except OSError as exc:
                 errors.append(type(exc).__name__)
         def live(item):
+            if item.identity.pid in self.reaped:
+                return False  # Actual guardian wait status is stronger than notification order.
             try:
                 return item.alive()
             except BaseException as exc:
@@ -334,6 +376,11 @@ class Job:
                 if live(item):
                     tree = OwnedTree(item)
                     tree.refresh()
+            except ExitPending as exc:
+                try:
+                    self.reconcile_item_exit(item)
+                except BaseException as unresolved:
+                    errors.append(type(unresolved).__name__ + ":" + str(unresolved)[:2048])
             except ProcessExited as exc:
                 if live(item):
                     errors.append(type(exc).__name__ + ":" + str(exc)[:2048])
@@ -353,7 +400,13 @@ class Job:
                             errors.append(type(exc).__name__ + ":" + str(exc)[:2048])
         for item in self.items.values():
             try:
-                item.send(signal.SIGTERM)
+                if live(item):
+                    item.send(signal.SIGTERM)
+            except ExitPending:
+                try:
+                    self.reconcile_item_exit(item)
+                except BaseException as exc:
+                    errors.append(type(exc).__name__ + ":" + str(exc)[:2048])
             except BaseException as exc:
                 errors.append(type(exc).__name__)
         end = min(self.deadline - 1, time.monotonic() + max(0, min(grace, 14)))
@@ -365,6 +418,11 @@ class Job:
             try:
                 if live(item):
                     item.send(signal.SIGKILL)
+            except ExitPending:
+                try:
+                    self.reconcile_item_exit(item)
+                except BaseException as exc:
+                    errors.append(type(exc).__name__ + ":" + str(exc)[:2048])
             except BaseException as exc:
                 errors.append(type(exc).__name__)
         # Reap direct/adopted children only; negative waitpid is NOT a signal.

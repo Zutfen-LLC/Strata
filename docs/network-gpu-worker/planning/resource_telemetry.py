@@ -28,6 +28,13 @@ class ProcessExited(CoverageError):
     """A held pidfd confirms exit; never inferred from an unreadable entry."""
 
 
+class ExitPending(CoverageError):
+    """Scoped proc entry disappeared; only a true-parent wait may resolve this."""
+    def __init__(self, identity, path):
+        self.identity, self.path = identity, path
+        super().__init__("terminal-proc-read-unconfirmed:identity=" + repr(identity) + ":path=" + path)
+
+
 @dataclass(frozen=True)
 class Observation:
     value: object = None
@@ -187,7 +194,7 @@ def parse_stat(text):
         raise CoverageError("malformed-process-stat") from None
 
 
-def verify_initial_namespaces(expected, proc_fd=None):
+def verify_initial_namespaces(expected, proc_fd=None, *, process=None):
     if not isinstance(expected, dict) or set(expected) != {"cgroup", "mnt", "pid"}:
         raise CoverageError("initial-host-namespace-receipt-required")
     for kind in ("cgroup", "mnt", "pid"):
@@ -199,7 +206,12 @@ def verify_initial_namespaces(expected, proc_fd=None):
         if (own.st_dev, own.st_ino) != tuple(wanted):
             raise CoverageError("initial-host-namespace-mismatch:" + kind)
         if proc_fd is not None:
-            other = os.stat("ns/" + kind, dir_fd=proc_fd)
+            try:
+                other = os.stat("ns/" + kind, dir_fd=proc_fd)
+            except OSError as exc:
+                if process is not None and exc.errno in (errno.ENOENT, errno.ESRCH):
+                    process.reconcile_missing("ns/" + kind)
+                raise
             if (other.st_dev, other.st_ino) != tuple(wanted):
                 raise CoverageError("owned-process-namespace-mismatch:" + kind)
 
@@ -250,8 +262,8 @@ class OwnedProcess:
                     raise CoverageError("child-parent-mismatch")
             exe = os.stat("exe", dir_fd=proc_fd)
             identity = Identity(actual_pid, start, exe.st_dev, exe.st_ino)
-            verify_initial_namespaces(namespace_receipt, proc_fd)
             item = cls(identity, proc_fd, pid_fd, namespace_receipt)
+            verify_initial_namespaces(namespace_receipt, proc_fd, process=item)
             if actual_pid != pid or (expected is not None and identity != expected):
                 raise CoverageError("process-identity-mismatch")
             item.verify()
@@ -260,7 +272,7 @@ class OwnedProcess:
         except (ProcessExited, OSError) as exc:
             terminal = isinstance(exc, ProcessExited) or (exc.errno in (errno.ENOENT, errno.ESRCH) and
                 exc.filename in ("/proc/" + str(pid), "exe", "ns/cgroup", "ns/mnt", "ns/pid"))
-            if parent is not None and terminal and select.select([pid_fd], [], [], 0)[0]:
+            if parent is not None and terminal and select.select([pid_fd], [], [], 0.1)[0]:
                 parent.verify()
                 return None  # Proven exit, not permission/identity/schema failure.
             raise
@@ -277,12 +289,25 @@ class OwnedProcess:
             raise CoverageError("owned-process-handle-closed")
         return not select.select([self.pid_fd], [], [], 0)[0]
 
+    def reconcile_missing(self, name):
+        """At most 100 ms on the held pidfd; absence alone never proves exit."""
+        path = "/proc/" + str(self.identity.pid) + "/" + name
+        for after_wait in (False, True):
+            stat = read_text("stat", self.proc_fd)
+            if not (stat.status == "unavailable" and stat.reason in ("ENOENT", "ESRCH")):
+                pid, _, start = parse_stat(stat)  # Permission/schema failures stay fatal.
+                if (pid, start) != (self.identity.pid, self.identity.start_ticks):
+                    raise CoverageError("terminal-read-identity-changed:" + path)
+            if select.select([self.pid_fd], [], [], 0 if after_wait else 0.1)[0]:
+                raise ProcessExited("owned-process-exited-during-read:" + path)
+        raise ExitPending(self.identity, path)
+
     def verify(self, executable=True):
         if not self.alive():
             raise ProcessExited("owned-process-exited")
         stat = read_text("stat", self.proc_fd)
-        if stat.status == "unavailable" and stat.reason in ("ENOENT", "ESRCH") and not self.alive():
-            raise ProcessExited("owned-process-exited-during-stat")
+        if stat.status == "unavailable" and stat.reason in ("ENOENT", "ESRCH"):
+            self.reconcile_missing("stat")
         pid, _, start = parse_stat(stat)
         if (pid, start) != (self.identity.pid, self.identity.start_ticks):
             raise CoverageError("owned-process-identity-changed")
@@ -290,8 +315,8 @@ class OwnedProcess:
             try:
                 exe = os.stat("exe", dir_fd=self.proc_fd)
             except OSError as exc:
-                if exc.errno in (errno.ENOENT, errno.ESRCH) and not self.alive():
-                    raise ProcessExited("owned-process-exited-during-exe") from None
+                if exc.errno in (errno.ENOENT, errno.ESRCH):
+                    self.reconcile_missing("exe")
                 raise
             if (exe.st_dev, exe.st_ino) != (self.identity.exe_device, self.identity.exe_inode):
                 raise CoverageError("owned-process-executable-changed")
@@ -301,9 +326,11 @@ class OwnedProcess:
     def read(self, name):
         self.verify()
         value = read_text(name, self.proc_fd)
+        if value.status == "unavailable" and value.reason in ("ENOENT", "ESRCH"):
+            self.reconcile_missing(name)
         try:
             self.verify()
-        except ProcessExited:
+        except (ProcessExited, ExitPending):
             if value.status != "ok" and not (value.status == "unavailable" and
                                                value.reason in ("ENOENT", "ESRCH")):
                 required(value, "process-read:" + name)  # Preserve genuine read failures.
@@ -376,7 +403,11 @@ class OwnedProcess:
                 return sorted(children)
             finally:
                 os.close(task_fd)
+        except ExitPending:
+            raise
         except (CoverageError, OSError) as exc:
+            if isinstance(exc, OSError) and exc.errno in (errno.ENOENT, errno.ESRCH):
+                self.reconcile_missing(path.removeprefix("/proc/" + str(self.identity.pid) + "/"))
             terminal = isinstance(exc, ProcessExited) or (isinstance(exc, OSError) and
                        exc.errno in (errno.ENOENT, errno.ESRCH) and not self.alive())
             detail = str(exc)
@@ -397,8 +428,11 @@ class OwnedProcess:
             return "already-exited"
         # An unexpected exec still belongs to this pidfd/start-time instance;
         # reject its samples but permit safe cleanup of the owned task.
-        self.verify(executable=False)
-        signal.pidfd_send_signal(self.pid_fd, sig, None, 0)
+        try:
+            self.verify(executable=False)
+            signal.pidfd_send_signal(self.pid_fd, sig, None, 0)
+        except (ProcessExited, ProcessLookupError):
+            return "already-exited"
         return "sent"
 
     def close(self):
@@ -427,7 +461,7 @@ class OwnedTree:
                 item.close()
 
     def refresh(self):
-        verify_initial_namespaces(self.root.namespace_receipt, self.root.proc_fd)
+        verify_initial_namespaces(self.root.namespace_receipt, self.root.proc_fd, process=self.root)
         self.root.verify()
         self.retire_exited()
         queue = [p for p in self.items.values() if p.alive()]
@@ -451,6 +485,15 @@ class OwnedTree:
                         self.retire_exited()
                 try:
                     child = OwnedProcess.pin(pid, parent=parent)
+                except ExitPending as exc:
+                    if (exc.identity.pid, exc.identity.start_ticks) == \
+                            (self.root.identity.pid, self.root.identity.start_ticks):
+                        raise
+                    raise CoverageError("owned-child-terminal-unconfirmed:" + str(exc)) from None
+                except ProcessExited:
+                    if parent is self.root:
+                        raise
+                    raise CoverageError("owned-parent-exited-during-child-discovery") from None
                 except (CoverageError, OSError) as exc:
                     raise CoverageError("owned-child-pin:pid=" + str(pid) + ":parent=" +
                                         repr(parent.identity) + ":" + type(exc).__name__ + ":" + str(exc)) from None

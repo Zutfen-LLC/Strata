@@ -146,7 +146,7 @@ class ReleaseGate:
 
 class TrialOrder:
     def __init__(self, phases=PHASES):
-        if tuple(phases) not in (PHASES, ("G0", "G1")):
+        if tuple(phases) not in (PHASES, ("G0", "G1"), ("G1",)):
             raise CoverageError("unsupported-trial-schedule")
         self.phases = tuple(phases)
         self.next = 0

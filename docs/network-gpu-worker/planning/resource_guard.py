@@ -104,8 +104,8 @@ def verify_namespaces(process, expected):
         try:
             actual = namespace_identity("ns/" + kind, process.proc_fd)
         except OSError as exc:
-            if exc.errno in (errno.ENOENT, errno.ESRCH) and not process.alive():
-                raise ProcessExited("owned-process-exited-during-namespace-read") from None
+            if exc.errno in (errno.ENOENT, errno.ESRCH):
+                process.reconcile_missing("ns/" + kind)
             raise
         monitor = namespace_identity("/proc/self/ns/" + kind)
         if actual != tuple(expected[kind]) or monitor != tuple(expected[kind]):
@@ -239,7 +239,7 @@ class CpuGuard:
 
 
 def capture(tree, worker_identity, namespace_receipt):
-    verify_initial_namespaces(namespace_receipt, tree.root.proc_fd)
+    verify_initial_namespaces(namespace_receipt, tree.root.proc_fd, process=tree.root)
     items = tree.refresh()
     worker = next((p for p in items if p.identity == worker_identity), None)
     if worker is None:

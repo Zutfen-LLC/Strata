@@ -141,6 +141,7 @@ class WarningTests(unittest.TestCase):
         job.channel, job.root = Mock(), Mock()
         job.root.alive.return_value = False
         job.root.identity.pid = 123
+        job.children = {123}
         job.reap = Mock(return_value=17)
         with patch("runtime.select.select", return_value=([], [], [])):
             rc = job.poll()

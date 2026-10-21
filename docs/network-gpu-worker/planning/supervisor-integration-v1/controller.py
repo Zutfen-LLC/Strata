@@ -275,9 +275,11 @@ class Controller:
             if self.gpu_completion:
                 result.update(completed_phases=list(self.phases), gpu_completion=True,
                               baseline_archive_sha256=self.baseline["archive_sha256"],
+                              g0_reference_archive_sha256=self.baseline["g0_archive_sha256"],
+                              g0_reference_supervisor_status="FAILED",
                               historical_active_s=completion.HISTORICAL_ACTIVE_S,
                               window_start_mono=self.start, window_deadline_mono=self.deadline,
-                              new_request_allowance=3, new_token_allowance=192)
+                              new_request_allowance=2, new_token_allowance=128)
             return result
         except BaseException:
             # A live peer will receive CANCEL on its next fresh challenge. If
