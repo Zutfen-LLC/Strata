@@ -64,7 +64,7 @@ reserve is 4096 MiB, cache budget 18432 MiB, cold cache disk admission 22.25 GiB
 and running disk floor 4 GiB on the cache filesystem. The provisional admission
 is `floor((free - 4096MiB - 256MiB - 1598720) / 5222400) >= 3289`.
 The fixed plan has 3289 remote experts, 17176473600 expert bytes, and SHA-256
-`a51c6e4acc74cd84f5333d3b13b4cd58abf1ddf6276b59fd757fa815f8040578`.
+`a51c6e4acc74cd84f5333d3b13b4cd58abf1ddf6276b59fd757fa815f8045578`.
 Ownership remains primary 1056, helper 2263, full CPU 21257, uncovered CPU 17968.
 No metadata planner, owner selection, weight extraction or transfer occurs here.
 

@@ -24,7 +24,7 @@ from policy import ENGINE_CAPS, GPU_CAPS, Stamp, duration, accounting_deadline
 from runtime import Job, Session, packet, receive
 
 IMPLEMENTATION = "bf51f09e286a7a5ce89fbff67b3ee07cb044a5e5"
-PLAN_SHA = "a51c6e4acc74cd84f5333d3b13b4cd58abf1ddf6276b59fd757fa815f8040578"
+PLAN_SHA = "a51c6e4acc74cd84f5333d3b13b4cd58abf1ddf6276b59fd757fa815f8045578"
 
 
 def owned_listener(process, port):
