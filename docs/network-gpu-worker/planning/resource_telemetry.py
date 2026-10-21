@@ -15,7 +15,7 @@ import signal
 READ_CAP = 262144
 MAX_PROCESSES = 16
 MAX_TASKS = 256
-MAX_CHILD_SCANS = 4
+MAX_CHILD_SCANS = 2
 STATUS_FIELDS = ("VmRSS", "RssAnon", "RssFile", "RssShmem", "VmSwap")
 HOST_FIELDS = ("MemAvailable", "SwapTotal", "SwapFree")
 
@@ -344,7 +344,7 @@ class OwnedProcess:
                         raise CoverageError("required-leader-task-absent")
                     return tuple(sorted(names, key=int))
 
-                children, previous = set(), None
+                children = set()
                 for scan in range(1, MAX_CHILD_SCANS + 1):
                     path, after, vanished = base, (), []
                     before = tasks()
@@ -368,18 +368,12 @@ class OwnedProcess:
                     if still_present:
                         path = base + "/" + min(still_present, key=int) + "/children"
                         raise CoverageError("stable-required-entry-absence:ENOENT")
-                    # A dead task's children move to another live task, possibly
-                    # one already read. Restart the whole scan even if all reads
-                    # succeeded; retain every observed child for ownership pinning.
-                    if before != after or vanished:
-                        previous = None
-                        continue
-                    # Stable complete task coverage does not require child-map
-                    # quiescence. Reconcile every observed child by identity below.
-                    if before == previous:
-                        return sorted(children)
-                    previous = before
-                raise CoverageError("unresolved-task-children-coverage:scans=" + str(MAX_CHILD_SCANS))
+                    # Always make the bounded second pass, including surviving
+                    # tasks already read: an exiting thread can reparent children
+                    # onto them. Neither task nor child sets must converge.
+                    # Children born after this finite observation are discovered
+                    # by later samples/adoption; this is not an atomic snapshot.
+                return sorted(children)
             finally:
                 os.close(task_fd)
         except (CoverageError, OSError) as exc:

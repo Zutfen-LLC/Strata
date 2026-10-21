@@ -5,10 +5,10 @@ source at `ad921e0f09fa340bc138cc230202c1b7a6e0674d`. Its monitor libraries orig
 at `a3b706deae4101e90592bed58701df20f9bd4da2`, with the correction linked below. It is not a
 byte-for-byte patch to the historical shell drivers. See [SOURCE-COVERAGE.md](SOURCE-COVERAGE.md).
 
-Current continuation: [PROCFS-CHILD-CHURN-V1-20261021](../namespace-runner-v1/PROCFS-CHILD-CHURN-V1-20261021.md).
-It accepts changing child maps with stable required task coverage and handles
-confirmed descendant exits during discovery/sampling/adoption. B0/G0 use one A
-smoke request; B1/G1 keep the original A/B/A stream. It supersedes historical
+Current continuation: [PERIODIC-OBSERVATION-V1-20261021](../namespace-runner-v1/PERIODIC-OBSERVATION-V1-20261021.md).
+It observes tasks/children without set convergence and preserves identity-safe
+tracking. B0/G0 use one A smoke request; B1/G1 use matching A/B streams.
+Effective phase waits/lifetimes clip to the remaining allowance. It supersedes historical
 execution gates and time/usage balances below, with one new focused mocked entry
 on ROLE_CPU_C followed automatically by the already authorized trial on PASS.
 The author ran no tests, Python source, builds, model or fleet operations.
@@ -98,7 +98,10 @@ residency 1800000 ms. Engine phases remain B0/B1/G0/G1 with caps
 1200/600/1800/900 seconds; remote GPU G0/G1 caps are 1900/1000 seconds. Preserve
 11-second gaps after B0/G0. Global cap is 5400 seconds, original stop/launch
 cutoff 5355; leases conservatively consume transit/cleanup time inside it.
-G0/G1 refuse launch without their full 1900/1000-second remaining envelope.
+The current amendment supersedes full-maximum-envelope admission. Controller
+waits and owned lifetimes clip to remaining time, preserving the 45-second
+global reserve, five-second challenge transit and 15-second owned cleanup.
+Fresh leases can only shorten deadlines. No positive safe interval means refusal.
 CPU absolute cap remains original admission plus 7200 seconds. TERM starts with
 15 seconds reserved; at most 14 seconds grace leaves up to one second for
 pidfd KILL and actual wait/reap inside that cap. No deadline resets on attach.
@@ -130,17 +133,18 @@ before the exec byte is released. Listener coverage means an owned listening
 socket, **not loaded/READY residency**. Engine SETUP_BEGIN still initiates arena
 loading. No standalone preload was invented.
 
-Shared `OwnedProcess.children()` now allows up to four bounded scans. It requires
-two complete scans with the same stable task set and valid pinned parent identity;
-child maps may change. A children ENOENT is recoverable only when that
-task is absent from the subsequent enumeration. Any task-set change forces a
-full rescan, including tasks already read, and all successfully seen children
+Shared `OwnedProcess.children()` now performs two bounded observation passes.
+Neither task sets nor child maps must converge within or between passes.
+A children ENOENT is recoverable only when that task is absent from the
+subsequent enumeration and pinned parent identity still verifies. The second
+pass rereads tasks that can receive reparented children. All observed children
 are retained for `OwnedTree` parent/identity pinning. A newly observed PID absent
 at pidfd lookup or confirmed exited by its held pidfd grants no identity or
 signal. Confirmed exited descendant handles are retired, keeping the 16-process
 tracking cap without accumulating dead historical slots. EACCES,
 malformed data, a still-present task missing children, missing leader/task
-directory, process identity loss and unresolved churn refuse coverage. Failure
+directory, process identity loss and unresolved ownership refuse coverage.
+Churn alone is not a refusal. Failure
 context includes the proc path, pinned PID/start/exe identity and scan task sets.
 Descendant status/namespace/cgroup sampling and watchdog adoption distinguish
 confirmed exit from required read failure. Partial cleanup discovery retains
@@ -149,13 +153,14 @@ and identity-safe tracking/cleanup, not an atomic global procfs snapshot. No
 total process-tree quiescence, sleep, deadline extension or ownership exemption.
 
 The actual engine input write in `agent.py` calls `commands.requests(phase)`.
-B0/G0 send `GEN 64 9419` then `QUIT`; B1/G1 send the unchanged A/B/A stream.
+B0/G0 send `GEN 64 9419` then `QUIT`; B1/G1 send A then B, each GEN64, then QUIT.
 `Controller` still requires a zero exit and complete cleanup for each phase;
 its DONE event is a supervisor receipt, not a product request count. Evidence
 must separately require one product DONE and `.first-logits.0` for each B0/G0,
-three product DONEs and `.first-logits.0/.1/.2` for each B1/G1. B0/G0 are startup/cache
+two product DONEs and `.first-logits.0/.1` for each B1/G1. B0/G0 are startup/cache
 smoke only. B1/G1 remain complete like-for-like comparison streams. See the current
 amendment for the cumulative failed-request charge and active-time ledger.
+Repeated-A coverage is dropped by this reduced schedule, not reported PASS.
 
 The watchdog is parent of workload and monitor, and subreaper for their orphans.
 All normal signals use held pidfds with identity checks; there are no group,

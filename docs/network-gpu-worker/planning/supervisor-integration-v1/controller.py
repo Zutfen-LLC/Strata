@@ -12,7 +12,7 @@ import time
 
 from resource_guard import CoverageError, GuardStop
 from linux_owned import parent_death
-from policy import ENGINE_CAPS, GPU_CAPS, TrialOrder
+from policy import ENGINE_CAPS, GPU_CAPS, TrialOrder, bounded_job_deadline
 
 
 def close_all(owners):
@@ -213,20 +213,27 @@ class Controller:
         while self.clock() < end:
             self.pump()
 
+    def phase_cap(self, cap):
+        now = self.clock()
+        # The existing 45-second global reserve and five-second challenge
+        # transit allowance remain real. No full-maximum-envelope admission.
+        return bounded_job_deadline(now, now + cap, self.deadline - 45 - 5) - now
+
     def run(self):
         cpu, engine, gpu = (self.peers[r] for r in ("ROLE_CPU_C", "ROLE_ENGINE_A", "ROLE_GPU_B"))
         try:
+            cpu_cap = self.phase_cap(7200)
             cpu.queue("START", phase="CPU")
-            self.wait(cpu.role, "LISTENING_COVERED", "CPU", 450)
+            self.wait(cpu.role, "LISTENING_COVERED", "CPU", min(450, cpu_cap))
             for phase in ("B0", "B1", "G0", "G1"):
                 if phase.startswith("G"):
-                    if self.clock() + GPU_CAPS[phase] > self.deadline - 45:
-                        raise GuardStop("original-gpu-phase-launch-budget")
+                    gpu_cap = self.phase_cap(GPU_CAPS[phase])
                     gpu.queue("START", phase=phase)
-                    self.wait(gpu.role, "LISTENING_COVERED", phase, 30)
+                    self.wait(gpu.role, "LISTENING_COVERED", phase, min(30, gpu_cap))
                 self.order.permit(phase, cpu.covered, gpu.covered)
+                engine_cap = self.phase_cap(ENGINE_CAPS[phase])
                 engine.queue("START", phase=phase)
-                done = self.wait(engine.role, "DONE", phase, ENGINE_CAPS[phase])
+                done = self.wait(engine.role, "DONE", phase, engine_cap)
                 self.order.finish(phase, done["rc"], done["cleanup"]["complete"])
                 if phase == "G1":
                     self.success_at = self.clock()  # Cleanup consumes the retention grant.

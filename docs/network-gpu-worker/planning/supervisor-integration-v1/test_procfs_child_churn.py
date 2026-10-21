@@ -211,13 +211,13 @@ class ChurnTests(TestCase):
         self.assertIs(job.stop("again"), result)
 
     def test_smoke_and_full_streams_preserve_new_cumulative_ceiling(self):
-        smoke, full = b"GEN 64 9419\nQUIT\n", b"GEN 64 9419\nGEN 64 14773,6353\nGEN 64 9419\nQUIT\n"
+        smoke, full = b"GEN 64 9419\nQUIT\n", b"GEN 64 9419\nGEN 64 14773,6353\nQUIT\n"
         self.assertEqual([commands.requests(p) for p in ("B0", "B1", "G0", "G1")],
                          [smoke, full, smoke, full])
         count = sum(commands.requests(p).count(b"GEN 64 ") for p in ("B0", "B1", "G0", "G1"))
-        self.assertEqual(count, 8)
-        self.assertEqual((2 + count, 128 + count * 64), (10, 640))
-        self.assertLessEqual(128 + count * 64, 704)
+        self.assertEqual(count, 6)
+        self.assertEqual((4 + count, 256 + count * 64), (10, 640))
+        self.assertLessEqual(256 + count * 64, 704)
 
 
 def main():

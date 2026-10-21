@@ -7,13 +7,14 @@ from policy import ENGINE_CAPS, GPU_CAPS
 
 REQUESTS = b"GEN 64 9419\nGEN 64 14773,6353\nGEN 64 9419\nQUIT\n"
 B0_REQUESTS = b"GEN 64 9419\nQUIT\n"
+COMPARISON_REQUESTS = b"GEN 64 9419\nGEN 64 14773,6353\nQUIT\n"
 
 
 def requests(phase):
-    """B0/G0 startup/cache smoke; retain complete B1/G1 comparison streams."""
+    """B0/G0 single-A smoke; B1/G1 identical two-prompt comparisons."""
     if phase not in ENGINE_CAPS:
         raise CoverageError("request-phase-mismatch")
-    return B0_REQUESTS if phase in ("B0", "G0") else REQUESTS
+    return B0_REQUESTS if phase in ("B0", "G0") else COMPARISON_REQUESTS
 
 
 def product(role, phase, b):

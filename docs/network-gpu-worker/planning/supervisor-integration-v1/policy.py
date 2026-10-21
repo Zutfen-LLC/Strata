@@ -103,6 +103,17 @@ def accounting_deadline(now, original, global_limit):
     return min(now + 30, original, global_limit - 15)
 
 
+def bounded_job_deadline(now, original, global_limit):
+    """Clip existing upper bounds; retain 15 seconds for owned cleanup."""
+    if any(type(v) not in (int, float) or not math.isfinite(v)
+           for v in (now, original, global_limit)):
+        raise CoverageError("invalid-phase-deadline")
+    deadline = min(original, global_limit)
+    if deadline <= now + 15:
+        raise GuardStop("no-positive-phase-interval-after-cleanup")
+    return deadline
+
+
 class ReleaseGate:
     """No stale readiness, late heartbeat or partial launch can release exec."""
     def __init__(self, run_id, role, phase, now, deadline):

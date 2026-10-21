@@ -21,11 +21,19 @@ from resource_telemetry import required, read_text
 from cache_status import idle_deadline
 from commands import product, requests
 from outer import OuterGuards
-from policy import ENGINE_CAPS, GPU_CAPS, Stamp, duration, accounting_deadline
+from policy import (ENGINE_CAPS, GPU_CAPS, Stamp, duration, accounting_deadline,
+                    bounded_job_deadline)
 from runtime import Job, Session, packet, receive
 
 IMPLEMENTATION = "bf51f09e286a7a5ce89fbff67b3ee07cb044a5e5"
 PLAN_SHA = "a51c6e4acc74cd84f5333d3b13b4cd58abf1ddf6276b59fd757fa815f8045578"
+
+
+def clip_job_limit(job, global_limit):
+    """Fresh lease bounds can only shorten the existing owned job/gate."""
+    job.deadline = min(job.deadline, global_limit)
+    job.gate.deadline = job.deadline
+    job.gate.ready_until = min(job.gate.ready_until, job.deadline - 15)
 
 
 def owned_listener(process, port):
@@ -184,6 +192,9 @@ def serve(config, channel):
             if remaining <= 20:
                 raise CoverageError("insufficient-controller-budget")
             global_limit = min(global_limit, time.monotonic() + remaining - 5)
+            if job is not None and not detached:
+                # Fresh leases may shorten a job, never extend its original cap.
+                clip_job_limit(job, global_limit)
             action = request.get("action")
             challenge, next_challenge = None, time.monotonic() + 1
             sequence += 1
@@ -215,9 +226,9 @@ def serve(config, channel):
                     os.write(input_w, requests(phase))
                 os.close(input_w)
                 launch = Stamp(session.domain, time.monotonic(), time.time())
-                deadline = session.admission.mono + 7200 if role == "ROLE_CPU_C" else \
-                    min(global_limit, launch.mono + cap)
                 try:
+                    original = session.admission.mono + 7200 if role == "ROLE_CPU_C" else launch.mono + cap
+                    deadline = bounded_job_deadline(launch.mono, original, global_limit)
                     job = Job((run_id, role, phase), argv, env, input_r, session.namespaces,
                               session.guard, outer, deadline, directory)
                 finally:

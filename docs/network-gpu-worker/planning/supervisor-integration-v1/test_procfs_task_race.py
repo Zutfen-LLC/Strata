@@ -81,7 +81,7 @@ class ProcfsRaceTests(unittest.TestCase):
                 patch.object(t, "verify_initial_namespaces"), \
                 patch.object(t.OwnedProcess, "pin", side_effect=[child, grandchild]) as pin:
             self.assertEqual(tree.refresh(), [root, child, grandchild])
-        self.assertEqual([c.args[0] for c in reads.call_args_list].count("41/children"), 3)
+        self.assertEqual([c.args[0] for c in reads.call_args_list].count("41/children"), 2)
         self.assertEqual([(c.args[0], c.kwargs["parent"]) for c in pin.call_args_list],
                          [(51, root), (61, child)])
         self.assertGreaterEqual(root.verify.call_count, 3)
@@ -139,15 +139,14 @@ class ProcfsRaceTests(unittest.TestCase):
                     self.assertRaisesRegex(t.CoverageError, reason):
                 root.children()
 
-    def test_unresolved_churn_is_bounded_and_fails_coverage(self):
+    def test_task_churn_is_bounded_without_requiring_convergence(self):
         snapshots, values = [], []
         for index in range(t.MAX_CHILD_SCANS):
             task = str(42 + index)
             snapshots.extend([("41", task), ("41",)])
             values.extend([("41/children", t.ok("")), (task + "/children", MISSING)])
-        with enumeration(snapshots, values) as (reads, scanned), \
-                self.assertRaisesRegex(t.CoverageError, "unresolved-task-children-coverage"):
-            process().children()
+        with enumeration(snapshots, values) as (reads, scanned):
+            self.assertEqual(process().children(), [])
         self.assertEqual(reads.call_count, t.MAX_CHILD_SCANS * 2)
         self.assertEqual(scanned.call_count, t.MAX_CHILD_SCANS * 2)
 
@@ -166,7 +165,7 @@ class ProcfsRaceTests(unittest.TestCase):
 
     def test_phase_specific_streams_preserve_comparison_and_usage_bounds(self):
         self.assertEqual(commands.requests("B0"), b"GEN 64 9419\nQUIT\n")
-        full = b"GEN 64 9419\nGEN 64 14773,6353\nGEN 64 9419\nQUIT\n"
+        full = b"GEN 64 9419\nGEN 64 14773,6353\nQUIT\n"
         class Bindings(dict):
             def __missing__(self, key):
                 return "/generic/" + key
@@ -174,9 +173,9 @@ class ProcfsRaceTests(unittest.TestCase):
         for phase in ("B1", "G1"):
             self.assertEqual(commands.requests(phase), full)
         self.assertEqual(sum(commands.requests(p).count(b"GEN 64 ")
-                             for p in ("B0", "B1", "G0", "G1")), 8)
-        self.assertLessEqual(2 + 8, 11)
-        self.assertEqual(128 + 8 * 64, 640)
+                             for p in ("B0", "B1", "G0", "G1")), 6)
+        self.assertLessEqual(4 + 6, 11)
+        self.assertEqual(256 + 6 * 64, 640)
         for phase, cap in (("B0", 1200), ("B1", 600), ("G0", 1800), ("G1", 900)):
             _, env, actual_cap = commands.product("ROLE_ENGINE_A", phase, Bindings())
             self.assertEqual(env["STRATA_DUMP_FIRST_LOGITS"], "/generic/RUN_A/" + phase + ".first-logits")

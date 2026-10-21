@@ -1,8 +1,8 @@
 # GPU-RESERVE-WARNING-V1
 
-Current execution continuation: [PROCFS-CHILD-CHURN-V1-20261021](PROCFS-CHILD-CHURN-V1-20261021.md).
+Current execution continuation: [PERIODIC-OBSERVATION-V1-20261021](PERIODIC-OBSERVATION-V1-20261021.md).
 It supersedes the focused check, all-phases A/B/A requirement and time/usage
-ledger below after the reported d5b8f7b5 and 984b6fb6 inference/coverage failures. The local
+ledger below after the reported interrupted inference runs. The local
 runtime warning policy in this document is unchanged.
 
 This authorized experiment policy amendment supersedes earlier instructions to
