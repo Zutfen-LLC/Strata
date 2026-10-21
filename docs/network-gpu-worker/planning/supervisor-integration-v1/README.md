@@ -59,8 +59,17 @@ and PSI remain diagnostic; unavailable/malformed values are not zero and do not
 introduce a new stop policy. No 16 MiB worker threshold, debounce or larger host
 swap allowance is introduced.
 
-Selected local GPU floors remain 1152 MiB primary and 512 MiB helper. Remote GPU
-reserve is 4096 MiB, cache budget 18432 MiB, cold cache disk admission 22.25 GiB
+GPU-RESERVE-WARNING-V1 keeps strict local startup admission at 1152 MiB primary
+and 512 MiB helper, including the initial pre-exec monitor sample. After exec-gate
+release, those local reserve crossings are diagnostic
+warnings, including during CUDA/serve startup, rather than termination. Sampling,
+required telemetry/identity failures and cleanup baseline restoration remain
+strict. Per-phase diagnostics record sampled minima and crossing counts; warning
+records occur at most once per selected local GPU per phase. There is no new
+runtime stop threshold or CUDA error detector. Existing product failures still
+abort; actual CUDA OOM is possible. See the
+[active policy and continuation](../namespace-runner-v1/GPU-RESERVE-WARNING-V1.md).
+Remote GPU reserve remains a strict 4096 MiB, cache budget 18432 MiB, cold cache disk admission 22.25 GiB
 and running disk floor 4 GiB on the cache filesystem. The provisional admission
 is `floor((free - 4096MiB - 256MiB - 1598720) / 5222400) >= 3289`.
 The fixed plan has 3289 remote experts, 17176473600 expert bytes, and SHA-256

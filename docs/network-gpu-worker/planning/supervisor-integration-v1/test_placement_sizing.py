@@ -100,15 +100,15 @@ class SizingTests(unittest.TestCase):
         self.assertFalse(assigned & (primary | helper))
         self.assertEqual(cpu - old_cpu, {(0, 4), (1, 4)})
 
-    def test_resource_floors_and_remote_cli_are_unchanged(self):
+    def test_admission_floors_and_remote_cli_are_unchanged(self):
         policy = POLICIES["ROLE_CPU_C"]
         self.assertEqual((policy.admission, policy.rss, policy.headroom),
                          ((107000 + 16384) * MIB, 108024 * MIB, 8192 * MIB))
         guard = OuterGuards("ROLE_ENGINE_A", device_ids=("primary", "helper"), selection="primary,helper")
-        guard.check({"gpu_free_bytes": [1152 * MIB, 512 * MIB]})
+        guard.check({"gpu_free_bytes": [1152 * MIB, 512 * MIB]}, admission=True)
         for primary, helper in ((1152 * MIB - 1, 512 * MIB), (1152 * MIB, 512 * MIB - 1)):
             with self.subTest(primary=primary, helper=helper), self.assertRaises(GuardStop):
-                guard.check({"gpu_free_bytes": [primary, helper]})
+                guard.check({"gpu_free_bytes": [primary, helper]}, admission=True)
         for phase in ("G0", "G1"):
             argv, _, cap = commands.product("ROLE_GPU_B", phase, Bindings())
             self.assertEqual(option(argv, "--plan"), "/generic/GPU_PLAN_B")

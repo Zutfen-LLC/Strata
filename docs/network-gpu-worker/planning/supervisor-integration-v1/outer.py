@@ -1,4 +1,4 @@
-"""Existing GPU/disk guards; bounded management reads, never a GPU context."""
+"""GPU-RESERVE-WARNING-V1: local runtime warnings; admission/remote guards intact."""
 import os
 from pathlib import Path
 import re
@@ -78,6 +78,9 @@ class OuterGuards:
         self.role, self.tool, self.device_ids = role, tool, tuple(device_ids)
         self.cache = Path(cache) if cache else None
         self.baseline = None
+        self.local_minimum = None
+        self.local_below = [False, False]
+        self.local_crossings = [0, 0]
         if role != "ROLE_CPU_C" and (len(self.device_ids) != (2 if role == "ROLE_ENGINE_A" else 1) or
                                      selection != ",".join(self.device_ids)):
             raise CoverageError("guard-workload-device-binding")
@@ -103,8 +106,27 @@ class OuterGuards:
                 any(type(v) is not int or v < 0 for v in free):
             raise CoverageError("selected-gpu-guard-unavailable")
         floors = (1152 * MIB, 512 * MIB) if count == 2 else (4 * GIB,)
-        if any(v < minimum for v, minimum in zip(free, floors)):
+        below = [v < minimum for v, minimum in zip(free, floors)]
+        if any(below) and (admission or self.role != "ROLE_ENGINE_A"):
             raise GuardStop("gpu-reserve-floor")
+        if self.role == "ROLE_ENGINE_A":
+            if admission:
+                # Fresh admission is still strict. The forked phase monitor
+                # inherits empty diagnostics; startup does not reset any guard.
+                self.local_minimum = None
+                self.local_below = [False, False]
+                self.local_crossings = [0, 0]
+                return None
+            entered = [now and not old for now, old in zip(below, self.local_below)]
+            first = [entry and count == 0 for entry, count in zip(entered, self.local_crossings)]
+            self.local_crossings = [count + int(entry) for count, entry in zip(self.local_crossings, entered)]
+            self.local_minimum = list(free) if self.local_minimum is None else \
+                [min(old, now) for old, now in zip(self.local_minimum, free)]
+            self.local_below = below
+            return {"policy": "GPU-RESERVE-WARNING-V1", "free_bytes": list(free),
+                    "minimum_sampled_free_bytes": list(self.local_minimum),
+                    "reserve_bytes": list(floors), "below_reserve": list(below),
+                    "crossings": list(self.local_crossings), "first_warning": first}
         if self.role == "ROLE_GPU_B":
             disk = values.get("disk_free_bytes")
             if type(disk) is not int or disk < 0:

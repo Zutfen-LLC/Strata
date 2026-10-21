@@ -77,7 +77,19 @@ def monitor_child(root, namespaces, guard, outer, phase, journal_path, channel, 
             journal.emit("INTEGRATION_RESOURCE_SAMPLE_V1", key=key, sequence=sequence,
                          mono=started, sample=sample, outer=extra)
             guard.check(key[1], sample, admission=sequence == 0)
-            outer.check(extra, admission=False, phase=phase)
+            if sequence == 0 and key[1] == "ROLE_ENGINE_A":
+                # The workload is still behind the exec gate. Preserve the
+                # strict local floor at initial coverage as well as admission.
+                outer.check(extra, admission=True, phase=phase)
+            diagnostic = outer.check(extra, admission=False, phase=phase)
+            if diagnostic is not None:
+                journal.emit("LOCAL_GPU_RESERVE_DIAGNOSTIC_V1", key=key, sequence=sequence,
+                             mono=started, **diagnostic)
+                if any(diagnostic["first_warning"]):
+                    # At most one warning per selected local GPU per phase;
+                    # later samples retain minima and every crossing count.
+                    journal.emit("GPU_RESERVE_WARNING_V1", key=key, sequence=sequence,
+                                 mono=started, **diagnostic)
             if time.monotonic() - started >= 2:
                 raise CoverageError("resource-sample-overrun")
             packet(channel, {"kind": "COVERED", "key": key, "sequence": sequence, "mono": started})
