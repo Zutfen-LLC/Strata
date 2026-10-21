@@ -5,6 +5,7 @@ The private config supplies frozen bindings, initial namespace provenance,
 verified executable identities and existing transport. Never commit it.
 """
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -37,7 +38,17 @@ def owned_listener(process, port):
                 names.append(entry.name)
                 if len(names) > 256:
                     raise CoverageError("owned-fd-cap")
-        sockets = {os.readlink(name, dir_fd=fd) for name in names}
+        sockets = set()
+        for name in names:
+            try:
+                sockets.add(os.readlink(name, dir_fd=fd))
+            except OSError as exc:
+                if exc.errno != errno.ENOENT:
+                    raise
+                # An enumerated FD may close before lookup. It contributes no
+                # ownership evidence; a lost pinned process must still refuse.
+                process.verify()
+        process.verify()
         table = required(process.read("net/tcp"), "owned-listener-table")
         for row in table.splitlines()[1:]:
             fields = row.split()
