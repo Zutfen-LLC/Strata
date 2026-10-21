@@ -297,7 +297,7 @@ class Job:
         try:
             self.adopt()
         except BaseException as exc:
-            errors.append(type(exc).__name__)
+            errors.append(type(exc).__name__ + ":" + str(exc)[:2048])
         # Discover bounded descendants before stopping their parents. Failure is
         # reported incomplete; no arbitrary PID or group kill fills the gap.
         for item in list(self.items.values()):
@@ -310,7 +310,7 @@ class Job:
                         elif child is not item:
                             child.close()
             except BaseException as exc:
-                errors.append(type(exc).__name__)
+                errors.append(type(exc).__name__ + ":" + str(exc)[:2048])
         for item in self.items.values():
             try:
                 item.send(signal.SIGTERM)
@@ -336,7 +336,7 @@ class Job:
                     if live(item):
                         item.send(signal.SIGKILL)
             except BaseException as exc:
-                errors.append(type(exc).__name__)
+                errors.append(type(exc).__name__ + ":" + str(exc)[:2048])
             try:
                 pid, status = os.waitpid(-1, os.WNOHANG)
             except ChildProcessError:

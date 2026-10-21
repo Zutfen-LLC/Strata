@@ -19,7 +19,7 @@ import uuid
 from resource_guard import CoverageError, Journal
 from resource_telemetry import required, read_text
 from cache_status import idle_deadline
-from commands import product, REQUESTS
+from commands import product, requests
 from outer import OuterGuards
 from policy import ENGINE_CAPS, GPU_CAPS, Stamp, duration, accounting_deadline
 from runtime import Job, Session, packet, receive
@@ -212,7 +212,7 @@ def serve(config, channel):
                 os.mkdir(directory, 0o700)
                 input_r, input_w = os.pipe2(os.O_CLOEXEC)
                 if role == "ROLE_ENGINE_A":
-                    os.write(input_w, REQUESTS)
+                    os.write(input_w, requests(phase))
                 os.close(input_w)
                 launch = Stamp(session.domain, time.monotonic(), time.time())
                 deadline = session.admission.mono + 7200 if role == "ROLE_CPU_C" else \

@@ -1,5 +1,10 @@
 # GPU-RESERVE-WARNING-V1
 
+Current execution continuation: [PROCFS-TASK-RACE-V1-20261021](PROCFS-TASK-RACE-V1-20261021.md).
+It supersedes the focused check, all-phases A/B/A requirement and time/usage
+ledger below after the reported d5b8f7b5 inference/coverage failure. The local
+runtime warning policy in this document is unchanged.
+
 This authorized experiment policy amendment supersedes earlier instructions to
 terminate on the engine role's local runtime reserve crossings. Placement and
 product binaries do not change. Historical artifacts, receipts and budget bytes

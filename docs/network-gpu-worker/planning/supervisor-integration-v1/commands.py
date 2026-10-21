@@ -6,6 +6,14 @@ from resource_guard import CoverageError
 from policy import ENGINE_CAPS, GPU_CAPS
 
 REQUESTS = b"GEN 64 9419\nGEN 64 14773,6353\nGEN 64 9419\nQUIT\n"
+B0_REQUESTS = b"GEN 64 9419\nQUIT\n"
+
+
+def requests(phase):
+    """B0 startup smoke; retain complete, identical comparison streams."""
+    if phase not in ENGINE_CAPS:
+        raise CoverageError("request-phase-mismatch")
+    return B0_REQUESTS if phase == "B0" else REQUESTS
 
 
 def product(role, phase, b):

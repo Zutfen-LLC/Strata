@@ -15,6 +15,7 @@ import signal
 READ_CAP = 262144
 MAX_PROCESSES = 16
 MAX_TASKS = 256
+MAX_CHILD_SCANS = 4
 STATUS_FIELDS = ("VmRSS", "RssAnon", "RssFile", "RssShmem", "VmSwap")
 HOST_FIELDS = ("MemAvailable", "SwapTotal", "SwapFree")
 
@@ -274,30 +275,85 @@ class OwnedProcess:
         return {"identity": asdict(self.identity), "memory_bytes": values}
 
     def children(self):
-        self.verify()
-        task_fd = os.open("task", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
-                          dir_fd=self.proc_fd)
+        base = "/proc/" + str(self.identity.pid) + "/task"
+        path, scan, before, after, vanished = base, 0, (), (), []
         try:
-            tasks = []
-            with os.scandir(task_fd) as entries:
-                for entry in entries:
-                    tasks.append(entry.name)
-                    if len(tasks) > MAX_TASKS:
-                        raise CoverageError("task-enumeration-cap")
-            if len(tasks) > MAX_TASKS or any(not t.isdigit() for t in tasks):
-                raise CoverageError("task-enumeration-cap-or-schema")
-            children = set()
-            for task in tasks:
-                raw = required(read_text(task + "/children", task_fd), "children")
-                if any(not p.isdigit() or int(p) <= 1 for p in raw.split()):
-                    raise CoverageError("children-schema")
-                children.update(map(int, raw.split()))
-                if len(children) > MAX_PROCESSES:
-                    raise CoverageError("children-cap")
             self.verify()
-            return sorted(children)
-        finally:
-            os.close(task_fd)
+            task_fd = os.open("task", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+                              dir_fd=self.proc_fd)
+            try:
+                def tasks():
+                    names = []
+                    # scandir(fd) duplicates a descriptor with a shared directory
+                    # offset. Each pass needs a fresh open description at offset 0.
+                    scan_fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+                                      dir_fd=task_fd)
+                    try:
+                        with os.scandir(scan_fd) as entries:
+                            for entry in entries:
+                                names.append(entry.name)
+                                if len(names) > MAX_TASKS:
+                                    raise CoverageError("task-enumeration-cap")
+                    finally:
+                        os.close(scan_fd)
+                    if any(not re.fullmatch(r"[0-9]{1,10}", n) or int(n) <= 0 for n in names) or \
+                            len(set(names)) != len(names):
+                        raise CoverageError("task-enumeration-schema")
+                    if str(self.identity.pid) not in names:
+                        raise CoverageError("required-leader-task-absent")
+                    return tuple(sorted(names, key=int))
+
+                children, previous = set(), None
+                for scan in range(1, MAX_CHILD_SCANS + 1):
+                    path, after, vanished = base, (), []
+                    before = tasks()
+                    current = {}
+                    for task in before:
+                        path = base + "/" + task + "/children"
+                        value = read_text(task + "/children", task_fd)
+                        if value.status == "unavailable" and value.reason == "ENOENT":
+                            vanished.append(task)
+                            continue  # Prove disappearance below; never fabricate [].
+                        raw = required(value, "children")
+                        if any(not re.fullmatch(r"[0-9]{1,10}", p) or int(p) <= 1 for p in raw.split()):
+                            raise CoverageError("children-schema")
+                        current[task] = tuple(sorted(set(map(int, raw.split()))))
+                        children.update(current[task])
+                        if len(children) > MAX_PROCESSES:
+                            raise CoverageError("children-cap")
+                    self.verify()
+                    path = base
+                    after = tasks()
+                    self.verify()
+                    still_present = set(vanished).intersection(after)
+                    if still_present:
+                        path = base + "/" + min(still_present, key=int) + "/children"
+                        raise CoverageError("stable-required-entry-absence:ENOENT")
+                    # A dead task's children move to another live task, possibly
+                    # one already read. Restart the whole scan even if all reads
+                    # succeeded; retain every observed child for ownership pinning.
+                    if before != after or vanished:
+                        previous = None
+                        continue
+                    # Two complete matching per-task maps reconcile reparenting
+                    # across reads. Churn never grants empty/partial coverage.
+                    if current == previous:
+                        return sorted(children)
+                    previous = current
+                raise CoverageError("unresolved-task-children-coverage:scans=" + str(MAX_CHILD_SCANS))
+            finally:
+                os.close(task_fd)
+        except (CoverageError, OSError) as exc:
+            detail = str(exc)
+            if isinstance(exc, OSError):
+                detail = errno.errorcode.get(exc.errno, "IO") + ":" + detail
+            raise CoverageError("owned-children:pid=" + str(self.identity.pid) +
+                                ":start_ticks=" + str(self.identity.start_ticks) +
+                                ":exe_device=" + str(self.identity.exe_device) +
+                                ":exe_inode=" + str(self.identity.exe_inode) +
+                                ":path=" + path + ":scan=" + str(scan) + ":cause=" + detail +
+                                ":tasks_before=" + repr(before) + ":tasks_after=" + repr(after) +
+                                ":vanished=" + repr(vanished)) from None
 
     def send(self, sig):
         # Never fall back to os.kill(pid), kill-by-port or process-group signals.

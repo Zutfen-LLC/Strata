@@ -1,9 +1,16 @@
 # Supervisor integration v1 — static candidate, not runtime approval
 
 This is a new replacement supervisor, based on the complete sanitized historical
-source at `ad921e0f09fa340bc138cc230202c1b7a6e0674d`. It integrates the unchanged
-monitor libraries from `a3b706deae4101e90592bed58701df20f9bd4da2`. It is not a
+source at `ad921e0f09fa340bc138cc230202c1b7a6e0674d`. Its monitor libraries originate
+at `a3b706deae4101e90592bed58701df20f9bd4da2`, with the correction linked below. It is not a
 byte-for-byte patch to the historical shell drivers. See [SOURCE-COVERAGE.md](SOURCE-COVERAGE.md).
+
+Current continuation: [PROCFS-TASK-RACE-V1-20261021](../namespace-runner-v1/PROCFS-TASK-RACE-V1-20261021.md).
+It patches shared task/children enumeration and selects a single-request B0
+smoke stream; B1/G0/G1 keep the original A/B/A stream. It supersedes historical
+execution gates and time/usage balances below, with one new focused mocked entry
+on ROLE_CPU_C followed automatically by the already authorized trial on PASS.
+The author ran no tests, Python source, builds, model or fleet operations.
 
 No new Python, syntax check, fixture, live probe, build, product executable or
 model was executed by the author or reviewers. The user reported the original
@@ -31,6 +38,7 @@ change the implementation or extend the expired model-run approval.
 | agent.py | Host-local guardian, challenge lease, phase receipts, finite retention |
 | controller.py | Three required peers, serial phases and owned transport cleanup |
 | test_integration.py | Synthetic fixtures; no live workloads or signals |
+| test_procfs_task_race.py | Nine focused mocked cases for task reconciliation, failures and amended request bytes; NOT RUN here |
 | live_probe.py | Future separately approved three-case harmless-child probe |
 
 ## Role policies and unchanged workload envelope
@@ -119,6 +127,26 @@ coverage, parent-owned workload/monitor pidfds and a fresh receipt are required
 before the exec byte is released. Listener coverage means an owned listening
 socket, **not loaded/READY residency**. Engine SETUP_BEGIN still initiates arena
 loading. No standalone preload was invented.
+
+Shared `OwnedProcess.children()` now allows up to four bounded scans. It requires
+two complete identical per-task child maps with unchanged task enumeration and
+valid pinned process identity. A children ENOENT is recoverable only when that
+task is absent from the subsequent enumeration. Any task-set change forces a
+full rescan, including tasks already read, and all successfully seen children
+are retained for the unchanged `OwnedTree` parent/identity pinning path. EACCES,
+malformed data, a still-present task missing children, missing leader/task
+directory, process identity loss and unresolved churn refuse coverage. Failure
+context includes the proc path, pinned PID/start/exe identity and scan task sets.
+These scans add no sleep, deadline extension or new ownership exemption.
+
+The actual engine input write in `agent.py` calls `commands.requests(phase)`.
+B0 sends `GEN 64 9419` then `QUIT`; B1/G0/G1 each send the unchanged A/B/A stream.
+`Controller` still requires a zero exit and complete cleanup for each phase;
+its DONE event is a supervisor receipt, not a product request count. Evidence
+must separately require one product DONE and `.first-logits.0` for B0, three
+product DONEs and `.first-logits.0/.1/.2` for each other phase. B0 is startup/smoke
+only. B1/G1 remain complete like-for-like comparison streams. See the current
+amendment for the cumulative failed-request charge and active-time ledger.
 
 The watchdog is parent of workload and monitor, and subreaper for their orphans.
 All normal signals use held pidfds with identity checks; there are no group,
