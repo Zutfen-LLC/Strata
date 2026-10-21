@@ -13,7 +13,7 @@ def product(role, phase, b):
            "LC_ALL": "C", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
     if role == "ROLE_CPU_C" and phase == "CPU":
         argv = [b["BIN_CPU_C"], "--port", b["CPU_PORT_C"], "--workers", "2",
-                "--memory-budget-mib", "105870", "--deadline-ms", "10000",
+                "--memory-budget-mib", "105950", "--deadline-ms", "10000",
                 "--local-setup-ms", "600000", "--local-root", b["LOCAL_ROOT_C"],
                 "--local-manifest", b["MANIFEST_C"], "--residency-ms", "1800000"]
         return argv, env, 7200
@@ -35,7 +35,7 @@ def product(role, phase, b):
             "--remote-cpu-deadline-ms", "10000", "--remote-cpu-local-manifest", b["MANIFEST_A"],
             "--remote-cpu-resident", "--remote-cpu-setup-ms", "600000", "--expert-cache", "1056",
             "--expert-cache-per-layer", "--expert-profile", b["PROFILE_A"],
-            "--expert-cache-device1", "2263", "--remote-expert-opt", "--vram-reserve-mib", "1152",
+            "--expert-cache-device1", "2247", "--remote-expert-opt", "--vram-reserve-mib", "1152",
             "--adapt-every", "0", "--adapt-swaps", "0", "--pcie-frac", "0", "--short-read", "64",
             "--prefill", "64", "--prompt-cache", "0", "--spec", "2", "--suffix-draft", "0",
             "--lookup-chain", "0", "--pipeline-windows", "0", "--max-context", "1024",

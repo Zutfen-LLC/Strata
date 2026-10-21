@@ -164,7 +164,7 @@ class ClockGateTests(unittest.TestCase):
 class StatusTests(unittest.TestCase):
     def test_wire_offsets_and_idle_zero_session(self):
         payload = bytearray(100)
-        struct.pack_into("<IIQQQ", payload, 0, 1, 0, 0, 111012556800, 1000)
+        struct.pack_into("<IIQQQ", payload, 0, 1, 0, 0, 111096115200, 1000)
         struct.pack_into("<I", payload, 96, 1)
         header = struct.pack("<IHHQ", cache_status.MAGIC, 17, 0, 100)
         self.assertEqual(cache_status.decode(header, payload), 1000)

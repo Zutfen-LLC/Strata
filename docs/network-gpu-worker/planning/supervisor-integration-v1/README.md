@@ -65,10 +65,15 @@ and running disk floor 4 GiB on the cache filesystem. The provisional admission
 is `floor((free - 4096MiB - 256MiB - 1598720) / 5222400) >= 3289`.
 The fixed plan has 3289 remote experts, 17176473600 expert bytes, and SHA-256
 `a51c6e4acc74cd84f5333d3b13b4cd58abf1ddf6276b59fd757fa815f8045578`.
-Ownership remains primary 1056, helper 2263, full CPU 21257, uncovered CPU 17968.
+The approved sizing correction fixes primary 1056, helper 2247, full CPU 21273,
+uncovered CPU 17984. The unchanged remote plan remains disjoint because the new
+helper selection is a prefix subset of the old selection. The CPU bitmap and
+partition identity are freshly derived once, then identical across all four runs.
+See [the sizing amendment](../namespace-runner-v1/PLACEMENT-SIZING-CORRECTION.md).
 No metadata planner, owner selection, weight extraction or transfer occurs here.
 
-The CPU CLI remains memory-budget 105870 MiB, two workers, setup 600000 ms,
+The CPU CLI uses memory-budget 105950 MiB for 111096115200 arena bytes
+(105949.51171875 MiB), two workers, setup 600000 ms,
 residency 1800000 ms. Engine phases remain B0/B1/G0/G1 with caps
 1200/600/1800/900 seconds; remote GPU G0/G1 caps are 1900/1000 seconds. Preserve
 11-second gaps after B0/G0. Global cap is 5400 seconds, original stop/launch

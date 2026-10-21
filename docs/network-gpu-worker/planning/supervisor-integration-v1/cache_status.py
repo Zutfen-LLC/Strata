@@ -20,7 +20,7 @@ def decode(header, payload):
     version, state, session, arena, remaining = struct.unpack_from("<IIQQQ", payload)
     complete, = struct.unpack_from("<I", payload, 96)
     if version != 1 or state not in (0, 1, 2) or complete != 1 or \
-            arena != 111012556800 or not 0 < remaining <= 1800000:
+            arena != 111096115200 or not 0 < remaining <= 1800000:
         raise CoverageError("verified-full-arena-idle-status-required")
     # Empty state/session after engine EOF is valid retained residency.
     return remaining
