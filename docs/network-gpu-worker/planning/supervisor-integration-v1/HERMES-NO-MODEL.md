@@ -10,10 +10,12 @@ author's final receipt), `ROLE_CPU_C` (one approved Linux host), `ROLE_CONTROLLE
 No other execution target is permitted. No engine/GPU host operations, worker
 services, listening ports, model/source assets, GPUs or pressure generation.
 
-Use existing authorized GitHub authentication to fetch **only** the files in
-`SHA256SUMS.integration-v1` plus that manifest from
+Use existing authorized GitHub authentication to fetch the manifest at
+`supervisor-integration-v1/SHA256SUMS.integration-v1`, then **only** its listed
+payload files, all relative to this planning/ URL base:
 `https://raw.githubusercontent.com/Zutfen-LLC/Strata/ARTIFACT_COMMIT/docs/network-gpu-worker/planning/`.
-Limit transfer to256KiB total; retain paths relative to planning/. No clone,
+Limit transfer to256KiB total; retain paths relative to planning/ and verify
+the manifest from that planning/ working directory. No clone,
 external downloads/install or credentials in receipts. Verify the manifest's
 full SHA from the final author receipt, then every file's SHA/size before use.
 Stop on missing/mismatched bytes, unexpected main/feature drift, platform or
