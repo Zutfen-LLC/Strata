@@ -170,7 +170,7 @@ window. No private worker_control helper is fetched or trusted.
 
 ## Validation gate
 
-43 new synthetic cases are authored, not executed. The original 26 cases can be
+44 new synthetic cases are authored, not executed. The original 26 cases can be
 run from their unchanged pins; the user-reported previous pass is preserved.
 The proposed live probe exercises real proc/pidfd/cgroup sampling, natural exit,
 monitor exit, stall escalation and parent reaping using only harmless children.

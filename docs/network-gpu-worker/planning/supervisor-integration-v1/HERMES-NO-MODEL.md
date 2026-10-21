@@ -26,7 +26,7 @@ initial PID/mount/cgroup namespace receipts. Do not modify cgroups, limits,
 security, network, services or swap. A true-root unsupported counter must be
 reported explicitly; required unavailable coverage means STOP, never zero.
 
-Stage1: run exactly the unchanged26 synthetic monitor cases and new43 integration
+Stage1: run exactly the unchanged26 synthetic monitor cases and new44 integration
 cases, serially, with no live signals/workloads. Existing reported26-case PASS
 remains valid history; this is an explicit integration-regression gate, not a
 cosmetic repeat. For each stage cap256MiB address space,30CPU-seconds,60wall-seconds,
@@ -44,7 +44,7 @@ python3 -B -I -c 'import resource,runpy,sys; resource.setrlimit(resource.RLIMIT_
 
 Require RC0, zero failures/errors/skips, exact counts and markers:
 `RESOURCE_MONITOR_FIXTURES_PASS_V1 tests=26 live_signals=0 workloads=0` and
-`SUPERVISOR_INTEGRATION_FIXTURES_PASS_V1 tests=43 live_signals=0 workloads=0`.
+`SUPERVISOR_INTEGRATION_FIXTURES_PASS_V1 tests=44 live_signals=0 workloads=0`.
 Stop at first failure; do not repair/run a second invocation in this window.
 
 Stage2, only if Stage1 passes: create private PROBE_CONFIG with exactly

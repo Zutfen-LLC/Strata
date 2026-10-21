@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import cache_status
 import commands
 import controller
+import live_probe
 import runtime
 from outer import OuterGuards
 from policy import (GIB, MIB, POLICIES, ReleaseGate, RoleGuard, Stamp, TrialOrder,
@@ -197,6 +198,17 @@ class StatusTests(unittest.TestCase):
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_independent_probe_guard_does_not_walk_exiting_children(self):
+        own = Mock()
+        own.status.return_value = {"memory_bytes": {"VmRSS": Observation(MIB, "ok", "")}}
+        with patch("live_probe.OwnedProcess.pin", return_value=own), \
+                patch("live_probe.identity"), patch("live_probe.host_sample", return_value={}), \
+                patch("live_probe.cgroup_snapshot", return_value={"coverage": "required-covered"}):
+            value = live_probe.parent_sample({})
+        own.children.assert_not_called()
+        own.close.assert_called_once()
+        self.assertEqual(value["worker_memory_bytes"], own.status.return_value["memory_bytes"])
+
     def job(self):
         job = object.__new__(runtime.Job)
         job.key = ("run", "ROLE_ENGINE_A", "B0")
@@ -441,7 +453,7 @@ def main():
             patch("signal.pidfd_send_signal", side_effect=AssertionError("live signal forbidden")), \
             patch("socket.socket", side_effect=AssertionError("live socket forbidden")):
         result = unittest.TextTestRunner(verbosity=2).run(suite)
-    if not result.wasSuccessful() or result.skipped or result.testsRun != 43:
+    if not result.wasSuccessful() or result.skipped or result.testsRun != 44:
         raise SystemExit(1)
     print("SUPERVISOR_INTEGRATION_FIXTURES_PASS_V1 tests=" + str(result.testsRun) +
           " live_signals=0 workloads=0")

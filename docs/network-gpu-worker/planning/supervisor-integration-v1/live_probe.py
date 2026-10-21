@@ -11,20 +11,27 @@ import resource
 import sys
 import time
 
-from resource_guard import CoverageError, GuardStop, EVENT_KEYS, headroom, signature
-from resource_telemetry import OwnedProcess, OwnedTree, required, read_text
+from resource_guard import (CoverageError, GuardStop, EVENT_KEYS, headroom, signature,
+                            cgroup_snapshot)
+from resource_telemetry import OwnedProcess, required, read_text, host_sample
 from linux_owned import identity
 from policy import MIB
-from runtime import Job, collect, packet
+from runtime import Job, packet
 
 
 def parent_sample(ns):
     own = OwnedProcess.pin(os.getpid(), expected=identity(os.getpid(), ns), namespace_receipt=ns)
-    tree = OwnedTree(own)
     try:
-        return collect(tree, ns)
+        # Independent host/cgroup protection must not walk children whose
+        # deliberate terminal transitions belong to Job.poll and its reaper.
+        value = host_sample()
+        process = own.status()
+        value["processes"] = [process]
+        value["worker_memory_bytes"] = process["memory_bytes"]
+        value["cgroup"] = cgroup_snapshot(own, ns)
+        return value
     finally:
-        tree.close()
+        own.close()
 
 
 class ProbeGuard:
