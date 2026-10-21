@@ -157,11 +157,14 @@ worker service and helper staging/wait times separate. No speedup gate.
 ## Complete Hermes continuation
 
 Continue the authorized experiment from the immutable commit containing this
-amendment. Use currently connected Valinor and existing private ROLE_CONTROLLER,
-ROLE_ENGINE_A (two local GPUs), ROLE_GPU_B and ROLE_CPU_C bindings/transport,
-approved interpreter and trusted namespace receipts. Geekom is offline. No
-tests, builds, models or fleet work on the user's desktop; the focused test runs
-on ROLE_CPU_C (inferswarm05). Do not install dependencies or change permissions,
+amendment. Reuse Hermes's existing approved ROLE_CONTROLLER and transport
+bindings without relocating orchestration. Keep the existing private ROLE_ENGINE_A
+(inferswarm03, two local GPUs), ROLE_GPU_B (inferswarm04) and ROLE_CPU_C
+(inferswarm05) bindings, approved interpreter and trusted namespace receipts.
+Existing authorized controller SSH orchestration is permitted. Run no local
+tests, builds or model workloads on either user desktop. The focused fixtures
+execute on inferswarm05; product workloads execute only on inferswarm03/04/05.
+Do not install dependencies or change permissions,
 security/network settings, services, cgroups or swap. Preserve other work.
 
 1. Fetch this amendment and both refreshed SHA256 manifests through existing
