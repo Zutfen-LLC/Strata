@@ -1,0 +1,93 @@
+--- a/controller.py
++++ b/controller.py
+@@ -18,0 +19 @@
++PEER_DIAGNOSTICS_V1 = True
+@@ -52 +53 @@
+-def finish_process(process, fd):
++def finish_process(process, fd, *, before_close=None):
+@@ -76,0 +78,5 @@
++        if before_close is not None:
++            try:
++                before_close()
++            except BaseException as exc:
++                errors.append(type(exc).__name__)
+@@ -90 +96 @@
+-    def __init__(self, role, run_id, argv):
++    def __init__(self, role, run_id, argv, *, diagnostic_path=None):
+@@ -91,0 +98,7 @@
++        self.diagnostic_path = diagnostic_path
++        self.stderr_tail = bytearray()
++        self.stderr_bytes = 0
++        self.stderr_eof = False
++        self.stderr_nonblocking = False
++        self.terminal_packet = None
++        self.exit_status = None
+@@ -94 +107 @@
+-                                        stderr=subprocess.DEVNULL, close_fds=True,
++                                        stderr=subprocess.PIPE, close_fds=True,
+@@ -100,0 +114,2 @@
++            os.set_blocking(self.process.stderr.fileno(), False)
++            self.stderr_nonblocking = True
+@@ -113,0 +129,35 @@
++    def drain_stderr(self):
++        # Bounded work and memory; stderr never grants progress/lease coverage.
++        if self.stderr_eof or not self.stderr_nonblocking:
++            return
++        for _ in range(16):
++            try:
++                raw = os.read(self.process.stderr.fileno(), 4096)
++            except BlockingIOError:
++                break
++            if not raw:
++                self.stderr_eof = True
++                break
++            self.stderr_bytes += len(raw)
++            self.stderr_tail.extend(raw)
++            del self.stderr_tail[:-65536]
++
++    def save_diagnostics(self):
++        if self.diagnostic_path is None:
++            return
++        value = {"run_id": self.run_id, "role": self.role,
++                 "final_packet": self.terminal_packet, "exit_status": self.exit_status,
++                 "exit_status_scope": "controller-owned peer transport, possibly stopped by cleanup; not resident worker",
++                 "stderr_tail": self.stderr_tail.decode("utf-8", errors="replace"),
++                 "stderr_bytes_observed": self.stderr_bytes,
++                 "stderr_capture_ready": self.stderr_nonblocking,
++                 "stderr_tail_truncated": self.stderr_bytes > len(self.stderr_tail),
++                 "stderr_eof_observed": self.stderr_eof}
++        raw = json.dumps(value, allow_nan=False).encode("ascii")
++        if len(raw) > 512 * 1024:
++            raise CoverageError("peer-diagnostic-cap")
++        temporary = self.diagnostic_path + ".tmp"
++        with open(temporary, "wb") as output:
++            output.write(raw)
++        os.replace(temporary, self.diagnostic_path)
++
+@@ -121,0 +172 @@
++        self.drain_stderr()
+@@ -156,0 +208,7 @@
++                self.final_seen = self.final_seen or message.get("kind") == "FINAL"
++                self.events.append(message)
++                if message.get("kind") == "FINAL":
++                    # Identity was checked above. Preserve the actual failure,
++                    # independently of event consumption or subsequent cleanup.
++                    self.terminal_packet = message
++                    self.save_diagnostics()
+@@ -160,2 +217,0 @@
+-                self.final_seen = self.final_seen or message.get("kind") == "FINAL"
+-                self.events.append(message)
+@@ -178 +234,5 @@
+-        finish_process(self.process, fd)
++        try:
++            finish_process(self.process, fd, before_close=self.drain_stderr)
++        finally:
++            self.exit_status = self.process.returncode
++            self.save_diagnostics()
+@@ -206 +266,2 @@
+-        ready = select.select([p.process.stdout for p in active], [], [], 0.05)[0]
++        watched = [p.process.stdout for p in active] + [p.process.stderr for p in active if not p.stderr_eof]
++        ready = select.select(watched, [], [], 0.05)[0]
+@@ -207,0 +269,2 @@
++            if not peer.closed and peer.process.stderr in ready:
++                peer.drain_stderr()

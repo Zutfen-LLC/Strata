@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import select
 import sys
@@ -9,6 +10,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import first_layer_profile as attached
+import paired_g_continuation as gpu_only
 from paired_tasks import TAG, PHASES, WINDOW, REQUEST_CAP, TOKEN_CAP, read_json, requests, validate_plan
 
 SUPERVISOR = attached.SUPERVISOR
@@ -48,7 +50,9 @@ def configure(root, config):
     global _configured
     if _configured:
         raise ValueError("paired profile already configured")
-    if config.get("diagnostic") != TAG or config.get("supervisor_commit") != SUPERVISOR or \
+    continuation = config.get("diagnostic") == gpu_only.TAG
+    phases = gpu_only.PHASES if continuation else PHASES
+    if config.get("diagnostic") not in (TAG, gpu_only.TAG) or config.get("supervisor_commit") != SUPERVISOR or \
             config.get("approved_window_s") != WINDOW or config.get("execution_approved") is not True or \
             len(config.get("diagnostic_revision", "")) != 40:
         raise ValueError("separate paired model-execution approval/config required")
@@ -57,6 +61,11 @@ def configure(root, config):
         raise ValueError("identical private token plan binding")
     plan = json.loads(plan_raw)
     validate_plan(plan)
+    if continuation:
+        if config["plan_sha256"] != gpu_only.PLAN_SHA:
+            raise ValueError("exact retained G-only plan required")
+        if config.get("role") == "ROLE_ENGINE_A" and config["binary_sha256"] != config["retained_engine_sha256"]:
+            raise ValueError("accepted baseline engine binary must remain unchanged")
     root = Path(root).resolve(strict=True)
     sys.path[:0] = [str(root), str(root.parent), str(Path(__file__).resolve().parent)]
     import agent
@@ -64,9 +73,11 @@ def configure(root, config):
     import gpu_completion as completion
     if not getattr(agent, "FIRST_LAYER_PHASES_V1", False) or not getattr(controller, "SERVICE_RESIDENCY_V1", False):
         raise ValueError("retained published supervisor patches required")
-    completion.PHASES = PHASES
+    if continuation and not getattr(controller, "PEER_DIAGNOSTICS_V1", False):
+        raise ValueError("published peer-diagnostics patch required")
+    completion.PHASES = phases
     completion.WINDOW_S = WINDOW
-    completion.ENGINE_CAPS = {p: WINDOW for p in PHASES}
+    completion.ENGINE_CAPS = {p: WINDOW for p in phases}
     completion.GPU_CAPS = {"G0": WINDOW}
     attached.WINDOW = WINDOW  # Only reuse its read-only resident observer, never its trace configure().
     original_product, original_job = agent.product, agent.Job
@@ -103,21 +114,31 @@ def configure(root, config):
             result.poll = poll
         return result
 
-    agent.product, agent.requests, agent.Job = product, lambda phase: requests(plan, phase), job
+    def phase_requests(phase):
+        if phase not in phases:
+            raise ValueError("phase is outside the approved continuation")
+        return requests(plan, phase)
+
+    agent.product, agent.requests, agent.Job = product, phase_requests, job
     _configured = True
     return agent, controller
 
 
 def launch(controller, config):
+    start, started_utc = time.monotonic(), time.time()  # Before controller/relay startup.
     from policy import TrialOrder
+    continuation = config.get("diagnostic") == gpu_only.TAG
+    phases = gpu_only.PHASES if continuation else PHASES
+    tag = gpu_only.TAG if continuation else TAG
+    request_cap, token_cap = (gpu_only.REQUEST_CAP, gpu_only.TOKEN_CAP) if continuation else (REQUEST_CAP, TOKEN_CAP)
     if set(config["peers"]) != {"ROLE_CPU_C", "ROLE_ENGINE_A", "ROLE_GPU_B"} or len(config["forwards"]) > 4:
         raise ValueError("existing bounded role transports required")
 
     class Paired(controller.Controller):
         def __init__(self, peers, start):
             self.peers, self.clock, self.start = peers, time.monotonic, start
-            self.deadline, self.phases, self.order = start + WINDOW, PHASES, TrialOrder(PHASES)
-            self.engine_caps = {p: WINDOW for p in PHASES}
+            self.deadline, self.phases, self.order = start + WINDOW, phases, TrialOrder(phases)
+            self.engine_caps = {p: WINDOW for p in phases}
             self.gpu_caps, self.gpu_completion, self.success_at = {"G0": WINDOW}, True, None
 
         def run(self):
@@ -125,7 +146,7 @@ def launch(controller, config):
             try:
                 self.start_phase(cpu, "CPU")  # Existing service observation, never product start.
                 proof = self.wait(cpu.role, "LISTENING_COVERED", "CPU", 10)
-                for phase in PHASES:
+                for phase in phases:
                     if phase == "G0":
                         self.start_phase(gpu, phase)
                         self.wait(gpu.role, "LISTENING_COVERED", phase, min(30, self.phase_cap(WINDOW)))
@@ -133,7 +154,7 @@ def launch(controller, config):
                     self.start_phase(engine, phase)
                     done = self.wait(engine.role, "DONE", phase, self.phase_cap(WINDOW))
                     self.order.finish(phase, done["rc"], done["cleanup"]["complete"])
-                    if phase != PHASES[-1]:
+                    if phase != phases[-1]:
                         self.gap()
                 gpu.queue("STOP")
                 controller.require_cleanup(self.wait(gpu.role, "STOPPED", "G0", 45))
@@ -144,10 +165,11 @@ def launch(controller, config):
                     if peer is cpu:
                         resident = final["resident"]
                     peer.close()
-                return {"complete": True, "diagnostic": TAG, "window_s": WINDOW,
-                        "new_elapsed_s": self.clock() - self.start, "request_cap": REQUEST_CAP,
-                        "generated_token_cap": TOKEN_CAP, "historical_requests": 17,
-                        "historical_generated_tokens": 835, "historical_numerical_verdict": "NUMERICAL_FAIL",
+                return {"complete": True, "diagnostic": tag, "window_s": WINDOW,
+                        "new_elapsed_s": self.clock() - self.start, "request_cap": request_cap,
+                        "generated_token_cap": token_cap, "historical_requests": 24 if continuation else 17,
+                        "historical_generated_tokens": 888 if continuation else 835,
+                        "separate_run_comparison": continuation, "historical_numerical_verdict": "NUMERICAL_FAIL",
                         "cpu_attached": proof["attached"], "cpu_resident": resident}
             except BaseException:
                 for peer in self.peers.values():
@@ -165,15 +187,54 @@ def launch(controller, config):
             finally:
                 controller.close_all(self.peers.values())
 
-    start, forwards, peers = time.monotonic(), [], {}
+    forwards, peers, clock_receipt, evidence = [], {}, None, None
+    def save_clock():
+        if evidence is not None:
+            temporary = evidence / "execution-clock.json.tmp"
+            with open(temporary, "w", encoding="ascii") as output:
+                json.dump(clock_receipt, output, allow_nan=False)
+            os.replace(temporary, evidence / "execution-clock.json")
     try:
+        if continuation:
+            evidence = Path(config["controller_evidence"])
+            if not evidence.is_absolute():
+                raise ValueError("new absolute controller evidence directory required")
+            os.mkdir(evidence, 0o700)
+            clock_receipt = {"diagnostic": tag, "start_mono": start, "start_utc": started_utc,
+                             "deadline_mono": start + WINDOW, "window_s": WINDOW,
+                             "cleanup_reserve_s": 45, "status": "RUNNING"}
+            save_clock()
+            baseline = config["retained_b"]
+            proof = gpu_only.check_baseline(gpu_only.retained_plan(config["plan"]), baseline["root"], baseline["engine_config"])
+            if proof["engine_binary_sha256"] != config["retained_engine_sha256"]:
+                raise ValueError("retained B/new engine binary binding mismatch")
+            with open(evidence / "retained-b-check.json", "w", encoding="ascii") as output:
+                json.dump(proof, output, allow_nan=False)
         for argv in config["forwards"]:
             forwards.append(controller.Forward(argv))
         for role, argv in config["peers"].items():
-            peers[role] = controller.Peer(role, config["run_id"], argv)
-        return Paired(peers, start).run()
+            kwargs = {"diagnostic_path": str(evidence / (role + ".json"))} if continuation else {}
+            peers[role] = controller.Peer(role, config["run_id"], argv, **kwargs)
+        result = Paired(peers, start).run()
+        if clock_receipt is not None:
+            clock_receipt["status"] = "COMPLETE"
+        return result
+    except BaseException as exc:
+        if clock_receipt is not None:
+            clock_receipt.update(status="FAILED", error=type(exc).__name__ + ":" + str(exc))
+        raise
     finally:
-        controller.close_all([*peers.values(), *forwards])
+        try:
+            controller.close_all([*peers.values(), *forwards])
+        except BaseException as exc:
+            if clock_receipt is not None:
+                clock_receipt.update(status="FAILED", cleanup_error=type(exc).__name__ + ":" + str(exc))
+            raise
+        finally:
+            if clock_receipt is not None:
+                clock_receipt.update(end_mono=time.monotonic())
+                clock_receipt["elapsed_s"] = clock_receipt["end_mono"] - start
+                save_clock()
 
 
 def main():
