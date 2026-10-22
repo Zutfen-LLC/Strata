@@ -12,6 +12,7 @@
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
 #include "strata/worker/gpu_client.hpp"
+#include "strata/worker/gpu_capture.hpp"
 #endif
 #include "strata/artifact/gguf_reader.hpp"
 
@@ -4917,11 +4918,36 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // All participating workers and local helpers have succeeded before either network contribution
     // reaches the merge. On any loss, the request latches failed and neither partial is committed here.
 #ifdef STRATA_NETWORK_CUDA_WORKER
+    static thread_local bool merge_captured=false;
+    const char* merge_directory=std::getenv("STRATA_GPU_MERGE_CAPTURE_DIR");
+    const bool capture_merge=merge_directory && !merge_captured && gpu_worker_sent;
+    strata::worker::diagnostic::Merge merge;
+    if (capture_merge) {
+        if (n_tok!=1) {d.failed=true;d.fail="diagnostic merge requires first one-token request";return;}
+        merge.request=d.gpu_worker->diagnostic_request();
+        const auto before=d.remote_opt->diagnostic_sum();
+        merge.before=strata::worker::diagnostic::floats(before.data(),before.size());
+        merge.gpu=strata::worker::diagnostic::floats(d.gpu_worker->partials(),(size_t)n_tok*H);
+        std::vector<float> zero((size_t)n_tok*H,0.f);
+        merge.cpu=strata::worker::diagnostic::floats(worker_sent ? d.worker->partials() : zero.data(),zero.size());
+        merge.cpu_mask=worker_sent ? worker_mask : std::vector<uint8_t>((size_t)n_tok*k,0);
+    }
     if (gpu_worker_sent)
         d.remote_opt->accumulate_host(d.gpu_worker->partials(), gpu_worker_mask.data(), (int)n_tok, (int)k);
 #endif
     if (worker_sent)
         d.remote_opt->accumulate_host(d.worker->partials(), worker_mask.data(), (int)n_tok, (int)k);
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    if (capture_merge) {
+        const auto after=d.remote_opt->diagnostic_sum();
+        merge.after=strata::worker::diagnostic::floats(after.data(),after.size());
+        auto encoded=strata::worker::diagnostic::encode(merge);
+        if (!strata::worker::diagnostic::file(merge_directory,"merge.capture",encoded,true,gpu_worker_error)) {
+            d.failed=true;d.fail=gpu_worker_error.c_str();d.fail_layer=d.layers;return;
+        }
+        merge_captured=true;
+    }
+#endif
 #endif
     const auto c4 = std::chrono::steady_clock::now();
     pt("ran");

@@ -43,6 +43,7 @@ public:
     // The current window's routing weights and token span as begin() published them: the dispatch reads
     // the same weights the verifier holds (the pool callback's signature carries none).
     const float* cur_weights() const { return weights_; }
+    std::vector<float> diagnostic_sum() const;
     int cur_token_begin() const { return token_begin_; }
     int cur_tokens() const { return tokens_; }
 

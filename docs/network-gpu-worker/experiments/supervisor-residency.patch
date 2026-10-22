@@ -1,0 +1,148 @@
+diff --git a/agent.py b/agent.py
+index 5c2ed9c..dcbc979 100644
+--- a/agent.py
++++ b/agent.py
+@@ -30,0 +31 @@ PLAN_SHA = "a51c6e4acc74cd84f5333d3b13b4cd58abf1ddf6276b59fd757fa815f8045578"
++SERVICE_RESIDENCY_V1 = True  # Explicit additive experiment patch over 31156168.
+@@ -126,0 +128 @@ def serve(config, channel):
++    service_owned = False
+@@ -138,0 +141,12 @@ def serve(config, channel):
++
++    def tell(value):
++        nonlocal detached
++        try:
++            packet(channel, value)
++        except OSError as exc:
++            if service_owned and exc.errno in (errno.EPIPE, errno.ECONNRESET, errno.ENOTCONN):
++                journal.emit("SERVICE_CONTROLLER_DETACHED_V1", reason="controller-send-disconnected")
++                detached = True
++                return
++            raise
++
+@@ -142 +156 @@ def serve(config, channel):
+-            if cancelled[0] or (not detached and now >= global_limit - 15):
++            if cancelled[0] or (not service_owned and not detached and now >= global_limit - 15):
+@@ -147,2 +161,3 @@ def serve(config, channel):
+-                    packet(channel, {"kind": "CLEANING", "run_id": run_id, "role": role,
+-                                     "phase": job.key[2]})
++                    if not detached:
++                        tell({"kind": "CLEANING", "run_id": run_id, "role": role,
++                                         "phase": job.key[2]})
+@@ -153,0 +169,3 @@ def serve(config, channel):
++                    if detached and role == "ROLE_CPU_C" and rc == 0 and result["complete"]:
++                        reason = "resident-service-stopped"
++                        return
+@@ -162 +180,8 @@ def serve(config, channel):
+-                        packet(channel, {"kind": "LISTENING_COVERED", "run_id": run_id,
++                        if role == "ROLE_CPU_C" and config.get("service_residency") is True:
++                            if not config.get("retention_approved"):
++                                raise CoverageError("service-ownership-not-approved")
++                            from resident_cpu import grant
++                            owner = grant(config, job, session)
++                            service_owned = True
++                            journal.emit("SERVICE_OWNERSHIP_GRANTED_V1", **owner)
++                        tell({"kind": "LISTENING_COVERED", "run_id": run_id,
+@@ -174 +199 @@ def serve(config, channel):
+-                    packet(channel, receipt)
++                    tell(receipt)
+@@ -185 +210 @@ def serve(config, channel):
+-                packet(channel, {"kind": "CHALLENGE", "run_id": run_id, "role": role,
++                tell({"kind": "CHALLENGE", "run_id": run_id, "role": role,
+@@ -186,0 +212,2 @@ def serve(config, channel):
++            if detached:
++                continue
+@@ -187,0 +215,4 @@ def serve(config, channel):
++                if service_owned:
++                    journal.emit("SERVICE_CONTROLLER_DETACHED_V1", reason="controller-lease-expired")
++                    detached = True
++                    continue
+@@ -191 +222,14 @@ def serve(config, channel):
+-            request = receive(channel)
++            try:
++                request = receive(channel)
++            except OSError as exc:
++                if service_owned and exc.errno in (errno.EPIPE, errno.ECONNRESET, errno.ENOTCONN):
++                    journal.emit("SERVICE_CONTROLLER_DETACHED_V1", reason="controller-receive-disconnected")
++                    detached = True
++                    continue
++                raise
++            except CoverageError as exc:
++                if service_owned and str(exc) == "control-eof":
++                    journal.emit("SERVICE_CONTROLLER_DETACHED_V1", reason="controller-eof")
++                    detached = True
++                    continue
++                raise
+@@ -197 +241 @@ def serve(config, channel):
+-            if remaining <= 20:
++            if remaining <= 20 and not service_owned:
+@@ -200 +244 @@ def serve(config, channel):
+-            if job is not None and not detached:
++            if job is not None and not detached and not service_owned:
+@@ -206,0 +251,4 @@ def serve(config, channel):
++                if service_owned:
++                    journal.emit("SERVICE_CONTROLLER_DETACHED_V1", reason="measurement-cancel")
++                    detached = True
++                    continue
+@@ -254 +302 @@ def serve(config, channel):
+-                packet(channel, {"kind": "CLEANING", "run_id": run_id, "role": role,
++                tell({"kind": "CLEANING", "run_id": run_id, "role": role,
+@@ -265,2 +313,5 @@ def serve(config, channel):
+-                if completion_mode or role != "ROLE_CPU_C" or job is None or not config.get("retention_approved") or \
+-                        request.get("completed_phases") != ["B0", "B1", "G0", "G1"]:
++                service = config.get("service_residency") is True
++                expected = list(completion.PHASES) if service and completion_mode else ["B0", "B1", "G0", "G1"]
++                if (completion_mode and not service) or role != "ROLE_CPU_C" or job is None or \
++                        not config.get("retention_approved") or request.get("completed_phases") != expected or \
++                        request.get("service_residency", False) is not service:
+@@ -268,2 +318,0 @@ def serve(config, channel):
+-                age = duration(request["success_age_s"] + 5, 5400)
+-                completion_stamp = Stamp(session.domain, time.monotonic() - age, time.time())
+@@ -272,0 +322,12 @@ def serve(config, channel):
++                if service:
++                    if not service_owned:
++                        raise CoverageError("service-ownership-not-granted")
++                    from resident_cpu import commit
++                    receipt = commit(config, job, session)
++                    journal.emit("SERVICE_RESIDENCY_COMMITTED_V1", **receipt)
++                    detached = True
++                    tell({"kind": "RETENTION_COMMITTED", "run_id": run_id, "role": role,
++                                     "bounded": False, **receipt})
++                    continue
++                age = duration(request["success_age_s"] + 5, 5400)
++                completion_stamp = Stamp(session.domain, time.monotonic() - age, time.time())
+@@ -280 +341 @@ def serve(config, channel):
+-                packet(channel, {"kind": "RETENTION_COMMITTED", "run_id": run_id, "role": role,
++                tell({"kind": "RETENTION_COMMITTED", "run_id": run_id, "role": role,
+@@ -296 +357 @@ def serve(config, channel):
+-                packet(channel, {"kind": "FINAL", "run_id": run_id, "role": role,
++                tell({"kind": "FINAL", "run_id": run_id, "role": role,
+diff --git a/controller.py b/controller.py
+index 4d02f77..2f438e5 100644
+--- a/controller.py
++++ b/controller.py
+@@ -17,0 +18 @@ import gpu_completion as completion
++SERVICE_RESIDENCY_V1 = True  # Explicit additive experiment patch over 31156168.
+@@ -182 +183 @@ class Controller:
+-                 gpu_completion=False, baseline=None):
++                 gpu_completion=False, baseline=None, service_residency=False):
+@@ -186 +187,2 @@ class Controller:
+-        if type(gpu_completion) is not bool or (gpu_completion and retain):
++        if type(gpu_completion) is not bool or type(service_residency) is not bool or \
++                (gpu_completion and retain and not service_residency) or (service_residency and not retain):
+@@ -187,0 +190 @@ class Controller:
++        self.service_residency = service_residency
+@@ -265,2 +268,5 @@ class Controller:
+-                cpu.queue("RETAIN", completed_phases=["B0", "B1", "G0", "G1"])
+-                self.wait(cpu.role, "RETENTION_COMMITTED", cap=5)
++                cpu.queue("RETAIN", completed_phases=list(self.phases), service_residency=self.service_residency)
++                retained = self.wait(cpu.role, "RETENTION_COMMITTED", cap=5)
++                if self.service_residency and (retained.get("bounded") is not False or
++                        retained.get("lifetime") != "service-owned-no-idle-expiry"):
++                    raise GuardStop("service-residency-receipt-required")
+@@ -274,0 +281,2 @@ class Controller:
++            if self.retain:
++                result["residency"] = retained
+@@ -356 +364,2 @@ def launch(config):
+-                          baseline=config.get("baseline")).run()
++                          baseline=config.get("baseline"),
++                          service_residency=config.get("service_residency", False)).run()

@@ -7,6 +7,7 @@ namespace strata::worker {
 // must abort the affected request and may start a new CPU-only session explicitly.
 class GpuWorkerTier {
 public:
+    const std::vector<uint8_t>& diagnostic_request() const { return diagnostic_request_; }
     struct Open {
         std::string host="127.0.0.1";
         uint16_t port=7432;
@@ -40,6 +41,7 @@ public:
     };
     const Stats& stats()const{return stats_;}
 private:
+    std::vector<uint8_t> diagnostic_request_;
     bool exchange(uint16_t,const std::vector<uint8_t>&,uint16_t,WireFrame&,std::string&);
     bool fail(const std::string&,std::string&);
     uintptr_t fd_=~(uintptr_t)0;

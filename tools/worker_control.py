@@ -46,6 +46,7 @@ def status(sock):
             "expirations", "unloads", "complete")
     out = dict(zip(keys, values))
     out["state"] = ("empty", "setup", "ready")[state]
+    out["idle_expiry"] = "none" if out["idle_remaining_ms"] == (1 << 64) - 1 else "finite-or-empty"
     payload = exchange(sock, 9, 10)
     if len(payload) != 59:
         raise RuntimeError("unsupported legacy status length")

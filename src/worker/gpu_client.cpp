@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 
 namespace strata::worker {
 namespace {
@@ -127,6 +128,7 @@ bool GpuWorkerTier::post(int64_t layer,const float* x,const int32_t* ids,const f
     if(!gpu_codec::decode_reply(plan_,blob_digest(payload),r,response.payload,result))
         return fail("CUDA reply malformed, duplicate, missing, nonfinite or stale",err);
     reply_=std::move(result);sequence_=r.sequence;posted_=true;
+    if (std::getenv("STRATA_GPU_MERGE_CAPTURE_DIR") && diagnostic_request_.empty()) diagnostic_request_=payload;
     ++stats_.requests;stats_.entries+=count;stats_.request_ms+=(double)(now_ms()-began);return true;
 }
 bool GpuWorkerTier::finish(std::string& err){

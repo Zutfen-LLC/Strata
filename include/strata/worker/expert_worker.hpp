@@ -35,6 +35,7 @@ struct WorkerOptions {
     bool local_upload_fallback = false;
     int local_setup_ms = 600000; // whole local setup budget, in addition to per-batch I/O budget
     int residency_ms = 0; ///< opt-in idle TTL, 1..86400000 ms; 0 preserves session-scoped weights
+    bool residency_forever = false; ///< explicit service-owned residency; no idle expiry, never implicit at 0
     uint32_t upload_chunk_max = kUploadChunkMax;   ///< advertised data cap, 1..kUploadChunkMax
 };
 

@@ -125,6 +125,10 @@ void RemoteExpertOpt::accumulate_host(const float* partials, const uint8_t* owne
         h_mask_[token_begin_ * K + i] |= owned[(size_t) i] != 0;
 }
 
+std::vector<float> RemoteExpertOpt::diagnostic_sum() const {
+    return {h_sum_+token_begin_*H,h_sum_+(token_begin_+tokens_)*H};
+}
+
 void RemoteExpertOpt::copy_rows(float* dst, const float* src, int token_begin, int tokens,
                          const int32_t* hit_rows, const int32_t* count, void* stream) const {
     copy_cpu_rows<<<tokens * K, 128, 0, (cudaStream_t) stream>>>(

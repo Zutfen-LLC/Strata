@@ -1,6 +1,8 @@
 // Actual network-worker CUDA executor. Uses Strata's existing grouped expert kernels;
 // RemoteExperts is a same-process helper and is deliberately not used as a network service.
 #include "strata/worker/gpu_worker.hpp"
+#include "strata/worker/gpu_capture.hpp"
+#include <cstdlib>
 #include "strata/kernels/iq_kernels.hpp"
 #include <cuda_runtime.h>
 #include <algorithm>
@@ -124,6 +126,31 @@ public:
                 out[h]=out[h]+r.weights[i]*row[h];
             }
         }
+        const char* directory=std::getenv("STRATA_GPU_CAPTURE_DIR");
+        if (directory && !captured_) {
+            if (r.T!=1) {err="diagnostic requires the first one-token request";return false;}
+            diagnostic::Capture c;
+            while (c.selected<r.mask.size() && !r.mask[c.selected]) ++c.selected;
+            if (c.selected>=r.mask.size()) {err="diagnostic selected entry missing";return false;}
+            const auto* asset=p.find(r.layer,r.ids[c.selected]);
+            if (!asset || asset->bytes>kGpuBlobMax) {err="diagnostic assigned blob bounds";return false;}
+            const size_t slot=(size_t)(asset-p.assets.data()), selected=(size_t)packed[c.selected];
+            if (!gpu_codec::encode_request(p,r,c.request)) {err="diagnostic request encoding";return false;}
+            c.blob.resize((size_t)asset->bytes); c.input_q.resize((size_t)p.n_embd/32*36); c.hidden_q.resize((size_t)p.n_ff/32*36);
+            const size_t f=align256(dst.size()*(size_t)p.n_ff*sizeof(float));
+            if (!check(cudaMemcpyAsync(c.blob.data(),blobs_[slot],c.blob.size(),cudaMemcpyDeviceToHost,stream_),"capture resident blob",err) ||
+                !check(cudaMemcpyAsync(c.input_q.data(),dq_,c.input_q.size(),cudaMemcpyDeviceToHost,stream_),"capture input quant",err) ||
+                !check(cudaMemcpyAsync(c.hidden_q.data(),(uint8_t*)scratch_+3*f+selected*c.hidden_q.size(),c.hidden_q.size(),cudaMemcpyDeviceToHost,stream_),"capture hidden quant",err) ||
+                !check(cudaStreamSynchronize(stream_),"capture completion",err)) return false;
+            std::vector<float> ordered(r.mask.size()*p.n_embd,0.f);
+            for (size_t i=0;i<r.mask.size();++i) if (r.mask[i])
+                std::copy_n(rows.data()+(size_t)packed[i]*p.n_embd,p.n_embd,ordered.data()+i*p.n_embd);
+            c.rows=diagnostic::floats(ordered.data(),ordered.size());
+            c.partial=diagnostic::floats(reply.partials.data(),reply.partials.size());
+            auto encoded=diagnostic::encode(c);
+            if (c.blob.size()>kGpuBlobMax || blob_digest(c.blob)!=asset->digest || !diagnostic::file(directory,"cuda.capture",encoded,true,err)) return false;
+            captured_=true;
+        }
         return true;
     }
     void release(GpuCounters& c) override {
@@ -134,7 +161,7 @@ public:
         c.gpu_allocated_bytes=0;c.gpu_weight_bytes=0;c.gpu_scratch_bytes=0;
     }
 private:
-    int device_;bool loaded_=false;size_t observed_bytes_=0;
+    int device_;bool loaded_=false,captured_=false;size_t observed_bytes_=0;
     cudaStream_t stream_=nullptr;void *weights_=nullptr,*workspace_=nullptr,*dq_=nullptr,*scratch_=nullptr;
     float *dx_=nullptr,*dout_=nullptr;unsigned long long* dptr_=nullptr;
     int32_t *dstart_=nullptr,*ddst_=nullptr,*dtok_=nullptr,*dcount_=nullptr;

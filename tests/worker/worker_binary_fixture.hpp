@@ -9,7 +9,8 @@ struct Binary {
     pid_t pid = -1;
     uint16_t port = 0;
     fs::path log;
-    Binary(const Fixture& f, int ttl = 30000, int deadline = 10000, const char* executable = STRATA_WORKER_BIN, bool residency_flag = true) {
+    Binary(const Fixture& f, int ttl = 30000, int deadline = 10000, const char* executable = STRATA_WORKER_BIN, bool residency_flag = true,
+           bool residency_forever = false) {
         // Create a unique empty log before fork. A prior instance's listening line must never
         // be accepted while the new child is still opening/truncating its output.
         std::string pattern = (f.root / "worker-XXXXXX").string();
@@ -25,6 +26,12 @@ struct Binary {
             ::close(fd);
             auto root = f.root.string(), manifest = (f.root / "local.manifest").string();
             auto lifetime = std::to_string(ttl), io = std::to_string(deadline);
+            if (residency_forever) {
+                ::execl(executable, executable, "--port", "0", "--workers", "2", "--memory-budget-mib", "20",
+                        "--local-root", root.c_str(), "--local-manifest", manifest.c_str(),
+                        "--residency-forever", "--deadline-ms", io.c_str(), nullptr);
+                _exit(127);
+            }
             if (!residency_flag) {
                 ::execl(executable, executable, "--port", "0", "--workers", "2", "--memory-budget-mib", "20",
                         "--local-root", root.c_str(), "--local-manifest", manifest.c_str(),
