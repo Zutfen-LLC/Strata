@@ -11,6 +11,7 @@
 #include "strata/worker/expert_tier.hpp"
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
+#include "strata/core/cpu_first_remote_post.hpp"
 #include "strata/worker/gpu_client.hpp"
 #include "strata/worker/gpu_capture.hpp"
 #include "strata/worker/layer_trace.hpp"
@@ -4642,41 +4643,55 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             gpu_worker_mask[(size_t)i] = kind[i] == 4;
             gpu_worker_sent = gpu_worker_sent || kind[i] == 4;
         }
-        if (gpu_worker_sent) {
-            if (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr ||
-                !d.gpu_worker->post(d.layers, x_f, ids, d.remote_opt->cur_weights(), gpu_worker_mask.data(),
-                                    (int)n_tok, (int)k, gpu_worker_error)) {
-                d.failed = true;
-                if (gpu_worker_error.empty()) gpu_worker_error = "network CUDA worker requires current routing weights";
-                d.fail = gpu_worker_error.c_str();
-                d.fail_layer = d.layers;
-                return;
-            }
-        }
     }
 #endif
-    if (d.worker != nullptr) {
-        bool any = false;
-        for (int64_t i = 0; i < n; ++i) any = any || kind[i] == 3;
-        if (any) {
-            if (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr) {
-                d.failed = true;
-                d.fail = "the remote CPU-expert worker needs the verifier's routing weights (remote_opt)";
-                d.fail_layer = d.layers;
-                return;
+    auto post_cpu_worker = [&]() -> bool {
+        if (d.worker != nullptr) {
+            bool any = false;
+            for (int64_t i = 0; i < n; ++i) any = any || kind[i] == 3;
+            if (any) {
+                if (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr) {
+                    d.failed = true;
+                    d.fail = "the remote CPU-expert worker needs the verifier's routing weights (remote_opt)";
+                    d.fail_layer = d.layers;
+                    return false;
+                }
+                worker_mask.assign((size_t) n, 0);
+                for (int64_t i = 0; i < n; ++i) worker_mask[(size_t) i] = kind[i] == 3 ? 1 : 0;
+                if (!d.worker->post(d.layers, x_f, ids, d.remote_opt->cur_weights(), worker_mask.data(), (int) n_tok,
+                                    (int) k, worker_error)) {
+                    d.failed = true;
+                    d.fail = worker_error.c_str();
+                    d.fail_layer = d.layers;
+                    return false;
+                }
+                worker_sent = d.worker->posted();
             }
-            worker_mask.assign((size_t) n, 0);
-            for (int64_t i = 0; i < n; ++i) worker_mask[(size_t) i] = kind[i] == 3 ? 1 : 0;
-            if (!d.worker->post(d.layers, x_f, ids, d.remote_opt->cur_weights(), worker_mask.data(), (int) n_tok,
-                                (int) k, worker_error)) {
-                d.failed = true;
-                d.fail = worker_error.c_str();
-                d.fail_layer = d.layers;
-                return;
-            }
-            worker_sent = d.worker->posted();
         }
-    }
+        return true;
+    };
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    auto post_gpu_worker = [&]() -> bool {
+        if (gpu_worker_sent && (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr ||
+            !d.gpu_worker->post(d.layers, x_f, ids, d.remote_opt->cur_weights(), gpu_worker_mask.data(),
+                                (int)n_tok, (int)k, gpu_worker_error))) {
+            d.failed = true;
+            if (gpu_worker_error.empty()) gpu_worker_error = "network CUDA worker requires current routing weights";
+            d.fail = gpu_worker_error.c_str();
+            d.fail_layer = d.layers;
+            return false;
+        }
+        return true;
+    };
+    // Submit copied CPU inputs before waiting for synchronous GPU I/O. A failed
+    // GPU post (or exception) must join CPU before returning; no partial merges.
+    if (!cpu_first_remote_post(post_cpu_worker, post_gpu_worker, [&] {
+            if (worker_sent && !d.worker->finish(worker_error))
+                std::fprintf(stderr, "strata: CPU request drain after GPU post failure: %s\n", worker_error.c_str());
+        })) return;
+#else
+    if (!post_cpu_worker()) return;
+#endif
 #endif // STRATA_NATIVE_EXPERTS: no worker requests in the disabled build
     static const bool dec_batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
     // the GPU's copy_rows_from_mapped zeroes the rows it computed itself (dec_batch); STRATA_VERIFY_DEVICE_PLAN's

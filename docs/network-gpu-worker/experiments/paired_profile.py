@@ -11,6 +11,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import first_layer_profile as attached
 import paired_g_continuation as gpu_only
+import cpu_first_overlap as overlap
 from paired_tasks import TAG, PHASES, WINDOW, REQUEST_CAP, TOKEN_CAP, read_json, requests, validate_plan
 
 SUPERVISOR = attached.SUPERVISOR
@@ -50,9 +51,10 @@ def configure(root, config):
     global _configured
     if _configured:
         raise ValueError("paired profile already configured")
-    continuation = config.get("diagnostic") == gpu_only.TAG
+    candidate = config.get("diagnostic") == overlap.TAG
+    continuation = candidate or config.get("diagnostic") == gpu_only.TAG
     phases = gpu_only.PHASES if continuation else PHASES
-    if config.get("diagnostic") not in (TAG, gpu_only.TAG) or config.get("supervisor_commit") != SUPERVISOR or \
+    if config.get("diagnostic") not in (TAG, gpu_only.TAG, overlap.TAG) or config.get("supervisor_commit") != SUPERVISOR or \
             config.get("approved_window_s") != WINDOW or config.get("execution_approved") is not True or \
             len(config.get("diagnostic_revision", "")) != 40:
         raise ValueError("separate paired model-execution approval/config required")
@@ -64,7 +66,9 @@ def configure(root, config):
     if continuation:
         if config["plan_sha256"] != gpu_only.PLAN_SHA:
             raise ValueError("exact retained G-only plan required")
-        if config.get("role") == "ROLE_ENGINE_A" and config["binary_sha256"] != config["retained_engine_sha256"]:
+        if candidate:
+            overlap.candidate_identity(config)
+        elif config.get("role") == "ROLE_ENGINE_A" and config["binary_sha256"] != config["retained_engine_sha256"]:
             raise ValueError("accepted baseline engine binary must remain unchanged")
     root = Path(root).resolve(strict=True)
     sys.path[:0] = [str(root), str(root.parent), str(Path(__file__).resolve().parent)]
@@ -127,9 +131,10 @@ def configure(root, config):
 def launch(controller, config):
     start, started_utc = time.monotonic(), time.time()  # Before controller/relay startup.
     from policy import TrialOrder
-    continuation = config.get("diagnostic") == gpu_only.TAG
+    candidate = config.get("diagnostic") == overlap.TAG
+    continuation = candidate or config.get("diagnostic") == gpu_only.TAG
     phases = gpu_only.PHASES if continuation else PHASES
-    tag = gpu_only.TAG if continuation else TAG
+    tag = overlap.TAG if candidate else gpu_only.TAG if continuation else TAG
     request_cap, token_cap = (gpu_only.REQUEST_CAP, gpu_only.TOKEN_CAP) if continuation else (REQUEST_CAP, TOKEN_CAP)
     if set(config["peers"]) != {"ROLE_CPU_C", "ROLE_ENGINE_A", "ROLE_GPU_B"} or len(config["forwards"]) > 4:
         raise ValueError("existing bounded role transports required")
@@ -167,8 +172,8 @@ def launch(controller, config):
                     peer.close()
                 return {"complete": True, "diagnostic": tag, "window_s": WINDOW,
                         "new_elapsed_s": self.clock() - self.start, "request_cap": request_cap,
-                        "generated_token_cap": token_cap, "historical_requests": 24 if continuation else 17,
-                        "historical_generated_tokens": 888 if continuation else 835,
+                        "generated_token_cap": token_cap, "historical_requests": 31 if candidate else 24 if continuation else 17,
+                        "historical_generated_tokens": 941 if candidate else 888 if continuation else 835,
                         "separate_run_comparison": continuation, "historical_numerical_verdict": "NUMERICAL_FAIL",
                         "cpu_attached": proof["attached"], "cpu_resident": resident}
             except BaseException:
@@ -208,6 +213,15 @@ def launch(controller, config):
             proof = gpu_only.check_baseline(gpu_only.retained_plan(config["plan"]), baseline["root"], baseline["engine_config"])
             if proof["engine_binary_sha256"] != config["retained_engine_sha256"]:
                 raise ValueError("retained B/new engine binary binding mismatch")
+            if candidate:
+                overlap.candidate_identity(config)
+                previous = config["prior_g"]
+                overlap.prior_g(gpu_only.retained_plan(config["plan"]), previous["root"], previous["engine_config"],
+                                config["retained_engine_sha256"])
+                clock_receipt.update(candidate_engine_sha256=config["candidate_engine_sha256"],
+                                     accepted_engine_sha256=config["retained_engine_sha256"],
+                                     candidate_source_revision=config["candidate_source_revision"])
+                save_clock()
             with open(evidence / "retained-b-check.json", "w", encoding="ascii") as output:
                 json.dump(proof, output, allow_nan=False)
         for argv in config["forwards"]:

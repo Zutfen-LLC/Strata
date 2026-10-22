@@ -1508,6 +1508,15 @@ set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITI
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 
+if(STRATA_BUILD_TESTS)
+  # Production submission-order seam, no native/kernel/device dependency; also native-OFF.
+  add_executable(cpu_first_remote_post_test tests/core/cpu_first_remote_post_test.cpp)
+  target_include_directories(cpu_first_remote_post_test PRIVATE include)
+  target_link_libraries(cpu_first_remote_post_test PRIVATE Threads::Threads)
+  add_test(NAME cpu_first_remote_post_test COMMAND cpu_first_remote_post_test)
+  set_tests_properties(cpu_first_remote_post_test PROPERTIES TIMEOUT 10 RUN_SERIAL TRUE)
+endif()
+
 if(STRATA_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # Real worker codecs/socket seam, with no executor, model, ggml or GPU linkage.
   add_executable(gpu_frame_test tests/worker/gpu_frame_test.cpp

@@ -288,17 +288,23 @@ int main() {
                 component_l1 / (reference_l1 + 1e-30), component_l1, reference_l1);
     numerical_metrics(base, float_reference, 3e-2, std::numeric_limits<double>::infinity(),
                       "mixed result versus dequantized float reference");
-    // Failure must not advance CPU serving or commit an earlier partial. The sync GPU post detects
-    // the lost peer before CPU post; the engine's failed latch rejects the affected request.
+    // CPU is now submitted first. GPU loss must drain that CPU request, retain
+    // the failed latch and commit neither partial; no fallback or retry.
     WorkerStatusInfo before_loss, after_loss;
     if (!check(cpu_tier.status(before_loss, err), "CPU counters before GPU loss")) return 1;
     services.stop_gpu();
     Plan lost_plan;
     check(dispatch(rows, lost_plan), "GPU loss fails the affected request");
     check(gpu_tier.dead(), "GPU loss latches dead; no invisible CPU retry");
-    check(cpu_tier.status(after_loss, err) && after_loss.requests == before_loss.requests,
-          "CPU05 never receives GPU04 fallback work");
+    check(!cpu_tier.posted() && cpu_tier.served(), "GPU loss joined the already-submitted CPU request");
+    check(cpu_tier.status(after_loss, err) && after_loss.requests == before_loss.requests + 1,
+          "only the original CPU share ran; no GPU fallback or retry");
+    const auto failed_sum = merge.diagnostic_sum();
+    check(std::all_of(failed_sum.begin(), failed_sum.end(), [](float v) { return v == 0; }),
+          "GPU post failure committed neither remote partial");
+    check(std::all_of(rows.begin(), rows.end(), [](float v) { return v == -11.5f; }),
+          "GPU post failure returned before publishing any CPU result row");
     check(source.reads == 0, "GPU loss never falls back to local source");
-    std::printf("gpu_worker_dispatch_test: failures=%d (primary rows emulated; network CUDA and merge real)\n", failures);
+    std::printf("CPU_FIRST_DISPATCH_V1 failures=%d (real dispatcher, CPU tier, network CUDA and merge)\n", failures);
     return failures ? 1 : 0;
 }
