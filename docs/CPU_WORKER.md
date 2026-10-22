@@ -208,6 +208,10 @@ the GGUF shards. See [the local source contract](cpu-worker-local/README.md) and
 ## Session-independent residency (default off)
 
 A complete trusted local partition can now survive engine exit for an explicit bounded idle window.
+For service-owned retention without idle expiry, explicitly select worker
+`--residency-forever` instead of a positive `--residency-ms`, and keep engine
+`--remote-cpu-resident`. Zero/omitted TTL still means session-scoped weights.
+See [durable residency, status and explicit stop](network-gpu-worker/README.md#explicit-durable-cpu-residency).
 See [the lifecycle and compatibility contract](cpu-worker-residency/README.md) and
 [the ready-to-use Hermes recipe](cpu-worker-residency/HERMES.md). Without the new flags, the
 session-scoped behavior described above remains in force.

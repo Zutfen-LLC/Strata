@@ -1505,6 +1505,25 @@ set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITI
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 
+if(STRATA_BUILD_TESTS)
+  # Production submission-order seam, no native/kernel/device dependency; also native-OFF.
+  add_executable(cpu_first_remote_post_test tests/core/cpu_first_remote_post_test.cpp)
+  target_include_directories(cpu_first_remote_post_test PRIVATE include)
+  target_link_libraries(cpu_first_remote_post_test PRIVATE Threads::Threads)
+  add_test(NAME cpu_first_remote_post_test COMMAND cpu_first_remote_post_test)
+  set_tests_properties(cpu_first_remote_post_test PROPERTIES TIMEOUT 10 RUN_SERIAL TRUE)
+endif()
+
+if(STRATA_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Real worker codecs/socket seam, with no executor, model, ggml or GPU linkage.
+  add_executable(gpu_frame_test tests/worker/gpu_frame_test.cpp
+                 src/worker/gpu_wire.cpp src/worker/expert_wire.cpp src/worker/wire_sock.cpp)
+  target_include_directories(gpu_frame_test PRIVATE include src/worker)
+  target_link_libraries(gpu_frame_test PRIVATE Threads::Threads)
+  add_test(NAME gpu_frame_test COMMAND gpu_frame_test)
+  set_tests_properties(gpu_frame_test PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+endif()
+
 # These synthetic BF16 checks must link without ggml too; retain the native-ON utility target.
 if(STRATA_NATIVE_EXPERTS OR STRATA_BUILD_TESTS)
   add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)
@@ -1776,6 +1795,13 @@ if(STRATA_NATIVE_EXPERTS)
       add_dependencies(worker_residency_test strata-expert-worker)
       add_test(NAME worker_residency_test COMMAND worker_residency_test)
       set_tests_properties(worker_residency_test PROPERTIES TIMEOUT 90)
+      add_executable(worker_service_residency_test tests/worker/worker_service_residency_test.cpp)
+      target_include_directories(worker_service_residency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+      target_link_libraries(worker_service_residency_test PRIVATE strata_worker_tier)
+      target_compile_definitions(worker_service_residency_test PRIVATE STRATA_WORKER_BIN="$<TARGET_FILE:strata-expert-worker>")
+      add_dependencies(worker_service_residency_test strata-expert-worker)
+      add_test(NAME worker_service_residency_test COMMAND worker_service_residency_test)
+      set_tests_properties(worker_service_residency_test PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
       add_executable(worker_compat_test tests/worker/worker_compat_test.cpp)
       target_include_directories(worker_compat_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
       target_link_libraries(worker_compat_test PRIVATE strata_expert_worker)

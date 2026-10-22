@@ -24,7 +24,7 @@ void usage() {
     std::fprintf(
         stderr,
         "usage: strata-expert-worker [--port P] [--memory-budget-mib N] [--workers N] "
-        "[--deadline-ms N] [--verbose] [--residency-ms N]\n"
+        "[--deadline-ms N] [--verbose] [--residency-ms N | --residency-forever]\n"
         "       [--local-root DIR --local-manifest FILE] [--local-upload-fallback] [--local-setup-ms N]\n"
         "  binds 127.0.0.1 only; serves one loopback connection at a time\n");
 }
@@ -82,6 +82,7 @@ int main(int argc, char** argv) {
             }
             opt.residency_ms = (int)value;
         }
+        else if (a == "--residency-forever") opt.residency_forever = true;
         else if (a == "--verbose") opt.verbose = 1;
         else {
             usage();

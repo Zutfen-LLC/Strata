@@ -1,160 +1,127 @@
 # Fixed network CUDA expert placement
 
-This is an unvalidated, opt-in candidate for one RTX 3090 worker on **inferswarm04**.
-The engine remains on inferswarm03 (its two RTX 3060 GPUs keep their existing ownership).
-Inferswarm05 keeps its existing resident CPU arena and full CPU partition. It may retain
-duplicate weights; only requests outside the frozen GPU assignment execute on it.
+This opt-in backend executes an explicitly assigned subset of experts on a remote
+CUDA worker. Local GPU ownership stays fixed. The existing CPU worker retains its
+partition and serves only uncovered routed entries. No discovery, live joining,
+rebalancing, arena shrinking or transparent fallback is implemented.
 
-No configuration, compilation, tests, benchmarks or model loads were run on Geekom.
-No operations were run on an inferswarm host. A draft PR and independent static reviews
-are preparation for the [Hermes fixture gate](HERMES.md), not runtime acceptance.
+The supported slice is uniform plain Q8_0/Q8_0 without Hadamard transforms or scale
+tails, within the existing CPU geometry bounds. The network service is POSIX/CUDA
+only. CPU-only/native-ON builds can build asset/protocol fixtures without CUDA;
+native-OFF excludes network worker integration. HIP, SYCL and Windows support is
+not claimed. See [validation and limits](VALIDATION.md) before assessing acceptance.
 
-## Supported first slice
+## Configuration and selective cache
 
-The existing CPU worker's supported layout is uniform plain Q8_0/Q8_0, without
-Hadamard transforms or scale tails, within its existing geometry bounds. This slice
-uses that same layout and the existing CUDA `native_expert_grouped` kernels. It does
-not pretend that `RemoteExperts` is a network service: that class remains the
-same-process helper for other local GPUs.
-
-The new SGW1 protocol explicitly negotiates CUDA execution and q8_1 activations with
-F32 results. The existing SEW1 CPU protocol and native-bitwise contract are unchanged.
-An incompatible peer is an error; there is no upload-mode or CPU inference fallback.
-The new service is POSIX/CUDA only. CPU-only/native-ON builds can build the asset and
-protocol fixture sources without a CUDA dependency. Native-OFF builds exclude them.
-There are no HIP, gfx906, SYCL, Windows or full-model parity claims.
-
-The assignment is configured at startup on both peers, checked against the engine's
-trusted local manifest, and frozen for the session. Every selected pair must be in
-the existing CPU partition and outside all local GPU caches. A different model,
-layout or placement requires closing the session and restarting with the new plan.
-No discovery, live join, rebalancing or CPU arena shrinking is implemented.
-
-## Selective acquisition
-
-The operator starts from an existing trusted `SWLOCAL1` manifest and an explicit
-list of `(layer, expert)` pairs. The selective plan contains only assigned entries,
-their expected lengths/digests and required model/layout/geometry identity. Plan
-generation reads bounded metadata, not model weights. This avoids repeating the
-older one-time whole-model manifest preparation as part of GPU setup.
-
-`GpuAssetSource` uses the existing GGUF layout: for expert `e`, each role range is
-`layer_role_offset + e * role_bytes`. It reads exactly the gate, up and down slices,
-concatenated in the native blob layout, for a missing assigned expert. It does not
-download or stage a layer or shard. The engine must already have its trusted model
-source; this is not a whole-model downloader. Files may span different GGUF shards.
-
-Create the plan on the source host from explicit zero-based pairs:
+Start with an existing trusted SWLOCAL1 manifest and an explicit list of zero-based
+`LAYER EXPERT` pairs, one pair per line:
 
 ```sh
-# assigned.txt contains only the chosen LAYER EXPERT pairs, one per line.
-strata-gpu-manifest plan existing-trusted.local assigned.txt fixed-3090.plan
-sha256sum fixed-3090.plan
+strata-gpu-manifest plan existing-trusted.local assigned.txt fixed.plan
 ```
 
-Copy only that small plan to the worker. The operator creates an empty dedicated
-cache directory, then starts `strata-cuda-expert-worker --plan fixed-3090.plan
---cache-root CACHE --device 0 --port 7432 --cache-budget-mib 24576 --reserve-mib 1024`.
-The final two values are independent operator limits, not measured recommendations.
+Plan generation reads bounded metadata rather than weights. Copy only that plan
+to the worker and create a dedicated owned cache directory. Example limits below
+are operator choices, not a recommendation that any assignment fits:
+
+```sh
+strata-cuda-expert-worker --plan fixed.plan --cache-root CACHE --device 0 --port 7432 --cache-budget-mib 24576 --reserve-mib 1024
+```
+
 The engine adds `--remote-gpu-experts NUMERIC_FORWARD_HOST:PORT --remote-gpu-plan
-fixed-3090.plan` to its existing supported serial remote-CPU configuration. It also
-requires that configuration's trusted `--remote-cpu-local-manifest`. An operator
-must approve the real-model window before using that engine configuration.
+fixed.plan` to its supported serial remote-CPU configuration, including the trusted
+`--remote-cpu-local-manifest`. Every assigned expert must be in that CPU partition
+and outside all local GPU caches. Model, layout and placement are frozen for the
+session; change them only by closing the session and starting a new one.
 
-The worker reports a missing bitmap after rechecking only assigned cache blobs.
-The engine reads and transfers only those missing/corrupt entries. A restart reuses
-verified assigned files; assignment additions fetch only missing additions. Cache
-keys bind model, layout, layer, expert, length and expected digest. `Digest128` is the
-existing two-pass noncryptographic FNV integrity check; the trusted manifest and
-owned SSH transport remain the trust boundary. No authentication claim is made.
+Both services bind loopback. Use an existing trusted transport; the protocol does
+not provide authentication. SGW1 negotiates CUDA execution, q8_1 activations and
+F32 results separately from the unchanged SEW1 CPU native-bitwise contract.
+Incompatible peers fail rather than silently selecting another arithmetic path.
 
-The worker's dedicated, operator-created cache directory uses relative generated
-names, directory descriptors and no-follow regular-file opens. New files publish
-atomically only after complete length and digest verification. Incomplete uploads
-cannot become usable assets. Existing complete assigned files are reverified before
-readiness, and stale temporary files are not hits.
+The worker rechecks only assigned cache blobs and returns a missing bitmap. The
+engine reads and sends only missing or corrupt assigned gate/up/down slices from
+its trusted model source. Complete validated files survive restarts. Partial
+uploads never become hits; reuse is validated per complete entry, not inferred
+from persisted byte totals. No whole-model mirror or automatic eviction occurs.
+Keys bind model, layout, layer, expert, length and expected digest. Digest128 is
+the existing noncryptographic integrity check; the manifest and trusted transport
+remain the trust boundary.
 
-Disk retention and VRAM residency have separate bounds. The disk budget counts all
-retained regular files, including old assignments and incomplete temporary files;
-setup reserves space for new assets before accepting them. Capacity refusal preserves
-other assets. Nothing is automatically evicted. The explicit cleanup operation removes
-only this cache format's unassigned assets/abandoned temporary files, with exclusive
-cache ownership; unrelated files are preserved. Use a fresh owned directory for
-fixtures. Close the worker before intentional retention cleanup.
+The cache uses generated relative names, directory descriptors and no-follow
+regular-file opens. New files publish atomically after length/digest verification.
+The disk budget counts retained regular files, including old assignments and
+temporary files, and reserves new assets before accepting them. Intentional cache
+cleanup requires exclusive ownership with the worker stopped and preserves
+unrelated files.
 
-Host staging is bounded by one expert blob (at most 8 MiB under the compiled cap),
-plus bounded protocol frames and inference buffers. It never mirrors the assignment
-in host RAM. Counters distinguish assigned bytes, verified cached/reused bytes,
-network weight payload bytes, source bytes returned by selective reads, bytes written
-to cache, retained disk bytes, host staging and actual CUDA allocations. Source-read
-bytes are logical `pread` payload bytes; filesystem readahead and physical device
-I/O need separate OS measurements. Protocol framing/SSH overhead is separate from
-weight payload transfer.
+Host staging is bounded by one expert blob (at most 8 MiB), protocol frames and
+inference buffers. A contiguous send adds at most 4,194,384 bytes for one SGW1 frame
+(4 MiB plan bound + 64-byte allowance + 16-byte header), not an assignment-sized
+allocation. Wire bytes and the controlled writer's cancellation/deadline behavior
+are unchanged. Copy time is charged before the socket writer; no TCP option changes
+are made. Counters distinguish source reads, transfer, persistence, cache reuse,
+verification, host staging and GPU allocation. Logical source reads do not measure
+physical disk I/O or transport framing overhead.
 
-## Capacity, readiness and failure
+## Readiness, execution and failure
 
-The CUDA executor initializes the chosen device, queries available VRAM, accounts for
-the complete assigned weights and its actual fixed inference scratch/metadata/input/
-output allocations, and subtracts an explicit runtime reserve. Each CUDA allocation
-and copy is checked. An estimated 18–20 GB assignment is not a promise of fit: free
-memory, reserve and actual allocations decide. Setup refuses before inference on
-overcapacity or allocation failure. Use the worker's actual counters plus an external
-GPU/RSS sample to assess untracked runtime and allocator overhead.
+READY requires verified assigned weights resident on the selected GPU and a
+completed CUDA synchronization. Free VRAM must cover weights, actual scratch and
+metadata/input/output allocations, plus the configured reserve. Every allocation
+and copy is checked; an estimated assignment size is not proof of fit. Disk cache
+and VRAM have separate limits and lifetimes. Disconnect releases the GPU session;
+complete disk entries may remain.
 
-READY requires every assigned blob to be length/digest verified and copied to GPU
-memory, with completed CUDA synchronization. Only then may inference run. Disconnect
-invalidates the session and GPU allocation lifetime; complete disk files may survive.
-A fresh connection sets up a new session with new request sequencing.
+The engine submits the existing asynchronous CPU request before synchronous GPU
+network I/O. CPU post owns copies of activations, IDs, masks and routing weights.
+No GPU request thread is introduced. Completion remains CPU finish then GPU finish;
+helper/GPU/CPU weighted merge order is unchanged. On GPU-post failure or exception,
+the posted CPU request is joined before returning. No partial is committed and no
+CPU fallback/retry is performed. Existing I/O deadlines and outer process guards
+remain necessary; filesystem calls and kernels cannot be preempted by socket timers.
 
-Requests and replies bind model, layout, frozen placement, session, sequence and the
-request identity. Unassigned entries, stale sessions, malformed lengths, nonfinite
-values, duplicate or mismatched results are errors. The engine masks each execution
-owner's rows and merges its already-weighted partial exactly once. Both remote tiers
-must finish successfully before any remote partial is accumulated for the window.
-Failure latches the tier dead, aborts the affected request and does not silently retry
-on 05. A newly started CPU-only engine session is the recovery path. There is no
-transparent failover or mid-session placement change.
+Requests/replies bind model, layout, placement, session, sequence and request
+identity. Unassigned entries, stale/duplicate replies, malformed lengths and
+nonfinite results are errors. Each owner contributes its weighted partial once,
+only after both remote tiers succeed. A failure latches the affected tier dead.
 
-The first network-GPU post is synchronous, so there is no claim of network/CPU overlap.
-During selective GPU startup the engine probes the already-ready CPU session so its
-socket does not time out while weights transfer. Status probes do not renew the CPU
-residency TTL. Expiry or loss cancels GPU setup; the configured TTL must cover setup
-and the intended session. This does not resize or replace the CPU arena.
-The service is one connection and one request at a time, with bounded setup and frame
-deadlines. Cache verification and GPU residency may exceed a short frame budget:
-SETUP and READY reply waits use the remaining total setup budget. Connect, negotiation,
-uploads and inference retain their short frame budgets. The server charges assigned
-cache verification to the same total setup budget. Kernel execution and ordinary filesystem system calls cannot be preempted
-by those deadlines; Hermes uses an owned outer process timeout. The listener binds
-loopback; use existing trusted SSH forwards for cross-host access, not a new firewall
-or public listener.
+`--remote-gpu-setup-ms` bounds total setup (default 600000 ms), while
+`--remote-gpu-deadline-ms` bounds ordinary frame I/O (default 10000 ms). SETUP/READY
+waits use the remaining total setup budget. During GPU setup, probes keep the
+already-ready CPU connection active without renewing its residency TTL.
 
-## Numerical acceptance declared before execution
+## Explicit durable CPU residency
 
-CUDA q8_1 and CPU-native activation rounding differ. No CPU/GPU bitwise equality is
-expected. The reference is the existing `src/kernels/native_expert_parity.cpp`: GGML's
-own weight dequantizer, float expert evaluation with double dot accumulation, and
-the existing direct grouped CUDA path. The fixture gate must record, not assume:
+The existing finite `--residency-ms N` remains supported. Zero or omitted preserves
+session-scoped behavior. The worker's new `--residency-forever` is an explicit,
+mutually exclusive alternative to a positive finite TTL; it never follows from
+zero. The engine must also request `--remote-cpu-resident` with its trusted local
+manifest. Nonresident sessions still release their weights on disconnect.
 
-* Relative L1 error of CUDA network output versus the dequantized float reference
-  at most `3e-2`, the existing native-expert parity threshold. Report max absolute
-  error and RMSE as well, per case and aggregate. A near-zero reference needs an
-  absolute-error report rather than a misleading relative claim.
-* Network CUDA output versus the same-device direct grouped CUDA calculation with
-  the identical entry-order weighting: relative L1 at most `1e-6` and max absolute
-  error at most `1e-5`. Transport should not introduce quantization.
-* Mixed-owner merge versus a reference assembled from the same local-GPU, remote-GPU
-  and CPU per-entry results in the documented merge order: relative L1 at most
-  `1e-6`, max absolute error at most `1e-5`. Separately compare the full result to the
-  dequantized reference with the `3e-2` bound and report cancellation-sensitive cases.
-* Existing CPU direct-versus-transport bitwise fixtures must retain their contract.
-  Ownership masks, entry counts, request identities and reply cardinality are exact
-  structural checks, independently of floating-point tolerances.
+A healthy complete arena then survives engine disconnects with no idle expiry.
+It remains owned by the CPU service, not by the engine task. Memory limits,
+partition identity, bounded frame I/O and operator monitoring still apply. This
+does not install a background service, open persistent remote access or expand
+the loaded partition. Forever-mode detail logs stop after an 8 MiB quota; use
+status counters for continued observation.
 
-These are acceptance requirements for Hermes, not measurements. Test coverage and
-static findings are recorded with the candidate; no runtime PASS is claimed here.
+The existing `ExpertWorkerClient::cache_status()` reports `idle_remaining_ms =
+UINT64_MAX` for a complete no-expiry arena, with its real byte/allocation/reuse
+counters. Reconnect using the same manifest/partition and resident flag. Existing
+`unload()` releases weights while leaving the worker available; `shutdown()` or
+normal service SIGINT/SIGTERM releases weights and stops it. Use the owning
+service's normal stop mechanism, not an unverified numeric PID. Engine or test
+completion alone must not unload a healthy explicitly resident arena.
 
-The eventual real-model gate requires a separately authorized window after fixtures
-pass. It must show that 04 executes assigned experts while 05's per-request entry
-count includes only uncovered work, with source/network/disk/GPU/RSS/numerical/timing
-evidence and unchanged 05 arena/partition identity.
+## Focused checks
+
+With the relevant retained build configuration and dependencies, test targets are
+`gpu_assets_test`, `gpu_worker_test`, `gpu_worker_dispatch_test`, `gpu_frame_test`,
+`cpu_first_remote_post_test` and `worker_service_residency_test`. The first two also
+have CPU-only protocol/asset coverage; the dispatcher and CUDA worker cases need
+the CUDA executor. The frame fixture uses the real socket/codec seam without CUDA
+or model weights. Its optional `--latency` compares split framing, contiguous
+framing and fixture-only accepted-side TCP_NODELAY; timing has no CI pass threshold.
+The residency fixture starts its own tiny synthetic worker and must never target
+an existing service. See [attributed results and unrun checks](VALIDATION.md).

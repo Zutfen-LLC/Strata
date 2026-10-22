@@ -36,16 +36,6 @@ uint64_t mono_ns() {
         .count();
 }
 
-void logf(const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    std::fputs("strata-worker: ", stderr);
-    std::vfprintf(stderr, fmt, ap);
-    std::fputc('\n', stderr);
-    std::fflush(stderr);
-    va_end(ap);
-}
-
 bool layout_supported(uint16_t gu, uint16_t d) {
     for (const SupportedLayout& s : kSupportedLayouts)
         if (s.gu == gu && s.d == d) return true;
@@ -171,6 +161,32 @@ struct ExpertWorkerService::Impl {
     uint64_t last_sequence = 0;
     bool have_sequence = false;
     std::unique_ptr<strata::kernels::cpu::ExpertPool> pool;
+    uint64_t service_log_bytes = 0;
+    bool service_log_suppressed = false;
+
+    void logf(const char* fmt, ...) {
+        va_list ap;
+        va_start(ap, fmt);
+        if (!opt.residency_forever) {
+            std::fputs("strata-worker: ", stderr);
+            std::vfprintf(stderr, fmt, ap);
+            std::fputc('\n', stderr);
+        } else if (!service_log_suppressed) {
+            char message[2048]{};
+            const int size = std::vsnprintf(message, sizeof message, fmt, ap);
+            message[sizeof message - 1] = 0;
+            const size_t bytes = size < 0 ? 0 : std::min((size_t)size, sizeof message - 1);
+            if (service_log_bytes + bytes + 16 <= 8u * 1048576) {
+                std::fprintf(stderr,"strata-worker: %s\n",message);
+                service_log_bytes += bytes + 16;
+            } else {
+                std::fputs("strata-worker: service detail log quota reached; further detail suppressed; use status counters and guardian journal\n",stderr);
+                service_log_suppressed = true;
+            }
+        }
+        std::fflush(stderr);
+        va_end(ap);
+    }
 
     Impl(WorkerOptions o, WorkerCounters* c)
         : opt(o), counters(c),
@@ -188,7 +204,8 @@ struct ExpertWorkerService::Impl {
     uint64_t idle_since_ns = 0;
 
     bool resident_expired() const {
-        return resident_complete && mono_ns() - idle_since_ns >= (uint64_t)opt.residency_ms * 1000000;
+        return resident_complete && !opt.residency_forever &&
+               mono_ns() - idle_since_ns >= (uint64_t)opt.residency_ms * 1000000;
     }
     void unload_weights(const char* reason) {
         if (arena_bytes) logf("cache unload: reason=%s bytes=%llu", reason, (unsigned long long)arena_bytes);
@@ -332,7 +349,7 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, siz
         identity = {c.u64(), c.u64()};
         if (n < 24 || version != kLocalVersion || flags > 3 || !local ||
             ((flags & 1) && !opt.local_upload_fallback) ||
-            ((flags & kLocalResident) && opt.residency_ms == 0)) {
+            ((flags & kLocalResident) && opt.residency_ms == 0 && !opt.residency_forever)) {
             fail(ST_LOCAL_UNAVAILABLE);
             send_frame(fd, ack, ST_LOCAL_UNAVAILABLE, {});
             return;
@@ -955,7 +972,8 @@ void ExpertWorkerService::Impl::on_cache_status(sock_fd fd) {
     put64(reply, session);
     put64(reply, arena_bytes);
     const auto elapsed = resident_complete ? (mono_ns() - idle_since_ns) / 1000000 : 0;
-    put64(reply, resident_complete && elapsed < (uint64_t)opt.residency_ms ? opt.residency_ms - elapsed : 0);
+    put64(reply, resident_complete && opt.residency_forever ? kResidencyNoExpiry :
+                 resident_complete && elapsed < (uint64_t)opt.residency_ms ? opt.residency_ms - elapsed : 0);
     for (auto v : {counters->cache_hits, counters->reused_bytes, counters->loaded_bytes,
                    counters->verified_bytes, counters->peak_arena_bytes, counters->arena_allocations,
                    counters->cache_expirations, counters->cache_unloads}) put64(reply, v);
@@ -1034,8 +1052,9 @@ ExpertWorkerService::~ExpertWorkerService() {
 
 bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
     if (impl_->opt.residency_ms < 0 || impl_->opt.residency_ms > kMaxResidencyMs ||
-        (impl_->opt.residency_ms && impl_->opt.deadline_ms <= 0)) {
-        err = "residency must be 0..86400000 ms, with a positive I/O deadline";
+        (impl_->opt.residency_forever && impl_->opt.residency_ms != 0) ||
+        ((impl_->opt.residency_ms || impl_->opt.residency_forever) && impl_->opt.deadline_ms <= 0)) {
+        err = "residency must be 0..86400000 ms or explicit forever, with a positive I/O deadline";
         return false;
     }
     if (impl_->opt.upload_chunk_max == 0 || impl_->opt.upload_chunk_max > kUploadChunkMax) {
@@ -1070,9 +1089,9 @@ void ExpertWorkerService::run() {
     impl_->void_session();
     impl_->unload_weights("shutdown");
     sock::close_fd(impl_->listener);
-    logf("shutdown: arena released; joining CPU pool");
+    impl_->logf("shutdown: arena released; joining CPU pool");
     impl_->pool.reset();
-    logf("shutdown: CPU pool joined; resident=0 B");
+    impl_->logf("shutdown: CPU pool joined; resident=0 B");
 }
 
 void ExpertWorkerService::stop() {
