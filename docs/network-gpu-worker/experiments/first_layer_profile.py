@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 
-TAG="GPU-FIRST-LAYER-V1-20261022"
+TAG="GPU-FIRST-LAYER-V2-20261022"
 SUPERVISOR="311561689bb4b1f8a109821601e3a6bda07067e6"
 WINDOW=600
 PHASES=("B0","G0")
@@ -41,7 +41,7 @@ def configure(root,config):
     completion.WINDOW_S=WINDOW
     completion.ENGINE_CAPS={p:WINDOW for p in PHASES}
     completion.GPU_CAPS={"G0":WINDOW}
-    completion.HISTORICAL_ACTIVE_S=7541.0
+    completion.HISTORICAL_ACTIVE_S=7541.0+117 # Approximate failed-trace increment; not a new precise receipt.
     policy.POLICIES["ROLE_REPLAY_C"]=policy.Policy("ROLE_REPLAY_C",8704*policy.MIB,8*policy.GIB,512*policy.MIB,512*policy.MIB)
     original=agent.product
     def product(role,phase,bindings,*,gpu_completion=False):
@@ -51,7 +51,8 @@ def configure(root,config):
         directory=str(Path(config["run_root"])/("trace-"+phase))
         os.mkdir(directory,0o700)
         if role=="ROLE_ENGINE_A":
-            env.update(STRATA_FIRST_LAYER_TRACE_DIR=directory,STRATA_REQUIRE_CPU_RESIDENT_HIT="1")
+            env.update(STRATA_FIRST_LAYER_TRACE_DIR=directory,STRATA_REQUIRE_CPU_RESIDENT_HIT="1",
+                       STRATA_VERIFY_ASYNC_LAUNCH="1",STRATA_VERIFY_TRACE="1")
         else: env["STRATA_GPU_LAYER_ROWS_DIR"]=directory
         return argv,env,cap
     def requests(phase):
@@ -144,7 +145,8 @@ def launch(controller,config):
                     if peer is cpu: resident=final["resident"]
                     peer.close()
                 return {"complete":True,"diagnostic":TAG,"window_start_mono":self.start,"window_deadline_mono":self.deadline,
-                        "historical_active_s":7541.0,"historical_requests":14,"historical_tokens":833,
+                        "historical_active_s_before_failed_trace":7541.0,"failed_trace_active_s_approx":117,
+                        "historical_requests":15,"historical_generated_tokens":833,"failed_trace_started_requests":1,
                         "new_request_cap":2,"new_token_cap":2,"cpu_attached":attached["attached"],"cpu_resident":resident}
             except BaseException:
                 for peer in self.peers.values():

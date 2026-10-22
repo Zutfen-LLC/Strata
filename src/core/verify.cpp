@@ -714,6 +714,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     }
 #ifdef STRATA_NETWORK_CUDA_WORKER
     if (const char* directory=std::getenv("STRATA_FIRST_LAYER_TRACE_DIR")) {
+        const char* launch=std::getenv("STRATA_VERIFY_ASYNC_LAUNCH");
+        if (!launch || launch[0]!='1') {
+            err="first-layer trace requires STRATA_VERIFY_ASYNC_LAUNCH=1 for CPU doorbell service";return false;
+        }
         if (*directory!='/' || first_layer_trace_ || lb_!=0 || le_!=g.n_layers ||
             g.n_layers<1 || g.n_layers>128 || g.n_embd<1 || g.n_embd>2560 || ss.k!=10 || g.n_expert>512) {
             err="first-layer trace requires one complete bounded verifier";return false;
@@ -2795,6 +2799,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             const char* value = std::getenv("STRATA_VERIFY_ASYNC_LAUNCH");
             return value != nullptr && value[0] == '1';
         }();
+        trace_ev("LAUNCH-BEGIN", -1, -1, threaded_launch);
         launch_o.emplace(ar_off_ ? exec_nr_[T] : exec_[T], cs_, device_, threaded_launch,
                          [this] { (void) release_gpu_waits(5000); });
         const cudaError_t le = launch_o->status();
@@ -2804,7 +2809,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         trace_ev("LAUNCHED", -1, -1, (int64_t) le);
         if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+        trace_ev("QUERY-BEGIN", -1, -1, 0);
         (void) launch_o->query();
+        trace_ev("QUERY-DONE", -1, -1, 0);
 #else
         (void) cudaStreamQuery(cs_);
 #endif

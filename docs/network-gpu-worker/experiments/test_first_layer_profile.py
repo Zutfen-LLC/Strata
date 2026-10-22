@@ -31,9 +31,13 @@ class Cases(TestCase):
             mkdir.assert_called_once_with("/private/new/trace-"+phase,0o700);self.assertEqual(cap,600)
             if role=="ROLE_ENGINE_A":
                 self.assertEqual(env["STRATA_REQUIRE_CPU_RESIDENT_HIT"],"1")
+                self.assertEqual(env["STRATA_VERIFY_ASYNC_LAUNCH"],"1")
+                self.assertEqual(env["STRATA_VERIFY_TRACE"],"1")
                 self.assertIn("STRATA_FIRST_LAYER_TRACE_DIR",env)
                 self.assertEqual("--remote-gpu-experts" in argv,phase=="G0")
-            else:self.assertIn("STRATA_GPU_LAYER_ROWS_DIR",env)
+            else:
+                self.assertIn("STRATA_GPU_LAYER_ROWS_DIR",env)
+                self.assertNotIn("STRATA_VERIFY_ASYNC_LAUNCH",env)
             self.assertNotIn("STRATA_GPU_CAPTURE_DIR",env)
     def test_resident_idle_proof_and_busy_observation(self):
         import resident_cpu
@@ -109,5 +113,5 @@ def main():
             patch("socket.socket",side_effect=forbidden),patch("signal.pidfd_send_signal",side_effect=forbidden):
         result=TextTestRunner(verbosity=2).run(defaultTestLoader.loadTestsFromTestCase(Cases))
     if not result.wasSuccessful() or result.skipped or result.testsRun!=7:raise SystemExit(1)
-    print("FIRST_LAYER_PROFILE_PASS_V1 tests=7 workloads=0")
+    print("FIRST_LAYER_PROFILE_PASS_V2 tests=7 workloads=0")
 if __name__=="__main__":main()
