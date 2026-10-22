@@ -2,6 +2,7 @@
 // RemoteExperts is a same-process helper and is deliberately not used as a network service.
 #include "strata/worker/gpu_worker.hpp"
 #include "strata/worker/gpu_capture.hpp"
+#include "strata/worker/layer_trace.hpp"
 #include <cstdlib>
 #include "strata/kernels/iq_kernels.hpp"
 #include <cuda_runtime.h>
@@ -126,6 +127,22 @@ public:
                 out[h]=out[h]+r.weights[i]*row[h];
             }
         }
+        const char* layer_directory=std::getenv("STRATA_GPU_LAYER_ROWS_DIR");
+        if (layer_directory && r.layer<128 && !layer_written_[r.layer]) {
+            if (r.T!=1) {err="GPU layer trace requires first one-token request";return false;}
+            try {
+                using namespace diagnostic::layer;
+                std::vector<uint8_t> request;
+                if (!gpu_codec::encode_request(p,r,request)) {err="GPU layer trace request";return false;}
+                std::vector<float> ordered(r.K*p.n_embd,0.f);
+                for (size_t i=0;i<r.K;++i) if(r.mask[i])
+                    std::copy_n(rows.data()+(size_t)packed[i]*p.n_embd,p.n_embd,ordered.data()+i*p.n_embd);
+                Record trace{Gpu,r.layer,p.n_layers,p.n_embd,r.K,p.n_expert,
+                             {request,bytes(ordered.data(),ordered.size()),bytes(reply.partials.data(),reply.partials.size())}};
+                if (!write(layer_directory,trace,err)) return false;
+                layer_written_[r.layer]=true;
+            } catch (const std::exception& e) {err=e.what();return false;}
+        }
         const char* directory=std::getenv("STRATA_GPU_CAPTURE_DIR");
         if (directory && !captured_) {
             if (r.T!=1) {err="diagnostic requires the first one-token request";return false;}
@@ -162,6 +179,7 @@ public:
     }
 private:
     int device_;bool loaded_=false,captured_=false;size_t observed_bytes_=0;
+    bool layer_written_[128]{};
     cudaStream_t stream_=nullptr;void *weights_=nullptr,*workspace_=nullptr,*dq_=nullptr,*scratch_=nullptr;
     float *dx_=nullptr,*dout_=nullptr;unsigned long long* dptr_=nullptr;
     int32_t *dstart_=nullptr,*ddst_=nullptr,*dtok_=nullptr,*dcount_=nullptr;

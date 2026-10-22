@@ -1,0 +1,19 @@
+diff --git a/agent.py b/agent.py
+index dcbc979..5424ace 100644
+--- a/agent.py
++++ b/agent.py
+@@ -31,0 +32 @@ SERVICE_RESIDENCY_V1 = True  # Explicit additive experiment patch over 31156168.
++FIRST_LAYER_PHASES_V1 = True
+@@ -135 +136,2 @@ def serve(config, channel):
+-    phase_list = ("CPU",) if role == "ROLE_CPU_C" else completion.PHASES if completion_mode else \
++    phase_list = ("CPU",) if role == "ROLE_CPU_C" else \
++        tuple(completion.ENGINE_CAPS if role == "ROLE_ENGINE_A" else completion.GPU_CAPS) if completion_mode else \
+diff --git a/policy.py b/policy.py
+index cf61c51..d4b4afa 100644
+--- a/policy.py
++++ b/policy.py
+@@ -13,0 +14 @@ GPU_CAPS = {"G0": 1900, "G1": 1000}
++FIRST_LAYER_SCHEDULES_V1 = (("B0", "G0"),)
+@@ -149 +150 @@ class TrialOrder:
+-        if tuple(phases) not in (PHASES, ("G0", "G1"), ("G1",)):
++        if tuple(phases) not in (PHASES, ("G0", "G1"), ("G1",), *FIRST_LAYER_SCHEDULES_V1):

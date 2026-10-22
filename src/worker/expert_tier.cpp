@@ -8,6 +8,7 @@
 #include "strata/worker/expert_tier.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 
@@ -127,6 +128,11 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
         client_.close();
         die(err);
         return false;
+    }
+    // Attach-only diagnostic: never turn a missing resident cache into a cold load.
+    if (std::getenv("STRATA_REQUIRE_CPU_RESIDENT_HIT") && (!in.resident || !client_.cache_hit())) {
+        err = "required existing CPU resident partition did not produce a cache hit";
+        client_.close(); die(err); return false;
     }
     const uint32_t blob = client_.blob_bytes();
     if (blob == 0) { err = "the remote CPU-expert worker reported a zero blob size"; client_.close(); die(err); return false; }

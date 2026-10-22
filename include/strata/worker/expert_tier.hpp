@@ -110,6 +110,7 @@ public:
         double wait_ms = 0;                ///< the part of that the caller waited after its own work
     };
     const Stats& stats() const { return st_; }
+    const std::vector<uint8_t>& diagnostic_partition() const { return partition_; }
     /// One evidence line for the engine's report (identities and counters, never payloads).
     void report(std::string& out) const;
 

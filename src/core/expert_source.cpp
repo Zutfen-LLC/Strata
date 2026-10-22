@@ -13,6 +13,7 @@
 #ifdef STRATA_NETWORK_CUDA_WORKER
 #include "strata/worker/gpu_client.hpp"
 #include "strata/worker/gpu_capture.hpp"
+#include "strata/worker/layer_trace.hpp"
 #endif
 #include "strata/artifact/gguf_reader.hpp"
 
@@ -4922,6 +4923,22 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     const char* merge_directory=std::getenv("STRATA_GPU_MERGE_CAPTURE_DIR");
     const bool capture_merge=merge_directory && !merge_captured && gpu_worker_sent;
     strata::worker::diagnostic::Merge merge;
+    static thread_local bool layer_written[128]{};
+    const char* layer_directory=std::getenv("STRATA_FIRST_LAYER_TRACE_DIR");
+    const bool trace_layer=layer_directory && d.layers>=0 && d.layers<128 && !layer_written[d.layers];
+    strata::worker::diagnostic::layer::Record host_trace;
+    if (trace_layer) {
+        if (n_tok!=1 || k!=10 || !d.remote_opt || !d.worker || lay.n_layers<1 || lay.n_layers>128) {
+            d.failed=true;d.fail="first-layer host trace geometry/owner";d.fail_layer=d.layers;return;
+        }
+        using namespace strata::worker::diagnostic::layer;
+        std::vector<float> zero(H,0.f);
+        const auto helper=d.remote_opt->diagnostic_sum();
+        host_trace={Host,(uint32_t)d.layers,(uint32_t)lay.n_layers,(uint32_t)H,(uint32_t)k,(uint32_t)d.n_expert,
+                    {bytes(x_f,H),bytes(ids,k),bytes(d.remote_opt->cur_weights(),k),bytes(kind,k),
+                     bytes(helper.data(),helper.size()),bytes(worker_sent?d.worker->partials():zero.data(),H),
+                     bytes(gpu_worker_sent?d.gpu_worker->partials():zero.data(),H),{}}};
+    }
     if (capture_merge) {
         if (n_tok!=1) {d.failed=true;d.fail="diagnostic merge requires first one-token request";return;}
         merge.request=d.gpu_worker->diagnostic_request();
@@ -4938,6 +4955,21 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     if (worker_sent)
         d.remote_opt->accumulate_host(d.worker->partials(), worker_mask.data(), (int)n_tok, (int)k);
 #ifdef STRATA_NETWORK_CUDA_WORKER
+    if (trace_layer) {
+        using namespace strata::worker::diagnostic::layer;
+        try {
+            const auto sum=d.remote_opt->diagnostic_sum();host_trace.fields[7]=bytes(sum.data(),sum.size());
+            if (!write(layer_directory,host_trace,gpu_worker_error)) throw std::runtime_error(gpu_worker_error);
+            if (d.layers==0) {
+                Record part{Partition,0,(uint32_t)lay.n_layers,(uint32_t)H,(uint32_t)k,(uint32_t)d.n_expert,
+                            {d.worker->diagnostic_partition()}};
+                if (!write(layer_directory,part,gpu_worker_error)) throw std::runtime_error(gpu_worker_error);
+            }
+            layer_written[d.layers]=true;
+        } catch (const std::exception& e) {
+            gpu_worker_error=e.what();d.failed=true;d.fail=gpu_worker_error.c_str();d.fail_layer=d.layers;return;
+        }
+    }
     if (capture_merge) {
         const auto after=d.remote_opt->diagnostic_sum();
         merge.after=strata::worker::diagnostic::floats(after.data(),after.size());

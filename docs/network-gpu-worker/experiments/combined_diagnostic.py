@@ -31,7 +31,7 @@ def configure(root, config):
         raise ValueError("separate diagnostic execution approval/config required")
     if not isinstance(config.get("diagnostic_revision"), str) or len(config["diagnostic_revision"]) != 40:
         raise ValueError("candidate revision receipt required")
-    root = Path(root)
+    root = Path(root).resolve(strict=True)
     sys.path[:0] = [str(root), str(root.parent), str(Path(__file__).resolve().parent)]
     import agent
     import controller
@@ -76,7 +76,7 @@ def configure(root, config):
     return agent, controller
 
 
-def replay(agent, config, remaining, *, entered=None):
+def replay(agent, config, remaining, *, entered=None, argv_count=5, cap=90):
     """Reuse the real CPU-role Session/Job guard for a short 05 replay."""
     from linux_owned import parent_death
     from outer import OuterGuards
@@ -84,7 +84,7 @@ def replay(agent, config, remaining, *, entered=None):
     from runtime import Job, Session
     import uuid
     entered = time.monotonic() if entered is None else entered
-    if config.get("role") != "ROLE_CPU_C" or not 20 < remaining <= WINDOW:
+    if config.get("role") != "ROLE_CPU_C" or not 20 < remaining <= WINDOW or argv_count not in (5,7) or cap not in (90,120):
         raise ValueError("bounded 05 replay config")
     parent_death(os.getppid())
     root = config["run_root"]
@@ -99,10 +99,10 @@ def replay(agent, config, remaining, *, entered=None):
     try:
         session.admit()
         argv = config["replay_argv"]
-        if not isinstance(argv, list) or len(argv) != 5 or any(not isinstance(x, str) or not Path(x).is_absolute() for x in argv):
+        if not isinstance(argv, list) or len(argv) != argv_count or any(not isinstance(x, str) or not Path(x).is_absolute() for x in argv):
             raise ValueError("exact absolute replay argv required")
         agent.verified_file(argv[0], config["binary_sha256"], 256 * 1048576)
-        deadline = entered + min(90, remaining - 5)
+        deadline = entered + min(cap, remaining - 5)
         if time.monotonic() >= deadline - 15:
             raise ValueError("replay preflight consumed safe interval")
         fd = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)

@@ -359,6 +359,11 @@ public:
     std::string profile_report();
 
 private:
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    float* first_layer_trace_ = nullptr; // pinned D2H graph destinations, at most 128*(K+3)*H floats
+    std::string first_layer_directory_;
+    bool first_layer_written_ = false;
+#endif
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
     // batch windows (see init_slots)

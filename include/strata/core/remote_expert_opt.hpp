@@ -44,6 +44,7 @@ public:
     // the same weights the verifier holds (the pool callback's signature carries none).
     const float* cur_weights() const { return weights_; }
     std::vector<float> diagnostic_sum() const;
+    const int32_t* diagnostic_device_mask() const { return m_mask_; }
     int cur_token_begin() const { return token_begin_; }
     int cur_tokens() const { return tokens_; }
 

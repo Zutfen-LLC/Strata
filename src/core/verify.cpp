@@ -9,6 +9,9 @@
 #include "strata/core/host_graph_launch.hpp"
 #endif
 #include "strata/core/remote_expert_opt.hpp"
+#ifdef STRATA_NETWORK_CUDA_WORKER
+#include "strata/worker/layer_trace.hpp"
+#endif
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
 #if defined(_WIN32)
@@ -632,6 +635,9 @@ Verifier::~Verifier() {
                      h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    if (first_layer_trace_) cudaFreeHost(first_layer_trace_);
+#endif
 }
 
 bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) {
@@ -706,6 +712,20 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         err = "verify: the stage's layer range or its hand-off buffers are wrong";
         return false;
     }
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    if (const char* directory=std::getenv("STRATA_FIRST_LAYER_TRACE_DIR")) {
+        if (*directory!='/' || first_layer_trace_ || lb_!=0 || le_!=g.n_layers ||
+            g.n_layers<1 || g.n_layers>128 || g.n_embd<1 || g.n_embd>2560 || ss.k!=10 || g.n_expert>512) {
+            err="first-layer trace requires one complete bounded verifier";return false;
+        }
+        first_layer_directory_=directory;
+        const size_t bytes=(size_t)g.n_layers*((ss.k+3)*g.n_embd+ss.k)*sizeof(float);
+        if (strata::core::host_alloc_guarded((void**)&first_layer_trace_,bytes,cudaHostAllocPortable)!=cudaSuccess) {
+            err="first-layer trace pinned allocation refused";return false;
+        }
+        std::memset(first_layer_trace_,0,bytes);
+    }
+#endif
     const WeightRef* wo = wt.find("output.weight");
     if (wo == nullptr) { err = "verify: output.weight is missing"; return false; }
     n_vocab_ = wo->ne1;
@@ -2088,6 +2108,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (sh_stream_on() && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
         }
+#ifdef STRATA_NETWORK_CUDA_WORKER
+        // These D2H nodes join the existing graph, on its existing stream. No
+        // host sync inside graph capture and no change to flags or arithmetic.
+        float* trace=first_layer_trace_ && T==1 && !batch_rec_ ? first_layer_trace_+(size_t)l*((K+3)*N+K) : nullptr;
+        if (trace && (sg_gated_[grp] ||
+                cudaMemcpyAsync(trace,parts_out,K*N*4,cudaMemcpyDeviceToHost,cs)!=cudaSuccess ||
+                cudaMemcpyAsync(trace+K*N,shared_+tb*N,N*4,cudaMemcpyDeviceToHost,cs)!=cudaSuccess)) {
+            err="first-layer trace parts/shared copy failed";return false;
+        }
+#endif
         if (sg_gated_[grp]) {   // STRATA_LFUSE: the shared expert's gate was not applied: the combine applies it (all rows are hits)
             try {
                 native_moe_combine_multi_hits_gated(parts_out, w_ + tb * K, shared_ + tb * N, sh_g_ + tb, bo_ + tb * N, N, K, n, cs);
@@ -2109,8 +2139,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             mb.weights = w_ + t * K; mb.shared = shared_ + t * N;
             if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
         }
+#ifdef STRATA_NETWORK_CUDA_WORKER
+        if (trace && cudaMemcpyAsync(trace+(K+1)*N,bo_+tb*N,N*4,cudaMemcpyDeviceToHost,cs)!=cudaSuccess) {
+            err="first-layer trace pre-remote combine copy failed";return false;
+        }
+#endif
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
+#ifdef STRATA_NETWORK_CUDA_WORKER
+        if (trace && (cudaMemcpyAsync(trace+(K+2)*N,bo_+tb*N,N*4,cudaMemcpyDeviceToHost,cs)!=cudaSuccess ||
+                !remote_opt_ || cudaMemcpyAsync(trace+(K+3)*N,remote_opt_->diagnostic_device_mask()+tb*K,K*4,cudaMemcpyDeviceToHost,cs)!=cudaSuccess)) {
+            err="first-layer trace final device combine copy failed";return false;
+        }
+#endif
         stamp(l, 24, grp);
         if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
@@ -2701,6 +2742,11 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    if (first_layer_trace_ && !first_layer_written_ && (T!=1 || pos0!=0 || tokens[0]!=9419)) {
+        err="first-layer diagnostic requires the fresh one-token 9419 prompt";return false;
+    }
+#endif
     // the overlapped split launched this stage's window already: keep the graph variant (#871) chosen for it then,
     // or this thread would serve the window as the other variant
     const bool pre = prelaunched_ == T;
@@ -2960,6 +3006,25 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         cudaStreamSynchronize(copy_);   // no host function of this window may raise flag B in the next one
         copy_used_ = false;
     }
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    if (first_layer_trace_ && !first_layer_written_) {
+        using namespace strata::worker::diagnostic::layer;
+        try {
+            Record meta{Window,0,(uint32_t)g.n_layers,(uint32_t)g.n_embd,(uint32_t)ss.k,(uint32_t)g.n_expert,
+                        {bytes(tokens,1),bytes(&pos0,1)}};
+            if (!write(first_layer_directory_.c_str(),meta,err)) return false;
+            for (uint32_t l=0;l<(uint32_t)g.n_layers;++l) {
+                const float* data=first_layer_trace_+(size_t)l*((ss.k+3)*g.n_embd+ss.k);
+                Record row{Device,l,(uint32_t)g.n_layers,(uint32_t)g.n_embd,(uint32_t)ss.k,(uint32_t)g.n_expert,
+                           {bytes(data,(size_t)ss.k*g.n_embd),bytes(data+(size_t)ss.k*g.n_embd,g.n_embd),
+                            bytes(data+(size_t)(ss.k+1)*g.n_embd,g.n_embd),bytes(data+(size_t)(ss.k+2)*g.n_embd,g.n_embd),
+                            bytes((const int32_t*)(data+(size_t)(ss.k+3)*g.n_embd),ss.k)}};
+                if (!write(first_layer_directory_.c_str(),row,err)) return false;
+            }
+            first_layer_written_=true;
+        } catch (const std::exception& e) {err=e.what();return false;}
+    }
+#endif
     if (h_bal_ != nullptr && !all_resident_ && !bal_paused_) pcie_balance_window(steps, G);
     if (prof_on_ && G == 1) collect_profile();   // the window's GPU stage stamps
     // ---- a sampled or penalized request: the head's sampling again, host-side so its parameters are this call's

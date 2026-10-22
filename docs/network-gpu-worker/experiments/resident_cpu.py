@@ -109,7 +109,23 @@ def commit(config, job, session):
     return {k: value[k] for k in ("lifetime", "watchdog", "worker", "monitor")}
 
 
-def live_status(config):
+def resource_row(path):
+    """A bounded last complete sample, including the normal rotation interval."""
+    for candidate in (path,path+".previous"):
+        try:
+            with open(candidate,"rb") as source:
+                source.seek(0,os.SEEK_END);source.seek(max(0,source.tell()-131072))
+                rows=source.read(131073)
+        except FileNotFoundError:
+            if candidate==path:continue
+            raise
+        complete=rows.split(b"\n")[:-1]
+        if len(rows)>131072:raise CoverageError("resident-resource-tail-cap")
+        if complete:return json.loads(complete[-1])
+    raise CoverageError("resident-resource-tail-unavailable")
+
+
+def live_status(config, *, query_cache=True):
     """Read current process identities, fresh coverage and worker cache status."""
     with open(config["run_root"] + "/resident.json", "rb") as source:
         raw = source.read(1048577)
@@ -124,22 +140,16 @@ def live_status(config):
             expected = Identity(**receipt[key])
             owners.append(OwnedProcess.pin(expected.pid, expected=expected,
                                           namespace_receipt=config["namespaces"]))
-        with open(receipt["resources"], "rb") as source:
-            source.seek(0, os.SEEK_END)
-            source.seek(max(0, source.tell() - 131072))
-            rows = source.read(131073)
-        if len(rows) > 131072 or not rows.endswith(b"\n"):
-            raise CoverageError("resident-resource-tail-unavailable")
-        row = json.loads(rows.splitlines()[-1])
+        row = resource_row(receipt["resources"])
         if row.get("marker") != "INTEGRATION_RESOURCE_SAMPLE_V1" or \
                 not 0 <= time.monotonic() - row["mono"] < 4 or \
                 row["key"] != [config["run_id"], "ROLE_CPU_C", "CPU"]:
             raise CoverageError("resident-coverage-not-fresh")
-        status = cache_status(receipt["port"])
-        if status["complete"]:
+        status = cache_status(receipt["port"]) if query_cache else None
+        if status is not None and status["complete"]:
             if status["resident_bytes"] != ARENA or status["idle_remaining_ms"] != NO_EXPIRY:
                 raise CoverageError("resident-arena-changed")
-        elif status["resident_bytes"] != 0:
+        elif status is not None and status["resident_bytes"] != 0:
             raise CoverageError("resident-incomplete-arena")
         for owner in owners:
             owner.verify()
