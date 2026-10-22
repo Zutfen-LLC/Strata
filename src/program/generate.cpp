@@ -26,6 +26,11 @@
 #ifdef STRATA_NATIVE_EXPERTS
 #include "strata/worker/expert_tier.hpp"
 #endif
+#ifdef STRATA_NETWORK_CUDA_WORKER
+#include "strata/worker/gpu_client.hpp"
+#include "strata/worker/gpu_assets.hpp"
+#include "strata/worker/setup_keepalive.hpp"
+#endif
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
@@ -565,6 +570,9 @@ struct Options {
     bool remote_cpu_local_fallback = false;
     bool remote_cpu_resident = false;
     int remote_cpu_setup_ms = 600000;
+    bool remote_gpu_experts = false;
+    std::string remote_gpu_host = "127.0.0.1", remote_gpu_plan;
+    int remote_gpu_port = 7432, remote_gpu_deadline_ms = 10000, remote_gpu_setup_ms = 600000;
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
     /// **R4.2g.  ROUND 328 MEASURED THAT THE GLOBAL ADMISSION POLICY CANNOT WORK, AND THIS IS THE FIX.**
@@ -1010,6 +1018,12 @@ void usage() {
                  "  --remote-cpu-resident  opt-in persistent worker cache; needs local manifest and worker TTL\n"
                  "  --remote-cpu-setup-ms N  whole local setup budget (default 600000)\n"
                  "  --remote-cpu-deadline-ms N  per-frame deadline to the worker (default 10000)\n"
+                 "  --remote-gpu-experts HOST:PORT  fixed network CUDA expert worker (inferswarm04)\n"
+                 "                       needs --remote-cpu-experts, its trusted --remote-cpu-local-manifest,\n"
+                 "                       and --remote-gpu-plan; CPU residency stays intact, CUDA owns the assigned subset\n"
+                 "  --remote-gpu-plan FILE  frozen selective expert plan (plain Q8_0/Q8_0 only)\n"
+                 "  --remote-gpu-setup-ms N  whole setup budget (default 600000)\n"
+                 "  --remote-gpu-deadline-ms N  per-frame deadline (default 10000)\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
                  "                       layers across CUDA1..3 (default: stripe)\n"
                  "  --peer-device N      a second GPU as an adaptive expert-cache tier (rows over P2P; it also\n"
@@ -2243,7 +2257,6 @@ int main(int argc, char** argv) {
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-#ifndef STRATA_NATIVE_EXPERTS
     // Preflight worker options before model-header dispatch or GPU setup. Respect the value
     // consumption of both parsers (including Qwen3.6), so a path may start with "--remote-cpu-".
     // Qwen3.6 also checks its actual parsed options before engine setup: serve mode ignores unknowns
@@ -2276,9 +2289,24 @@ int main(int argc, char** argv) {
         "--resident-budget-gib", "--model", "--ctx", "--chunk", "--n", "--force", "--emb",
         "--dump-full-logits", "--bench-pp", "--bench-tg", "--draft-vocab", "--expert-vram",
         "--cpu-threads", "--expert-slots", "--hybrid-rows",
+        "--remote-cpu-experts", "--remote-cpu-local-manifest", "--remote-cpu-setup-ms", "--remote-cpu-deadline-ms",
     };
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
+        if (a == "--remote-gpu-experts" || a == "--remote-gpu-plan" ||
+            a == "--remote-gpu-setup-ms" || a == "--remote-gpu-deadline-ms") {
+#ifndef STRATA_NATIVE_EXPERTS
+            std::fprintf(stderr, "strata: %s requires STRATA_NATIVE_EXPERTS=ON\n", a.c_str());
+            return 2;
+#elif !defined(STRATA_NETWORK_CUDA_WORKER)
+            std::fprintf(stderr, "strata: %s requires the CUDA/native POSIX network worker build\n", a.c_str());
+            return 2;
+#else
+            if (i + 1 < argc) ++i;
+            continue;
+#endif
+        }
+#ifndef STRATA_NATIVE_EXPERTS
         if (a == "--remote-cpu-experts" || a == "--remote-cpu-local-manifest" ||
             a == "--remote-cpu-local-fallback" || a == "--remote-cpu-resident" ||
             a == "--remote-cpu-setup-ms" || a == "--remote-cpu-deadline-ms") {
@@ -2286,6 +2314,7 @@ int main(int argc, char** argv) {
                          a.c_str());
             return 2;
         }
+#endif
         if (a == "--help" || a == "-h" || a == "--version" || a == "-V" || a == "--families") break;
         if (a == "--control-vector-layer-range") i += std::min(2, argc - i - 1);
         else {
@@ -2294,7 +2323,6 @@ int main(int argc, char** argv) {
             }
         }
     }
-#endif
     // `strata --version` / `-V` (also `strata generate --version`): the version and nothing else, before any GPU is touched
     for (int i = 1; i < argc && i < 3; ++i) {
         if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-V") == 0) {
@@ -2547,6 +2575,21 @@ int main(int argc, char** argv) {
         else if (a == "--remote-cpu-setup-ms") o.remote_cpu_setup_ms=std::atoi(next("--remote-cpu-setup-ms"));
         else if (a == "--remote-cpu-deadline-ms")
             o.remote_cpu_deadline_ms = std::max(100, std::atoi(next("--remote-cpu-deadline-ms")));
+        else if (a == "--remote-gpu-experts") {
+            o.remote_gpu_experts = true;
+            const std::string v = next("--remote-gpu-experts");
+            const size_t c = v.rfind(':');
+            const int port = c == std::string::npos ? -1 : std::atoi(v.c_str() + c + 1);
+            if (c == std::string::npos || v.substr(0, c).empty() || port < 1 || port > 65535) {
+                std::fprintf(stderr, "--remote-gpu-experts takes HOST:PORT\n");
+                return 2;
+            }
+            o.remote_gpu_host = v.substr(0, c);
+            o.remote_gpu_port = port;
+        }
+        else if (a == "--remote-gpu-plan") o.remote_gpu_plan = next("--remote-gpu-plan");
+        else if (a == "--remote-gpu-setup-ms") o.remote_gpu_setup_ms = std::atoi(next("--remote-gpu-setup-ms"));
+        else if (a == "--remote-gpu-deadline-ms") o.remote_gpu_deadline_ms = std::atoi(next("--remote-gpu-deadline-ms"));
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
@@ -3289,6 +3332,13 @@ int main(int argc, char** argv) {
     }
     if (!o.remote_cpu_local_manifest.empty() && (!o.mmap_experts || o.native_preset.empty())) {
         std::fprintf(stderr, "strata generate: local worker sources require --mmap-experts and --native GGUF reference slices\n");
+        return 2;
+    }
+    if ((!o.remote_gpu_plan.empty() && !o.remote_gpu_experts) ||
+        (o.remote_gpu_experts && (!o.remote_cpu_experts || o.remote_cpu_local_manifest.empty() ||
+                                  o.remote_gpu_plan.empty() || o.remote_gpu_setup_ms <= 0 || o.remote_gpu_deadline_ms <= 0))) {
+        std::fprintf(stderr, "strata generate: network CUDA experts need --remote-cpu-experts, its trusted local manifest, "
+                             "--remote-gpu-plan and positive setup/deadline budgets\n");
         return 2;
     }
     if (o.remote_cpu_experts) {
@@ -6610,6 +6660,9 @@ int main(int argc, char** argv) {
     // verified the whole set (READY), which this open() waits for.
 #ifdef STRATA_NATIVE_EXPERTS
     strata::worker::ExpertWorkerTier worker_tier;
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    strata::worker::GpuWorkerTier gpu_worker_tier;
+#endif
     if (o.remote_cpu_experts) {
         if (profile.empty() || srcp == nullptr) {
             std::fprintf(stderr, "strata generate: --remote-cpu-experts needs --expert-profile and the expert source\n");
@@ -6683,6 +6736,33 @@ int main(int argc, char** argv) {
             wopen.resident=o.remote_cpu_resident;
             wopen.setup_ms=o.remote_cpu_setup_ms;
         }
+#ifdef STRATA_NETWORK_CUDA_WORKER
+        strata::worker::GpuPlan gpu_plan;
+        if (o.remote_gpu_experts) {
+            if (!strata::worker::read_gpu_plan(o.remote_gpu_plan, gpu_plan, err)) {
+                std::fprintf(stderr, "strata generate: network GPU plan: %s\n", err.c_str());
+                return 1;
+            }
+            std::vector<std::pair<uint16_t, uint16_t>> assigned;
+            for (const auto& a : gpu_plan.assets) {
+                if (gpu_holds(a.layer, a.expert)) {
+                    std::fprintf(stderr, "strata generate: network GPU plan overlaps existing local GPU ownership at %u/%u\n",
+                                 (unsigned)a.layer, (unsigned)a.expert);
+                    return 1;
+                }
+                assigned.emplace_back(a.layer, a.expert);
+            }
+            strata::worker::GpuPlan expected;
+            std::vector<uint8_t> declared, trusted;
+            if (!strata::worker::make_gpu_plan(local_manifest, assigned, expected, err) ||
+                !strata::worker::encode_gpu_plan(gpu_plan, declared, err) ||
+                !strata::worker::encode_gpu_plan(expected, trusted, err) || declared != trusted) {
+                std::fprintf(stderr, "strata generate: network GPU plan does not match trusted source model/layout/digests: %s\n",
+                             err.c_str());
+                return 1;
+            }
+        }
+#endif
         const auto wt0 = Clock::now();
         if (!worker_tier.open(wopen, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -6695,6 +6775,54 @@ int main(int argc, char** argv) {
                      (double) worker_tier.stats().setup_weight_bytes / 1073741824.0);
         std::string setup_report; worker_tier.report(setup_report);
         std::fprintf(stderr,"strata generate: %s\n",setup_report.c_str());
+#ifdef STRATA_NETWORK_CUDA_WORKER
+        if (o.remote_gpu_experts) {
+            // The CPU worker above retains the identical full partition and arena. Only execution
+            // ownership changes for this explicitly assigned subset; no CPU setup identity is rewritten.
+            for (const auto& a : gpu_plan.assets)
+                if (!worker_tier.holds(a.layer, a.expert)) {
+                    std::fprintf(stderr, "strata generate: network GPU assignment is outside the frozen CPU partition\n");
+                    return 1;
+                }
+            strata::worker::GpuAssetSource gpu_source;
+            std::string source_root = std::filesystem::path(o.native_preset).parent_path().string();
+            if (source_root.empty()) source_root = ".";
+            if (!gpu_source.open(source_root, local_manifest, gpu_plan, err)) {
+                std::fprintf(stderr, "strata generate: selective GPU source: %s\n", err.c_str());
+                return 1;
+            }
+            strata::worker::GpuWorkerTier::Open gopen;
+            gopen.host = o.remote_gpu_host;
+            gopen.port = (uint16_t)o.remote_gpu_port;
+            gopen.deadline_ms = o.remote_gpu_deadline_ms;
+            gopen.setup_ms = o.remote_gpu_setup_ms;
+            gopen.plan = gpu_plan;
+            gopen.fetch = [&](int64_t l, int64_t e, uint8_t* dst, uint32_t bytes) {
+                const auto* a = gpu_plan.find((int)l, (int)e);
+                return a != nullptr && gpu_source.read_into(*a, dst, bytes, err);
+            };
+            // Cold selective transfer may take minutes. Preserve the existing CPU connection's
+            // receive deadline without changing its partition or extending its residency TTL.
+            strata::worker::CpuSetupKeepalive cpu_keepalive(worker_tier);
+            gopen.cancelled = [&] { return cpu_keepalive.failed(); };
+            const bool gpu_ready = gpu_worker_tier.open(gopen, err);
+            std::string cpu_setup_error;
+            const bool cpu_still_ready = cpu_keepalive.finish(cpu_setup_error);
+            if (!cpu_still_ready) {
+                std::fprintf(stderr, "strata generate: %s\n", cpu_setup_error.c_str());
+                return 1;
+            }
+            if (!gpu_ready) {
+                std::fprintf(stderr, "strata generate: network GPU setup: %s\n", err.c_str());
+                return 1;
+            }
+            std::string gpu_report;
+            gpu_worker_tier.report(gpu_report);
+            std::fprintf(stderr, "strata generate: %s; selective_source_read_bytes=%llu source_staging_peak=%llu\n",
+                         gpu_report.c_str(), (unsigned long long)gpu_source.stats().source_read_bytes,
+                         (unsigned long long)gpu_source.stats().host_staging_peak);
+        }
+#endif
     }
 
 #endif // STRATA_NATIVE_EXPERTS: no worker construction or setup in the disabled build
@@ -6714,6 +6842,9 @@ int main(int argc, char** argv) {
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
 #ifdef STRATA_NATIVE_EXPERTS
     drive.d.worker = o.remote_cpu_experts ? &worker_tier : nullptr;
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    drive.d.gpu_worker = o.remote_gpu_experts ? &gpu_worker_tier : nullptr;
+#endif
 #endif
     drive.d.remote_opt = remote_opt.get();   // #349: the dispatch reads the window's weights from it
     drive.d.peer = peer.valid() ? &peer : nullptr;
@@ -12468,6 +12599,9 @@ int main(int argc, char** argv) {
             const int64_t worker_ent0 = drive.d.worker_entries;
             const double worker_req_ms0 = worker_tier.stats().request_ms;
 #endif
+#ifdef STRATA_NETWORK_CUDA_WORKER
+            const int64_t gpu_worker_ent0 = drive.d.gpu_worker_entries;
+#endif
             bool from_live = false;
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
@@ -15428,6 +15562,14 @@ int main(int argc, char** argv) {
                                  (double) wst.infer_out_bytes / 1048576.0);   // NOT the client's wait
             }
 #endif // STRATA_NATIVE_EXPERTS
+#ifdef STRATA_NETWORK_CUDA_WORKER
+            if (o.remote_gpu_experts) {
+                std::string gpu_report;
+                gpu_worker_tier.report(gpu_report);
+                std::fprintf(stderr, "strata serve: %s; this request executed %lld routed entries on network CUDA\n",
+                             gpu_report.c_str(), (long long)(drive.d.gpu_worker_entries - gpu_worker_ent0));
+            }
+#endif
             // the resident RAM mode, cumulative: experts read from experts.bin since the copy was made (what the plain
             // mmap mode reads through the OS file cache, from the SSD when the RAM could not keep it)
             if (src.complement_ready())

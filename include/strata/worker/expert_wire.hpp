@@ -81,7 +81,9 @@ enum Status : uint16_t {
 };
 
 inline constexpr uint32_t kLocalResident = 2; // LOCAL_SETUP flag, opt-in on both peers
-inline constexpr int kMaxResidencyMs = 86400000; // one day, no unbounded retention
+inline constexpr int kMaxResidencyMs = 86400000; // maximum finite TTL; forever is a separate opt-in
+// CACHE_STATUS idle_remaining_ms sentinel, only for explicit --residency-forever.
+inline constexpr uint64_t kResidencyNoExpiry = UINT64_MAX;
 
 // ---- compiled bounds --------------------------------------------------------
 // The worker's own caps, from the geometry the CPU pool is compiled for (expert.hpp: H, FF, MAXT) plus the
