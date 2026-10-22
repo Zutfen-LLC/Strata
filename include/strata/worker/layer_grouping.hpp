@@ -37,6 +37,65 @@ inline std::vector<float> local(const std::vector<float>& rows,const std::vector
     return result;
 }
 struct Groups {std::vector<float> local,helper,cpu,gpu,remote,final;};
+inline size_t moved_cpu_to_gpu(const std::vector<int32_t>& baseline,const std::vector<int32_t>& distributed) {
+    if(baseline.empty()||baseline.size()!=distributed.size())throw std::runtime_error("four-way owner shape");
+    size_t moved=baseline.size();
+    for(size_t i=0;i<baseline.size();++i){
+        if(baseline[i]<-1||baseline[i]>3||distributed[i]<-1||distributed[i]>4)
+            throw std::runtime_error("four-way baseline/owner bounds");
+        if(baseline[i]!=distributed[i]){
+            if(moved!=baseline.size()||baseline[i]!=3||distributed[i]!=4)
+                throw std::runtime_error("four-way requires one CPU-to-GPU entry and no other ownership change");
+            moved=i;
+        }
+    }
+    if(moved==baseline.size())throw std::runtime_error("four-way CPU-to-GPU entry unavailable");
+    return moved;
+}
+inline Groups anchored(const std::vector<float>& rows,const std::vector<float>& weights,
+                       const std::vector<int32_t>& owners,const std::vector<float>& captured_local,
+                       const std::vector<float>& captured_helper) {
+    const size_t H=captured_local.size(),K=weights.size();
+    if(!H||!K||K>10||rows.size()!=H*K||owners.size()!=K||captured_helper.size()!=H)
+        throw std::runtime_error("four-way anchored shape");
+    Groups result;result.local=captured_local;result.helper=captured_helper;
+    std::vector<uint8_t> mask(K);
+    for(int owner:{3,4}){
+        for(size_t i=0;i<K;++i){
+            if(owners[i]<-1||owners[i]>4)throw std::runtime_error("four-way owner bounds");
+            mask[i]=owners[i]==owner;
+        }
+        auto& partial=owner==3?result.cpu:result.gpu;partial.resize(H);
+        ExpertWorkerService::accumulate_partial(1,(int)K,mask.data(),weights.data(),rows.data(),(int)H,partial.data());
+    }
+    result.remote.resize(H);result.final.resize(H);
+    for(size_t h=0;h<H;++h){
+        result.remote[h]=add(add(result.helper[h],result.gpu[h]),result.cpu[h]);
+        result.final[h]=add(result.local[h],result.remote[h]);
+    }
+    return result;
+}
+struct Effects {
+    std::vector<double> row_baseline,row_distributed,group_cpu,group_cuda,row_main,group_main,interaction;
+};
+inline Effects effects(const std::vector<float>& cpu_baseline,const std::vector<float>& cpu_distributed,
+                       const std::vector<float>& cuda_baseline,const std::vector<float>& cuda_distributed) {
+    const size_t n=cpu_baseline.size();
+    if(!n||cpu_distributed.size()!=n||cuda_baseline.size()!=n||cuda_distributed.size()!=n)
+        throw std::runtime_error("four-way effects shape");
+    Effects result;
+    for(size_t i=0;i<n;++i){
+        const double cb=cpu_baseline[i],cg=cpu_distributed[i],gb=cuda_baseline[i],gg=cuda_distributed[i];
+        if(!std::isfinite(cb)||!std::isfinite(cg)||!std::isfinite(gb)||!std::isfinite(gg))
+            throw std::runtime_error("four-way nonfinite effects");
+        const double rb=gb-cb,rg=gg-cg,gc=cg-cb,ggroup=gg-gb;
+        result.row_baseline.push_back(rb);result.row_distributed.push_back(rg);
+        result.group_cpu.push_back(gc);result.group_cuda.push_back(ggroup);
+        result.row_main.push_back((rb+rg)/2);result.group_main.push_back((gc+ggroup)/2);
+        result.interaction.push_back(rg-rb);
+    }
+    return result;
+}
 inline Groups reduce(const std::vector<float>& rows,const std::vector<float>& weights,
                      const std::vector<int32_t>& owners,const std::vector<float>& shared,
                      Local model,const std::vector<float>* actual_helper=nullptr) {

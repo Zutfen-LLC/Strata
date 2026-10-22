@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import time
 
-TAG="GPU-LAYER-GROUPING-V1-20261022"
+TAG="GPU-LAYER-FOUR-WAY-V1-20261022"
 SUPERVISOR="311561689bb4b1f8a109821601e3a6bda07067e6"
 
 

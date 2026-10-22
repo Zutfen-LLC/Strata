@@ -3,6 +3,7 @@
 #include "strata/worker/layer_grouping.hpp"
 #include "strata/worker/expert_worker.hpp"
 #include <sys/resource.h>
+#include <array>
 using namespace strata::worker;
 namespace L=strata::worker::diagnostic::layer;
 namespace G=strata::worker::diagnostic::grouping;
@@ -31,19 +32,6 @@ Boundary boundary(const char* dir,uint32_t l,const L::Record& meta){
         require(b.mask[i]==0||b.mask[i]==1,"device ownership mask bounds");}
     return b;
 }
-void merge_checks(const char* mode,const Boundary& b){
-    const size_t H=b.host.H,K=b.host.K;std::vector<float> remote(H),final(H);
-    for(size_t h=0;h<H;++h){remote[h]=G::add(G::add(b.helper[h],b.gpu[h]),b.cpu[h]);final[h]=G::add(b.before[h],b.sum[h]);}
-    char label[100];
-    for(auto model:{G::Local::NativeFma,G::Local::Float64}){
-        std::snprintf(label,sizeof label,"SELF_%s_local_%s",mode,G::name(model));
-        compare(label,b.host.layer,G::local(b.parts,b.w,b.shared,model),b.before);
-    }
-    std::snprintf(label,sizeof label,"SELF_%s_host_remote_sum",mode);compare(label,b.host.layer,remote,b.sum);
-    std::snprintf(label,sizeof label,"SELF_%s_final_device_add",mode);compare(label,b.host.layer,final,b.after);
-    for(size_t i=0;i<K;++i){const bool remote_owner=b.kind[i]==2||b.kind[i]==3||b.kind[i]==4;
-        std::printf("OWNER mode=%s layer=%u entry=%zu expert=%d kind=%d device_mask=%d expected_remote=%d\n",mode,b.host.layer,i,b.ids[i],b.kind[i],b.mask[i],remote_owner);}
-}
 void inspect(const Boundary& b,const Boundary& g){
     for(const auto& field:std::vector<std::pair<const char*,std::pair<const std::vector<float>*,const std::vector<float>*>>>{
             {"shared",{&b.shared,&g.shared}},{"local_rows",{&b.parts,&g.parts}},{"pre_remote",{&b.before,&g.before}},
@@ -65,55 +53,70 @@ std::vector<float> actual_gpu_rows(const Boundary& b,const L::Record& gpu,const 
     require(gpu.fields[2]==b.host.fields[6],"GPU/engine partial exact bytes");
     return L::finite(gpu.fields[1],(size_t)b.host.K*b.host.H);
 }
-std::vector<float> native_rows(const Boundary& b,const LocalManifest& manifest,const char* root){
+std::vector<float> cpu_rows(const Boundary& b,const LocalManifest& manifest,const char* root){
     const size_t H=b.host.H,K=b.host.K;const uint32_t layer=b.host.layer;std::string error;
     std::vector<std::pair<uint16_t,uint16_t>> selected;
-    for(int32_t expert:b.ids)selected.emplace_back(layer,expert);
+    for(size_t i=0;i<K;++i)if(b.kind[i]==3)selected.emplace_back(layer,b.ids[i]);
     std::sort(selected.begin(),selected.end());selected.erase(std::unique(selected.begin(),selected.end()),selected.end());
     GpuPlan plan;require(make_gpu_plan(manifest,selected,plan,error),error);GpuAssetSource source;require(source.open(root,manifest,plan,error),error);
     strata::kernels::cpu::NativeFmt fmt;require(strata::kernels::cpu::native_fmt(plan.gu_type,plan.d_type,H,plan.n_ff,fmt,error),error);
     std::vector<float> rows(K*H);
     std::vector<uint8_t> blob;
-    for(size_t i=0;i<K;++i){const auto* asset=plan.find(layer,b.ids[i]);require(asset&&source.read(*asset,blob,error),error);
+    size_t probes=0;
+    for(size_t i=0;i<K;++i){
+        if(b.kind[i]!=3)continue; // Captured local/helper anchors need no surrogate expert computation.
+        const auto* asset=plan.find(layer,b.ids[i]);require(asset&&source.read(*asset,blob,error),error);
         const uint8_t* pointer=blob.data();const uint8_t mask=1;const float weight=1.f;std::vector<float> row;
         require(ExpertWorkerService::direct_native_partial(fmt,1,1,&mask,&weight,b.x.data(),&pointer,row,error),error);
         std::copy(row.begin(),row.end(),rows.begin()+i*H);
+        ++probes;
     }
-    std::printf("COMMON_INPUT_NATIVE_ROWS layer=%u source_bytes=%llu experts=%zu input=B_bitwise_G kernel_changes=0\n",layer,(unsigned long long)source.stats().source_read_bytes,K);
+    std::printf("FOUR_WAY_CPU_ROWS layer=%u source_bytes=%llu experts=%zu input=B_bitwise_G local_helper_probes=0 kernel_changes=0\n",layer,(unsigned long long)source.stats().source_read_bytes,probes);
     return rows;
 }
-void group_report(const char* experiment,const Boundary& b,const Boundary& g,const G::Groups& pb,const G::Groups& pg){
-    char label[120];
-    for(const auto& mode:std::vector<std::pair<const char*,std::pair<const Boundary*,const G::Groups*>>>{{"B",{&b,&pb}},{"G",{&g,&pg}}}){
-        const auto& actual=*mode.second.first;const auto& predicted=*mode.second.second;
-        for(const auto& field:std::vector<std::pair<const char*,std::pair<const std::vector<float>*,const std::vector<float>*>>>{
-                {"local",{&predicted.local,&actual.before}},{"CPU",{&predicted.cpu,&actual.cpu}},
-                {"GPU",{&predicted.gpu,&actual.gpu}},{"remote",{&predicted.remote,&actual.sum}},{"final",{&predicted.final,&actual.after}}}){
-            std::snprintf(label,sizeof label,"%s_%s_prediction_vs_actual_%s",experiment,mode.first,field.first);
-            compare(label,b.host.layer,*field.second.first,*field.second.second);
-        }
-    }
-    const auto delta=G::delta(b.after,g.after,pb.final,pg.final);
-    std::printf("GROUPING_DELTA experiment=%s layer=%u exact_coordinates=%zu/%zu actual_max=%.12g predicted_max=%.12g residual_max=%.12g helper_per_expert_rows_unobserved=1 causality_not_implied=1\n",
-        experiment,b.host.layer,delta.equal,b.after.size(),delta.actual_max,delta.predicted_max,delta.residual_max);
+size_t four_way_controls(const Boundary& b,const Boundary& g){
+    require(G::exact(b.x,g.x)&&b.ids==g.ids&&G::exact(b.w,g.w),"four-way input/IDs/order/weights must be identical");
+    require(G::exact(b.shared,g.shared)&&G::exact(b.parts,g.parts)&&G::exact(b.before,g.before)&&
+            G::exact(b.helper,g.helper)&&b.mask==g.mask,"four-way captured local/helper/mask controls differ");
+    return G::moved_cpu_to_gpu(b.kind,g.kind);
 }
-void common_replay(const char* row_source,const Boundary& b,const Boundary& g,const std::vector<float>& rows){
-    require(G::exact(b.x,g.x)&&b.ids==g.ids,"common-input replay requires exact input and identical routed IDs");
-    bool helper_owners_equal=true;
-    for(size_t i=0;i<b.kind.size();++i)helper_owners_equal&=(b.kind[i]==2)==(g.kind[i]==2);
-    const bool controlled=G::exact(b.w,g.w)&&G::exact(b.shared,g.shared)&&G::exact(b.helper,g.helper)&&helper_owners_equal;
-    std::printf("COMMON_GROUPING_CONTROL rows=%s layer=%u input_bitwise=1 ids_equal=1 weights_bitwise=%d shared_bitwise=%d helper_partial_bitwise=%d helper_owners_equal=%d fixed_controls_match_observed=%d\n",
-        row_source,b.host.layer,G::exact(b.w,g.w),G::exact(b.shared,g.shared),G::exact(b.helper,g.helper),helper_owners_equal,controlled);
-    for(auto model:{G::Local::NativeFma,G::Local::Float64}){
-        const auto pb=G::reduce(rows,b.w,b.kind,b.shared,model,&b.helper),pg=G::reduce(rows,g.w,g.kind,g.shared,model,&g.helper);
-        std::string label=std::string(row_source)+"_actual_controls_"+G::name(model);
-        group_report(label.c_str(),b,g,pb,pg);
-        if(helper_owners_equal){
-            // Same rows AND weights/shared/helper: isolate only grouping order.
-            const auto fixed=G::reduce(rows,b.w,g.kind,b.shared,model,&b.helper);
-            label=std::string(row_source)+"_fixed_B_controls_"+G::name(model);group_report(label.c_str(),b,g,pb,fixed);
-        }else std::puts("FIXED_HELPER_GROUPING_UNAVAILABLE helper_membership_differs");
+void effect_report(const char* field,const char* effect,const std::vector<double>& values){
+    double maximum=0,square=0;size_t nonzero=0;
+    for(double value:values){maximum=std::max(maximum,std::fabs(value));square+=value*value;nonzero+=value!=0;}
+    std::printf("FOUR_WAY_EFFECT field=%s effect=%s nonzero=%zu/%zu maxabs=%.12g rms=%.12g counterfactual=1\n",
+        field,effect,nonzero,values.size(),maximum,std::sqrt(square/values.size()));
+}
+void four_way(const Boundary& b,const Boundary& g,const std::vector<float>& native,const std::vector<float>& cuda,size_t moved){
+    const size_t H=b.host.H;
+    std::printf("FOUR_WAY_CONTROLS layer=%u entry=%zu expert=%d weight=%a input_ids_weights_bitwise=1 captured_local_helper_bitwise=1 local_helper_recomputed=0 row_native=unit_weight_worker_probe\n",
+        b.host.layer,moved,b.ids[moved],b.w[moved]);
+    compare("FOUR_WAY_moved_CPU_vs_captured_CUDA_row",b.host.layer,
+        std::vector<float>(native.begin()+moved*H,native.begin()+(moved+1)*H),
+        std::vector<float>(cuda.begin()+moved*H,cuda.begin()+(moved+1)*H));
+    auto substituted=native;std::copy_n(cuda.data()+moved*H,H,substituted.data()+moved*H);
+    const std::array<G::Groups,4> arms{
+        G::anchored(native,b.w,b.kind,b.before,b.helper),G::anchored(native,b.w,g.kind,b.before,b.helper),
+        G::anchored(substituted,b.w,b.kind,b.before,b.helper),G::anchored(substituted,b.w,g.kind,b.before,b.helper)};
+    const char* names[]={"CPU_baseline","CPU_distributed","CUDA_baseline","CUDA_distributed"};
+    struct Field {const char* name;const std::vector<float> *observed_b,*observed_g;std::vector<float> G::Groups::* member;};
+    const Field fields[]={{"CPU_partial",&b.cpu,&g.cpu,&G::Groups::cpu},{"GPU_partial",&b.gpu,&g.gpu,&G::Groups::gpu},
+                          {"remote",&b.sum,&g.sum,&G::Groups::remote},{"final",&b.after,&g.after,&G::Groups::final}};
+    for(const auto& field:fields){
+        for(size_t arm=0;arm<arms.size();++arm){
+            const auto& predicted=arms[arm].*(field.member);char label[120];
+            std::snprintf(label,sizeof label,"FOUR_WAY_%s_vs_observed_B_%s",names[arm],field.name);compare(label,b.host.layer,predicted,*field.observed_b);
+            std::snprintf(label,sizeof label,"FOUR_WAY_%s_vs_observed_G_%s",names[arm],field.name);compare(label,b.host.layer,predicted,*field.observed_g);
+            const auto delta=G::delta(*field.observed_b,*field.observed_g,arms[0].*(field.member),predicted);
+            std::printf("FOUR_WAY_DELTA cell=%s field=%s reference_cell=CPU_baseline exact_coordinates=%zu/%zu actual_max=%.12g predicted_max=%.12g residual_max=%.12g\n",
+                names[arm],field.name,delta.equal,H,delta.actual_max,delta.predicted_max,delta.residual_max);
+        }
+        const auto effects=G::effects(arms[0].*(field.member),arms[1].*(field.member),arms[2].*(field.member),arms[3].*(field.member));
+        effect_report(field.name,"row_at_baseline",effects.row_baseline);effect_report(field.name,"row_at_distributed",effects.row_distributed);
+        effect_report(field.name,"group_at_CPU",effects.group_cpu);effect_report(field.name,"group_at_CUDA",effects.group_cuda);
+        effect_report(field.name,"row_main_average",effects.row_main);effect_report(field.name,"group_main_average",effects.group_main);
+        effect_report(field.name,"interaction_difference_in_differences",effects.interaction);
     }
+    std::puts("FOUR_WAY_LIMITS all_cells_are_predictions CPU_baseline_targets_observed_B CUDA_distributed_targets_observed_G helper_per_expert_rows_not_required_for_fixed_anchor no_ULP_universality no_end_to_end_causal_claim");
 }
 }
 int main(int argc,char** argv){
@@ -137,38 +140,17 @@ int main(int argc,char** argv){
             if(!out.bitwise&&first_bits<0)first_bits=l;if(out.material&&first_material<0)first_material=l;
             observations.push_back({(int)l,input.bitwise,out.bitwise});
             std::printf("ROUTING layer=%u ids_equal=%d weights_bitwise=%d\n",l,b.ids==g.ids,b.host.fields[2]==g.host.fields[2]);
-            merge_checks("B",b);merge_checks("G",g);
-            if(l>=1&&l<=4)inspect(b,g);
             for(size_t i=0;i<g.ids.size();++i)require((g.kind[i]==4)==frozen.owns(l,g.ids[i]),"G frozen GPU owner differs");
         }
         std::printf("FIRST_DIVERGENCE input_bits=%d input_drift=%d output_bits=%d output_drift=%d diagnostic_drift=1e-5 formal_thresholds_unchanged=1\n",first_input_bits,first_input_material,first_bits,first_material);
         const int selected=G::seed(observations);
-        std::printf("SELECTION policy=earliest_BIT_output_difference_with_bitwise_identical_input layer=%d source_layer_indices_zero_based=1 requested_detail_layers=1..4\n",selected);
+        std::printf("SELECTION policy=earliest_BIT_output_difference_with_bitwise_identical_input layer=%d source_layer_indices_zero_based=1 requested_detail=seed_only\n",selected);
         if(selected>=0){auto b=boundary(argv[1],selected,bm),g=boundary(argv[2],selected,bm);LocalManifest manifest;require(read_local_manifest(argv[6],manifest,error),error);
             require(selected>=1&&selected<=4,"seed is outside requested saved layers 1..4; no speculative replay");
-            require(b.ids==g.ids,"seed routed IDs differ; common expert-row association unavailable");
-            bool has_gpu=std::find(g.kind.begin(),g.kind.end(),4)!=g.kind.end();std::vector<float> actual;
-            if(has_gpu)actual=actual_gpu_rows(g,read(argv[3],L::Gpu,selected),frozen);
-            auto common=native_rows(b,manifest,argv[5]);const size_t H=b.host.H;
-            for(size_t i=0;i<b.kind.size();++i){
-                const std::vector<float> row(common.begin()+i*H,common.begin()+(i+1)*H);
-                char label[90];
-                if(b.kind[i]<=1){std::snprintf(label,sizeof label,"COMMON_native_vs_actual_B_local_entry_%zu",i);
-                    compare(label,selected,row,std::vector<float>(b.parts.begin()+i*H,b.parts.begin()+(i+1)*H));}
-                if(g.kind[i]<=1){std::snprintf(label,sizeof label,"COMMON_native_vs_actual_G_local_entry_%zu",i);
-                    compare(label,selected,row,std::vector<float>(g.parts.begin()+i*H,g.parts.begin()+(i+1)*H));}
-            }
-            common_replay("native",b,g,common);
-            if(has_gpu){
-                for(size_t i=0;i<g.kind.size();++i)if(g.kind[i]==4){
-                    char label[90];std::snprintf(label,sizeof label,"COMMON_native_vs_actual_G_GPU_entry_%zu",i);
-                    compare(label,selected,std::vector<float>(common.begin()+i*H,common.begin()+(i+1)*H),std::vector<float>(actual.begin()+i*H,actual.begin()+(i+1)*H));
-                    std::copy_n(actual.data()+i*H,H,common.data()+i*H);
-                }
-                std::puts("HYBRID_ROWS actual_G_GPU_rows_used_for_BOTH_groupings other_rows_native helper_partial_anchored=1");
-                common_replay("hybrid_G_GPU",b,g,common);
-            }
+            const size_t moved=four_way_controls(b,g);inspect(b,g);
+            const auto actual=actual_gpu_rows(g,read(argv[3],L::Gpu,selected),frozen);
+            four_way(b,g,cpu_rows(b,manifest,argv[5]),actual,moved);
         }else std::puts("COMMON_REPLAY_UNAVAILABLE no_BIT_different_output_with_identical_input no_common_input_invented");
-        std::puts("LAYER_GROUPING_DIAGNOSTIC_COMPLETE_V1 numerical_acceptance_not_implied=1 new_GEN=0");return 0;
+        std::puts("LAYER_FOUR_WAY_DIAGNOSTIC_COMPLETE_V1 numerical_acceptance_not_implied=1 new_GEN=0");return 0;
     }catch(const std::exception& e){std::fprintf(stderr,"LAYER_DIAGNOSTIC_FAIL %s\n",e.what());return 1;}
 }

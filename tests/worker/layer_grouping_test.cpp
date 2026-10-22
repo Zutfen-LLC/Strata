@@ -35,6 +35,24 @@ int main(){
         check(refused,"invalid owner rejected");
         refused=false;try{(void)G::delta({0},{NAN},{0},{0});}catch(...){refused=true;}
         check(refused,"nonfinite delta rejected");
-        std::puts("LAYER_GROUPING_FIXTURES_V1 PASS models=0 cuda=0");return 0;
+        check(G::moved_cpu_to_gpu({0,3,2,3},{0,3,2,4})==3,"moved entry derived from owners, not expert number");
+        refused=false;try{(void)G::moved_cpu_to_gpu({3,3},{4,4});}catch(...){refused=true;}
+        check(refused,"multiple ownership changes cannot invent four supported arms");
+        refused=false;try{(void)G::moved_cpu_to_gpu({0,3},{0,3});}catch(...){refused=true;}
+        check(refused,"missing moved entry cannot use a hardcoded expert");
+        refused=false;try{(void)G::moved_cpu_to_gpu({0,3},{4,3});}catch(...){refused=true;}
+        check(refused,"a local-to-GPU change is outside the verified CPU-row experiment");
+        const std::vector<float> fixed_local{3},fixed_helper{4};
+        const auto cb=G::anchored(rows,weights,{3,3,3},fixed_local,fixed_helper);
+        const auto cg=G::anchored(rows,weights,{3,4,3},fixed_local,fixed_helper);
+        auto cuda_rows=rows;cuda_rows[1]=2;
+        const auto gb=G::anchored(cuda_rows,weights,{3,3,3},fixed_local,fixed_helper);
+        const auto gg=G::anchored(cuda_rows,weights,{3,4,3},fixed_local,fixed_helper);
+        check(cb.local==fixed_local&&gg.local==fixed_local&&cb.helper==fixed_helper&&gg.helper==fixed_helper,"captured anchors reused without local/helper recomputation");
+        check(cb.final[0]==7&&cg.final[0]==8&&gb.final[0]==9&&gg.final[0]==9,"four row/order cells with all other rows fixed");
+        const auto effect=G::effects(cb.final,cg.final,gb.final,gg.final);
+        check(effect.row_baseline[0]==2&&effect.row_distributed[0]==1&&effect.group_cpu[0]==1&&effect.group_cuda[0]==0,"conditional row/order effects");
+        check(effect.row_main[0]==1.5&&effect.group_main[0]==.5&&effect.interaction[0]==-1,"main effects and difference-in-differences interaction");
+        std::puts("LAYER_FOUR_WAY_FIXTURES_V1 PASS models=0 cuda=0");return 0;
     }catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}
 }
