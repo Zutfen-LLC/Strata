@@ -18,13 +18,17 @@ uint64_t Cursor::get(size_t n) {
 bool send(uintptr_t fd, uint16_t msg, uint16_t status, const std::vector<uint8_t>& p,
           int ms, const std::function<bool()>& cancel, std::string& err) {
     if (p.size() > kGpuFrameMax || ms <= 0) { err = "CUDA frame exceeds bound or deadline"; return false; }
-    std::vector<uint8_t> h;
-    put(h, kGpuWireMagic, 4); put(h, msg, 2); put(h, status, 2); put(h, p.size());
+    // Match the CPU transport: queue the complete frame through one bounded
+    // writer. Separate header/body sends can leave a short write awaiting ACK.
+    std::vector<uint8_t> frame;
+    frame.reserve(kHeaderBytes + p.size());
+    put(frame, kGpuWireMagic, 4); put(frame, msg, 2); put(frame, status, 2); put(frame, p.size());
     const auto began=std::chrono::steady_clock::now();
     auto remaining=[&] { return ms-(int)std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now()-began).count(); };
-    if (!sock::send_all_controlled((sock_fd)fd, h.data(), h.size(), ms, cancel) ||
-        (!p.empty() && (remaining()<=0 || !sock::send_all_controlled((sock_fd)fd, p.data(), p.size(), remaining(), cancel)))) {
+    frame.insert(frame.end(), p.begin(), p.end());
+    const int left = remaining(); // Copy time cannot renew the original I/O budget.
+    if (left <= 0 || !sock::send_all_controlled((sock_fd)fd, frame.data(), frame.size(), left, cancel)) {
         err = "CUDA worker send disconnected or exceeded deadline"; return false;
     }
     return true;

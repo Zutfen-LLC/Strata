@@ -1505,6 +1505,16 @@ set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITI
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 
+if(STRATA_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Real worker codecs/socket seam, with no executor, model, ggml or GPU linkage.
+  add_executable(gpu_frame_test tests/worker/gpu_frame_test.cpp
+                 src/worker/gpu_wire.cpp src/worker/expert_wire.cpp src/worker/wire_sock.cpp)
+  target_include_directories(gpu_frame_test PRIVATE include src/worker)
+  target_link_libraries(gpu_frame_test PRIVATE Threads::Threads)
+  add_test(NAME gpu_frame_test COMMAND gpu_frame_test)
+  set_tests_properties(gpu_frame_test PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+endif()
+
 # These synthetic BF16 checks must link without ggml too; retain the native-ON utility target.
 if(STRATA_NATIVE_EXPERTS OR STRATA_BUILD_TESTS)
   add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)

@@ -1,0 +1,4 @@
+3fd1698fa703cd7b64fccdf6455bcb0d744b2f82b71395aea7def7b46bf1ce7e  CMakeLists.txt
+9b9ef5f0fa9430a5774f19fd458ddbe61f607f458366fed42dcddb369fe8c750  src/worker/gpu_wire.cpp
+101db16f3c28a25c17104d960229c7118c433dc66d807808502bcc6060a35ff1  tests/worker/gpu_frame_test.cpp
+f9b669702093a07d9da177833a270b631ccdef3667ef075a67ec8eaf85c09dd7  docs/network-gpu-worker/experiments/GPU-FRAME-V1-20261022.md
