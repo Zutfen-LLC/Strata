@@ -12,7 +12,7 @@ It does not import experiment branch ancestry or diagnostic runtime hooks.
 | Selective remote CUDA assets/cache, protocol and ownership | bf51f09e286a7a5ce89fbff67b3ee07cb044a5e5 | Original PR #2 source/tests retained |
 | Contiguous bounded GPU frame send and socket fixture | 3dc8363bd0794de6e8ea283eba46bc43d5a84da9 | gpu_wire.cpp and gpu_frame_test.cpp copied exactly; only their CMake target added |
 | Explicit no-expiry CPU service residency | 98b5791d6042d3b25eac0bb5c5f6e372f78166a5, introduced at 0a54d0db28f884d731ccbc6ada55c62f3f976651 | Wire sentinel, worker option/lifetime/log quota and real-worker fixture copied exactly, including corrected service_setup helper |
-| CPU-first post with failure drain | 98b5791d6042d3b25eac0bb5c5f6e372f78166a5 | Submission hunk/header and focused fixtures retained; success finish/merge unchanged |
+| CPU-first post with failure drain | 98b5791d6042d3b25eac0bb5c5f6e372f78166a5 | Submission hunk/header and focused fixtures retained; CUDA failure assertion now uses existing device combine/readback; success finish/merge unchanged |
 
 Capture/replay, first-layer trace nodes, diagnostic environment/CLI switches,
 fleet controllers, role bindings, approval ledgers and campaign packets are
@@ -63,7 +63,11 @@ review plus git whitespace/readback checks. No desktop scripts, builds, tests,
 models or fleet operations were run. Exact-head configuration/build/fixtures and
 native-OFF/backend compilation have NOT RUN. Historical runtime results apply to
 the revisions above; removing disabled diagnostic code is not executed validation
-of this head. Existing hosted title CI does not compile the engine. Keep PR #2
+of this head. Review caught a retained fixture call to an excluded diagnostic
+accessor. Its no-partial-commit assertion now runs the existing device combine
+against a zero destination and reads back the result; no runtime accessor was
+added. This corrected assertion has NOT RUN. Existing hosted title CI does not
+compile the engine. Keep PR #2
 draft until maintainers assess these targeted validation gaps and numerical limits.
 No new model campaign, service operation, merge or deployment is part of this PR
 preparation. The intentionally resident CPU service and remote cache are untouched.

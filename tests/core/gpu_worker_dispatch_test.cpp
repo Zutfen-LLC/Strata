@@ -299,7 +299,12 @@ int main() {
     check(!cpu_tier.posted() && cpu_tier.served(), "GPU loss joined the already-submitted CPU request");
     check(cpu_tier.status(after_loss, err) && after_loss.requests == before_loss.requests + 1,
           "only the original CPU share ran; no GPU fallback or retry");
-    const auto failed_sum = merge.diagnostic_sum();
+    // Exercise the production device combine instead of requiring a diagnostic
+    // accessor to the host sum. begin() reset it before the failed dispatch.
+    std::vector<float> failed_sum(T * H, 0.f);
+    if (!gpu(cudaMemset(merged.p, 0, failed_sum.size()*sizeof(float)))) return 1;
+    merge.combine((float*)merged.p, nullptr, 0, T, nullptr, 0, nullptr);
+    if (!gpu(cudaMemcpy(failed_sum.data(), merged.p, failed_sum.size()*sizeof(float), cudaMemcpyDeviceToHost))) return 1;
     check(std::all_of(failed_sum.begin(), failed_sum.end(), [](float v) { return v == 0; }),
           "GPU post failure committed neither remote partial");
     check(std::all_of(rows.begin(), rows.end(), [](float v) { return v == -11.5f; }),
