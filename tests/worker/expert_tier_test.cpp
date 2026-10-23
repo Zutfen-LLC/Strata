@@ -456,6 +456,11 @@ struct AdverseWorker {
                 put64(ack, 0x88);
                 put64(ack, 0);
                 reply = MSG_READY_ACK;
+            } else if (msg == MSG_STATUS) {
+                put64(ack,0x88);
+                for(int i=0;i<6;++i)put64(ack,0);
+                ack.push_back(0);ack.push_back(0);ack.push_back(1);
+                reply=MSG_STATUS_ACK;
             } else if (msg == MSG_INFER) {
                 if (mode == timeout) {
                     std::this_thread::sleep_for(std::chrono::seconds(4)); // client deadline must fire first
@@ -525,13 +530,54 @@ void group_battery(const NativeFmt& fmt, BlobMap& blobs) {
           {{"a",1,2,1},{"b",2,2,1}},again,err),"insufficient CPU capacity is refused");
     check(!strata::worker::place_cpu_partitions(complement,kLayers,kExperts,hot,
           {{"a",1,0,1},{"a",1,0,1}},again,err),"duplicate CPU endpoints are refused");
+    std::vector<std::vector<uint8_t>> skewed;
+    check(strata::worker::place_cpu_partitions(complement,kLayers,kExperts,hot,
+          {{"small-a",1,1,1},{"small-b",2,1,1},{"large",3,1000,1}},skewed,err),
+          "skewed capacity placement keeps every configured participant");
+    auto bit_count=[](const std::vector<uint8_t>& p) {
+        size_t n=0;for(uint8_t byte:p)for(;byte;byte&=(uint8_t)(byte-1))++n;return n;
+    };
+    check(skewed.size()==3&&bit_count(skewed[0])==1&&bit_count(skewed[1])==1&&bit_count(skewed[2])==5,
+          "skewed capacity quotas reserve one expert per participant");
 
     Svc a, b, c;
     check(a.start()&&b.start()&&c.start(),"three CPU worker services started");
     std::vector<CpuEndpoint> endpoints={{"127.0.0.1",a.port,3,1},{"127.0.0.1",b.port,2,1},{"127.0.0.1",c.port,2,1}};
+    Fetcher fetch{&blobs};
+
+    // The compatibility path still runs through the group with one endpoint; two endpoints publish both
+    // requests before either reply is awaited.
+    const size_t stride=((size_t)kExperts+7)/8;
+    std::vector<uint8_t> p0((size_t)kLayers*stride,0),p1=p0,sparse=p0;
+    p0[0]|=(uint8_t)(1u<<2);p1[0]|=(uint8_t)(1u<<5);sparse[0]=p0[0];
+    {
+        auto o=fetch.open(a.port);o.partition=p0;
+        CpuWorkerGroup single;
+        check(single.open({o},sparse,err),"single-worker group opened");
+        const int32_t id=2;const float weight=0.5f;const uint8_t owned=1;
+        std::vector<float> x(kEmbd,0.1f);
+        check(single.post(0,x.data(),&id,&weight,&owned,1,1,err)&&single.active(0),
+              "single-worker compatibility request posted");
+        check(single.finish(err)&&single.served(0),"single-worker compatibility request finished");
+        single.close();
+    }
+    {
+        sparse[0]=p0[0]|p1[0];
+        auto o0=fetch.open(a.port);o0.partition=p0;
+        auto o1=fetch.open(b.port);o1.partition=p1;
+        CpuWorkerGroup pair;
+        check(pair.open({o0,o1},sparse,err),"two-worker group opened");
+        const int32_t ids[2]={2,5};const float weights[2]={0.4f,0.6f};const uint8_t owned[2]={1,1};
+        std::vector<float> x(kEmbd,0.1f);
+        check(pair.post(0,x.data(),ids,weights,owned,1,2,err)&&pair.active(0)&&pair.active(1)&&
+              pair.stats(0).requests==1&&pair.stats(1).requests==1,
+              "two-worker requests are both published before finish");
+        check(pair.finish(err)&&pair.served(0)&&pair.served(1),"two-worker group finished");
+        pair.close();
+    }
+
     check(strata::worker::place_cpu_partitions(complement,kLayers,kExperts,hot,endpoints,three,err),
           "fixture three-way placement");
-    Fetcher fetch{&blobs};
     std::vector<strata::worker::ExpertWorkerTier::Open> opens;
     for(size_t i=0;i<endpoints.size();++i){auto o=fetch.open(endpoints[i].port);o.partition=three[i];opens.push_back(o);}
     CpuWorkerGroup group;
@@ -565,12 +611,33 @@ void group_battery(const NativeFmt& fmt, BlobMap& blobs) {
     const std::vector<int32_t> no_ids={0,4,8};const std::vector<uint8_t> none={0,0,0};
     check(group.post(0,x.data(),no_ids.data(),weights.data(),none.data(),T,K,err)&&!group.posted()&&group.finish(err),
           "a no-work group window sends no requests");
+    group.close();
+
+    // Once worker 0 is READY, setup of worker 1 may take longer than worker 0's idle frame deadline.
+    // STATUS keepalives must preserve the first connection until all partitions are ready.
+    {
+        Svc early(WorkerOptions{.deadline_ms=150}),slow(WorkerOptions{.deadline_ms=1000});
+        check(early.start()&&slow.start(),"services for sequential setup keepalive started");
+        auto o0=fetch.open(early.port);o0.partition=p0;o0.deadline_ms=1000;
+        auto o1=fetch.open(slow.port);o1.partition=p1;o1.deadline_ms=1000;
+        const auto fetch_blob=o1.fetch;
+        o1.fetch=[fetch_blob](int64_t l,int64_t e,uint8_t* dst,uint32_t bytes) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(350));
+            return fetch_blob(l,e,dst,bytes);
+        };
+        sparse[0]=p0[0]|p1[0];
+        CpuWorkerGroup kept;
+        check(kept.open({o0,o1},sparse,err),"earlier CPU worker stayed alive during later setup");
+        check(kept.ready()&&!kept.dead(),"sequentially loaded CPU group is ready");
+    }
 
     // Missing/duplicate/out-of-range ownership is rejected before any connection is opened.
     auto bad=opens;bad[0].partition[0]&=(uint8_t)~(1u<<2);
     check(!CpuWorkerGroup::validate(bad,complement,err),"missing CPU ownership is refused");
     bad=opens;bad[0].partition[0]|=(uint8_t)(1u<<5);
     check(!CpuWorkerGroup::validate(bad,complement,err),"duplicate CPU ownership is refused");
+    bad=opens;std::fill(bad[0].partition.begin(),bad[0].partition.end(),0);
+    check(!CpuWorkerGroup::validate(bad,complement,err),"an empty configured CPU participant is refused");
     bad=opens;for(auto& o:bad)o.n_expert=15;bad[0].partition[1]|=0x80;
     std::vector<uint8_t> fifteen=complement;for(int l=0;l<kLayers;++l)fifteen[(size_t)l*2+1]&=0x7f;
     check(!CpuWorkerGroup::validate(bad,fifteen,err),"out-of-range CPU ownership is refused");
@@ -670,11 +737,13 @@ void failure_battery(const NativeFmt& fmt, BlobMap& blobs) {
         if (mode == AdverseWorker::timeout)
             check(took < 3.0, "the deadline fired instead of hanging");
     }
-    // One failed participant drains the successful peer and fails the whole group. The caller receives no
-    // success on which it could commit either partial; posted() is clear before failure propagates.
-    {
+    // Every adverse reply mode also runs through a real two-peer group. One failed participant drains the
+    // successful peer and fails the whole group, so the caller has no success on which to commit a partial.
+    for (const auto mode : {AdverseWorker::refusal, AdverseWorker::malformed_reply,
+                            AdverseWorker::disconnect, AdverseWorker::timeout,
+                            AdverseWorker::stale_reply}) {
         Svc good;check(good.start(),"good service for group failure control");
-        AdverseWorker bad(AdverseWorker::refusal);bad.start();
+        AdverseWorker bad(mode);bad.start();
         const size_t stride=((size_t)kExperts+7)/8;
         std::vector<uint8_t> complement((size_t)kLayers*stride,0), p0=complement, p1=complement;
         p0[0]|=(uint8_t)(1u<<2);p1[0]|=(uint8_t)(1u<<5);complement[0]=p0[0]|p1[0];
@@ -688,9 +757,12 @@ void failure_battery(const NativeFmt& fmt, BlobMap& blobs) {
         const int32_t ids[2]={2,5};const float weights[2]={0.4f,0.6f};
         std::vector<float> x(kEmbd,0.1f);const uint8_t owned[2]={1,1};
         check(group.post(0,x.data(),ids,weights,owned,1,2,err),"mixed-success group posted both peers");
+        const auto t0=std::chrono::steady_clock::now();
         check(!group.finish(err),"one CPU peer failure rejects the whole group");
         check(!group.posted()&&group.dead()&&group.served(0),"successful CPU peer was drained before failure propagated");
         check(group.stats(0).requests==1&&group.stats(1).requests==1,"both CPU peer requests were published");
+        if(mode==AdverseWorker::timeout)check(std::chrono::duration<double>(
+             std::chrono::steady_clock::now()-t0).count()<3.0,"group timeout failed without hanging");
     }
     // setup refusals: over-budget is typed and latches; an empty partition is a config error, not a latch
     {

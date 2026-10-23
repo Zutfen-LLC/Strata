@@ -4646,6 +4646,18 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     static thread_local std::vector<uint8_t> gpu_worker_mask;
     static thread_local std::string gpu_worker_error;
     bool gpu_worker_sent = false;
+    bool gpu_worker_inflight = false;
+    struct GpuWorkerDrain {
+        strata::worker::GpuWorkerGroup* group;
+        bool* inflight;
+        ~GpuWorkerDrain() {
+            if(group!=nullptr && *inflight) {
+                std::string ignored;
+                (void)group->finish(ignored);
+                *inflight=false;
+            }
+        }
+    } gpu_worker_drain{d.gpu_worker,&gpu_worker_inflight};
     if (d.gpu_worker != nullptr) {
         gpu_worker_mask.assign((size_t)n, 0);
         for (int64_t i = 0; i < n; ++i) {
@@ -4687,15 +4699,18 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     };
 #ifdef STRATA_NETWORK_CUDA_WORKER
     auto post_gpu_worker = [&]() -> bool {
-        if (d.gpu_worker && (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr ||
-            !d.gpu_worker->post(d.layers, x_f, ids, d.remote_opt->cur_weights(), gpu_worker_mask.data(),
-                                (int)n_tok, (int)k, gpu_worker_error))) {
+        if (d.gpu_worker && (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr)) {
             d.failed = true;
-            if (gpu_worker_error.empty()) gpu_worker_error = "network CUDA worker requires current routing weights";
+            gpu_worker_error = "network CUDA worker requires current routing weights";
             d.fail = gpu_worker_error.c_str();
             d.fail_layer = d.layers;
             return false;
         }
+        if(d.gpu_worker && !d.gpu_worker->post(d.layers,x_f,ids,d.remote_opt->cur_weights(),gpu_worker_mask.data(),
+                                               (int)n_tok,(int)k,gpu_worker_error)) {
+            d.failed=true;d.fail=gpu_worker_error.c_str();d.fail_layer=d.layers;return false;
+        }
+        gpu_worker_inflight=gpu_worker_sent;
         return true;
     };
     // Submit copied CPU inputs before queueing every remote GPU share. A failed
@@ -4914,18 +4929,26 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             }
     }
 #ifdef STRATA_NATIVE_EXPERTS
+    bool cpu_worker_ok = true;
     if (d.worker != nullptr) {   // #349: join the worker's reply (its round trip overlapped the work above)
         // The scope drain joins every published group request on any earlier return. Here all workers
         // finish before any partial reaches the merge. Endpoint order below is deterministic run to run.
-        if (!d.worker->finish(worker_error)) {
-            d.failed = true;
-            d.fail = worker_error.c_str();
-            d.fail_layer = d.layers;
-            return;
-        }
+        cpu_worker_ok = d.worker->finish(worker_error);
     }
 #ifdef STRATA_NETWORK_CUDA_WORKER
-    if (gpu_worker_sent && !d.gpu_worker->finish(gpu_worker_error)) {
+    // Drain both posted groups before propagating either error. A CPU loss must not leave the GPU group
+    // in flight, just as a GPU loss must not leave the CPU group in flight.
+    const bool gpu_worker_ok = !gpu_worker_sent || d.gpu_worker->finish(gpu_worker_error);
+    gpu_worker_inflight=false;
+#endif
+    if (!cpu_worker_ok) {
+        d.failed = true;
+        d.fail = worker_error.c_str();
+        d.fail_layer = d.layers;
+        return;
+    }
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    if (!gpu_worker_ok) {
         d.failed = true;
         d.fail = gpu_worker_error.c_str();
         d.fail_layer = d.layers;

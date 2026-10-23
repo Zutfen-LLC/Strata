@@ -1,4 +1,5 @@
 #include "strata/worker/cpu_group.hpp"
+#include "strata/worker/setup_keepalive.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -39,16 +40,20 @@ bool place_cpu_partitions(const std::vector<uint8_t>& complement, uint16_t layer
     for(const auto& e:endpoints) {if(e.capacity)finite_capacity+=e.capacity;else unbounded=true;}
     if(!unbounded && finite_capacity<total) {err="CPU worker capacities do not cover the complement";return false;}
 
-    // Deterministic blob quotas: bounded workers receive up to their proportional share, with any residual
-    // assigned in endpoint order. Zero capacities share what remains equally. No quota exceeds a hard cap.
-    std::vector<uint64_t> quota(endpoints.size(),0), count(endpoints.size(),0);
-    long double denom=0; for(const auto& e:endpoints)denom += e.capacity ? e.capacity : total;
-    uint64_t used=0;
+    // Deterministic blob quotas. Reserve one expert for every configured participant first, then split the
+    // remainder proportionally to residual capacity. This keeps a heavily skewed capacity vector from
+    // rounding a small (but valid) participant down to an unusable empty partition.
+    std::vector<uint64_t> quota(endpoints.size(),1), count(endpoints.size(),0);
+    long double denom=0;
+    for(const auto& e:endpoints)denom += e.capacity ? e.capacity-1 : total;
+    uint64_t used=endpoints.size();
     for(size_t i=0;i<endpoints.size();++i) {
-        const uint64_t basis=endpoints[i].capacity?endpoints[i].capacity:total;
-        quota[i]=std::min<uint64_t>(endpoints[i].capacity?endpoints[i].capacity:total,
-                    (uint64_t)((long double)total*basis/denom)); used+=quota[i];
+        const uint64_t basis=endpoints[i].capacity?endpoints[i].capacity-1:total;
+        const uint64_t room=endpoints[i].capacity?endpoints[i].capacity-1:total-1;
+        const uint64_t share=denom>0?(uint64_t)((long double)(total-used)*basis/denom):0;
+        quota[i]+=std::min(room,share);
     }
+    used=0;for(uint64_t q:quota)used+=q;
     while(used<total) {
         bool advanced=false;
         for(size_t i=0;i<endpoints.size() && used<total;++i)
@@ -82,7 +87,12 @@ bool place_cpu_partitions(const std::vector<uint8_t>& complement, uint16_t layer
     // Unranked complement is traversed layer-round-robin, avoiding contiguous whole-layer ownership.
     for(int e=0;e<experts;++e)for(int l=0;l<layers;++l)
         if(!assign(l,e,0,false)) {err="CPU placement exhausted capacity";return false;}
-    for(uint8_t v:placed)(void)v;
+    uint64_t assigned=0;for(uint64_t n:count)assigned+=n;
+    if(assigned!=total) {err="CPU placement did not exhaust the complement";return false;}
+    for(int l=0;l<layers;++l)for(int e=0;e<experts;++e)
+        if((placed[(size_t)l*experts+e]!=0)!=bit(complement,stride,l,e)) {
+            err="CPU placement is not an exhaustive copy of the complement";return false;
+        }
     return true;
 }
 
@@ -111,6 +121,9 @@ bool CpuWorkerGroup::validate(const std::vector<ExpertWorkerTier::Open>& o,const
            std::string(x.model_name?x.model_name:"")!=std::string(f.model_name?f.model_name:"")||x.partition.size()!=bytes){
             err="CPU workers must have unique endpoints and identical model/layout/geometry";return false;
         }
+        if(std::none_of(x.partition.begin(),x.partition.end(),[](uint8_t v){return v!=0;})) {
+            err="every configured CPU worker must own at least one expert";return false;
+        }
         for(size_t i=0;i<bytes;++i){if(seen[i]&x.partition[i]){err="CPU worker assignments overlap";return false;}seen[i]|=x.partition[i];}
     }
     if(f.n_expert&7)for(int l=0;l<f.n_layers;++l)
@@ -121,17 +134,72 @@ bool CpuWorkerGroup::validate(const std::vector<ExpertWorkerTier::Open>& o,const
     return true;
 }
 
-bool CpuWorkerGroup::open(const std::vector<ExpertWorkerTier::Open>& o,const std::vector<uint8_t>& complement,std::string& err){
-    auto& d=*impl_;if(d.ready||d.failed||!validate(o,complement,err)){if(err.empty())err="CPU group already open or failed";return false;}
-    d.layers=o[0].n_layers;d.experts=o[0].n_expert;d.owners.assign((size_t)d.layers*d.experts,-1);
-    d.masks.resize(o.size());d.active.assign(o.size(),0);
-    for(size_t i=0;i<o.size();++i){
-        auto p=std::make_unique<ExpertWorkerTier>();
-        if(!p->open(o[i],err)){d.reason="CPU worker "+std::to_string(i)+" setup: "+err;d.failed=true;close();err=d.reason;return false;}
-        for(int l=0;l<d.layers;++l)for(int e=0;e<d.experts;++e)if(p->holds(l,e))d.owners[(size_t)l*d.experts+e]=(int)i;
-        d.peers.push_back(std::move(p));
+bool CpuWorkerGroup::open(const std::vector<ExpertWorkerTier::Open>& options,
+                          const std::vector<uint8_t>& complement, std::string& err) {
+    auto& d=*impl_;
+    if(d.ready||d.failed||!validate(options,complement,err)) {
+        if(err.empty())err="CPU group already open or failed";
+        return false;
     }
-    d.ready=true;return true;
+    d.layers=options[0].n_layers;
+    d.experts=options[0].n_expert;
+    d.owners.assign((size_t)d.layers*d.experts,-1);
+    d.masks.resize(options.size());
+    d.active.assign(options.size(),0);
+    std::vector<std::unique_ptr<CpuSetupKeepalive>> keepalives;
+    auto stop_keepalives=[&](std::string& why) {
+        bool ok=true;
+        for(size_t i=0;i<keepalives.size();++i) {
+            std::string e;
+            if(!keepalives[i]->finish(e)) {
+                if(why.empty())why="CPU worker "+std::to_string(i)+": "+e;
+                ok=false;
+            }
+        }
+        return ok;
+    };
+    try {
+        for(size_t i=0;i<options.size();++i) {
+            auto p=std::make_unique<ExpertWorkerTier>();
+            auto option=options[i];
+            const auto caller_cancel=option.cancelled;
+            option.cancelled=[&keepalives,caller_cancel] {
+                if(caller_cancel&&caller_cancel())return true;
+                for(const auto& keepalive:keepalives)if(keepalive->failed())return true;
+                return false;
+            };
+            if(!p->open(option,err)) {
+                std::string keepalive_error;
+                stop_keepalives(keepalive_error);
+                d.reason="CPU worker "+std::to_string(i)+" setup: "+err;
+                if(!keepalive_error.empty())d.reason+="; "+keepalive_error;
+                d.failed=true;
+                close();
+                err=d.reason;
+                return false;
+            }
+            for(int l=0;l<d.layers;++l)for(int e=0;e<d.experts;++e)
+                if(p->holds(l,e))d.owners[(size_t)l*d.experts+e]=(int)i;
+            d.peers.push_back(std::move(p));
+            const int interval=std::min(50,std::max(1,option.deadline_ms/4));
+            keepalives.push_back(std::make_unique<CpuSetupKeepalive>(*d.peers.back(),interval));
+        }
+    } catch (...) {
+        std::string ignored;
+        stop_keepalives(ignored);
+        close();
+        throw;
+    }
+    std::string keepalive_error;
+    if(!stop_keepalives(keepalive_error)) {
+        d.reason=keepalive_error;
+        d.failed=true;
+        close();
+        err=d.reason;
+        return false;
+    }
+    d.ready=true;
+    return true;
 }
 
 void CpuWorkerGroup::close(){auto& d=*impl_;for(auto& p:d.peers)p->close();d.peers.clear();d.ready=d.posted=false;d.masks.clear();d.active.clear();}

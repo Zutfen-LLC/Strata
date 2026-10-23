@@ -52,23 +52,31 @@ set -euo pipefail
 mkdir "$RUN"
 cp "$BUILD/CMakeCache.txt" "$RUN/cache-before.txt"
 export CMAKE_BUILD_PARALLEL_LEVEL=1 CTEST_PARALLEL_LEVEL=1 OMP_NUM_THREADS=2
-cmake -S "$SRC" -B "$BUILD" -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON \
-  >"$RUN/configure.log" 2>&1
-cmake --build "$BUILD" --target strata-expert-worker expert_tier_test worker_local_test \
-  worker_residency_test -j1 >"$RUN/build.log" 2>&1
-ctest --test-dir "$BUILD" -V -j1 --no-tests=error \
-  -R '^(expert_tier_test|worker_local_test|worker_local_binary_test|worker_residency_test)$' \
-  >"$RUN/tests.log" 2>&1
+run_logged() {
+  label=$1; shift; started=$SECONDS
+  set +e
+  "$@" >"$RUN/$label.log" 2>&1
+  rc=$?
+  set -e
+  printf '%s\t%s\t%s\n' "$label" "$rc" "$((SECONDS-started))" >>"$RUN/results.tsv"
+  return "$rc"
+}
+: >"$RUN/results.tsv"
+run_logged configure cmake -S "$SRC" -B "$BUILD" -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON
+run_logged build cmake --build "$BUILD" --target strata-expert-worker expert_tier_test worker_local_test \
+  worker_residency_test -j1
+run_logged tests ctest --test-dir "$BUILD" -V -j1 --no-tests=error \
+  -R '^(expert_tier_test|worker_local_test|worker_local_binary_test|worker_residency_test)$'
 sha256sum "$BUILD/strata-expert-worker" "$BUILD/expert_tier_test" >"$RUN/binaries.sha256"
 cp "$BUILD/CMakeCache.txt" "$RUN/cache-after.txt"
 git -C "$SRC" rev-parse HEAD >"$RUN/source.sha"
 ```
 
-`expert_tier_test` must report the single-, two- and three-endpoint placement checks; disjoint/exhaustive,
-capacity and endpoint validation; every active request published before finish; per-worker bitwise direct
-partials; ordered grouped numerical comparison; no-work; and mixed-success all-or-nothing draining. Its
-existing adverse-peer battery must also pass refusal, stale identity, malformed reply, timeout and
-disconnect. Do not describe a fixture pass as real-network or model validation.
+`expert_tier_test` must report real single-, two- and three-endpoint group checks; disjoint/exhaustive,
+capacity and endpoint validation; sequential setup keepalive; every active request published before finish;
+per-worker bitwise direct partials; ordered grouped numerical comparison; no-work; and mixed-success
+all-or-nothing draining for refusal, stale identity, malformed reply, timeout and disconnect. Do not
+describe a fixture pass as real-network or model validation.
 
 ## 3. Engine serial build and focused dispatcher fixtures
 
@@ -81,12 +89,21 @@ set -euo pipefail
 mkdir "$RUN"
 cp "$BUILD/CMakeCache.txt" "$RUN/cache-before.txt"
 export CMAKE_BUILD_PARALLEL_LEVEL=1 CTEST_PARALLEL_LEVEL=1 OMP_NUM_THREADS=2
-cmake -S "$SRC" -B "$BUILD" -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON \
-  >"$RUN/configure.log" 2>&1
-cmake --build "$BUILD" --target strata worker_dispatch_test -j1 >"$RUN/build.log" 2>&1
-ctest --test-dir "$BUILD" -V -j1 --no-tests=error \
-  -R '^(worker_dispatch_test|worker_dispatch_host_zero_test)$' >"$RUN/tests.log" 2>&1
-STRATA_VERIFY_DEVICE_PLAN=1 "$BUILD/worker_dispatch_test" >"$RUN/device-plan.log" 2>&1
+run_logged() {
+  label=$1; shift; started=$SECONDS
+  set +e
+  "$@" >"$RUN/$label.log" 2>&1
+  rc=$?
+  set -e
+  printf '%s\t%s\t%s\n' "$label" "$rc" "$((SECONDS-started))" >>"$RUN/results.tsv"
+  return "$rc"
+}
+: >"$RUN/results.tsv"
+run_logged configure cmake -S "$SRC" -B "$BUILD" -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON
+run_logged build cmake --build "$BUILD" --target strata worker_dispatch_test -j1
+run_logged tests ctest --test-dir "$BUILD" -V -j1 --no-tests=error \
+  -R '^(worker_dispatch_test|worker_dispatch_host_zero_test)$'
+run_logged device-plan env STRATA_VERIFY_DEVICE_PLAN=1 "$BUILD/worker_dispatch_test"
 sha256sum "$BUILD/strata" "$BUILD/worker_dispatch_test" >"$RUN/binaries.sha256"
 cp "$BUILD/CMakeCache.txt" "$RUN/cache-after.txt"
 git -C "$SRC" rev-parse HEAD >"$RUN/source.sha"
