@@ -3,13 +3,26 @@
 // The lifecycle the header states, against #348's client exactly as published: no second protocol, no
 // direct socket work, no re-implementation of the worker's kernels.  Setup streams each owned blob
 // through ONE blob-sized staging buffer (`Open::fetch` fills it), so the engine host never mirrors the
-// expert set in RAM.  A request thread carries the INFER frame while the engine's dispatch runs its local
-// CPU jobs; finish() joins it before any downstream consumer may commit, and every failure latches dead.
+// expert set in RAM.  One persistent communication thread carries INFER frames while the engine's dispatch
+// runs its local CPU jobs; finish() waits before any downstream consumer may commit, and every failure latches dead.
 #include "strata/worker/expert_tier.hpp"
 
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
+#elif defined(__linux__)
+#include <pthread.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace strata::worker {
 namespace {
@@ -18,6 +31,34 @@ uint64_t mono_ms() {
     return (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
+}
+
+uint64_t mono_ns() {
+    return (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+uint64_t current_thread_id() {
+#ifdef _WIN32
+    return (uint64_t) GetCurrentThreadId();
+#elif defined(__APPLE__)
+    uint64_t id = 0;
+    pthread_threadid_np(nullptr, &id);
+    return id;
+#elif defined(__linux__)
+    return (uint64_t) syscall(SYS_gettid);
+#else
+    return (uint64_t) std::hash<std::thread::id>{}(std::this_thread::get_id());
+#endif
+}
+
+void name_current_thread() {
+#if defined(__APPLE__)
+    pthread_setname_np("strata-cpu-io");
+#elif defined(__linux__)
+    pthread_setname_np(pthread_self(), "strata-cpu-io");
+#endif
 }
 
 /// The manifest's model identity: a digest of everything that changes the bytes the worker would compute
@@ -41,13 +82,16 @@ uint64_t model_digest(const char* name, uint16_t gu, uint16_t d, uint16_t layers
 }  // namespace
 
 ExpertWorkerTier::~ExpertWorkerTier() {
-    if (th_.joinable()) th_.join();
-    client_.close();
+    close();
 }
 
 bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     if (dead_) { err = "the remote CPU-expert worker tier is dead: " + dead_why_; return false; }
     if (ready_) { err = "the remote CPU-expert worker tier is already open"; return false; }
+    {
+        std::lock_guard<std::mutex> lock(request_mutex_);
+        stopping_ = pending_ = busy_ = posted_ = served_ = false;
+    }
     if (in.resident && !in.local) {
         err = "persistent weight reuse requires a trusted local manifest";
         return false;
@@ -231,15 +275,27 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
 }
 
 void ExpertWorkerTier::close() {
+    {
+        std::lock_guard<std::mutex> lock(request_mutex_);
+        stopping_ = true;
+        request_wake_.notify_all();
+    }
     if (th_.joinable()) th_.join();
     client_.close();
+    std::lock_guard<std::mutex> lock(request_mutex_);
     ready_ = false;
+    posted_ = false;
+    pending_ = false;
+    busy_ = false;
 }
 
 void ExpertWorkerTier::die(const std::string& why) {
-    dead_why_ = why;
-    dead_.store(true, std::memory_order_release);
-    ++st_.failures;
+    std::lock_guard<std::mutex> lock(request_mutex_);
+    if (!dead_.load(std::memory_order_relaxed)) {
+        dead_why_ = why;
+        ++st_.failures;
+        dead_.store(true, std::memory_order_release);
+    }
 }
 
 bool ExpertWorkerTier::post(int64_t layer, const float* x, const int32_t* ids, const float* weights,
@@ -252,10 +308,10 @@ bool ExpertWorkerTier::post(int64_t layer, const float* x, const int32_t* ids, c
         die(err);
         return false;
     }
-    if (th_.joinable()) {   // a post() without a finish(): join the leftover before reusing the slot
-        th_.join();
-        if (dead_) { err = "the previous remote CPU-expert request failed: " + dead_why_; return false; }
-    }
+    std::unique_lock<std::mutex> lock(request_mutex_);
+    // A post() before the previous finish() still orders behind that exchange before reusing the slot.
+    request_done_.wait(lock, [this] { return !busy_; });
+    if (dead_) { err = "the previous remote CPU-expert request failed: " + dead_why_; return false; }
     served_ = false;
     req_.session = client_.session();
     req_.model_id = model_id_;
@@ -277,6 +333,7 @@ bool ExpertWorkerTier::post(int64_t layer, const float* x, const int32_t* ids, c
         if (ids[i] < 0 || !holds(layer, ids[i])) {
             err = "the dispatch marked entry " + std::to_string(i) + " (layer " + std::to_string(layer) +
                   ", expert " + std::to_string(ids[i]) + ") for the remote CPU-expert worker, which the partition does not own";
+            lock.unlock();
             die(err);
             return false;
         }
@@ -290,20 +347,64 @@ bool ExpertWorkerTier::post(int64_t layer, const float* x, const int32_t* ids, c
     served_ = false;
     st_.requests += 1;
     st_.entries += (uint64_t) marked;
-    posted_ms_ = mono_ms();
-    th_ = std::thread([this] { run_request(); });
+    posted_ns_ = mono_ns();
+    pending_ = busy_ = true;
+    if (!th_.joinable()) {
+        try {
+            th_ = std::thread([this] { run_requests(); });
+        } catch (const std::exception& e) {
+            pending_ = busy_ = posted_ = false;
+            --st_.requests;
+            st_.entries -= (uint64_t) marked;
+            lock.unlock();
+            err = std::string("could not start the remote CPU-expert communication thread: ") + e.what();
+            die(err);
+            return false;
+        }
+    }
+    request_wake_.notify_one();
     return true;
 }
 
-void ExpertWorkerTier::run_request() {
-    std::string e;
-    InferReply r;
-    if (!client_.infer(req_, r, e)) {
-        die("the remote CPU-expert worker refused or dropped the request (" +
-            std::string(status_name(client_.last_status())) + "): " + e);
-        return;
+void ExpertWorkerTier::run_requests() {
+    name_current_thread();
+    std::unique_lock<std::mutex> lock(request_mutex_);
+    st_.communication_thread_id = current_thread_id();
+    ++st_.communication_thread_starts;
+    for (;;) {
+        request_wake_.wait(lock, [this] { return pending_ || stopping_; });
+        if (stopping_ && !pending_) break;
+        pending_ = false;
+        const uint64_t exchange_start = mono_ns();
+        const double queue_ms = (double) (exchange_start - posted_ns_) / 1e6;
+        lock.unlock();
+
+        bool ok = false;
+        std::string e;
+        InferReply r;
+        try {
+            ok = client_.infer(req_, r, e);
+        } catch (const std::exception& ex) {
+            e = std::string("exception in communication thread: ") + ex.what();
+        } catch (...) {
+            e = "unknown exception in communication thread";
+        }
+        const uint16_t status = client_.last_status();
+        const uint64_t exchange_end = mono_ns();
+        if (!ok)
+            die("the remote CPU-expert worker refused or dropped the request (" +
+                std::string(status_name(status)) + "): " + e);
+
+        lock.lock();
+        st_.queue_ms += queue_ms;
+        st_.exchange_ms += (double) (exchange_end - exchange_start) / 1e6;
+        if (ok) reply_ = std::move(r);
+        busy_ = false;
+        request_done_.notify_all();
+        if (!ok) break;
     }
-    reply_ = std::move(r);
+    pending_ = busy_ = false;
+    request_done_.notify_all();
 }
 
 bool ExpertWorkerTier::finish(std::string& err) {
@@ -311,15 +412,17 @@ bool ExpertWorkerTier::finish(std::string& err) {
         if (dead_) { err = dead_why_; return false; }
         return true;
     }
-    const auto w0 = mono_ms();
-    if (th_.joinable()) th_.join();
-    const uint64_t now = mono_ms();
-    st_.wait_ms += (double) (now - w0);              // what the caller actually waited after its own work
-    st_.request_ms += (double) (now - posted_ms_);   // the full post -> finish wall, service and network
+    const auto w0 = mono_ns();
+    std::unique_lock<std::mutex> lock(request_mutex_);
+    request_done_.wait(lock, [this] { return !busy_; });
+    const uint64_t now = mono_ns();
+    st_.wait_ms += (double) (now - w0) / 1e6;           // what the caller actually waited after its own work
+    st_.request_ms += (double) (now - posted_ns_) / 1e6; // full post -> finish wall; overlaps caller work
     posted_ = false;
     if (dead_) { err = dead_why_; return false; }
     if (reply_.partials.size() != (size_t) req_.T * n_embd_) {
         err = "the remote CPU-expert worker returned a short partial";
+        lock.unlock();
         die(err);
         return false;
     }
@@ -329,20 +432,26 @@ bool ExpertWorkerTier::finish(std::string& err) {
 
 bool ExpertWorkerTier::status(WorkerStatusInfo& out, std::string& err) {
     if (dead_) { err = "the remote CPU-expert worker tier is dead: " + dead_why_; return false; }
-    if (posted_ || th_.joinable()) { err = "a remote CPU-expert request is in flight"; return false; }
+    std::lock_guard<std::mutex> lock(request_mutex_);
+    if (posted_ || busy_) { err = "a remote CPU-expert request is in flight"; return false; }
     if (!client_.status(out, err)) return false;
     return true;
 }
 
 void ExpertWorkerTier::report(std::string& out) const {
+    std::lock_guard<std::mutex> lock(request_mutex_);
     char buf[1024];
     std::snprintf(buf, sizeof buf,
                   "%s%llu blobs / %.2f GiB ready in %.1f s; %llu requests, %llu entries; "
-                  "request wall %.1f ms, of which waited %.1f ms",
+                  "aggregate timings (overlap; not a partition): request wall %.1f ms, queue %.1f ms, "
+                  "exchange %.1f ms, caller finish wait %.1f ms; "
+                  "communication thread name=strata-cpu-io id=%llu starts=%llu",
                   dead_ ? "DEAD after its last failure; " : "", (unsigned long long) st_.setup_blobs,
                   (double) st_.setup_weight_bytes / 1073741824.0, st_.setup_ms / 1e3,
-                  (unsigned long long) st_.requests, (unsigned long long) st_.entries, st_.request_ms,
-                  st_.wait_ms);
+                  (unsigned long long) st_.requests, (unsigned long long) st_.entries,
+                  st_.request_ms, st_.queue_ms, st_.exchange_ms, st_.wait_ms,
+                  (unsigned long long) st_.communication_thread_id,
+                  (unsigned long long) st_.communication_thread_starts);
     out = buf;
     std::snprintf(buf, sizeof buf,
                   "; setup network=%llu B local=%llu B hits=%llu misses=%llu; phases connect/setup=%.1f ms "

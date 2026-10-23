@@ -228,6 +228,20 @@ void parity_battery(const NativeFmt& fmt, BlobMap& blobs, uint16_t port) {
     check(tier.stats().setup_blobs == blobs.size(), "setup blob count recorded");
     check(tier.stats().setup_weight_bytes == blobs.size() * fmt.bytes, "setup weight bytes recorded");
 
+    // Zero work does not create the lazy communication thread.  The ordinary close at the end covers
+    // cleanup after the persistent thread exists; failure_battery closes a freshly opened idle tier.
+    {
+        const int T = 1, K = 1;
+        std::vector<int32_t> ids{4};
+        std::vector<float> weights{0.5f}, x(kEmbd, 0.1f);
+        std::vector<uint8_t> owned{0};
+        check(tier.post(0, x.data(), ids.data(), weights.data(), owned.data(), T, K, err),
+              "the first zero-work post succeeds");
+        check(tier.finish(err), "the first zero-work finish succeeds");
+        check(tier.stats().communication_thread_starts == 0,
+              "zero work creates no communication thread");
+    }
+
     Rng r(99);
     for (int T : {1, 4, 8}) {
         const int K = 10;
@@ -328,17 +342,69 @@ void parity_battery(const NativeFmt& fmt, BlobMap& blobs, uint16_t port) {
         fetch.allow.store(true);
         *fetch.blobs = original;
     }
+    // post() owns copies of every caller buffer.  Mutating them as soon as post returns cannot alter
+    // the exchange that is already queued on the persistent thread.
+    {
+        const int T = 2, K = 3;
+        std::vector<int32_t> ids{1, 2, 3, 1, 2, 3};
+        std::vector<float> weights((size_t) T * K, 0.2f), x((size_t) T * kEmbd, 0.05f);
+        std::vector<uint8_t> owned((size_t) T * K, 1);
+        const auto original_ids = ids;
+        const auto original_weights = weights;
+        const auto original_x = x;
+        const auto original_owned = owned;
+        check(tier.post(1, x.data(), ids.data(), weights.data(), owned.data(), T, K, err),
+              "the copied-lifetime window posted");
+        std::fill(ids.begin(), ids.end(), 4);
+        std::fill(weights.begin(), weights.end(), -9.f);
+        std::fill(x.begin(), x.end(), 99.f);
+        std::fill(owned.begin(), owned.end(), 0);
+        check(tier.finish(err), "the copied-lifetime window finished");
+        std::vector<float> got(tier.partials(), tier.partials() + (size_t) T * kEmbd), want;
+        check(direct_window(fmt, blobs, 1, original_ids, original_weights, original_x, original_owned,
+                            T, K, want), "the copied-lifetime reference ran");
+        check(same_bits(want, got), "the queued request owns its caller inputs");
+    }
+    // A second post without a preceding finish waits for the first exchange and reuses the one slot.
+    // The legacy contract discarded the first reply in this usage; finish returns the second reply.
+    {
+        const int T = 2, K = 3;
+        std::vector<int32_t> ids{1, 2, 3, 1, 2, 3};
+        std::vector<float> wa((size_t) T * K, 0.1f), wb((size_t) T * K, 0.3f);
+        std::vector<float> xa((size_t) T * kEmbd, 0.02f), xb((size_t) T * kEmbd, 0.07f);
+        std::vector<uint8_t> owned((size_t) T * K, 1);
+        const uint64_t before = tier.stats().requests;
+        check(tier.post(1, xa.data(), ids.data(), wa.data(), owned.data(), T, K, err),
+              "the un-finished first request posted");
+        check(tier.post(1, xb.data(), ids.data(), wb.data(), owned.data(), T, K, err),
+              "the second post ordered behind the first");
+        check(tier.finish(err), "the ordered second request finished");
+        std::vector<float> got(tier.partials(), tier.partials() + (size_t) T * kEmbd), want;
+        check(direct_window(fmt, blobs, 1, ids, wb, xb, owned, T, K, want),
+              "the ordered second reference ran");
+        check(same_bits(want, got), "finish exposes the ordered second reply");
+        check(tier.stats().requests == before + 2, "both ordered requests used the one slot");
+    }
+    check(tier.stats().communication_thread_starts == 1,
+          "repeated requests use one persistent communication thread");
+    check(tier.stats().communication_thread_id != 0,
+          "the communication OS thread id is exposed for affinity inspection");
+    check(tier.stats().queue_ms >= 0 && tier.stats().exchange_ms > 0 && tier.stats().wait_ms >= 0,
+          "aggregate queue, exchange and finish-wait timings are recorded");
     tier.close();
 }
 
 // ---- the failure battery ------------------------------------------------------------------------
 
-/// A fake worker that answers the setup handshake (with tiny 64-byte blobs, never digest-verified) and
-/// swallows INFER frames: the client's deadline must fire, and long before the fake ever wakes.
-struct SwallowingWorker {
+/// A fake worker that answers setup with tiny 64-byte blobs, then injects one inference fault through
+/// the real client.  None of these failures may expose a partial for the engine to merge.
+struct AdverseWorker {
+    enum Mode { refusal, malformed_reply, disconnect, timeout, stale_reply };
+    Mode mode;
     int lfd = -1;
     uint16_t port = 0;
     std::thread th;
+    explicit AdverseWorker(Mode m) : mode(m) {}
     void start() {
         lfd = ::socket(AF_INET, SOCK_STREAM, 0);
         int one = 1;
@@ -388,8 +454,26 @@ struct SwallowingWorker {
                 put64(ack, 0);
                 reply = MSG_READY_ACK;
             } else if (msg == MSG_INFER) {
-                std::this_thread::sleep_for(std::chrono::seconds(4));   // the deadline must fire first
-                break;
+                if (mode == timeout) {
+                    std::this_thread::sleep_for(std::chrono::seconds(4)); // client deadline must fire first
+                    break;
+                }
+                if (mode == disconnect) break;
+                reply = MSG_INFER_ACK;
+                if (mode == refusal) {
+                    std::vector<uint8_t> f;
+                    encode_frame(f, reply, ST_STALE_SESSION, nullptr, 0);
+                    ::send(cfd, f.data(), f.size(), 0);
+                    break;
+                }
+                InferRequest request;
+                if (!decode_infer(p.data(), p.size(), kLayers, kExperts, kEmbd, request)) break;
+                InferReply response;
+                response.session = mode == stale_reply ? 0x99 : request.session;
+                response.sequence = request.sequence;
+                response.partials.assign((size_t) request.T * kEmbd, 0.25f);
+                ack = encode_infer_ack(response);
+                if (mode == malformed_reply) ack.pop_back();
             } else {
                 break;
             }
@@ -403,7 +487,7 @@ struct SwallowingWorker {
         }
         ::close(cfd);
     }
-    ~SwallowingWorker() {
+    ~AdverseWorker() {
         if (th.joinable()) th.join();
         if (lfd >= 0) ::close(lfd);
     }
@@ -452,6 +536,7 @@ void failure_battery(const NativeFmt& fmt, BlobMap& blobs) {
             failed = !run_window(tier, 0, ids, w, x, owned, T, K, out, err);
         check(failed, "a window after the worker left fails");
         check(tier.dead(), "the dropped worker latched the tier dead");
+        check(!tier.served(), "a disconnect exposes no partial to merge");
         Svc fresh;
         check(fresh.start(), "the fresh service started");
         strata::worker::ExpertWorkerTier tier2;
@@ -459,11 +544,14 @@ void failure_battery(const NativeFmt& fmt, BlobMap& blobs) {
         check(tier2.open(fetch2.open(fresh.port), err), "a fresh tier opens against the fresh service");
         tier2.close();
     }
-    // a deadline the worker never meets
-    {
-        SwallowingWorker fake;
+    // Typed refusal, malformed success, disconnect, timeout and stale successful identity all latch
+    // without exposing a partial.  These run through the persistent communication thread.
+    for (const auto mode : {AdverseWorker::refusal, AdverseWorker::malformed_reply,
+                            AdverseWorker::disconnect, AdverseWorker::timeout,
+                            AdverseWorker::stale_reply}) {
+        AdverseWorker fake(mode);
         fake.start();
-        check(fake.port != 0, "the swallowing worker started");
+        check(fake.port != 0, "the adverse worker started");
         strata::worker::ExpertWorkerTier tier;
         auto o = Fetcher{&blobs}.open(0);
         o.port = fake.port;
@@ -474,7 +562,7 @@ void failure_battery(const NativeFmt& fmt, BlobMap& blobs) {
             std::memset(dst, 0xAB, (size_t) bytes);
             return true;
         };
-        check(tier.open(o, err), "tier open against the swallowing worker");
+        check(tier.open(o, err), "tier open against the adverse worker");
         const int T = 2, K = 10;
         Rng rr(41);
         const std::vector<int32_t> ids = distinct_ids(rr, T, K);
@@ -483,10 +571,21 @@ void failure_battery(const NativeFmt& fmt, BlobMap& blobs) {
         owned_of(make_partition(), 0, ids, owned);
         const auto t0 = std::chrono::steady_clock::now();
         check(tier.post(0, x.data(), ids.data(), w.data(), owned.data(), T, K, err), "the request was posted");
-        check(!tier.finish(err), "the unanswered request failed");
+        bool failed = false;
+        if (mode == AdverseWorker::timeout) {
+            tier.close(); // in-flight destruction/close wakes and joins; the socket deadline bounds it
+            failed = tier.dead();
+        } else {
+            failed = !tier.finish(err);
+        }
+        check(failed, "the adverse request failed");
         const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        check(tier.dead(), "the deadline latched the tier dead");
-        check(took < 3.0, "the deadline fired instead of hanging");
+        check(tier.dead(), "the adverse response latched the tier dead");
+        check(!tier.served(), "an adverse response exposes no partial to merge");
+        check(!tier.post(0, x.data(), ids.data(), w.data(), owned.data(), T, K, err),
+              "the dead tier sends no retry");
+        if (mode == AdverseWorker::timeout)
+            check(took < 3.0, "the deadline fired instead of hanging");
     }
     // setup refusals: over-budget is typed and latches; an empty partition is a config error, not a latch
     {

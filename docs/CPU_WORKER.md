@@ -144,8 +144,11 @@ untouched. Header and payload reads have separate budgets; connection establishm
 execution are not preempted by this setting. The pieces:
 
 - **The tier** (`strata::worker::ExpertWorkerTier`, `strata_worker_tier`, CPU-only like the service):
-  owns the client, the frozen ownership bitmap, one in-flight request on its own thread, and the failure
-  latch.  `tests/worker/expert_tier_test` runs its whole lifecycle against the real in-process service.
+  owns the client, the frozen ownership bitmap, one in-flight request slot on one persistent communication
+  thread, and the failure latch. The thread starts at the first nonempty post, preserving the former
+  posting thread's inherited affinity; the tier sets no affinity. Its OS thread id, queue time, exchange
+  time and caller finish wait are aggregate report fields for live placement and timing checks.
+  `tests/worker/expert_tier_test` runs its whole lifecycle against the real in-process service.
 - **The partition is derived, never configured**: at startup, after CUDA0's cache, every stage cache and
   every helper tier (`--expert-cache-device1..3`) is filled, the complement - every expert no GPU tier
   holds - becomes the worker's.  Every routed expert keeps exactly one executing owner.  Setup streams
@@ -155,7 +158,7 @@ execution are not preempted by this setting. The pieces:
 - **In a verify window** (`expert_pool_dispatch_multi`), after the GPU's plan is published, the peer
   launched and the helpers begun - and before the local pool's own work - the worker entries' frame goes
   out (activations, ids, routing weights, ownership mask; nothing for a window with no owned entry).  The
-  round trip overlaps the local CPU jobs; `finish` joins before anything downstream may commit.
+  round trip overlaps the local CPU jobs; `finish` waits before anything downstream may commit.
 - **The merge reuses the helper tiers' mechanism** (`RemoteExpertOpt`): the worker's entries' per-entry
   rows are zeroed (the GPU's own weighted combine adds nothing for them) and its already-weighted partial
   is added on top of the combined result, after every helper tier's partial - one contribution each,
