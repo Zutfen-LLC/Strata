@@ -12,7 +12,7 @@
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
 #include "strata/core/cpu_first_remote_post.hpp"
-#include "strata/worker/gpu_client.hpp"
+#include "strata/worker/gpu_group.hpp"
 #endif
 #include "strata/artifact/gguf_reader.hpp"
 
@@ -4670,7 +4670,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     };
 #ifdef STRATA_NETWORK_CUDA_WORKER
     auto post_gpu_worker = [&]() -> bool {
-        if (gpu_worker_sent && (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr ||
+        if (d.gpu_worker && (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr ||
             !d.gpu_worker->post(d.layers, x_f, ids, d.remote_opt->cur_weights(), gpu_worker_mask.data(),
                                 (int)n_tok, (int)k, gpu_worker_error))) {
             d.failed = true;
@@ -4681,7 +4681,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         }
         return true;
     };
-    // Submit copied CPU inputs before waiting for synchronous GPU I/O. A failed
+    // Submit copied CPU inputs before queueing every remote GPU share. A failed
     // GPU post (or exception) must join CPU before returning; no partial merges.
     if (!cpu_first_remote_post(post_cpu_worker, post_gpu_worker, [&] {
             if (worker_sent && !d.worker->finish(worker_error))
@@ -4933,7 +4933,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // reaches the merge. On any loss, the request latches failed and neither partial is committed here.
 #ifdef STRATA_NETWORK_CUDA_WORKER
     if (gpu_worker_sent)
-        d.remote_opt->accumulate_host(d.gpu_worker->partials(), gpu_worker_mask.data(), (int)n_tok, (int)k);
+        for (size_t i=0;i<d.gpu_worker->size();++i) if (d.gpu_worker->active(i))
+            d.remote_opt->accumulate_host(d.gpu_worker->partials(i), d.gpu_worker->mask(i), (int)n_tok, (int)k);
 #endif
     if (worker_sent)
         d.remote_opt->accumulate_host(d.worker->partials(), worker_mask.data(), (int)n_tok, (int)k);

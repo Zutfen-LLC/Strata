@@ -5,6 +5,10 @@ CUDA worker. Local GPU ownership stays fixed. The existing CPU worker retains it
 partition and serves only uncovered routed entries. No discovery, live joining,
 rebalancing, arena shrinking or transparent fallback is implemented.
 
+For several independent remote GPUs, use the bounded opt-in
+[remote worker group](../REMOTE_GPU_WORKERS.md). The legacy endpoint/plan pair
+remains a one-worker shorthand; SGW1 and per-worker selective caches are unchanged.
+
 The supported slice is uniform plain Q8_0/Q8_0 without Hadamard transforms or scale
 tails, within the existing CPU geometry bounds. The network service is POSIX/CUDA
 only. CPU-only/native-ON builds can build asset/protocol fixtures without CUDA;
@@ -73,20 +77,22 @@ and copy is checked; an estimated assignment size is not proof of fit. Disk cach
 and VRAM have separate limits and lifetimes. Disconnect releases the GPU session;
 complete disk entries may remain.
 
-The engine submits the existing asynchronous CPU request before synchronous GPU
-network I/O. CPU post owns copies of activations, IDs, masks and routing weights.
-No GPU request thread is introduced. Completion remains CPU finish then GPU finish;
-helper/GPU/CPU weighted merge order is unchanged. On GPU-post failure or exception,
-the posted CPU request is joined before returning. No partial is committed and no
-CPU fallback/retry is performed. Existing I/O deadlines and outer process guards
-remain necessary; filesystem calls and kernels cannot be preempted by socket timers.
+The engine submits the existing asynchronous CPU request before queueing copied
+GPU requests to per-endpoint communication threads. Each socket has one owner,
+including idle STATUS probes. Completion remains CPU finish then group finish;
+helper/endpoint-configuration-order/CPU weighted merge order is deterministic.
+On GPU submission failure or exception, the posted CPU request is joined before
+returning. Later peer failure drains the group before any network sum commits.
+No CPU fallback/retry is performed. Existing I/O deadlines and outer process
+guards remain necessary; filesystem calls and kernels cannot be preempted by
+socket timers.
 
 Requests/replies bind model, layout, placement, session, sequence and request
 identity. Unassigned entries, stale/duplicate replies, malformed lengths and
 nonfinite results are errors. Each owner contributes its weighted partial once,
 only after both remote tiers succeed. A failure latches the affected tier dead.
 
-`--remote-gpu-setup-ms` bounds total setup (default 600000 ms), while
+`--remote-gpu-setup-ms` bounds each worker's total setup (default 600000 ms), while
 `--remote-gpu-deadline-ms` bounds ordinary frame I/O (default 10000 ms). SETUP/READY
 waits use the remaining total setup budget. During GPU setup, probes keep the
 already-ready CPU connection active without renewing its residency TTL.

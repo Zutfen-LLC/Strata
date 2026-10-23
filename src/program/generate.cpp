@@ -23,11 +23,12 @@
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/worker/gpu_endpoint.hpp"
 #ifdef STRATA_NATIVE_EXPERTS
 #include "strata/worker/expert_tier.hpp"
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
-#include "strata/worker/gpu_client.hpp"
+#include "strata/worker/gpu_group.hpp"
 #include "strata/worker/gpu_assets.hpp"
 #include "strata/worker/setup_keepalive.hpp"
 #endif
@@ -571,6 +572,8 @@ struct Options {
     bool remote_cpu_resident = false;
     int remote_cpu_setup_ms = 600000;
     bool remote_gpu_experts = false;
+    bool remote_gpu_legacy = false;
+    std::vector<strata::worker::GpuEndpoint> remote_gpu_workers;
     std::string remote_gpu_host = "127.0.0.1", remote_gpu_plan;
     int remote_gpu_port = 7432, remote_gpu_deadline_ms = 10000, remote_gpu_setup_ms = 600000;
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
@@ -1022,6 +1025,8 @@ void usage() {
                  "                       needs --remote-cpu-experts, its trusted --remote-cpu-local-manifest,\n"
                  "                       and --remote-gpu-plan; CPU residency stays intact, CUDA owns the assigned subset\n"
                  "  --remote-gpu-plan FILE  frozen selective expert plan (plain Q8_0/Q8_0 only)\n"
+                 "  --remote-gpu-worker HOST:PORT PLAN  repeat for 1..8 disjoint parallel workers;\n"
+                 "                       replaces the legacy endpoint/plan pair; same fixed CPU partition\n"
                  "  --remote-gpu-setup-ms N  whole setup budget (default 600000)\n"
                  "  --remote-gpu-deadline-ms N  per-frame deadline (default 10000)\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
@@ -2293,7 +2298,7 @@ int main(int argc, char** argv) {
     };
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--remote-gpu-experts" || a == "--remote-gpu-plan" ||
+        if (a == "--remote-gpu-worker" || a == "--remote-gpu-experts" || a == "--remote-gpu-plan" ||
             a == "--remote-gpu-setup-ms" || a == "--remote-gpu-deadline-ms") {
 #ifndef STRATA_NATIVE_EXPERTS
             std::fprintf(stderr, "strata: %s requires STRATA_NATIVE_EXPERTS=ON\n", a.c_str());
@@ -2302,7 +2307,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata: %s requires the CUDA/native POSIX network worker build\n", a.c_str());
             return 2;
 #else
-            if (i + 1 < argc) ++i;
+            i += std::min(a == "--remote-gpu-worker" ? 2 : 1, argc-i-1);
             continue;
 #endif
         }
@@ -2576,7 +2581,7 @@ int main(int argc, char** argv) {
         else if (a == "--remote-cpu-deadline-ms")
             o.remote_cpu_deadline_ms = std::max(100, std::atoi(next("--remote-cpu-deadline-ms")));
         else if (a == "--remote-gpu-experts") {
-            o.remote_gpu_experts = true;
+            o.remote_gpu_experts = o.remote_gpu_legacy = true;
             const std::string v = next("--remote-gpu-experts");
             const size_t c = v.rfind(':');
             const int port = c == std::string::npos ? -1 : std::atoi(v.c_str() + c + 1);
@@ -2587,7 +2592,15 @@ int main(int argc, char** argv) {
             o.remote_gpu_host = v.substr(0, c);
             o.remote_gpu_port = port;
         }
-        else if (a == "--remote-gpu-plan") o.remote_gpu_plan = next("--remote-gpu-plan");
+        else if (a == "--remote-gpu-plan") {o.remote_gpu_legacy=true;o.remote_gpu_plan=next("--remote-gpu-plan");}
+        else if (a == "--remote-gpu-worker") {
+            strata::worker::GpuEndpoint endpoint;
+            if (!strata::worker::parse_gpu_endpoint(next("--remote-gpu-worker"),endpoint)) {
+                std::fprintf(stderr,"--remote-gpu-worker takes numeric HOST:PORT followed by PLAN\n");return 2;
+            }
+            endpoint.plan=next("--remote-gpu-worker PLAN");
+            o.remote_gpu_workers.push_back(std::move(endpoint));o.remote_gpu_experts=true;
+        }
         else if (a == "--remote-gpu-setup-ms") o.remote_gpu_setup_ms = std::atoi(next("--remote-gpu-setup-ms"));
         else if (a == "--remote-gpu-deadline-ms") o.remote_gpu_deadline_ms = std::atoi(next("--remote-gpu-deadline-ms"));
         else if (a == "--expert-cache-remote-placement")
@@ -3334,11 +3347,13 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: local worker sources require --mmap-experts and --native GGUF reference slices\n");
         return 2;
     }
-    if ((!o.remote_gpu_plan.empty() && !o.remote_gpu_experts) ||
+    if ((o.remote_gpu_legacy && !o.remote_gpu_workers.empty()) ||
+        o.remote_gpu_workers.size()>strata::worker::kMaxGpuWorkers ||
+        (!o.remote_gpu_plan.empty() && !o.remote_gpu_experts) ||
         (o.remote_gpu_experts && (!o.remote_cpu_experts || o.remote_cpu_local_manifest.empty() ||
-                                  o.remote_gpu_plan.empty() || o.remote_gpu_setup_ms <= 0 || o.remote_gpu_deadline_ms <= 0))) {
+            (o.remote_gpu_workers.empty() && o.remote_gpu_plan.empty()) || o.remote_gpu_setup_ms <= 0 || o.remote_gpu_deadline_ms <= 0))) {
         std::fprintf(stderr, "strata generate: network CUDA experts need --remote-cpu-experts, its trusted local manifest, "
-                             "--remote-gpu-plan and positive setup/deadline budgets\n");
+                             "one legacy endpoint/plan or 1..8 --remote-gpu-worker pairs, and positive setup/deadline budgets\n");
         return 2;
     }
     if (o.remote_cpu_experts) {
@@ -6661,7 +6676,7 @@ int main(int argc, char** argv) {
 #ifdef STRATA_NATIVE_EXPERTS
     strata::worker::ExpertWorkerTier worker_tier;
 #ifdef STRATA_NETWORK_CUDA_WORKER
-    strata::worker::GpuWorkerTier gpu_worker_tier;
+    strata::worker::GpuWorkerGroup gpu_worker_tier;
 #endif
     if (o.remote_cpu_experts) {
         if (profile.empty() || srcp == nullptr) {
@@ -6737,9 +6752,15 @@ int main(int argc, char** argv) {
             wopen.setup_ms=o.remote_cpu_setup_ms;
         }
 #ifdef STRATA_NETWORK_CUDA_WORKER
-        strata::worker::GpuPlan gpu_plan;
+        std::vector<strata::worker::GpuWorkerTier::Open> gpu_open;
         if (o.remote_gpu_experts) {
-            if (!strata::worker::read_gpu_plan(o.remote_gpu_plan, gpu_plan, err)) {
+          auto endpoints=o.remote_gpu_workers;
+          if(endpoints.empty())endpoints.push_back({o.remote_gpu_host,o.remote_gpu_plan,(uint16_t)o.remote_gpu_port});
+          for(const auto& endpoint:endpoints) {
+            strata::worker::GpuWorkerTier::Open item;
+            item.host=endpoint.host;item.port=endpoint.port;item.deadline_ms=o.remote_gpu_deadline_ms;item.setup_ms=o.remote_gpu_setup_ms;
+            auto& gpu_plan=item.plan;
+            if (!strata::worker::read_gpu_plan(endpoint.plan, gpu_plan, err)) {
                 std::fprintf(stderr, "strata generate: network GPU plan: %s\n", err.c_str());
                 return 1;
             }
@@ -6761,6 +6782,11 @@ int main(int argc, char** argv) {
                              err.c_str());
                 return 1;
             }
+            gpu_open.push_back(std::move(item));
+          }
+          if(!strata::worker::GpuWorkerGroup::validate(gpu_open,err)) {
+            std::fprintf(stderr,"strata generate: network GPU group: %s\n",err.c_str());return 1;
+          }
         }
 #endif
         const auto wt0 = Clock::now();
@@ -6779,33 +6805,32 @@ int main(int argc, char** argv) {
         if (o.remote_gpu_experts) {
             // The CPU worker above retains the identical full partition and arena. Only execution
             // ownership changes for this explicitly assigned subset; no CPU setup identity is rewritten.
-            for (const auto& a : gpu_plan.assets)
+            for (const auto& item : gpu_open) for (const auto& a : item.plan.assets)
                 if (!worker_tier.holds(a.layer, a.expert)) {
                     std::fprintf(stderr, "strata generate: network GPU assignment is outside the frozen CPU partition\n");
                     return 1;
                 }
-            strata::worker::GpuAssetSource gpu_source;
+            std::vector<std::unique_ptr<strata::worker::GpuAssetSource>> gpu_sources;
             std::string source_root = std::filesystem::path(o.native_preset).parent_path().string();
             if (source_root.empty()) source_root = ".";
-            if (!gpu_source.open(source_root, local_manifest, gpu_plan, err)) {
+            for (auto& gopen : gpu_open) {
+              auto source=std::make_unique<strata::worker::GpuAssetSource>();
+              if (!source->open(source_root, local_manifest, gopen.plan, err)) {
                 std::fprintf(stderr, "strata generate: selective GPU source: %s\n", err.c_str());
                 return 1;
+              }
+              auto* src=source.get();const auto* plan=&gopen.plan;
+              gopen.fetch = [src,plan,&err](int64_t l, int64_t e, uint8_t* dst, uint32_t bytes) {
+                  const auto* a=plan->find((int)l,(int)e);
+                  return a && src->read_into(*a,dst,bytes,err);
+              };
+              gpu_sources.push_back(std::move(source));
             }
-            strata::worker::GpuWorkerTier::Open gopen;
-            gopen.host = o.remote_gpu_host;
-            gopen.port = (uint16_t)o.remote_gpu_port;
-            gopen.deadline_ms = o.remote_gpu_deadline_ms;
-            gopen.setup_ms = o.remote_gpu_setup_ms;
-            gopen.plan = gpu_plan;
-            gopen.fetch = [&](int64_t l, int64_t e, uint8_t* dst, uint32_t bytes) {
-                const auto* a = gpu_plan.find((int)l, (int)e);
-                return a != nullptr && gpu_source.read_into(*a, dst, bytes, err);
-            };
             // Cold selective transfer may take minutes. Preserve the existing CPU connection's
             // receive deadline without changing its partition or extending its residency TTL.
             strata::worker::CpuSetupKeepalive cpu_keepalive(worker_tier);
-            gopen.cancelled = [&] { return cpu_keepalive.failed(); };
-            const bool gpu_ready = gpu_worker_tier.open(gopen, err);
+            for(auto& gopen:gpu_open)gopen.cancelled=[&] {return cpu_keepalive.failed();};
+            const bool gpu_ready = gpu_worker_tier.open(gpu_open, err);
             std::string cpu_setup_error;
             const bool cpu_still_ready = cpu_keepalive.finish(cpu_setup_error);
             if (!cpu_still_ready) {
@@ -6818,9 +6843,11 @@ int main(int argc, char** argv) {
             }
             std::string gpu_report;
             gpu_worker_tier.report(gpu_report);
-            std::fprintf(stderr, "strata generate: %s; selective_source_read_bytes=%llu source_staging_peak=%llu\n",
-                         gpu_report.c_str(), (unsigned long long)gpu_source.stats().source_read_bytes,
-                         (unsigned long long)gpu_source.stats().host_staging_peak);
+            std::fprintf(stderr,"strata generate: %s\n",gpu_report.c_str());
+            for(size_t i=0;i<gpu_sources.size();++i)std::fprintf(stderr,
+                "strata generate: worker[%zu] selective_source_read_bytes=%llu source_staging_peak=%llu\n",i,
+                (unsigned long long)gpu_sources[i]->stats().source_read_bytes,
+                (unsigned long long)gpu_sources[i]->stats().host_staging_peak);
         }
 #endif
     }

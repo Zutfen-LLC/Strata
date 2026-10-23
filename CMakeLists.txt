@@ -1702,7 +1702,7 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(strata-gpu-manifest src/worker/gpu_manifest_main.cpp)
     target_link_libraries(strata-gpu-manifest PRIVATE strata_gpu_assets)
 
-    add_library(strata_gpu_protocol STATIC src/worker/gpu_wire.cpp src/worker/gpu_client.cpp
+    add_library(strata_gpu_protocol STATIC src/worker/gpu_wire.cpp src/worker/gpu_client.cpp src/worker/gpu_group.cpp
                 src/worker/gpu_worker.cpp)
     target_include_directories(strata_gpu_protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_include_directories(strata_gpu_protocol PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
@@ -1716,6 +1716,11 @@ if(STRATA_NATIVE_EXPERTS)
       target_include_directories(gpu_worker_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
       target_link_libraries(gpu_worker_test PRIVATE strata_gpu_protocol)
       add_test(NAME gpu_worker_test COMMAND gpu_worker_test)
+      add_executable(gpu_worker_group_test tests/worker/gpu_worker_group_test.cpp)
+      target_include_directories(gpu_worker_group_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+      target_link_libraries(gpu_worker_group_test PRIVATE strata_gpu_protocol)
+      add_test(NAME gpu_worker_group_test COMMAND gpu_worker_group_test)
+      set_tests_properties(gpu_worker_group_test PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
       set_tests_properties(gpu_assets_test gpu_worker_test PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
     endif()
 
