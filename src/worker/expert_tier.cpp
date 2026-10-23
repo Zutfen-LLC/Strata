@@ -97,6 +97,8 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
         return false;
     }
     st_ = {};
+    rpc_timing_.reset();
+    rpc_timing_.set_enabled(in.rpc_timing);
     if (in.fetch == nullptr && (!in.local || in.local_fallback)) {
         err = "the remote CPU-expert tier needs a blob fetcher";
         return false;
@@ -300,6 +302,7 @@ void ExpertWorkerTier::die(const std::string& why) {
 
 bool ExpertWorkerTier::post(int64_t layer, const float* x, const int32_t* ids, const float* weights,
                             const uint8_t* owned, int n_tok, int k, std::string& err) {
+    uint64_t prepare_start = 0;
     posted_ = false;
     if (dead_) { err = "the remote CPU-expert worker tier is dead: " + dead_why_; return false; }
     if (!ready_) { err = "the remote CPU-expert worker tier is not open"; return false; }
@@ -312,6 +315,7 @@ bool ExpertWorkerTier::post(int64_t layer, const float* x, const int32_t* ids, c
     // A post() before the previous finish() still orders behind that exchange before reusing the slot.
     request_done_.wait(lock, [this] { return !busy_; });
     if (dead_) { err = "the previous remote CPU-expert request failed: " + dead_why_; return false; }
+    if (rpc_timing_.enabled()) prepare_start = mono_ns();
     served_ = false;
     req_.session = client_.session();
     req_.model_id = model_id_;
@@ -348,6 +352,8 @@ bool ExpertWorkerTier::post(int64_t layer, const float* x, const int32_t* ids, c
     st_.requests += 1;
     st_.entries += (uint64_t) marked;
     posted_ns_ = mono_ns();
+    if (rpc_timing_.enabled())
+        rpc_timing_.add_phase(RpcTimingPhase::ClientPrepare, posted_ns_ - prepare_start);
     pending_ = busy_ = true;
     if (!th_.joinable()) {
         try {
@@ -382,8 +388,9 @@ void ExpertWorkerTier::run_requests() {
         bool ok = false;
         std::string e;
         InferReply r;
+        RpcExchangeTiming measured;
         try {
-            ok = client_.infer(req_, r, e);
+            ok = client_.infer(req_, r, e, rpc_timing_.enabled() ? &measured : nullptr);
         } catch (const std::exception& ex) {
             e = std::string("exception in communication thread: ") + ex.what();
         } catch (...) {
@@ -398,6 +405,14 @@ void ExpertWorkerTier::run_requests() {
         lock.lock();
         st_.queue_ms += queue_ms;
         st_.exchange_ms += (double) (exchange_end - exchange_start) / 1e6;
+        if (rpc_timing_.enabled()) {
+            rpc_timing_.add_phase(RpcTimingPhase::ClientQueueWake, exchange_start - posted_ns_);
+            rpc_timing_.add_phase(RpcTimingPhase::ClientEncodeSend, measured.encode_send_ns);
+            rpc_timing_.add_phase(RpcTimingPhase::ClientReceiveDecode, measured.receive_decode_ns);
+            const auto shape = rpc_request_shape(req_.mask, req_.ids);
+            rpc_timing_.finish_call(req_.T, shape.entries, shape.distinct_experts,
+                                    measured.request_bytes, measured.reply_bytes, ok);
+        }
         if (ok) reply_ = std::move(r);
         busy_ = false;
         request_done_.notify_all();
@@ -418,6 +433,8 @@ bool ExpertWorkerTier::finish(std::string& err) {
     const uint64_t now = mono_ns();
     st_.wait_ms += (double) (now - w0) / 1e6;           // what the caller actually waited after its own work
     st_.request_ms += (double) (now - posted_ns_) / 1e6; // full post -> finish wall; overlaps caller work
+    if (rpc_timing_.enabled())
+        rpc_timing_.add_phase(RpcTimingPhase::ClientFinishWait, now - w0);
     posted_ = false;
     if (dead_) { err = dead_why_; return false; }
     if (reply_.partials.size() != (size_t) req_.T * n_embd_) {
@@ -464,6 +481,8 @@ void ExpertWorkerTier::report(std::string& out) const {
     std::snprintf(buf, sizeof buf, "; cache_hit=%d reused=%llu B session=%llx", st_.cache_hit,
                   (unsigned long long)st_.reused_bytes, (unsigned long long)st_.session);
     out += buf;
+    const std::string timing = rpc_timing_.report("client");
+    if (!timing.empty()) out += "; " + timing;
 }
 
 }  // namespace strata::worker

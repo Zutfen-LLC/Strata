@@ -1680,7 +1680,8 @@ if(STRATA_NATIVE_EXPERTS)
   # involved), built here inside STRATA_NATIVE_EXPERTS because its arithmetic is ggml-cpu's.  The engine
   # integration (#349) links this same library from the GPU side.
   add_library(strata_expert_worker STATIC src/worker/expert_wire.cpp src/worker/expert_worker.cpp
-              src/worker/expert_client.cpp src/worker/wire_sock.cpp src/worker/local_source.cpp)
+              src/worker/expert_client.cpp src/worker/wire_sock.cpp src/worker/local_source.cpp
+              src/worker/rpc_timing.cpp)
   target_include_directories(strata_expert_worker PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_include_directories(strata_expert_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
   target_link_libraries(strata_expert_worker PUBLIC strata_kernels_cpu)
@@ -1748,6 +1749,9 @@ if(STRATA_NATIVE_EXPERTS)
     endif()
   endif()
   if(STRATA_BUILD_TESTS)
+    add_executable(rpc_timing_test tests/worker/rpc_timing_test.cpp)
+    target_link_libraries(rpc_timing_test PRIVATE strata_expert_worker)
+    add_test(NAME rpc_timing_test COMMAND rpc_timing_test)
     # the focused worker checks: codec bounds, arena/session rejections, and direct-versus-transport
     # native execution over a real loopback socket (Q8_0 packed fixtures, bitwise equality)
     add_executable(expert_worker_test tests/worker/expert_worker_test.cpp)

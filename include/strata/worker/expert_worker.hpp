@@ -18,6 +18,7 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/worker/expert_wire.hpp"
+#include "strata/worker/rpc_timing.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -37,6 +38,8 @@ struct WorkerOptions {
     int residency_ms = 0; ///< opt-in idle TTL, 1..86400000 ms; 0 preserves session-scoped weights
     bool residency_forever = false; ///< explicit service-owned residency; no idle expiry, never implicit at 0
     uint32_t upload_chunk_max = kUploadChunkMax;   ///< advertised data cap, 1..kUploadChunkMax
+    bool accepted_tcp_nodelay = false; ///< opt-in checked TCP_NODELAY on CPU-worker accepted sockets only
+    bool rpc_timing = false; ///< opt-in fixed-memory aggregate timing; never logs individual RPCs
 };
 
 /// #348 scope 8: what the service counts.  Identities and statuses are logged; prompts, activations and
@@ -73,6 +76,8 @@ public:
     void stop();
 
     const WorkerCounters& counters() const { return counters_; }
+    const RpcTimingCounters& rpc_timing() const { return rpc_timing_; }
+    void reset_rpc_timing() { rpc_timing_.reset(); }
 
     // ---- the execution pieces, exported so tests (and #349's verification) call the same code ----
 
@@ -95,6 +100,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     WorkerCounters counters_;
+    RpcTimingCounters rpc_timing_;
 };
 
 }  // namespace strata::worker

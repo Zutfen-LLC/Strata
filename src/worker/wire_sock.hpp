@@ -65,8 +65,10 @@ bool connect_numeric_controlled(const std::string &host, uint16_t port, int dead
 /// Binds and listens on 127.0.0.1:port (port 0 picks a free one; `port` receives it).  Loopback only.
 bool listen_loopback(uint16_t& port, sock_fd& out, std::string& err);
 
-/// Accepts one connection (deadline in ms; false on error/timeout).
-bool accept_one(sock_fd listener, sock_fd& out, int deadline_ms);
+/// Accepts one connection (deadline in ms; false on error/timeout). `tcp_nodelay` is deliberately
+/// per-call: CPU-worker experiments may enable it without changing GPU-worker accepted sockets.
+/// When requested, failure to set the option closes the accepted descriptor and returns false.
+bool accept_one(sock_fd listener, sock_fd& out, int deadline_ms, bool tcp_nodelay = false);
 
 /// Connects to host:port (deadline in ms).
 bool connect_host(const std::string& host, uint16_t port, int deadline_ms, sock_fd& out, std::string& err);

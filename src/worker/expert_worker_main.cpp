@@ -24,7 +24,8 @@ void usage() {
     std::fprintf(
         stderr,
         "usage: strata-expert-worker [--port P] [--memory-budget-mib N] [--workers N] "
-        "[--deadline-ms N] [--verbose] [--residency-ms N | --residency-forever]\n"
+        "[--deadline-ms N] [--verbose] [--tcp-nodelay] [--rpc-timing] "
+        "[--residency-ms N | --residency-forever]\n"
         "       [--local-root DIR --local-manifest FILE] [--local-upload-fallback] [--local-setup-ms N]\n"
         "  binds 127.0.0.1 only; serves one loopback connection at a time\n");
 }
@@ -83,6 +84,8 @@ int main(int argc, char** argv) {
             opt.residency_ms = (int)value;
         }
         else if (a == "--residency-forever") opt.residency_forever = true;
+        else if (a == "--tcp-nodelay") opt.accepted_tcp_nodelay = true;
+        else if (a == "--rpc-timing") opt.rpc_timing = true;
         else if (a == "--verbose") opt.verbose = 1;
         else {
             usage();
@@ -98,8 +101,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata-worker: %s\n", err.c_str());
         return 1;
     }
-    std::fprintf(stderr, "strata-worker: listening on 127.0.0.1:%u (budget %llu MiB, %d pool workers)\n",
-                 (unsigned) port, (unsigned long long) (opt.memory_budget >> 20), opt.workers);
+    std::fprintf(stderr, "strata-worker: listening on 127.0.0.1:%u (budget %llu MiB, %d pool workers, "
+                         "accepted TCP_NODELAY %s, RPC timing %s)\n",
+                 (unsigned) port, (unsigned long long) (opt.memory_budget >> 20), opt.workers,
+                 opt.accepted_tcp_nodelay ? "on" : "off", opt.rpc_timing ? "on" : "off");
     std::fflush(stderr);
     // run() has no signal hook: poll the flag beside it and stop the service when it lands.
     std::thread watcher([&] {
@@ -127,5 +132,7 @@ int main(int argc, char** argv) {
                  (unsigned long long)c.resident_bytes, (unsigned long long)c.peak_arena_bytes,
                  (unsigned long long)c.arena_allocations, (unsigned long long)c.cache_expirations,
                  (unsigned long long)c.cache_unloads);
+    const std::string timing = service.rpc_timing().report("worker");
+    if (!timing.empty()) std::fprintf(stderr, "strata-worker: %s\n", timing.c_str());
     return 0;
 }

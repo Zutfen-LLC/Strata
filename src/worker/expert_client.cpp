@@ -4,11 +4,17 @@
 #include "wire_sock.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <limits>
 
 namespace strata::worker {
 namespace {
+
+uint64_t mono_ns() {
+    return (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 bool fd_ok(uintptr_t fd) { return fd != ~(uintptr_t) 0; }
 
@@ -365,28 +371,46 @@ bool ExpertWorkerClient::mark_ready(std::string& err) {
     return true;
 }
 
-bool ExpertWorkerClient::infer(const InferRequest& r, InferReply& reply, std::string& err) {
+bool ExpertWorkerClient::infer(const InferRequest& r, InferReply& reply, std::string& err,
+                               RpcExchangeTiming* timing) {
+    if (timing) *timing = {};
+    const uint64_t send_start = timing ? mono_ns() : 0;
     std::vector<uint8_t> p;
     if (!encode_infer(r, n_embd_, p)) {
         err = "the request is outside the protocol's bounds";
+        if (timing) timing->encode_send_ns = mono_ns() - send_start;
         return false;
     }
-    if (!send_frame(MSG_INFER, ST_OK, p, err)) return false;
+    if (timing) timing->request_bytes = kHeaderBytes + p.size();
+    if (!send_frame(MSG_INFER, ST_OK, p, err)) {
+        if (timing) timing->encode_send_ns = mono_ns() - send_start;
+        return false;
+    }
+    if (timing) timing->encode_send_ns = mono_ns() - send_start;
+    const uint64_t receive_start = timing ? mono_ns() : 0;
     WireFrame f;
-    if (!recv_frame(MSG_INFER_ACK, f, err)) return false;
+    if (!recv_frame(MSG_INFER_ACK, f, err)) {
+        if (timing) timing->receive_decode_ns = mono_ns() - receive_start;
+        return false;
+    }
+    if (timing) timing->reply_bytes = kHeaderBytes + f.payload.size();
     last_status_ = f.status;
     if (f.status != ST_OK) {
         err = std::string("inference refused: ") + status_name(f.status);
+        if (timing) timing->receive_decode_ns = mono_ns() - receive_start;
         return false;
     }
     if (!decode_infer_ack(f.payload.data(), f.payload.size(), n_embd_, r.T, reply)) {
         err = "the reply's shape does not match the request";
+        if (timing) timing->receive_decode_ns = mono_ns() - receive_start;
         return false;
     }
     if (reply.session != session_ || reply.sequence != r.sequence) {
         err = "the reply's session or sequence does not match the request";
+        if (timing) timing->receive_decode_ns = mono_ns() - receive_start;
         return false;
     }
+    if (timing) timing->receive_decode_ns = mono_ns() - receive_start;
     return true;
 }
 

@@ -140,6 +140,7 @@ bool ExpertWorkerService::direct_native_partial(const NativeFmt& fmt, int T, int
 struct ExpertWorkerService::Impl {
     WorkerOptions opt;
     WorkerCounters* counters = nullptr;
+    RpcTimingCounters* timing = nullptr;
     sock_fd listener = kBadFd;
     std::atomic<bool> stopping{false};
 
@@ -188,8 +189,8 @@ struct ExpertWorkerService::Impl {
         va_end(ap);
     }
 
-    Impl(WorkerOptions o, WorkerCounters* c)
-        : opt(o), counters(c),
+    Impl(WorkerOptions o, WorkerCounters* c, RpcTimingCounters* t)
+        : opt(o), counters(c), timing(t),
           pool(std::make_unique<strata::kernels::cpu::ExpertPool>(o.workers)) {}
 
     void fail(uint16_t status) {
@@ -252,11 +253,12 @@ struct ExpertWorkerService::Impl {
     }
     void on_upload(sock_fd fd, const uint8_t* p, size_t n);
     void on_ready(sock_fd fd, const uint8_t* p, size_t n);
-    void on_infer(sock_fd fd, const uint8_t* p, size_t n);
+    void on_infer(sock_fd fd, const uint8_t* p, size_t n, uint64_t request_start_ns);
     void on_status(sock_fd fd);
     void on_cache_status(sock_fd fd);
     void serve_connection(sock_fd fd);
-    bool execute(const InferRequest& r, std::vector<float>& partials, std::string& err);
+    struct ExecuteTiming { uint64_t prepare, pool, reduce; };
+    bool execute(const InferRequest& r, std::vector<float>& partials, std::string& err, ExecuteTiming* timing);
 };
 
 bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malformed) {
@@ -804,13 +806,17 @@ void ExpertWorkerService::Impl::on_ready(sock_fd fd, const uint8_t* p, size_t n)
 }
 
 bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float>& partials,
-                                        std::string& err) {
+                                        std::string& err, ExecuteTiming* measured) {
     using strata::kernels::cpu::ExpertJobMulti;
+    const uint64_t prepare_start = measured ? mono_ns() : 0;
     const int T = r.T, K = r.K, H = manifest.n_embd;
     partials.assign((size_t) T * H, 0.f);
     bool any = false;
     for (size_t i = 0; i < r.mask.size(); ++i) any = any || r.mask[i] != 0;
-    if (!any) return true;   // zero CPU work: the reply is a zero partial, not an error
+    if (!any) {
+        if (measured) measured->prepare = mono_ns() - prepare_start;
+        return true;   // zero CPU work: the reply is a zero partial, not an error
+    }
     std::vector<uint8_t> nact((size_t) T * strata::kernels::cpu::kNativeActBytes, 0);
     for (int t = 0; t < T; ++t) {
         bool tok = false;
@@ -846,19 +852,46 @@ bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float
         j.out[j.nt] = rows.data() + (size_t) i * H;
         ++j.nt;
     }
-    const uint64_t t0 = mono_ns();
+    if (measured) measured->prepare = mono_ns() - prepare_start;
+    const uint64_t t0 = mono_ns(); // existing cpu_service_ns counter, independent of diagnostic timing
     pool->run_split_multi_native(fmt, jobs.data(), (int) jobs.size());
-    counters->cpu_service_ns += mono_ns() - t0;
+    const uint64_t pool_ns = mono_ns() - t0;
+    counters->cpu_service_ns += pool_ns;
+    if (measured) measured->pool = pool_ns;
+    const uint64_t reduce_start = measured ? mono_ns() : 0;
     accumulate_partial(T, K, r.mask.data(), r.weights.data(), rows.data(), H, partials.data());
+    if (measured) measured->reduce = mono_ns() - reduce_start;
     return true;
 }
 
-void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n) {
+void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
+                                         uint64_t request_start_ns) {
     ++counters->requests;
+    const bool measure = timing->enabled();
+    const uint64_t decode_start = measure ? mono_ns() : 0;
+    bool decode_recorded = false;
+    uint8_t tokens = 0;
+    uint32_t entries = 0, experts = 0;
+    auto finish_decode = [&] {
+        if (measure && !decode_recorded) {
+            timing->add_phase(RpcTimingPhase::WorkerDecodeValidate, mono_ns() - decode_start);
+            decode_recorded = true;
+        }
+    };
     // every reply path goes through here: status + payload, sent and counted as reply bytes
-    auto reply = [&](uint16_t status, const std::vector<uint8_t>& payload) {
+    auto reply = [&](uint16_t status, const std::vector<uint8_t>& payload, uint64_t encode_start_ns = 0) {
+        finish_decode();
+        if (measure && !encode_start_ns) encode_start_ns = mono_ns();
         counters->infer_out_bytes += kHeaderBytes + payload.size();
-        if (send_frame(fd, MSG_INFER_ACK, status, payload) && status == ST_OK && resident_complete)
+        const bool sent = send_frame(fd, MSG_INFER_ACK, status, payload);
+        if (measure) {
+            timing->add_phase(RpcTimingPhase::WorkerEncodeSend, mono_ns() - encode_start_ns);
+            timing->add_phase(RpcTimingPhase::WorkerRequest, mono_ns() - request_start_ns);
+        }
+        if (measure)
+            timing->finish_call(tokens, entries, experts, kHeaderBytes + n,
+                                sent ? kHeaderBytes + payload.size() : 0, sent && status == ST_OK);
+        if (sent && status == ST_OK && resident_complete)
             idle_since_ns = mono_ns(); // idle starts after the successful request's reply completes
     };
     if (state == State::Empty) {
@@ -871,6 +904,12 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n)
         fail(ST_BAD_REQUEST);
         reply(ST_BAD_REQUEST, {});
         return;
+    }
+    if (measure) {
+        tokens = r.T;
+        const auto shape = rpc_request_shape(r.mask, r.ids);
+        entries = shape.entries;
+        experts = shape.distinct_experts;
     }
     if (r.session != session || r.model_id != model_id || r.partition_id != partition_id) {
         logf("inference refused: stale session or identity (session %llx, model %llx, partition %llx)",
@@ -932,11 +971,19 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n)
 
     std::vector<float> partials;
     std::string err;
-    if (!execute(r, partials, err)) {
+    finish_decode();
+    ExecuteTiming measured;
+    if (measure) measured = {};
+    if (!execute(r, partials, err, measure ? &measured : nullptr)) {
         logf("inference refused: %s", err.c_str());
         fail(ST_NOT_OWNED);
         reply(ST_NOT_OWNED, {});
         return;
+    }
+    if (measure) {
+        timing->add_phase(RpcTimingPhase::WorkerQuantPrepare, measured.prepare);
+        timing->add_phase(RpcTimingPhase::WorkerPool, measured.pool);
+        timing->add_phase(RpcTimingPhase::WorkerWeightedReduce, measured.reduce);
     }
     last_sequence = r.sequence;
     have_sequence = true;
@@ -947,7 +994,9 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n)
     rep.session = session;
     rep.sequence = r.sequence;
     rep.partials = std::move(partials);
-    reply(ST_OK, encode_infer_ack(rep));
+    const uint64_t encode_start = measure ? mono_ns() : 0;
+    const auto payload = encode_infer_ack(rep);
+    reply(ST_OK, payload, encode_start);
 }
 
 void ExpertWorkerService::Impl::on_status(sock_fd fd) {
@@ -1013,7 +1062,7 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
             break;
         case MSG_INFER:
             counters->infer_in_bytes += kHeaderBytes + f.payload.size();
-            on_infer(fd, f.payload.data(), f.payload.size());
+            on_infer(fd, f.payload.data(), f.payload.size(), timing->enabled() ? mono_ns() : 0);
             break;
         case MSG_CACHE_STATUS:
             on_cache_status(fd);
@@ -1044,7 +1093,10 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
     void_session();   // a disconnect voids the session: the next connection restarts with SETUP_BEGIN
 }
 
-ExpertWorkerService::ExpertWorkerService(WorkerOptions options) : impl_(std::make_unique<Impl>(options, &counters_)) {}
+ExpertWorkerService::ExpertWorkerService(WorkerOptions options)
+    : impl_(std::make_unique<Impl>(options, &counters_, &rpc_timing_)) {
+    rpc_timing_.set_enabled(options.rpc_timing);
+}
 ExpertWorkerService::~ExpertWorkerService() {
     stop();
     sock::close_fd(impl_->listener);
@@ -1083,7 +1135,7 @@ void ExpertWorkerService::run() {
         impl_->expire_resident();
         sock_fd fd = kBadFd;
         if (impl_->listener == kBadFd) break;
-        if (!sock::accept_one(impl_->listener, fd, 100)) continue;
+        if (!sock::accept_one(impl_->listener, fd, 100, impl_->opt.accepted_tcp_nodelay)) continue;
         impl_->serve_connection(fd);
     }
     impl_->void_session();

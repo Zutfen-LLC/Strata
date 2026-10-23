@@ -571,6 +571,7 @@ struct Options {
     bool remote_cpu_local_fallback = false;
     bool remote_cpu_resident = false;
     int remote_cpu_setup_ms = 600000;
+    bool remote_cpu_rpc_timing = false;
     bool remote_gpu_experts = false;
     bool remote_gpu_legacy = false;
     std::vector<strata::worker::GpuEndpoint> remote_gpu_workers;
@@ -1021,6 +1022,7 @@ void usage() {
                  "  --remote-cpu-resident  opt-in persistent worker cache; needs local manifest and worker TTL\n"
                  "  --remote-cpu-setup-ms N  whole local setup budget (default 600000)\n"
                  "  --remote-cpu-deadline-ms N  per-frame deadline to the worker (default 10000)\n"
+                 "  --remote-cpu-rpc-timing  opt-in bounded client RPC latency aggregates\n"
                  "  --remote-gpu-experts HOST:PORT  fixed network CUDA expert worker (inferswarm04)\n"
                  "                       needs --remote-cpu-experts, its trusted --remote-cpu-local-manifest,\n"
                  "                       and --remote-gpu-plan; CPU residency stays intact, CUDA owns the assigned subset\n"
@@ -2314,7 +2316,8 @@ int main(int argc, char** argv) {
 #ifndef STRATA_NATIVE_EXPERTS
         if (a == "--remote-cpu-experts" || a == "--remote-cpu-local-manifest" ||
             a == "--remote-cpu-local-fallback" || a == "--remote-cpu-resident" ||
-            a == "--remote-cpu-setup-ms" || a == "--remote-cpu-deadline-ms") {
+            a == "--remote-cpu-setup-ms" || a == "--remote-cpu-deadline-ms" ||
+            a == "--remote-cpu-rpc-timing") {
             std::fprintf(stderr, "strata: %s requires STRATA_NATIVE_EXPERTS=ON; this build excludes the remote CPU-expert worker\n",
                          a.c_str());
             return 2;
@@ -2580,6 +2583,7 @@ int main(int argc, char** argv) {
         else if (a == "--remote-cpu-setup-ms") o.remote_cpu_setup_ms=std::atoi(next("--remote-cpu-setup-ms"));
         else if (a == "--remote-cpu-deadline-ms")
             o.remote_cpu_deadline_ms = std::max(100, std::atoi(next("--remote-cpu-deadline-ms")));
+        else if (a == "--remote-cpu-rpc-timing") o.remote_cpu_rpc_timing = true;
         else if (a == "--remote-gpu-experts") {
             o.remote_gpu_experts = o.remote_gpu_legacy = true;
             const std::string v = next("--remote-gpu-experts");
@@ -3340,8 +3344,9 @@ int main(int argc, char** argv) {
     // configuration whose execution path it does not implement, rather than silently running a different
     // one: the modes below are the ones the integration was framed for (see docs/CPU_WORKER.md).
     if ((!o.remote_cpu_local_manifest.empty() && !o.remote_cpu_experts) ||
+        (o.remote_cpu_rpc_timing && !o.remote_cpu_experts) ||
         ((o.remote_cpu_local_fallback || o.remote_cpu_resident) && o.remote_cpu_local_manifest.empty()) || o.remote_cpu_setup_ms<=0) {
-        std::fprintf(stderr,"strata generate: local manifest needs --remote-cpu-experts; fallback/residency needs a manifest; setup budget must be positive\n"); return 2;
+        std::fprintf(stderr,"strata generate: local manifest/RPC timing needs --remote-cpu-experts; fallback/residency needs a manifest; setup budget must be positive\n"); return 2;
     }
     if (!o.remote_cpu_local_manifest.empty() && (!o.mmap_experts || o.native_preset.empty())) {
         std::fprintf(stderr, "strata generate: local worker sources require --mmap-experts and --native GGUF reference slices\n");
@@ -6725,6 +6730,7 @@ int main(int argc, char** argv) {
         wopen.host = o.remote_cpu_host;
         wopen.port = (uint16_t) o.remote_cpu_port;
         wopen.deadline_ms = o.remote_cpu_deadline_ms;
+        wopen.rpc_timing = o.remote_cpu_rpc_timing;
         wopen.model_name = o.pack.c_str();
         wopen.gu_type = 8;
         wopen.d_type = 8;

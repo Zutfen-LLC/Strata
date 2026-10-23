@@ -131,12 +131,13 @@ struct Svc {
         th = std::thread([this] { svc->run(); });
         return true;
     }
-    ~Svc() {
+    void stop() {
         if (th.joinable()) {
             svc->stop();
             th.join();
         }
     }
+    ~Svc() { stop(); }
 };
 
 // ---- a raw frame client, for the wire-level controls ----------------------------------------------
@@ -743,6 +744,25 @@ void restart_and_disconnect() {
 }
 
 void malformed_and_deadline() {
+    {   // an empty INFER reaches the real handler, is refused, and remains attributable as T=0
+        Svc empty(strata::worker::WorkerOptions{.memory_budget = 64ull << 20, .workers = 1,
+                                                .deadline_ms = 250, .rpc_timing = true});
+        check(empty.start(), "the empty-inference timing service listens");
+        {
+            Raw raw;
+            check(raw.conn(empty.port), "raw connect for empty inference");
+            uint16_t msg = 0, st = 0;
+            std::vector<uint8_t> payload;
+            check(raw.send(strata::worker::MSG_INFER, 0, nullptr, 0) &&
+                      raw.recv_reply(msg, st, payload) && msg == strata::worker::MSG_INFER_ACK &&
+                      st == strata::worker::ST_WRONG_STATE,
+                  "an empty inference is refused in the empty state");
+        }
+        empty.stop(); // join before reading the service-owned diagnostic
+        check(empty.svc->rpc_timing().calls() == 1 && empty.svc->rpc_timing().failures() == 1 &&
+                  empty.svc->rpc_timing().token_shapes()[0] == 1,
+              "worker timing attributes the real empty/refused request once");
+    }
     Svc svc(strata::worker::WorkerOptions{.memory_budget = 64ull << 20, .workers = 1, .deadline_ms = 250});
     check(svc.start(), "the wire-abuse service listens");
     {   // bad magic: the connection closes with no reply

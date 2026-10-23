@@ -42,6 +42,7 @@ public:
         int setup_ms = 600000;
         std::function<bool()> cancelled;
         int deadline_ms = 10000;          ///< per-frame deadline (setup, upload, infer)
+        bool rpc_timing = false;           ///< fixed-memory per-host aggregates; default path has no clocks
         const char* model_name = "model";
         uint16_t gu_type = 8, d_type = 8; ///< GGML_TYPE_Q8_0 - the one layout the worker runs
         uint16_t n_layers = 0, n_expert = 0, n_embd = 0, n_ff = 0;
@@ -115,6 +116,10 @@ public:
         double exchange_ms = 0;            ///< client INFER send/reply duration on that thread
     };
     const Stats& stats() const { return st_; }
+    const RpcTimingCounters& rpc_timing() const { return rpc_timing_; }
+    bool rpc_timing_enabled() const { return rpc_timing_.enabled(); }
+    void reset_rpc_timing() { rpc_timing_.reset(); }
+    void record_result_merge(uint64_t ns) { rpc_timing_.add_phase(RpcTimingPhase::ClientResultMerge, ns); }
     /// One evidence line for the engine's report (identities and counters, never payloads).
     void report(std::string& out) const;
 
@@ -148,6 +153,7 @@ private:
     bool posted_ = false;
     bool served_ = false;
     Stats st_;
+    RpcTimingCounters rpc_timing_;
 };
 
 }  // namespace strata::worker

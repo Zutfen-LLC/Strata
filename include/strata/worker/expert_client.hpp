@@ -15,6 +15,13 @@
 
 namespace strata::worker {
 
+struct RpcExchangeTiming {
+    uint64_t encode_send_ns;
+    uint64_t receive_decode_ns;
+    uint64_t request_bytes;
+    uint64_t reply_bytes;
+};
+
 class ExpertWorkerClient {
 public:
     ExpertWorkerClient() = default;
@@ -51,7 +58,8 @@ public:
     bool mark_ready(std::string& err);
 
     /// One bounded inference request; on refusal returns false with `last_status` set.
-    bool infer(const InferRequest& r, InferReply& reply, std::string& err);
+    bool infer(const InferRequest& r, InferReply& reply, std::string& err,
+               RpcExchangeTiming* timing = nullptr);
 
     bool status(WorkerStatusInfo& out, std::string& err);
     bool cache_status(WorkerCacheInfo& out, std::string& err);

@@ -143,6 +143,14 @@ The engine side is **opt-in and default-off**: `strata --serve --remote-cpu-expe
 untouched. Header and payload reads have separate budgets; connection establishment and native kernel
 execution are not preempted by this setting. The pieces:
 
+The latency diagnostic is also default-off. Start only the CPU worker with `--tcp-nodelay` to test checked
+`TCP_NODELAY` on its accepted descriptor; GPU-worker accepts still use the unchanged default. Add
+`--rpc-timing` to the CPU worker and `--remote-cpu-rpc-timing` to the engine for fixed-memory aggregate
+latency histograms. The flags are independent, so socket behavior can be compared without timing overhead.
+The engine reports client-side aggregates with its existing worker report. The worker reports its aggregate
+only when it stops cleanly; stopping or replacing a worker unloads its arena and must be a separate approved
+operation. See [the Hermes latency handoff](cpu-worker-rpc-latency/HERMES.md).
+
 - **The tier** (`strata::worker::ExpertWorkerTier`, `strata_worker_tier`, CPU-only like the service):
   owns the client, the frozen ownership bitmap, one in-flight request slot on one persistent communication
   thread, and the failure latch. The thread starts at the first nonempty post, preserving the former

@@ -198,11 +198,19 @@ bool listen_loopback(uint16_t& port, sock_fd& out, std::string& err) {
     return true;
 }
 
-bool accept_one(sock_fd listener, sock_fd& out, int deadline_ms) {
+bool accept_one(sock_fd listener, sock_fd& out, int deadline_ms, bool tcp_nodelay) {
     const Budget budget(deadline_ms);
     if (!wait_fd(listener, false, budget)) return false;
     out = ::accept(listener, nullptr, nullptr);
-    return out != kBadFd;
+    if (out == kBadFd) return false;
+    if (tcp_nodelay) {
+        int one = 1;
+        if (::setsockopt(out, IPPROTO_TCP, TCP_NODELAY, (const char*) &one, sizeof one) != 0) {
+            close_fd(out);
+            return false;
+        }
+    }
+    return true;
 }
 
 bool connect_host(const std::string& host, uint16_t port, int deadline_ms, sock_fd& out, std::string& err) {

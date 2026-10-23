@@ -4936,8 +4936,15 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         for (size_t i=0;i<d.gpu_worker->size();++i) if (d.gpu_worker->active(i))
             d.remote_opt->accumulate_host(d.gpu_worker->partials(i), d.gpu_worker->mask(i), (int)n_tok, (int)k);
 #endif
-    if (worker_sent)
+    if (worker_sent) {
+        const bool time_worker_merge = d.worker->rpc_timing_enabled();
+        const auto worker_merge_start = time_worker_merge ? std::chrono::steady_clock::now()
+                                                          : std::chrono::steady_clock::time_point{};
         d.remote_opt->accumulate_host(d.worker->partials(), worker_mask.data(), (int)n_tok, (int)k);
+        if (time_worker_merge)
+            d.worker->record_result_merge((uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now() - worker_merge_start).count());
+    }
 #endif
     const auto c4 = std::chrono::steady_clock::now();
     pt("ran");

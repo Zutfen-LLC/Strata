@@ -218,7 +218,9 @@ void parity_battery(const NativeFmt& fmt, BlobMap& blobs, uint16_t port) {
     strata::worker::ExpertWorkerTier tier;
     Fetcher fetch{&blobs};
     const std::vector<uint8_t> partition = make_partition();
-    if (!tier.open(fetch.open(port), err)) {
+    auto tier_open = fetch.open(port);
+    tier_open.rpc_timing = true;
+    if (!tier.open(tier_open, err)) {
         std::fprintf(stderr, "FAIL: tier open against the real service: %s\n", err.c_str());
         ++fails;
         return;
@@ -240,6 +242,8 @@ void parity_battery(const NativeFmt& fmt, BlobMap& blobs, uint16_t port) {
         check(tier.finish(err), "the first zero-work finish succeeds");
         check(tier.stats().communication_thread_starts == 0,
               "zero work creates no communication thread");
+        check(tier.rpc_timing().calls() == 0,
+              "zero work creates no RPC timing call");
     }
 
     Rng r(99);
@@ -391,6 +395,13 @@ void parity_battery(const NativeFmt& fmt, BlobMap& blobs, uint16_t port) {
           "the communication OS thread id is exposed for affinity inspection");
     check(tier.stats().queue_ms >= 0 && tier.stats().exchange_ms > 0 && tier.stats().wait_ms >= 0,
           "aggregate queue, exchange and finish-wait timings are recorded");
+    check(tier.rpc_timing().calls() == tier.stats().requests && tier.rpc_timing().failures() == 0,
+          "opt-in client timing counts each successful production RPC once");
+    check(tier.rpc_timing().phase(strata::worker::RpcTimingPhase::ClientPrepare).count ==
+              tier.rpc_timing().calls() &&
+              tier.rpc_timing().phase(strata::worker::RpcTimingPhase::ClientReceiveDecode).count ==
+              tier.rpc_timing().calls(),
+          "client preparation and receive/decode distributions cover successful RPCs");
     tier.close();
 }
 
@@ -556,6 +567,7 @@ void failure_battery(const NativeFmt& fmt, BlobMap& blobs) {
         auto o = Fetcher{&blobs}.open(0);
         o.port = fake.port;
         o.deadline_ms = 400;
+        o.rpc_timing = true;
         // the fake advertises 64-byte blobs, so the fixture fetcher refuses them - feed it a fetch that
         // accepts the fake's size, just for the handshake
         o.fetch = [](int64_t, int64_t, uint8_t* dst, uint32_t bytes) {
@@ -584,6 +596,11 @@ void failure_battery(const NativeFmt& fmt, BlobMap& blobs) {
         check(!tier.served(), "an adverse response exposes no partial to merge");
         check(!tier.post(0, x.data(), ids.data(), w.data(), owned.data(), T, K, err),
               "the dead tier sends no retry");
+        check(tier.rpc_timing().calls() == 1 && tier.rpc_timing().failures() == 1,
+              "the real client timing counts the adverse RPC once as failed");
+        check(tier.rpc_timing().phase(strata::worker::RpcTimingPhase::ClientEncodeSend).count == 1 &&
+                  tier.rpc_timing().phase(strata::worker::RpcTimingPhase::ClientReceiveDecode).count == 1,
+              "the real refusal/disconnect/timeout path retains bounded exchange phases");
         if (mode == AdverseWorker::timeout)
             check(took < 3.0, "the deadline fired instead of hanging");
     }
@@ -613,9 +630,18 @@ int main() {
     if (fails) return 1;
     BlobMap blobs = make_blobs(fmt);
     {
-        Svc svc;
+        WorkerOptions timing_options;
+        timing_options.rpc_timing = true;
+        Svc svc(timing_options);
         check(svc.start(), "the service started");
         parity_battery(fmt, blobs, svc.port);
+        svc.stop(); // join before reading service-owned timing state
+        check(svc.svc->rpc_timing().calls() > 0 && svc.svc->rpc_timing().failures() == 0,
+              "opt-in worker timing counts successful production RPCs");
+        check(svc.svc->rpc_timing().phase(strata::worker::RpcTimingPhase::WorkerPool).count > 0 &&
+                  svc.svc->rpc_timing().phase(strata::worker::RpcTimingPhase::WorkerRequest).count ==
+                  svc.svc->rpc_timing().calls(),
+              "worker pool and complete-handler distributions cover real requests");
     }
     failure_battery(fmt, blobs);
     if (fails) {
