@@ -11,6 +11,7 @@
 // latch (an out-of-partition marking, a worker that goes away, a deadline the worker never meets, an
 // over-budget setup, an empty partition).
 #include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_group.hpp"
 #include "strata/worker/expert_worker.hpp"
 #include "strata/worker/expert_wire.hpp"
 
@@ -18,8 +19,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <string>
 #include <thread>
@@ -493,6 +496,86 @@ struct AdverseWorker {
     }
 };
 
+void group_battery(const NativeFmt& fmt, BlobMap& blobs) {
+    using strata::worker::CpuEndpoint;
+    using strata::worker::CpuWorkerGroup;
+    std::string err;
+    const std::vector<uint8_t> complement = make_partition();
+
+    // Placement: one endpoint is exactly the legacy full partition; two/three endpoints are deterministic,
+    // disjoint and exhaustive. Capacity is a hard bound and speed decides which worker receives hotter ranks.
+    const std::vector<std::pair<int32_t,int32_t>> hot = {{0,2},{0,5},{0,9},{1,1},{1,2},{1,3},{2,7}};
+    std::vector<std::vector<uint8_t>> one, two, three, again;
+    check(strata::worker::place_cpu_partitions(complement,kLayers,kExperts,hot,{{"one",1,7,1}},one,err) &&
+          one.size()==1 && one[0]==complement,"one CPU endpoint keeps the full complement");
+    check(strata::worker::place_cpu_partitions(complement,kLayers,kExperts,hot,
+          {{"a",1,4,1},{"b",2,3,2}},two,err),"two-worker capacity/speed placement");
+    check(strata::worker::place_cpu_partitions(complement,kLayers,kExperts,hot,
+          {{"a",1,3,1},{"b",2,2,2},{"c",3,2,1}},three,err) &&
+          strata::worker::place_cpu_partitions(complement,kLayers,kExperts,hot,
+          {{"a",1,3,1},{"b",2,2,2},{"c",3,2,1}},again,err) && three==again,
+          "three-worker placement is deterministic");
+    auto exact = [&](const std::vector<std::vector<uint8_t>>& parts) {
+        std::vector<uint8_t> seen(complement.size(),0);
+        for(const auto& p:parts)for(size_t i=0;i<p.size();++i){if(seen[i]&p[i])return false;seen[i]|=p[i];}
+        return seen==complement;
+    };
+    check(exact(two)&&exact(three),"placements are disjoint and exhaustive");
+    check(!strata::worker::place_cpu_partitions(complement,kLayers,kExperts,hot,
+          {{"a",1,2,1},{"b",2,2,1}},again,err),"insufficient CPU capacity is refused");
+    check(!strata::worker::place_cpu_partitions(complement,kLayers,kExperts,hot,
+          {{"a",1,0,1},{"a",1,0,1}},again,err),"duplicate CPU endpoints are refused");
+
+    Svc a, b, c;
+    check(a.start()&&b.start()&&c.start(),"three CPU worker services started");
+    std::vector<CpuEndpoint> endpoints={{"127.0.0.1",a.port,3,1},{"127.0.0.1",b.port,2,1},{"127.0.0.1",c.port,2,1}};
+    check(strata::worker::place_cpu_partitions(complement,kLayers,kExperts,hot,endpoints,three,err),
+          "fixture three-way placement");
+    Fetcher fetch{&blobs};
+    std::vector<strata::worker::ExpertWorkerTier::Open> opens;
+    for(size_t i=0;i<endpoints.size();++i){auto o=fetch.open(endpoints[i].port);o.partition=three[i];opens.push_back(o);}
+    CpuWorkerGroup group;
+    const bool group_open=group.open(opens,complement,err);
+    check(group_open,"three-worker group opened");
+    if(!group_open)return;
+    const int T=1,K=3;
+    const std::vector<int32_t> ids={2,5,9};
+    const std::vector<float> weights={0.2f,0.3f,0.5f};
+    std::vector<float> x(kEmbd);for(size_t i=0;i<x.size();++i)x[i]=(float)((int)(i%17)-8)*0.01f;
+    const std::vector<uint8_t> all={1,1,1};
+    check(group.post(0,x.data(),ids.data(),weights.data(),all.data(),T,K,err),"three-worker request posted");
+    bool published_all=true;for(size_t i=0;i<group.size();++i)published_all &= group.active(i)&&group.stats(i).requests==1;
+    check(published_all,"every participating CPU request is published before group finish waits");
+    check(group.finish(err),"three-worker request finished");
+    std::vector<float> merged(kEmbd,0), full;
+    for(size_t i=0;i<group.size();++i){
+        std::vector<uint8_t> mask(group.mask(i),group.mask(i)+K), reference;
+        check(direct_window(fmt,blobs,0,ids,weights,x,mask,T,K,reference),"per-worker direct reference");
+        check(std::memcmp(reference.data(),group.partials(i),reference.size()*sizeof(float))==0,
+              "each worker partial is bitwise its direct reference");
+        for(size_t j=0;j<merged.size();++j)merged[j]+=group.partials(i)[j]; // endpoint order is the contract
+    }
+    check(direct_window(fmt,blobs,0,ids,weights,x,all,T,K,full),"unsplit direct reference");
+    bool close=true;for(size_t h=0;h<full.size();++h){
+        float scale=std::fabs(full[h]);for(size_t i=0;i<group.size();++i)scale+=std::fabs(group.partials(i)[h]);
+        const float rounding_bound=8.f*std::numeric_limits<float>::epsilon()*std::max(scale,1.f);
+        close &= std::fabs(merged[h]-full[h])<=rounding_bound;
+    }
+    check(close,"ordered grouped reduction stays within its local F32 addition-rounding bound");
+    const std::vector<int32_t> no_ids={0,4,8};const std::vector<uint8_t> none={0,0,0};
+    check(group.post(0,x.data(),no_ids.data(),weights.data(),none.data(),T,K,err)&&!group.posted()&&group.finish(err),
+          "a no-work group window sends no requests");
+
+    // Missing/duplicate/out-of-range ownership is rejected before any connection is opened.
+    auto bad=opens;bad[0].partition[0]&=(uint8_t)~(1u<<2);
+    check(!CpuWorkerGroup::validate(bad,complement,err),"missing CPU ownership is refused");
+    bad=opens;bad[0].partition[0]|=(uint8_t)(1u<<5);
+    check(!CpuWorkerGroup::validate(bad,complement,err),"duplicate CPU ownership is refused");
+    bad=opens;for(auto& o:bad)o.n_expert=15;bad[0].partition[1]|=0x80;
+    std::vector<uint8_t> fifteen=complement;for(int l=0;l<kLayers;++l)fifteen[(size_t)l*2+1]&=0x7f;
+    check(!CpuWorkerGroup::validate(bad,fifteen,err),"out-of-range CPU ownership is refused");
+}
+
 void failure_battery(const NativeFmt& fmt, BlobMap& blobs) {
     std::string err;
     // an out-of-partition marking is caught BEFORE any frame (the engine's own bug, not the worker's)
@@ -587,6 +670,28 @@ void failure_battery(const NativeFmt& fmt, BlobMap& blobs) {
         if (mode == AdverseWorker::timeout)
             check(took < 3.0, "the deadline fired instead of hanging");
     }
+    // One failed participant drains the successful peer and fails the whole group. The caller receives no
+    // success on which it could commit either partial; posted() is clear before failure propagates.
+    {
+        Svc good;check(good.start(),"good service for group failure control");
+        AdverseWorker bad(AdverseWorker::refusal);bad.start();
+        const size_t stride=((size_t)kExperts+7)/8;
+        std::vector<uint8_t> complement((size_t)kLayers*stride,0), p0=complement, p1=complement;
+        p0[0]|=(uint8_t)(1u<<2);p1[0]|=(uint8_t)(1u<<5);complement[0]=p0[0]|p1[0];
+        Fetcher fetch{&blobs};auto a=fetch.open(good.port);a.partition=p0;
+        auto b=fetch.open(bad.port);b.partition=p1;b.deadline_ms=400;
+        b.fetch=[](int64_t,int64_t,uint8_t* dst,uint32_t bytes){std::memset(dst,0xAB,bytes);return true;};
+        strata::worker::CpuWorkerGroup group;
+        const bool group_open=group.open({a,b},complement,err);
+        check(group_open,"mixed-success CPU group opened");
+        if(!group_open)return;
+        const int32_t ids[2]={2,5};const float weights[2]={0.4f,0.6f};
+        std::vector<float> x(kEmbd,0.1f);const uint8_t owned[2]={1,1};
+        check(group.post(0,x.data(),ids,weights,owned,1,2,err),"mixed-success group posted both peers");
+        check(!group.finish(err),"one CPU peer failure rejects the whole group");
+        check(!group.posted()&&group.dead()&&group.served(0),"successful CPU peer was drained before failure propagated");
+        check(group.stats(0).requests==1&&group.stats(1).requests==1,"both CPU peer requests were published");
+    }
     // setup refusals: over-budget is typed and latches; an empty partition is a config error, not a latch
     {
         Svc svc(WorkerOptions{.memory_budget = 1ull << 20});
@@ -617,6 +722,7 @@ int main() {
         check(svc.start(), "the service started");
         parity_battery(fmt, blobs, svc.port);
     }
+    group_battery(fmt, blobs);
     failure_battery(fmt, blobs);
     if (fails) {
         std::fprintf(stderr, "expert_tier_test: %d failure(s)\n", fails);

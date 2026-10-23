@@ -5,6 +5,7 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_group.hpp"
 #include "strata/worker/expert_worker.hpp"
 #include "strata/worker/gpu_client.hpp"
 #include "strata/worker/gpu_group.hpp"
@@ -231,7 +232,7 @@ int main(int argc,char** argv) {
         auto* service=worker.get();services.extra.push_back(std::move(worker));
         services.extra_threads.emplace_back([service]{service->run();});gpu_ports.push_back(port);
     }
-    ExpertWorkerTier cpu_tier;
+    CpuWorkerGroup cpu_tier;
     ExpertWorkerTier::Open cop;
     cop.port = cp; cop.n_layers = 1; cop.n_expert = E; cop.n_embd = H; cop.n_ff = FF;
     cop.partition = {0xfc, 0x0f}; // unchanged full CPU complement, INCLUDING CUDA04's duplicate 2,3 weights
@@ -243,7 +244,8 @@ int main(int argc,char** argv) {
     GpuWorkerGroup gpu_tier;
     std::vector<GpuWorkerTier::Open> gpu_options(workers);
     for(int i=0;i<workers;++i) {gpu_options[i].port=gpu_ports[i];gpu_options[i].plan=plans[i];gpu_options[i].fetch=fetch;}
-    if (!check(cpu_tier.open(cop, err), "CPU READY") || !check(gpu_tier.open(gpu_options, err), "CUDA workers READY")) return 1;
+    const std::vector<uint8_t> cpu_partition = cop.partition;
+    if (!check(cpu_tier.open({cop}, cpu_partition, err), "CPU READY") || !check(gpu_tier.open(gpu_options, err), "CUDA workers READY")) return 1;
     check(cpu_tier.holds(0, 2) && gpu_tier.holds(0, 2), "CPU duplicate weights remain resident");
     strata::core::RemoteExpertOpt merge;
     if (!check(merge.init(err), "real merge tables")) return 1;
@@ -284,7 +286,7 @@ int main(int argc,char** argv) {
     std::vector<float> cpu_ref;
     if (!check(ExpertWorkerService::direct_native_partial(f, T, K, cpu_mask.data(), weights.data(), x.data(),
         entry_blobs.data(), cpu_ref, err), "CPU uncovered direct reference")) return 1;
-    check(std::memcmp(cpu_ref.data(), cpu_tier.partials(), cpu_ref.size()*sizeof(float)) == 0,
+    check(std::memcmp(cpu_ref.data(), cpu_tier.partials(0), cpu_ref.size()*sizeof(float)) == 0,
           "CPU05 receives ONLY uncovered experts, never CUDA04 duplicates");
     std::vector<float> base(T * H), expected(T * H), row(H);
     for (int i = 0; i < T * K; ++i) if (ids[i] < 2) {
@@ -327,13 +329,13 @@ int main(int argc,char** argv) {
     // CPU is now submitted first. GPU loss must drain that CPU request, retain
     // the failed latch and commit neither partial; no fallback or retry.
     WorkerStatusInfo before_loss, after_loss;
-    if (!check(cpu_tier.status(before_loss, err), "CPU counters before GPU loss")) return 1;
+    if (!check(cpu_tier.status(0, before_loss, err), "CPU counters before GPU loss")) return 1;
     controlled_loss->lose.store(true);
     Plan lost_plan;
     check(dispatch(rows, lost_plan), "GPU loss fails the affected request");
     check(gpu_tier.dead(), "GPU loss latches dead; no invisible CPU retry");
-    check(!cpu_tier.posted() && cpu_tier.served(), "GPU loss joined the already-submitted CPU request");
-    check(cpu_tier.status(after_loss, err) && after_loss.requests == before_loss.requests + 1,
+    check(!cpu_tier.posted() && cpu_tier.served(0), "GPU loss joined the already-submitted CPU request");
+    check(cpu_tier.status(0, after_loss, err) && after_loss.requests == before_loss.requests + 1,
           "only the original CPU share ran; no GPU fallback or retry");
     // Exercise the production device combine instead of requiring a diagnostic
     // accessor to the host sum. begin() reset it before the failed dispatch.

@@ -20,7 +20,7 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
-#include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_group.hpp"
 #include "strata/worker/expert_worker.hpp"
 
 #include "ggml.h"
@@ -43,6 +43,7 @@
 namespace fs = std::filesystem;
 using strata::kernels::cpu::NativeFmt;
 using strata::worker::ExpertWorkerService;
+using strata::worker::CpuWorkerGroup;
 using strata::worker::ExpertWorkerTier;
 using strata::worker::WorkerOptions;
 
@@ -225,7 +226,7 @@ int main() {
 
     Svc svc;
     check(svc.start(), "the worker service started");
-    ExpertWorkerTier tier;
+    CpuWorkerGroup tier;
     {
         ExpertWorkerTier::Open o;
         o.host = "127.0.0.1";
@@ -245,7 +246,7 @@ int main() {
             std::memcpy(dst, it->second.data(), bytes);
             return true;
         };
-        check(tier.open(o, err), "the tier opened (setup streamed, ready)");
+        check(tier.open({o}, partition, err), "the tier opened (setup streamed, ready)");
     }
     if (fails) return 1;
 
@@ -258,7 +259,7 @@ int main() {
     for (const auto& [le, slot] : resident) host_res[(size_t) le.first * kExperts + le.second] = slot;
 
     std::vector<int32_t> published_cache_rows;
-    auto run_window = [&](ExpertWorkerTier* t, int layer, const std::vector<int32_t>& ids,
+    auto run_window = [&](CpuWorkerGroup* t, int layer, const std::vector<int32_t>& ids,
                           const std::vector<float>& w, const std::vector<float>& x, int T,
                           std::vector<float>& out_rows, std::vector<int32_t>& kinds) {
         Plan plan(128);
@@ -423,8 +424,8 @@ int main() {
                     for (int e = 0; e < kEmbd; ++e) expect[(size_t) t * kEmbd + e] += w[i] * row_ref[e];
                     for (int e = 0; e < kEmbd; ++e) merged[(size_t) t * kEmbd + e] += w[i] * copied_rows[i * kEmbd + e];
                 }
-            check(tier.served(), "the window's reply is still held for the merge check");
-            const float* actual_partial = tier.partials();
+            check(tier.served(0), "the window's reply is still held for the merge check");
+            const float* actual_partial = tier.partials(0);
             for (size_t e = 0; e < expect.size(); ++e) expect[e] += worker_partial[e];
             check(std::memcmp(actual_partial, worker_partial.data(), worker_partial.size() * sizeof(float)) == 0,
                   "the transported worker partial is the direct reference");

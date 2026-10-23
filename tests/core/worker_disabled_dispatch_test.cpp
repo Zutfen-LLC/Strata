@@ -11,7 +11,7 @@
 int main() {
     strata::core::ExpertDispatch dispatch;
     alignas(void*) unsigned char opaque_worker[sizeof(void*)]{};
-    dispatch.worker = reinterpret_cast<strata::worker::ExpertWorkerTier*>(opaque_worker);
+    dispatch.worker = reinterpret_cast<strata::worker::CpuWorkerGroup*>(opaque_worker);
     dispatch.layers = 7;
     float output[] = {123.0f, -456.0f};
     // Null inputs and no pool/source/plan: touching any of them before refusal would fail.

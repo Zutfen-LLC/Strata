@@ -48,7 +48,7 @@ struct ExpertLayout;
 }
 
 namespace strata::worker {
-class ExpertWorkerTier;   // inferswarm #349: the opt-in remote CPU-expert tier (worker/expert_tier.hpp)
+class CpuWorkerGroup;     // one or more persistent remote CPU-expert tiers (worker/cpu_group.hpp)
 class GpuWorkerGroup;     // fixed network CUDA group; separate capability and numerical contract
 }
 
@@ -485,12 +485,12 @@ struct ExpertDispatch {
     RouterLookahead* lookahead = nullptr;   ///< CS-T: warms the next layer's predicted file-tier experts
     RemoteExperts* remote[3] = {}; ///< optional CUDA1..3 tiers for otherwise CPU-served rows
     int remote_count = 0;
-    /// inferswarm #349: the opt-in remote CPU-expert worker tier (default null = off, and then every
-    /// worker hook below is a dead branch).  Its partition is frozen at setup: every expert no GPU tier
-    /// holds executes there, the request goes out after the GPU's own work is published, and the
-    /// already-weighted partial joins the result through `remote_opt` (helpers first, worker on top).
-    strata::worker::ExpertWorkerTier* worker = nullptr;
-    // The network GPU plan is a frozen subset of the CPU partition. CPU weights stay resident, but
+    /// inferswarm #349: the opt-in remote CPU-expert group (default null = off, and then every worker
+    /// hook below is a dead branch). Its disjoint partitions are frozen at setup and exhaust the CPU
+    /// complement. Requests go out after the GPU work is published; ordered already-weighted partials
+    /// join through `remote_opt` only after every participating worker succeeds.
+    strata::worker::CpuWorkerGroup* worker = nullptr;
+    // The network GPU plan is a frozen subset of the CPU group's complement. CPU weights stay resident, but
     // entries assigned here execute only here for this session. Null preserves the CPU-only path.
     strata::worker::GpuWorkerGroup* gpu_worker = nullptr;
     RemoteExpertOpt* remote_opt = nullptr;   ///< the merge tables the helper tiers and the worker share

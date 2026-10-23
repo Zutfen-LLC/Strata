@@ -1775,7 +1775,7 @@ if(STRATA_NATIVE_EXPERTS)
   # one in-flight request, the already-weighted partial the verifier's merge consumes).  CPU-only like the
   # service above, so its whole lifecycle is testable without a GPU toolkit; the CUDA engine links it from
   # strata_engine (below) and only moves pointers between it and the verifier's buffers.
-  add_library(strata_worker_tier STATIC src/worker/expert_tier.cpp)
+  add_library(strata_worker_tier STATIC src/worker/expert_tier.cpp src/worker/cpu_group.cpp)
   target_include_directories(strata_worker_tier PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_worker_tier PUBLIC strata_expert_worker)
   # the engine (a GPU-backend target, defined above) drives the tier from its dispatch; this is the one

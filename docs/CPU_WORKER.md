@@ -136,7 +136,7 @@ cmake --build build-worker --target expert_worker_test expert_worker_e2e_test
   partition; per-blob digests ride each UPLOAD frame and are enforced when a slot completes.  A manifest
   with per-slot digest tables would be a protocol extension if a pack ever needs it.
 
-## The engine mode (inferswarm #349): `--remote-cpu-experts HOST:PORT`
+## The engine mode (inferswarm #349): one or more CPU endpoints
 
 The engine side is **opt-in and default-off**: `strata --serve --remote-cpu-experts 127.0.0.1:7431`
 (`--remote-cpu-deadline-ms N` budgets each full socket send/read; default 10000).  With the flag off, every path below is
@@ -168,6 +168,36 @@ execution are not preempted by this setting. The pieces:
   latches `failed`; the request aborts without committing partial state or returning stale data.  A dead
   tier never retries silently - only a full engine restart (a fresh `SETUP_BEGIN` + upload) serves again.
 
+Repeat the same option for parallel CPU workers:
+
+```sh
+strata --serve \
+  --remote-cpu-experts 127.0.0.1:7431@12000:1.0 \
+  --remote-cpu-experts 127.0.0.1:7432@12000:1.25 \
+  <the same required fixed-placement options>
+```
+
+The suffix is `@SLOTS[:SPEED]`. `SLOTS` is a hard maximum number of expert blobs assigned to that
+worker; zero or an omitted suffix is unbounded. `SPEED` is a positive relative execution weight. The
+engine first gives each endpoint a deterministic blob quota proportional to capacity. It then walks the
+profile from hottest to coldest and assigns entries by relative speed, breaking ties by per-layer load
+and endpoint order. Unranked complement entries are traversed expert-first across layers, not as whole
+contiguous layer ranges. Startup refuses duplicate endpoints, insufficient total capacity, overlapping,
+missing or out-of-range ownership. One endpoint receives the complete complement and remains the simple
+original mode.
+
+Each endpoint is an independent `ExpertWorkerTier` with its own persistent communication thread and
+deadline. A window copies and publishes every participating request before waiting for any reply. It
+then drains every active endpoint, even after one fails. Only after all succeed are partials added in
+command-line endpoint order. This order is deterministic, but it introduces one floating-point grouping
+boundary per worker: each per-worker partial remains bitwise equal to its direct native reference, while
+the final multi-worker sum is not promised bitwise equal to a single worker's left-to-right sum.
+
+Residency remains exact-partition residency. A worker holding the old complete 22,238-expert,
+116,135,731,200-byte complement does **not** match either smaller split partition. The first split run
+therefore needs a controlled worker reload (or an empty/expired resident arena) for each new exact
+bitmap. This change does not weaken partition identity and does not add superset reuse.
+
 What the mode refuses up front (rather than silently running a different path): everything but `--serve`;
 `--batch` slots; `--layer-split`; `--peer-device`; `--pipeline-windows`; no CUDA0 expert cache / pool /
 `--expert-profile`; `--short-read 0`; the adaptive tier on (`--adapt-every 0` fixes placement);
@@ -178,10 +208,15 @@ error naming the batched prefill path, for the prompt ingestion as well as the d
 the windows).  The one-shot `--prompt` path and the single-token expert path are not implemented for
 this mode and refuse if reached.
 
-The evidence it reports: a startup line with the frozen partition (blob count, GiB, setup seconds); the
+The evidence it reports: a startup line with the frozen partition (worker count, disjoint blob count,
+GiB, setup seconds); one report line per worker with setup/reuse bytes, request/entry counts, persistent
+thread starts and request/queue/exchange/wait timing; the
 `DONE` line grows ` worker_entries=N worker_req_wall=ms` per request; and a per-request stderr line with
-the tier's cumulative counters plus the worker's own STATUS (requests, failures, CPU service seconds -
+the tiers' cumulative counters plus each worker's own STATUS (requests, failures, CPU service seconds -
 the worker's kernel time, never the client's wait - and inference bytes in/out).
+
+The fixture-first multi-worker fleet validation and gated full-model proposal are in
+**[cpu-worker-group/HERMES.md](cpu-worker-group/HERMES.md)**.
 
 ## The two-host recipe (inferswarm05 + inferswarm03)
 

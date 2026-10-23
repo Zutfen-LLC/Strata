@@ -1,5 +1,5 @@
 #pragma once
-#include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_group.hpp"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -12,7 +12,10 @@ namespace strata::worker {
 class CpuSetupKeepalive {
 public:
     explicit CpuSetupKeepalive(ExpertWorkerTier& tier, int interval_ms = 50)
-        : tier_(tier), session_(tier.stats().session), interval_ms_(std::max(1, interval_ms)),
+        : tier_(&tier), sessions_{tier.stats().session}, interval_ms_(std::max(1, interval_ms)),
+          thread_([this] { run(); }) {}
+    explicit CpuSetupKeepalive(CpuWorkerGroup& group, int interval_ms = 50)
+        : group_(&group), interval_ms_(std::max(1, interval_ms)),
           thread_([this] { run(); }) {}
     ~CpuSetupKeepalive() { stop(); }
     CpuSetupKeepalive(const CpuSetupKeepalive&) = delete;
@@ -35,12 +38,20 @@ public:
     }
 private:
     void probe() {
-        WorkerStatusInfo status;
-        std::string err;
-        if (!tier_.status(status, err) || !session_ || status.session != session_ || status.ready != 1) {
-            why_ = "CPU worker session lost during selective CUDA acquisition";
-            if (!err.empty()) why_ += ": " + err;
-            failed_.store(true, std::memory_order_release);
+        if (group_ != nullptr && sessions_.empty()) {
+            for (size_t i = 0; i < group_->size(); ++i) sessions_.push_back(group_->stats(i).session);
+        }
+        for (size_t i = 0; i < sessions_.size(); ++i) {
+            WorkerStatusInfo status;
+            std::string err;
+            const bool ok = group_ != nullptr ? group_->status(i, status, err) : tier_->status(status, err);
+            if (!ok || !sessions_[i] || status.session != sessions_[i] || status.ready != 1) {
+                why_ = "CPU worker session lost during selective CUDA acquisition";
+                if (group_ != nullptr) why_ += " (worker " + std::to_string(i) + ")";
+                if (!err.empty()) why_ += ": " + err;
+                failed_.store(true, std::memory_order_release);
+                return;
+            }
         }
     }
     void run() {
@@ -55,8 +66,9 @@ private:
             if (wake_.wait_for(lock, std::chrono::milliseconds(interval_ms_), [this] { return stopping_; })) return;
         }
     }
-    ExpertWorkerTier& tier_;
-    const uint64_t session_;
+    ExpertWorkerTier* tier_ = nullptr;
+    CpuWorkerGroup* group_ = nullptr;
+    std::vector<uint64_t> sessions_;
     const int interval_ms_;
     std::atomic<bool> failed_{false};
     std::mutex mutex_;

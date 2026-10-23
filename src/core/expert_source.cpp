@@ -8,7 +8,7 @@
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #ifdef STRATA_NATIVE_EXPERTS
-#include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_group.hpp"
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
 #include "strata/core/cpu_first_remote_post.hpp"
@@ -4389,6 +4389,14 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         return;
     }
 #endif
+#ifdef STRATA_NATIVE_EXPERTS
+    if (d.worker != nullptr && (!d.worker->ready() || d.worker->dead())) {
+        d.failed = true;
+        d.fail = "the frozen remote CPU worker group is unavailable";
+        d.fail_layer = d.layers;
+        return;
+    }
+#endif
     if (n_tok < 1 || n_tok > MAXT) {
         d.failed = true;
         d.fail = "a verify window has more tokens than the multi-token expert kernel takes";
@@ -4625,6 +4633,15 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     static thread_local std::vector<uint8_t> worker_mask;   // #349: shared by the post here and the finish below
     static thread_local std::string worker_error;
     bool worker_sent = false;
+    struct CpuWorkerDrain {
+        strata::worker::CpuWorkerGroup* group;
+        ~CpuWorkerDrain() {
+            if (group != nullptr && group->posted()) {
+                std::string ignored;
+                (void) group->finish(ignored); // an early local/helper failure still drains every published CPU request
+            }
+        }
+    } cpu_worker_drain{d.worker};
 #ifdef STRATA_NETWORK_CUDA_WORKER
     static thread_local std::vector<uint8_t> gpu_worker_mask;
     static thread_local std::string gpu_worker_error;
@@ -4898,10 +4915,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
 #ifdef STRATA_NATIVE_EXPERTS
     if (d.worker != nullptr) {   // #349: join the worker's reply (its round trip overlapped the work above)
-        // a failure ANYWHERE between the post and here returned early; the tier's own post() joins any
-        // leftover request before its next use, and the destructor joins the last one, so no window can
-        // commit on top of a reply that never arrived.  The partial joins the merge AFTER every helper
-        // tier's - the documented order, deterministic run to run.
+        // The scope drain joins every published group request on any earlier return. Here all workers
+        // finish before any partial reaches the merge. Endpoint order below is deterministic run to run.
         if (!d.worker->finish(worker_error)) {
             d.failed = true;
             d.fail = worker_error.c_str();
@@ -4937,7 +4952,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             d.remote_opt->accumulate_host(d.gpu_worker->partials(i), d.gpu_worker->mask(i), (int)n_tok, (int)k);
 #endif
     if (worker_sent)
-        d.remote_opt->accumulate_host(d.worker->partials(), worker_mask.data(), (int)n_tok, (int)k);
+        for (size_t i=0;i<d.worker->size();++i) if (d.worker->active(i))
+            d.remote_opt->accumulate_host(d.worker->partials(i), d.worker->mask(i), (int)n_tok, (int)k);
 #endif
     const auto c4 = std::chrono::steady_clock::now();
     pt("ran");

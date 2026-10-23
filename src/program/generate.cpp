@@ -23,9 +23,10 @@
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/worker/cpu_endpoint.hpp"
 #include "strata/worker/gpu_endpoint.hpp"
 #ifdef STRATA_NATIVE_EXPERTS
-#include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_group.hpp"
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
 #include "strata/worker/gpu_group.hpp"
@@ -124,6 +125,7 @@ namespace strata::metal_engine { void set_model_shard(const char* shard1); }   /
 #endif
 
 #include <array>
+#include <bit>
 #include <chrono>
 #include <algorithm>
 #include <memory>
@@ -564,8 +566,7 @@ struct Options {
     /// below is untouched).  The worker holds the CPU-owned expert complement of another machine's RAM
     /// and computes its weighted partials; see docs/CPU_WORKER.md and worker/expert_tier.hpp.
     bool remote_cpu_experts = false;
-    std::string remote_cpu_host = "127.0.0.1";   ///< the worker, or the local end of an owned SSH forward
-    int remote_cpu_port = 7431;
+    std::vector<strata::worker::CpuEndpoint> remote_cpu_workers;
     int remote_cpu_deadline_ms = 10000;
     std::string remote_cpu_local_manifest;
     bool remote_cpu_local_fallback = false;
@@ -1008,8 +1009,11 @@ void usage() {
                  "  --expert-cache-device2 N|auto  fill CUDA2 with more experts\n"
                  "  --expert-cache-device3 N|auto  fill CUDA3 with more experts\n"
                  "  --remote-expert-opt   enable remote-expert decode optimizations (serve mode)\n"
-                 "  --remote-cpu-experts HOST:PORT  inferswarm #349, experimental: the CPU-owned expert\n"
-                 "                       complement executes on a resident CPU-expert worker\n"
+                 "  --remote-cpu-experts HOST:PORT[@SLOTS[:SPEED]]  inferswarm #349, experimental; repeat for\n"
+                 "                       1..8 resident CPU-expert workers. SLOTS is a hard expert-blob capacity\n"
+                 "                       (0/unset = unbounded); SPEED is a positive relative execution weight.\n"
+                 "                       The CPU complement is split deterministically by capacity and profile\n"
+                 "                       hotness; one endpoint keeps the original simple full-complement path.\n"
                  "                       (strata-expert-worker, docs/CPU_WORKER.md) instead of this host's\n"
                  "                       pool.  Opt-in and serve-only; needs a native Q8_0/Q8_0 pack, the\n"
                  "                       expert cache and --expert-profile, fixed placement, prompts within\n"
@@ -2565,14 +2569,30 @@ int main(int argc, char** argv) {
         else if (a == "--remote-cpu-experts") {
             o.remote_cpu_experts = true;
             const std::string v = next("--remote-cpu-experts");
-            const size_t c = v.rfind(':');
-            const int port = c == std::string::npos ? -1 : std::atoi(v.c_str() + c + 1);
-            if (c == std::string::npos || v.substr(0, c).empty() || port < 1 || port > 65535) {
-                std::fprintf(stderr, "--remote-cpu-experts takes HOST:PORT\n");
+            const size_t at = v.find('@');
+            const std::string address = v.substr(0, at);
+            const size_t c = address.rfind(':');
+            const int port = c == std::string::npos ? -1 : std::atoi(address.c_str() + c + 1);
+            strata::worker::CpuEndpoint endpoint;
+            endpoint.host = c == std::string::npos ? "" : address.substr(0, c);
+            endpoint.port = port > 0 && port <= 65535 ? (uint16_t)port : 0;
+            if (at != std::string::npos) {
+                const std::string placement = v.substr(at + 1);
+                const size_t colon = placement.find(':');
+                const std::string cap = placement.substr(0, colon);
+                const std::string speed = colon == std::string::npos ? "1" : placement.substr(colon + 1);
+                char *ce = nullptr, *se = nullptr;
+                endpoint.capacity = std::strtoull(cap.c_str(), &ce, 10);
+                endpoint.speed = std::strtod(speed.c_str(), &se);
+                if (cap.empty() || speed.empty() || ce == nullptr || *ce != '\0' || se == nullptr || *se != '\0')
+                    endpoint.port = 0;
+            }
+            if (endpoint.host.empty() || !endpoint.port || !std::isfinite(endpoint.speed) || endpoint.speed <= 0 ||
+                o.remote_cpu_workers.size() >= strata::worker::kMaxCpuWorkers) {
+                std::fprintf(stderr, "--remote-cpu-experts takes HOST:PORT[@SLOTS[:SPEED]] and may repeat 1..8 times\n");
                 return 2;
             }
-            o.remote_cpu_host = v.substr(0, c);
-            o.remote_cpu_port = port;
+            o.remote_cpu_workers.push_back(std::move(endpoint));
         }
         else if (a == "--remote-cpu-local-manifest") o.remote_cpu_local_manifest=next("--remote-cpu-local-manifest");
         else if (a == "--remote-cpu-local-fallback") o.remote_cpu_local_fallback=true;
@@ -6674,7 +6694,7 @@ int main(int argc, char** argv) {
     // blob-sized staging buffer (no local RAM mirror), and inference may not start before the worker has
     // verified the whole set (READY), which this open() waits for.
 #ifdef STRATA_NATIVE_EXPERTS
-    strata::worker::ExpertWorkerTier worker_tier;
+    strata::worker::CpuWorkerGroup worker_tier;
 #ifdef STRATA_NETWORK_CUDA_WORKER
     strata::worker::GpuWorkerGroup gpu_worker_tier;
 #endif
@@ -6722,8 +6742,6 @@ int main(int argc, char** argv) {
                      (unsigned long long) owned, (long long) (g.n_layers * g.n_expert),
                      (double) (owned * f0.bytes) / 1073741824.0);
         strata::worker::ExpertWorkerTier::Open wopen;
-        wopen.host = o.remote_cpu_host;
-        wopen.port = (uint16_t) o.remote_cpu_port;
         wopen.deadline_ms = o.remote_cpu_deadline_ms;
         wopen.model_name = o.pack.c_str();
         wopen.gu_type = 8;
@@ -6732,7 +6750,6 @@ int main(int argc, char** argv) {
         wopen.n_expert = (uint16_t) g.n_expert;
         wopen.n_embd = (uint16_t) g.n_embd;
         wopen.n_ff = (uint16_t) f0.n_ff;
-        wopen.partition = std::move(partition);
         wopen.fetch = [srcp, &lay](int64_t l, int64_t e, uint8_t* dst, uint32_t bytes) {
             if (lay.blob_bytes(l) != (uint64_t) bytes) return false;   // never truncate or reinterpret
             return srcp->copy_blob(l, e, dst);
@@ -6750,6 +6767,31 @@ int main(int argc, char** argv) {
             wopen.local_fallback=o.remote_cpu_local_fallback;
             wopen.resident=o.remote_cpu_resident;
             wopen.setup_ms=o.remote_cpu_setup_ms;
+        }
+        std::vector<std::vector<uint8_t>> cpu_partitions;
+        if (!strata::worker::place_cpu_partitions(partition, (uint16_t)g.n_layers, (uint16_t)g.n_expert,
+                                                   profile, o.remote_cpu_workers, cpu_partitions, err)) {
+            std::fprintf(stderr, "strata generate: remote CPU placement: %s\n", err.c_str());
+            return 1;
+        }
+        std::vector<strata::worker::ExpertWorkerTier::Open> cpu_open;
+        cpu_open.reserve(o.remote_cpu_workers.size());
+        for (size_t i = 0; i < o.remote_cpu_workers.size(); ++i) {
+            auto item = wopen;
+            item.host = o.remote_cpu_workers[i].host;
+            item.port = o.remote_cpu_workers[i].port;
+            item.partition = std::move(cpu_partitions[i]);
+            uint64_t assigned = 0;
+            for (uint8_t byte : item.partition) assigned += (uint64_t)std::popcount((unsigned)byte);
+            std::fprintf(stderr, "strata generate: CPU worker[%zu] %s:%u assigned %llu blobs "
+                                 "(capacity=%llu speed=%.3g)\n", i, item.host.c_str(), (unsigned)item.port,
+                         (unsigned long long)assigned,
+                         (unsigned long long)o.remote_cpu_workers[i].capacity, o.remote_cpu_workers[i].speed);
+            cpu_open.push_back(std::move(item));
+        }
+        if (!strata::worker::CpuWorkerGroup::validate(cpu_open, partition, err)) {
+            std::fprintf(stderr, "strata generate: remote CPU group: %s\n", err.c_str());
+            return 1;
         }
 #ifdef STRATA_NETWORK_CUDA_WORKER
         std::vector<strata::worker::GpuWorkerTier::Open> gpu_open;
@@ -6790,21 +6832,25 @@ int main(int argc, char** argv) {
         }
 #endif
         const auto wt0 = Clock::now();
-        if (!worker_tier.open(wopen, err)) {
+        if (!worker_tier.open(cpu_open, partition, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
-        std::fprintf(stderr, "strata generate: remote CPU experts ready on %s:%d in %.1f s (%llu blobs, "
-                             "%.2f GiB verified)\n", o.remote_cpu_host.c_str(),
-                     o.remote_cpu_port, std::chrono::duration<double>(Clock::now() - wt0).count(),
-                     (unsigned long long) worker_tier.stats().setup_blobs,
-                     (double) worker_tier.stats().setup_weight_bytes / 1073741824.0);
+        uint64_t setup_blobs = 0, setup_bytes = 0;
+        for (size_t i = 0; i < worker_tier.size(); ++i) {
+            setup_blobs += worker_tier.stats(i).setup_blobs;
+            setup_bytes += worker_tier.stats(i).setup_weight_bytes;
+        }
+        std::fprintf(stderr, "strata generate: %zu remote CPU workers ready in %.1f s (%llu disjoint blobs, "
+                             "%.2f GiB verified)\n", worker_tier.size(),
+                     std::chrono::duration<double>(Clock::now() - wt0).count(),
+                     (unsigned long long) setup_blobs, (double) setup_bytes / 1073741824.0);
         std::string setup_report; worker_tier.report(setup_report);
         std::fprintf(stderr,"strata generate: %s\n",setup_report.c_str());
 #ifdef STRATA_NETWORK_CUDA_WORKER
         if (o.remote_gpu_experts) {
-            // The CPU worker above retains the identical full partition and arena. Only execution
-            // ownership changes for this explicitly assigned subset; no CPU setup identity is rewritten.
+            // The CPU group above retains this subset across its disjoint partitions. Only execution
+            // ownership changes for the explicit network-GPU assignment; no CPU setup identity is rewritten.
             for (const auto& item : gpu_open) for (const auto& a : item.plan.assets)
                 if (!worker_tier.holds(a.layer, a.expert)) {
                     std::fprintf(stderr, "strata generate: network GPU assignment is outside the frozen CPU partition\n");
@@ -12624,7 +12670,8 @@ int main(int argc, char** argv) {
             // counts the prompt's windows too, not only the decode's
 #ifdef STRATA_NATIVE_EXPERTS
             const int64_t worker_ent0 = drive.d.worker_entries;
-            const double worker_req_ms0 = worker_tier.stats().request_ms;
+            double worker_req_ms0 = 0;
+            for (size_t wi = 0; wi < worker_tier.size(); ++wi) worker_req_ms0 += worker_tier.stats(wi).request_ms;
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
             const int64_t gpu_worker_ent0 = drive.d.gpu_worker_entries;
@@ -15426,9 +15473,11 @@ int main(int argc, char** argv) {
             char worker_txt[160] = "";
 #ifdef STRATA_NATIVE_EXPERTS
             if (o.remote_cpu_experts) {
+                double worker_req_ms = 0;
+                for (size_t wi = 0; wi < worker_tier.size(); ++wi) worker_req_ms += worker_tier.stats(wi).request_ms;
                 std::snprintf(worker_txt, sizeof worker_txt, " worker_entries=%lld worker_req_wall=%.1f",
                               (long long) (drive.d.worker_entries - worker_ent0),
-                              worker_tier.stats().request_ms - worker_req_ms0);
+                              worker_req_ms - worker_req_ms0);
             }
 #endif
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
@@ -15580,13 +15629,15 @@ int main(int argc, char** argv) {
                 worker_tier.report(wr);
                 std::fprintf(stderr, "strata serve: %s; this request executed %lld routed entries remotely\n", wr.c_str(),
                              (long long) (drive.d.worker_entries - worker_ent0));
-                strata::worker::WorkerStatusInfo wst;
-                if (worker_tier.status(wst, err))   // the worker's own counters: service time is ITS CPU time,
-                    std::fprintf(stderr, "                          worker status: %llu requests, %llu failures, "
-                                         "%.1f s CPU service, %.2f MiB in / %.2f MiB out\n",
-                                 (unsigned long long) wst.requests, (unsigned long long) wst.failures,
-                                 (double) wst.cpu_service_ns / 1e9, (double) wst.infer_in_bytes / 1048576.0,
-                                 (double) wst.infer_out_bytes / 1048576.0);   // NOT the client's wait
+                for (size_t wi = 0; wi < worker_tier.size(); ++wi) {
+                    strata::worker::WorkerStatusInfo wst;
+                    if (worker_tier.status(wi, wst, err))   // the worker's own counters: service time is ITS CPU time,
+                        std::fprintf(stderr, "                          worker[%zu] status: %llu requests, %llu failures, "
+                                             "%.1f s CPU service, %.2f MiB in / %.2f MiB out\n", wi,
+                                     (unsigned long long) wst.requests, (unsigned long long) wst.failures,
+                                     (double) wst.cpu_service_ns / 1e9, (double) wst.infer_in_bytes / 1048576.0,
+                                     (double) wst.infer_out_bytes / 1048576.0);   // NOT the client's wait
+                }
             }
 #endif // STRATA_NATIVE_EXPERTS
 #ifdef STRATA_NETWORK_CUDA_WORKER
