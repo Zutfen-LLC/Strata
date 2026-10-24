@@ -80,6 +80,13 @@ absence assertions and the listener probe. A pending stop can be reconciled thro
 an unreaped/uncertain result blocks replacement. `SO_REUSEADDR` matches the worker and avoids treating
 TIME_WAIT as a live listener. No port-free assertion runs ahead of an existing owned resident's stop.
 
+If a newly launched worker fails startup before a listener is available, `failure_worker: "stop"`
+terminates its retained guardian handle and uses that guardian's existing child cleanup. The driver
+waits/reaps before checking recorded identities, without a control exchange. A separate startup-abort
+receipt retains the original failure and cleanup outcome. Attached residents and workers with a STOP
+intent are excluded; uncertain cleanup is recorded without replacing the original failure or retrying.
+Missing or incomplete identity receipts leave child absence uncertain even after guardian reaping.
+
 The original monitor/resource limits and 32 MiB stdout/stderr caps remain. Individual reads are
 bounded to 64 KiB; startup exceptions enter owned cleanup, and child failure cannot become a successful
 owner exit. Cleanup failures leave explicit uncertain receipts and block worker control. Retaining a

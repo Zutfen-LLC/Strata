@@ -260,6 +260,41 @@ def stop_owned_worker():
     return receipt
 
 
+def abort_owned_worker_startup(reason):
+    """Abort only a just-launched guardian, before startup has established a control listener."""
+    global GUARDIAN
+    assert_worker_idle()
+    if GUARDIAN is None or cfg.get('attach_root'):
+        raise RuntimeError('cannot abort an attached worker without its retained launch handle')
+    if (W / 'stop.json').exists():
+        raise RuntimeError('cannot startup-abort a worker with an existing STOP intent')
+    path = R / 'worker-startup-abort.json'
+    receipt = {'operation': 'startup-abort', 'outcome': 'pending', 'error': repr(reason),
+               'guardian_pid': GUARDIAN.pid, 'control_outcome': 'not-sent'}
+    atom(path, receipt)
+    try:
+        if GUARDIAN.poll() is None:
+            GUARDIAN.terminate()  # existing guardian finally owns worker/monitor cleanup and reaping
+        rc = GUARDIAN.wait(timeout=cfg['shutdown_seconds'])
+        receipt.update(guardian_returncode=rc, reaped=True)
+        atom(path, receipt)
+        ids = json.loads((W / 'identities.json').read_text())
+        if set(ids) != {'guardian', 'worker', 'monitor'}:
+            raise RuntimeError('incomplete startup identity receipt; child absence is uncertain')
+        if ids['guardian']['pid'] != GUARDIAN.pid:
+            raise RuntimeError('startup guardian receipt differs from retained child')
+        receipt['identities'] = ids
+        wait_absent(ids, cfg['cleanup_seconds'])  # only after the actual guardian was reaped
+        receipt['outcome'] = 'completed'
+        atom(path, receipt)
+        GUARDIAN = None
+        return receipt
+    except BaseException as cleanup:
+        receipt.update(outcome='uncertain', cleanup_error=repr(cleanup))
+        atom(path, receipt)
+        raise
+
+
 def healthy():
     ids = json.loads((W / 'identities.json').read_text())
     for row in ids.values(): ident(row)

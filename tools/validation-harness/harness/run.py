@@ -77,8 +77,15 @@ def launch_worker(configuration, arm):
     C.GUARDIAN = subprocess.Popen([sys.executable, '-B', str(C.R / 'worker_owner.py'), str(path)],
         stdin=subprocess.DEVNULL, stdout=(C.R / ('worker-owner-' + arm['name'] + '.log')).open('xb'),
         stderr=subprocess.STDOUT, start_new_session=True)
-    C.wait_session(C.W, lambda row: (C.W / 'listening.json').exists() and (C.W / 'health.json').exists(),
-                   configuration['worker_start_seconds'], C.GUARDIAN)
+    try:
+        C.wait_session(C.W, lambda row: (C.W / 'listening.json').exists() and (C.W / 'health.json').exists(),
+                       configuration['worker_start_seconds'], C.GUARDIAN)
+    except BaseException as error:
+        if configuration['failure_worker'] == 'stop':
+            try: C.abort_owned_worker_startup(error)
+            except Exception as cleanup:
+                C.atom(C.R / 'worker-cleanup-uncertain.json', {'error': repr(cleanup)})
+        raise
     masks(arm)
 
 
@@ -116,7 +123,10 @@ def run(root):
         if cfg['failure_worker'] == 'stop' and not C.SESSIONS and C.GUARDIAN is not None:
             # Never retry an uncertain STOP; the retained child may still process it later.
             receipt = C.W / 'stop.json'
-            if not receipt.exists(): C.stop_owned_worker()
+            if not receipt.exists() and not (root / 'worker-startup-abort.json').exists():
+                try: C.stop_owned_worker()
+                except Exception as cleanup:
+                    C.atom(root / 'worker-cleanup-uncertain.json', {'error': repr(cleanup)})
         raise
 
 

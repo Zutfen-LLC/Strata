@@ -5,7 +5,10 @@ driver waited the full 420 seconds on its own unreaped guardian. Its separate Po
 explicitly unexercised. Hermes reports that the synthetic suite at `4916b4a4` ran 20 tests on controller
 Python 3.13.5: 19 passed, one reference-fixture error, 7.825 seconds, exit 1, clean cleanup. The fixture
 failed to select its registered asset after checking a missing binding; the later JSON/schema paths
-were not reached. The additive fixture correction and focused rerun are described in [HERMES.md](HERMES.md).
+were not reached. Hermes reports that the fixture-only correction at `64383360` passed its focused
+rerun: one test, 0.095 seconds, exit 0, all three subcases reached. A subsequent static review found
+the pre-listener startup-abort gap below; that additive lifecycle correction is pending the new
+focused selection in [HERMES.md](HERMES.md).
 These are supplied Hermes results, not locally executed checks. All executable desktop checks remain
 **NOT RUN**; no historical model run validates these edits.
 
@@ -20,6 +23,7 @@ These are supplied Hermes results, not locally executed checks. All executable d
 | Bind probe mistakes TIME_WAIT for live listener | Same SO_REUSEADDR as real worker; paired live-listener/TIME_WAIT socket case |
 | Handwritten hashes or overwritten upload pins | One new-root staging operation hashes source/destination bytes; repeated staging cannot overwrite pins |
 | Startup identity/monitor exception bypasses cleanup | Cleanup guard and signal handler precede first child launch; injected monitor-start failure checks child reaping |
+| Static finding: pre-listener timeout cleanup requires a listener and masks startup failure | Abort the just-launched owned guardian, reap before child absence checks, preserve the timeout; real no-listener child case plus attached/STOP-intent refusal |
 | Engine/worker nonzero exit hidden by owner status 0 | Save child status and return failure from owner; fake engine/worker cases preserve exit code 7 |
 | Config variations require editing executable driver | Ordered config entries change counts/masks/requests/assets; derived configs leave pinned base bytes unchanged |
 | Reference/dependency mismatch discovered after requests | Validate reference indices, manifest/control endpoint and actual monitor environment before launch |

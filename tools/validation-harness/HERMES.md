@@ -13,8 +13,8 @@ network permission or host setting change is requested.
 
 On the existing authorized Hermes controller, use a clean candidate source and the retained Python
 runtime. No private model assets or credentials are required. Verify the full source SHA, preserve
-source status and rerun only the corrected reference case once under the existing owned timeout/output
-guard:
+source status and run the startup-abort cases plus the two existing STOP regressions once under the
+existing owned timeout/output guard:
 
 ```sh
 set -euo pipefail
@@ -26,7 +26,11 @@ test -z "$(git -C "$SRC" status --porcelain)"
   cd "$SRC/tools/validation-harness/tests"
   timeout --signal=TERM --kill-after=5s 120s \
     python3 -B -m unittest -v \
-      test_harness.HarnessTests.test_reference_binding_schema_and_indices_checked_before_start
+      test_harness.HarnessTests.test_unbound_worker_startup_failure_stops_and_reaps_owned_hierarchy \
+      test_harness.HarnessTests.test_startup_abort_refuses_attached_resident_and_existing_stop_intent \
+      test_harness.HarnessTests.test_startup_abort_without_complete_identity_receipt_remains_uncertain \
+      test_harness.HarnessTests.test_stop_timeout_can_have_executed_and_reaps_retained_child \
+      test_harness.HarnessTests.test_uncertain_pending_stop_is_not_reissued
 )
 ```
 
@@ -38,14 +42,28 @@ TIME_WAIT cases passed, with clean cleanup reported. These are results supplied 
 the parent task; Codex did not execute the run or retrieve the private receipts. Preserve that first
 failure on Hermes. The additive correction binds the registered `reference` asset for both remaining
 subcases and checks that neither launches a process or creates an output root. The production guard
-is unchanged. This corrected case is pending remote validation.
+is unchanged. Hermes subsequently supplied a passing focused result at
+`6438336059d53a1f4c664a3b23a0015b30a5cba9`: one test in 0.095 seconds, exit 0, all three subcases
+reached. The other 19 tests were not repeated.
+
+A later independent static review found a separate pre-listener cleanup gap: a live worker stuck
+before bind caused startup timeout cleanup to require an owned listener and mask the original error.
+With `failure_worker: "stop"`, the additive lifecycle correction aborts only the just-launched owned
+guardian, triggers its existing child cleanup, waits/reaps before checking recorded identities, and
+preserves the original timeout alongside `worker-startup-abort.json`. No worker control is sent.
+An attached resident or existing STOP intent cannot enter this abort path. Missing/incomplete child
+identity receipts also leave cleanup uncertain, even if the guardian was reaped. If cleanup is uncertain,
+the receipt records that and the outer handler does not try a second cleanup/control operation.
+This lifecycle correction and its new synthetic cases are **NOT RUN** pending the selection above.
 
 Use a new result directory and bounded captured stdout/stderr. The suite uses stdlib temporary files,
 loopback socket pairs, mock control exchanges and tiny Python children. Fake engine/monitor scripts
 exercise the actual broker/guardian's stdin ownership, startup cleanup, nonzero exit and reap paths;
 there is no GPU query or native/model execution. Preserve the first failure and exit status; do not
-repeat to select a pass. Report duration, test count, source SHA and raw synthetic logs. The focused
-rerun must reach all three rejection paths; it does not replace the original full-suite result.
+repeat to select a pass. Report duration, test count, source SHA and raw synthetic logs. The new case
+must leave its no-listener worker, guardian and monitor absent, with the actual guardian reaped and
+its return code saved; `failure.json` must retain the original startup timeout. Preserve earlier
+results separately; this selection does not replace the original full-suite result.
 
 Review the example config and the config-only variation case: ordered entries change config
 values without editing helpers, and base pins remain unchanged. Missing paths,

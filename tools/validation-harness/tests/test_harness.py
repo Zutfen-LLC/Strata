@@ -232,6 +232,79 @@ class HarnessTests(unittest.TestCase):
             driver.launch_worker(dict(self.cfg, worker_root=str(C.W)), arm)
         self.assertEqual(events, ['stopped-and-reaped'])
 
+    def test_unbound_worker_startup_failure_stops_and_reaps_owned_hierarchy(self):
+        root, config, cfg, name = self.fake_runtime(worker=True)
+        (root / 'child.py').write_text('import time\nwhile True: time.sleep(.02)\n')
+        cfg['assets']['worker'] = sys.executable
+        cfg['worker_argv'] += ['--workers', '1', '--local-load-threads', '4']
+        cfg['failure_worker'] = 'stop'
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0)); cfg['port'] = probe.getsockname()[1]
+        real_spawn = subprocess.Popen
+        owners = []
+        def reap_owner(owner):
+            if owner.poll() is None: owner.terminate()
+            owner.wait(timeout=10)
+        def spawn(*args, **kwargs):
+            owner = real_spawn(*args, **kwargs)
+            owners.append(owner); self.children.append(owner)
+            self.addCleanup(reap_owner, owner)
+            return owner
+        with patch.object(bundle, 'verify', return_value=cfg), \
+             patch.object(C, '__file__', str(root / 'campaign.py')), \
+             patch.object(C.worker_control, '__file__', str(root / 'worker_control.py')), \
+             patch.object(C.subprocess, 'Popen', side_effect=spawn), \
+             patch.object(C, 'listener_owned', side_effect=AssertionError('no startup listener')), \
+             patch.object(C.worker_control, 'exchange') as exchange:
+            with self.assertRaisesRegex(TimeoutError, 'owner deadline') as failure:
+                driver.run(root)
+        exchange.assert_not_called()
+        self.assertEqual(len(owners), 1)
+        self.assertIsNotNone(owners[0].returncode)
+        with self.assertRaises(ChildProcessError): os.waitpid(owners[0].pid, os.WNOHANG)
+        receipt = json.loads((root / 'worker-startup-abort.json').read_text())
+        original = json.loads((root / 'failure.json').read_text())
+        self.assertEqual(original['error'], repr(failure.exception))
+        self.assertEqual(receipt['error'], original['error'])
+        self.assertEqual(receipt['outcome'], 'completed'); self.assertTrue(receipt['reaped'])
+        self.assertEqual(receipt['guardian_returncode'], owners[0].returncode)
+        self.assertEqual(receipt['control_outcome'], 'not-sent')
+        self.assertEqual(set(receipt['identities']), {'guardian', 'worker', 'monitor'})
+        C.wait_absent(receipt['identities'], 0)
+        final = json.loads((root / 'WORKER' / 'state.json').read_text())
+        self.assertEqual(final['exit_rc'], -signal.SIGTERM); self.assertEqual(final['monitor_exit_rc'], 0)
+        self.assertFalse((root / 'WORKER' / 'listening.json').exists())
+        self.assertFalse((root / 'WORKER' / 'stop.json').exists())
+        self.assertFalse((root / 'worker-cleanup-uncertain.json').exists())
+        self.assertIsNone(C.GUARDIAN)
+
+    def test_startup_abort_refuses_attached_resident_and_existing_stop_intent(self):
+        self.configure_control(); owner = self.child('import sys; sys.stdin.read()'); C.GUARDIAN = owner
+        C.cfg['attach_root'] = str(self.root)
+        with patch.object(owner, 'terminate') as terminate, patch.object(C.worker_control, 'exchange') as exchange:
+            with self.assertRaisesRegex(RuntimeError, 'attached'): C.abort_owned_worker_startup(TimeoutError())
+            del C.cfg['attach_root']
+            (C.W / 'stop.json').write_text(json.dumps({'outcome': 'uncertain'}))
+            with self.assertRaisesRegex(RuntimeError, 'STOP intent'): C.abort_owned_worker_startup(TimeoutError())
+        terminate.assert_not_called(); exchange.assert_not_called()
+        self.assertFalse((self.root / 'worker-startup-abort.json').exists())
+
+    def test_startup_abort_without_complete_identity_receipt_remains_uncertain(self):
+        self.configure_control(); owner = self.child('raise SystemExit(0)'); owner.wait(timeout=5)
+        C.GUARDIAN = owner
+        reason = TimeoutError('startup deadline before identity publication')
+        partial = {'guardian': {'pid': owner.pid}, 'worker': {'pid': owner.pid}}
+        for identities, expected in [(None, FileNotFoundError), (partial, RuntimeError)]:
+            with self.subTest(identities=identities):
+                if identities: (C.W / 'identities.json').write_text(json.dumps(identities))
+                with self.assertRaises(expected): C.abort_owned_worker_startup(reason)
+                receipt = json.loads((self.root / 'worker-startup-abort.json').read_text())
+                self.assertEqual(receipt['outcome'], 'uncertain'); self.assertTrue(receipt['reaped'])
+                self.assertEqual(receipt['guardian_returncode'], 0)
+                self.assertEqual(receipt['error'], repr(reason))
+                self.assertIs(C.GUARDIAN, owner)
+                with self.assertRaises(ChildProcessError): os.waitpid(owner.pid, os.WNOHANG)
+
     def fake_runtime(self, worker=False, exit_code=0, monitor_exit=0):
         root = self.root / ('guardian-fixture' if worker else 'broker-fixture'); root.mkdir()
         name = 'worker_owner.py' if worker else 'owner.py'
