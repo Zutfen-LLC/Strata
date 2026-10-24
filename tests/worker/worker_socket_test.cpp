@@ -8,6 +8,7 @@
 #include <vector>
 #include <sys/socket.h>
 #include <netinet/tcp.h>
+#include <fcntl.h>
 
 using namespace strata::worker;
 using Clock = std::chrono::steady_clock;
@@ -112,6 +113,8 @@ int main() {
         check(::getsockname(listener, (sockaddr*)&actual, &size) == 0 &&
               ntohl(actual.sin_addr.s_addr) == 0x7f000002u && port == ntohs(actual.sin_port),
               "numeric listener does not silently bind a wildcard or the default address");
+        const int flags = ::fcntl(listener, F_GETFL, 0);
+        check(flags >= 0 && (flags & O_NONBLOCK), "explicit listener cannot block after stale poll readiness");
         sock::close_fd(listener);
     }
     std::printf("worker_socket_test: read=%lldms write=%lldms failures=%d\n",

@@ -32,6 +32,8 @@ worker compares the kernel-reported source against the exact list immediately af
 connection, before reading frames or dispatching session, residency or control operations. A denied
 connection closes without a protocol reply. When a list is supplied, even loopback callers must match it.
 Clients and `tools/worker_control.py --host IPv4` use the selected address without wire changes.
+LAN mode has one selected endpoint, so local control must use `--host` with that address and its actual
+source must be listed. Explicit bind/peer policies require a positive `--deadline-ms` (default 10000).
 
 Source-address filtering provides **neither authentication nor encryption**. Session IDs are not
 credentials. Use this mode only on a trusted LAN with an operator-managed firewall limiting the worker's

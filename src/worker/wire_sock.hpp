@@ -70,6 +70,7 @@ bool listen_loopback(uint16_t& port, sock_fd& out, std::string& err);
 // Stored peer addresses are in network byte order, as returned by accept(). No DNS or CIDR matching.
 bool listener_policy(const std::string& bind_ip, const std::vector<std::string>& peers,
                      std::vector<uint32_t>& allowed, std::string& err);
+// Explicit CPU listeners are nonblocking so a reset queued peer cannot strand accept() after poll().
 bool listen_ipv4(const std::string& bind_ip, uint16_t& port, sock_fd& out, std::string& err);
 
 /// Accepts one connection (deadline in ms; false on error/timeout). `tcp_nodelay` is deliberately

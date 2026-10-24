@@ -21,8 +21,22 @@ selected by the operator (these variables are not supplied defaults):
 Add the existing local-source, residency, budget and pool settings from the approved configuration.
 Repeat `--allow-peer-ip` for another approved engine or operator control source. An explicit list has no
 implicit localhost exception. Default loopback callers retain their previous behavior when no list is
-supplied. The one-connection service remains serial; an operator control request waits for the active
+supplied. Explicit bind/peer policies require a positive frame deadline; omit `--deadline-ms` to use the
+existing 10000 ms default. Their listeners are nonblocking so a reset queued peer cannot strand accept.
+The one-connection service remains serial; an operator control request waits for the active
 engine connection to close, as before.
+
+A single LAN bind replaces the loopback endpoint. For control from the worker machine itself, include
+`--allow-peer-ip "$WORKER_IP"` when starting it, and explicitly target that address:
+
+```sh
+python tools/worker_control.py status --host "$WORKER_IP" --port "$WORKER_PORT"
+```
+
+Check the actual source address selected by the OS and allow it exactly. An SSH forward to 127.0.0.1
+no longer reaches a LAN-only listener; forward to the selected worker address and admit the forward's
+actual source. No second listener or automatic localhost exemption is added. Commands omitting `--host`
+continue to select 127.0.0.1 and work with the default loopback service.
 
 The allowlist is checked before protocol reads, TCP_NODELAY setup and protocol dispatch. A rejected peer
 cannot send SHUTDOWN, UNLOAD or setup frames into the state machine. Normal idle expiry still follows
@@ -41,7 +55,9 @@ it explicitly for matched LAN latency runs. GPU-worker accepted socket defaults 
 ## Operator NIC profile (Linux)
 
 Use `python tools/worker_nic.py discover --interface IFACE` to read driver, firmware, kernel, PCI identity
-and coalescing settings. Discovery reports support or actionable reasons for refusal. It never changes
+and coalescing settings, plus a hash of `/etc/machine-id` and the permanent NIC MAC from `ethtool -P`.
+Validation records match that exact host/NIC tuple, rather than another machine with the same PCI model
+and slot. Discovery reports support or actionable reasons for refusal. It never changes
 settings. Missing `ethtool` is reported; this tool does not install it or escalate privileges.
 
 The first supported mapping is e1000e with an original `rx-usecs` value of 0 or 3. On this driver, 3 is
@@ -63,16 +79,21 @@ python tools/worker_nic.py discover --interface IFACE
 python tools/worker_nic.py restore --interface IFACE --snapshot /operator/path/nic-original.json
 ```
 
-Snapshots are created exclusively with mode 0600 and flushed to disk; an existing path is never
-overwritten. Apply requires a matching snapshot from the same boot and exact interface, driver and
-hardware identity. It changes only `rx-usecs`, then reads back the entire coalescing setting map. Restore
+Snapshots are created exclusively with mode 0600 and flushed to disk; the tool never overwrites an
+existing path. A SHA-256 checksum detects accidental edits to the saved original before apply/restore.
+It is not authentication against someone who can replace both the data and checksum. Keep the original
+file and validation configuration under operator control. Apply requires a matching snapshot from the
+same boot and exact host, permanent NIC, interface and driver identity. It changes only `rx-usecs`, then
+reads back the entire coalescing setting map. Restore
 uses the saved original mode and verifies equality with the original map. Applying or restoring an
 already matching map makes no write. Neither action overwrites unrelated setting drift. Serialize
 operator actions and keep the snapshot until restore succeeds. A reboot or driver change requires
 inspection and a new snapshot, not blind reuse of the old file.
 
 A failed write or readback reports an uncertain outcome and preserves the original snapshot. Read back
-with `discover` before retrying. If only the owned mode changed, explicitly restore with that snapshot.
+with `discover` before retrying. If only the owned mode changed, explicitly restore with that snapshot,
+even if a partial operation left an unexpected numeric `rx-usecs` value. Apply remains restricted to 0
+or 3, and restore still writes only the saved original 0 or 3 and requires a full matching readback.
 If other settings drifted, resolve them with the operator; the tool refuses to overwrite them. It does
 not silently roll back, restart links, reload drivers or claim an unsuccessful restore succeeded.
 EEE, C-states, clocks, offloads, routes and security settings are outside this profile.
@@ -83,7 +104,9 @@ Copy `packaging/worker-nic-test.example.json` to an operator-owned file. Its pro
 `low-latency`, but its validated hardware list is deliberately empty. After remote apply/readback/restore
 and matched inference validation, add a record with `identity` equal to the full discovered `identity`
 object and `evidence` naming the retained results. Do not put a partial identity, a driver wildcard or
-unverified hardware in the list. Driver, firmware or kernel changes require a new validation record.
+unverified hardware in the list. A different host/permanent NIC or changed driver, firmware or kernel
+requires a new validation record. Keep actual host/NIC records in the operator's configuration, not this
+repository's example.
 
 ```sh
 python tools/worker_nic.py apply --interface IFACE --snapshot /operator/path/nic-original.json \

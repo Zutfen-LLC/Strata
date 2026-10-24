@@ -58,6 +58,11 @@ bool nonblocking(sock_fd fd) {
     u_long mode = 1;
     return ::ioctlsocket((SOCKET) fd, FIONBIO, &mode) == 0;
 }
+#else
+bool nonblocking(sock_fd fd) {
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    return flags >= 0 && ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
 #endif
 
 }  // namespace
@@ -244,6 +249,12 @@ bool listen_ipv4(const std::string& bind_ip, uint16_t& port, sock_fd& out, std::
     }
     out = ::socket(AF_INET, SOCK_STREAM, 0);
     if (out == kBadFd) { err = "socket() failed"; return false; }
+    // poll readiness can disappear when a queued peer resets. Never block in accept after that race.
+    if (!nonblocking(out)) {
+        err = "nonblocking listener setup failed";
+        close_fd(out);
+        return false;
+    }
     int one = 1;
     ::setsockopt(out, SOL_SOCKET, SO_REUSEADDR, (const char*) &one, sizeof one);
     addr.sin_port = htons(port);

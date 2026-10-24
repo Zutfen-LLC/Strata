@@ -73,6 +73,17 @@ void policy() {
     ExpertWorkerService service(invalid); uint16_t port = 0;
     check(!service.listen(port, error) && error.find("bind IP") != std::string::npos,
           "unsafe policy fails before opening local sources or sockets");
+    for (int deadline : {0, -1}) {
+        WorkerOptions bounded;
+        bounded.bind_ip = "192.0.2.1"; bounded.allow_peer_ips = {"192.0.2.2"};
+        bounded.deadline_ms = deadline;
+        ExpertWorkerService lan(bounded);
+        check(!lan.listen(port, error) && error.find("positive --deadline-ms") != std::string::npos,
+              "LAN cannot opt into an unbounded frame deadline");
+        bounded.bind_ip = "127.0.0.1"; bounded.allow_peer_ips = {"127.0.0.1"};
+        ExpertWorkerService filtered(bounded);
+        check(!filtered.listen(port, error), "filtered loopback also requires bounded frame reads");
+    }
 }
 }
 
@@ -94,6 +105,7 @@ int main() {
         const auto cold = info(client);
         client.close();
         second_allowed_source(service.port);
+        { OwnedSocket closed; source_connection(closed, service.port, "127.0.0.3"); }
         // Empty, partial and valid mutation/control frames must all be rejected before dispatch.
         denied_source(service.port, {});
         denied_source(service.port, {0x53, 0x45, 0x57});

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Explicit Linux CPU-worker NIC profile. Never called by worker/inference startup."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,18 @@ import sys
 
 class ProfileError(RuntimeError):
     pass
+
+
+def permanent_mac(text):
+    match = re.fullmatch(r"Permanent address:\s*([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s*", text.strip())
+    if not match or match[1].lower() in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff") or int(match[1][:2], 16) & 1:
+        raise ProfileError("permanent NIC address unavailable; inspect ethtool -P before validating this device")
+    return match[1].lower()
+
+
+def original_digest(state):
+    # Accidental-corruption detection, not authentication against a file editor.
+    return hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def fields(text):
@@ -64,6 +77,16 @@ class Ethtool:
             path = device / key
             identity["pci_" + key] = path.read_text().strip() if path.exists() else ""
         try:
+            machine = Path("/etc/machine-id").read_text().strip().lower()
+        except OSError:
+            machine = ""
+        identity["host_id_sha256"] = (hashlib.sha256(machine.encode("ascii")).hexdigest()
+                                      if re.fullmatch(r"[0-9a-f]{32}", machine) and int(machine, 16) else "")
+        try:
+            identity["permanent_mac"] = permanent_mac(self.command("-P", interface))
+        except ProfileError:
+            identity["permanent_mac"] = ""
+        try:
             raw = self.command("-c", interface)
             settings = fields(raw)
             diagnostic = ""
@@ -78,14 +101,18 @@ class Ethtool:
         self.command("-C", interface, "rx-usecs", str(value))
 
 
-def capability(state):
+def capability(state, restoring=False):
     identity, settings = state["identity"], state["coalesce"]
     reasons = []
     if identity.get("driver") != "e1000e":
         reasons.append("only e1000e has a reviewed mode mapping; do not copy its codes to this driver")
     if not all(identity.get(k) for k in ("bus_info", "driver_version", "pci_vendor", "pci_device")):
         reasons.append("physical PCI/driver identity incomplete; inspect ethtool -i and sysfs")
-    if settings.get("rx-usecs") not in ("0", "3"):
+    if not identity.get("host_id_sha256") or not identity.get("permanent_mac"):
+        reasons.append("host/permanent NIC identity incomplete; inspect /etc/machine-id and ethtool -P")
+    if restoring and not re.fullmatch(r"[0-9]+", settings.get("rx-usecs", "")):
+        reasons.append("current rx-usecs is unreadable; inspect ethtool -c before restoring")
+    elif not restoring and settings.get("rx-usecs") not in ("0", "3"):
         reasons.append("only original e1000e modes 0 and 3 have an exact restore path in this profile")
     if state.get("coalesce_diagnostic"):
         reasons.append(state["coalesce_diagnostic"])
@@ -94,8 +121,8 @@ def capability(state):
             "original_3_meaning": "e1000e dynamic-conservative mode, not 3 microseconds"}
 
 
-def supported(state):
-    info = capability(state)
+def supported(state, restoring=False):
+    info = capability(state, restoring)
     if not info["supported"]:
         raise ProfileError("; ".join(info["diagnostics"]))
 
@@ -115,25 +142,29 @@ def save_snapshot(path, state):
     # Never overwrite an original snapshot, including via a symlink. Persist it before any mutation.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as output:
-        json.dump({"schema": 1, "original": state}, output, indent=2, sort_keys=True)
+        json.dump({"schema": 1, "original": state, "original_sha256": original_digest(state)},
+                  output, indent=2, sort_keys=True)
         output.write("\n")
         output.flush()
         os.fsync(output.fileno())
 
 
 def original_snapshot(path):
-    original = load_json(path).get("original")
+    envelope = load_json(path)
+    original = envelope.get("original")
     if (not isinstance(original, dict) or not isinstance(original.get("identity"), dict) or
             not isinstance(original.get("coalesce"), dict) or not original.get("boot_id")):
         raise ProfileError("invalid original snapshot; do not apply or guess a restore value")
+    if envelope.get("original_sha256") != original_digest(original):
+        raise ProfileError("original snapshot checksum missing or mismatched; recover the intact original before changing settings")
     supported(original)
     return original
 
 
-def check_identity(original, current):
+def check_identity(original, current, restoring=False):
     if original["identity"] != current["identity"] or original["boot_id"] != current["boot_id"]:
         raise ProfileError("snapshot hardware/driver/boot mismatch; inspect this interface and take a new snapshot")
-    supported(current)
+    supported(current, restoring)
 
 
 def selected_profile(profile, test_config, state):
@@ -161,10 +192,12 @@ def change(backend, interface, snapshot_path, restore=False, profile=None, test_
     if not restore and selected_profile(profile, test_config, current) == "off":
         return {"action": "off", "changed": False, "readback": current}
     original = original_snapshot(snapshot_path)
-    check_identity(original, current)
+    check_identity(original, current, restore)
     applied = {**original["coalesce"], "rx-usecs": "0"}
     # Refuse unrelated drift rather than overwriting another operator's settings.
-    if current["coalesce"] not in (original["coalesce"], applied):
+    unchanged_other_fields = ({k: v for k, v in current["coalesce"].items() if k != "rx-usecs"} ==
+                              {k: v for k, v in original["coalesce"].items() if k != "rx-usecs"})
+    if not unchanged_other_fields or (not restore and current["coalesce"] not in (original["coalesce"], applied)):
         raise ProfileError("coalescing drift since snapshot; inspect ethtool -c; no setting changed by this command")
     expected = original["coalesce"] if restore else applied
     changed = current["coalesce"] != expected
@@ -172,7 +205,7 @@ def change(backend, interface, snapshot_path, restore=False, profile=None, test_
         try:
             backend.set_rx(interface, expected["rx-usecs"])
             current = backend.read(interface)
-            check_identity(original, current)
+            check_identity(original, current, restore)
             if current["coalesce"] != expected:
                 raise ProfileError("coalesce readback differs from the requested full setting map")
         except (OSError, ProfileError) as exc:
@@ -187,7 +220,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("discover", "snapshot", "apply", "restore"))
     parser.add_argument("--interface", required=True)
-    parser.add_argument("--snapshot", help="new immutable original file for snapshot; existing file for apply/restore")
+    parser.add_argument("--snapshot", help="new original file with corruption checksum; existing file for apply/restore")
     parser.add_argument("--profile", choices=("off", "low-latency"), default=None)
     parser.add_argument("--test-config", help="explicit test configuration with exact validated hardware records")
     args = parser.parse_args(argv)

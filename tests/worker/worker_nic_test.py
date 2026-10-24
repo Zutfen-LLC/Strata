@@ -15,7 +15,8 @@ SPEC.loader.exec_module(nic)
 
 def state():
     return {"identity": {"interface": "fixture0", "driver": "e1000e", "driver_version": "fixture",
-                         "bus_info": "fixture-pci", "pci_vendor": "fixture-vendor", "pci_device": "fixture-device"},
+                         "bus_info": "fixture-pci", "pci_vendor": "fixture-vendor", "pci_device": "fixture-device",
+                         "host_id_sha256": "fixture-host", "permanent_mac": "02:00:00:00:00:01"},
             "boot_id": "fixture-boot", "coalesce": {"rx-usecs": "3", "tx-usecs": "0", "adaptive-rx": "off"},
             "driver_raw": "synthetic", "coalesce_raw": "synthetic", "coalesce_diagnostic": ""}
 
@@ -26,6 +27,7 @@ class Fake:
         self.writes = []
         self.failure = False
         self.drift = False
+        self.partial_value = None
 
     def read(self, interface):
         return copy.deepcopy(self.state)
@@ -36,6 +38,8 @@ class Fake:
         if self.drift:
             self.state["coalesce"]["tx-usecs"] = "9"
         if self.failure:
+            if self.partial_value is not None:
+                self.state["coalesce"]["rx-usecs"] = self.partial_value
             raise nic.ProfileError("fixture partial set")
 
 
@@ -90,6 +94,8 @@ class ProfileTests(unittest.TestCase):
 
     def test_wrong_boot_wrong_identity_and_unrelated_drift_never_write(self):
         for section, key, value in (("identity", "bus_info", "other"),
+                                    ("identity", "host_id_sha256", "other-host"),
+                                    ("identity", "permanent_mac", "02:00:00:00:00:02"),
                                     ("coalesce", "tx-usecs", "1")):
             self.backend.state = state()
             self.backend.state[section][key] = value
@@ -114,6 +120,32 @@ class ProfileTests(unittest.TestCase):
             self.apply(profile="low-latency")
         self.assertEqual(self.snapshot.read_bytes(), before)
 
+    def test_explicit_restore_recovers_unexpected_owned_value_after_partial_failure(self):
+        self.backend.failure = True
+        self.backend.partial_value = "1"
+        with self.assertRaisesRegex(nic.ProfileError, "outcome uncertain"):
+            self.apply(profile="low-latency")
+        self.backend.failure = False
+        with self.assertRaises(nic.ProfileError):
+            self.apply(profile="low-latency")
+        self.assertTrue(self.apply(restore=True)["verified"])
+        self.assertEqual(self.backend.state["coalesce"], state()["coalesce"])
+        self.assertEqual(self.backend.writes, [("fixture0", "0"), ("fixture0", "3")])
+        self.backend.state["coalesce"]["rx-usecs"] = "1"
+        self.backend.state["coalesce"]["tx-usecs"] = "9"
+        with self.assertRaisesRegex(nic.ProfileError, "drift"):
+            self.apply(restore=True)
+        self.assertEqual(len(self.backend.writes), 2)
+
+    def test_changed_snapshot_is_detected_before_restore(self):
+        self.apply(profile="low-latency")
+        envelope = json.loads(self.snapshot.read_text())
+        envelope["original"]["coalesce"]["rx-usecs"] = "0"
+        self.snapshot.write_text(json.dumps(envelope))
+        with self.assertRaisesRegex(nic.ProfileError, "checksum"):
+            self.apply(restore=True)
+        self.assertEqual(self.backend.writes, [("fixture0", "0")])
+
     def test_test_default_requires_exact_validated_record(self):
         config = Path(self.directory.name) / "test.json"
         config.write_text(json.dumps({"schema": 1, "validated_hardware": []}))
@@ -126,8 +158,20 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(self.backend.writes, [("fixture0", "0")])
         with self.assertRaises(nic.ProfileError):
             self.apply(profile="off", test_config=config)
+        self.backend.state["identity"]["host_id_sha256"] = "other-host"
+        with self.assertRaisesRegex(nic.ProfileError, "no exact validated"):
+            self.apply(test_config=config)
+        self.backend.state["identity"] = state()["identity"]
+        self.backend.state["identity"]["permanent_mac"] = "02:00:00:00:00:02"
+        with self.assertRaisesRegex(nic.ProfileError, "no exact validated"):
+            self.apply(test_config=config)
+        self.assertEqual(len(self.backend.writes), 1)
 
     def test_text_parser_and_discovery_failures(self):
+        self.assertEqual(nic.permanent_mac("Permanent address: 02:AA:00:00:00:01\n"), "02:aa:00:00:00:01")
+        for invalid in ("Permanent address: 00:00:00:00:00:00", "Permanent address: ff:ff:ff:ff:ff:ff", "unavailable"):
+            with self.assertRaises(nic.ProfileError):
+                nic.permanent_mac(invalid)
         settings = nic.fields("Coalesce parameters for fixture0:\nAdaptive RX: off  TX: off\n"
                               "rx-usecs: 3\ntx-usecs: n/a\n")
         self.assertEqual(settings, {"adaptive-rx": "off", "adaptive-tx": "off", "rx-usecs": "3", "tx-usecs": "n/a"})

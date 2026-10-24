@@ -22,7 +22,9 @@ def main():
     # Fail closed before listening. No physical interface is opened by these negative cases.
     for extra in (("--bind-ip", "0.0.0.0"), ("--bind-ip", "192.0.2.1"),
                   ("--bind-ip", "localhost"), ("--allow-peer-ip", "192.0.2.0/24"),
-                  ("--bind-ip", "127.0.0.1", "--allow-peer-ip", "224.0.0.1")):
+                  ("--bind-ip", "127.0.0.1", "--allow-peer-ip", "224.0.0.1"),
+                  ("--allow-peer-ip", "127.0.0.1", "--deadline-ms", "0"),
+                  ("--allow-peer-ip", "127.0.0.1", "--deadline-ms", "garbage")):
         result = subprocess.run([args.worker, *extra], capture_output=True, timeout=5)
         if result.returncode != 1 or b"listening on" in result.stderr:
             raise RuntimeError(f"unsafe listener policy was not refused: {extra!r}")

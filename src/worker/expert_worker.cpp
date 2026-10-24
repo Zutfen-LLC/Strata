@@ -1106,6 +1106,10 @@ ExpertWorkerService::~ExpertWorkerService() {
 bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
     if (!sock::listener_policy(impl_->opt.bind_ip, impl_->opt.allow_peer_ips, impl_->allowed_peers, err))
         return false;
+    if ((impl_->opt.bind_ip != "127.0.0.1" || !impl_->opt.allow_peer_ips.empty()) && impl_->opt.deadline_ms <= 0) {
+        err = "explicit bind/peer policy requires a positive --deadline-ms";
+        return false;
+    }
     if (impl_->opt.residency_ms < 0 || impl_->opt.residency_ms > kMaxResidencyMs ||
         (impl_->opt.residency_forever && impl_->opt.residency_ms != 0) ||
         ((impl_->opt.residency_ms || impl_->opt.residency_forever) && impl_->opt.deadline_ms <= 0)) {
@@ -1130,8 +1134,9 @@ bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
         if (!impl_->local->open(impl_->opt.local_root, impl_->opt.local_manifest, err))
             return false;
     }
-    return impl_->opt.bind_ip == "127.0.0.1" ? sock::listen_loopback(port, impl_->listener, err)
-                                          : sock::listen_ipv4(impl_->opt.bind_ip, port, impl_->listener, err);
+    return impl_->opt.bind_ip == "127.0.0.1" && impl_->allowed_peers.empty()
+        ? sock::listen_loopback(port, impl_->listener, err)
+        : sock::listen_ipv4(impl_->opt.bind_ip, port, impl_->listener, err);
 }
 
 void ExpertWorkerService::run() {
