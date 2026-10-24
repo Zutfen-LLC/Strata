@@ -122,7 +122,7 @@ bool encode_infer(const InferRequest& r, uint16_t n_embd, std::vector<uint8_t>& 
     if (r.mask.size() != n || r.ids.size() != n || r.weights.size() != n) return false;
     if (r.activations.size() != (size_t) r.T * n_embd) return false;
     out.clear();
-    out.reserve(kInferPayloadMax);
+    out.reserve(kInferFixed + n * 7 + r.activations.size() * 4);
     put_u64(out, r.session);
     put_u64(out, r.model_id);
     put_u64(out, r.partition_id);
@@ -168,11 +168,16 @@ bool decode_infer(const uint8_t* p, size_t n, uint16_t n_layers, uint16_t n_expe
 
 std::vector<uint8_t> encode_infer_ack(const InferReply& r) {
     std::vector<uint8_t> o;
+    encode_infer_ack(r, o);
+    return o;
+}
+
+void encode_infer_ack(const InferReply& r, std::vector<uint8_t>& o) {
+    o.clear();
     o.reserve(16 + r.partials.size() * 4);
     put_u64(o, r.session);
     put_u64(o, r.sequence);
     for (size_t i = 0; i < r.partials.size(); ++i) put_f32(o, r.partials[i]);
-    return o;
 }
 
 bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, InferReply& r) {

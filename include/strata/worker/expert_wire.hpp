@@ -200,6 +200,7 @@ bool encode_infer(const InferRequest& r, uint16_t n_embd, std::vector<uint8_t>& 
 bool decode_infer(const uint8_t* p, size_t n, uint16_t n_layers, uint16_t n_expert, uint16_t n_embd,
                   InferRequest& r);
 std::vector<uint8_t> encode_infer_ack(const InferReply& r);
+void encode_infer_ack(const InferReply& r, std::vector<uint8_t>& out);
 bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, InferReply& r);
 
 /// Builds a whole frame - the 16-byte header plus the payload.  The ONE place the header is written,

@@ -125,6 +125,7 @@ public:
     void report(std::string& out) const;
 
 private:
+    friend struct RpcWorkspaceTestAccess;
     void run_requests();
     void die(const std::string& why);
 

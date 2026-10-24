@@ -53,7 +53,8 @@ bool ExpertWorkerClient::send_frame(uint16_t msg, uint16_t st, const std::vector
         err = "not connected";
         return false;
     }
-    std::vector<uint8_t> buf;
+    std::vector<uint8_t> temporary;
+    auto& buf = msg == MSG_INFER ? infer_frame_ : temporary;
     encode_frame(buf, msg, st, payload.data(), payload.size());
     if (!sock::send_all_controlled((sock_fd)fd_, buf.data(), buf.size(), deadline_ms_, setup_cancelled_)) {
         err = "send failed or timed out";
@@ -375,7 +376,7 @@ bool ExpertWorkerClient::infer(const InferRequest& r, InferReply& reply, std::st
                                RpcExchangeTiming* timing) {
     if (timing) *timing = {};
     const uint64_t send_start = timing ? mono_ns() : 0;
-    std::vector<uint8_t> p;
+    auto& p = infer_payload_;
     if (!encode_infer(r, n_embd_, p)) {
         err = "the request is outside the protocol's bounds";
         if (timing) timing->encode_send_ns = mono_ns() - send_start;
@@ -388,7 +389,7 @@ bool ExpertWorkerClient::infer(const InferRequest& r, InferReply& reply, std::st
     }
     if (timing) timing->encode_send_ns = mono_ns() - send_start;
     const uint64_t receive_start = timing ? mono_ns() : 0;
-    WireFrame f;
+    auto& f = infer_reply_;
     if (!recv_frame(MSG_INFER_ACK, f, err)) {
         if (timing) timing->receive_decode_ns = mono_ns() - receive_start;
         return false;
@@ -507,6 +508,9 @@ void ExpertWorkerClient::close() {
     blob_bytes_ = 0;
     chunk_cap_ = 0;
     n_embd_ = 0;
+    std::vector<uint8_t>().swap(infer_payload_);
+    std::vector<uint8_t>().swap(infer_frame_);
+    infer_reply_ = {};
 }
 
 }  // namespace strata::worker

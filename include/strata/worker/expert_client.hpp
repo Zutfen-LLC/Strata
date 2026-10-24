@@ -81,6 +81,7 @@ public:
     uint16_t last_status() const { return last_status_; }
 
 private:
+  friend struct RpcWorkspaceTestAccess;
   bool setup_impl(const SetupManifest &m, const Digest128 *identity, bool fallback, std::string &err, bool resident = false);
   bool send_frame(uint16_t msg, uint16_t st, const std::vector<uint8_t> &payload, std::string &err);
   bool recv_frame(uint16_t want_msg, WireFrame &f, std::string &err);
@@ -97,6 +98,9 @@ private:
   bool local_ = false;
   LocalStats local_stats_;
   uint16_t last_status_ = ST_OK;
+  // Synchronous, one-in-flight inference storage. Setup/upload frames remain temporary.
+  std::vector<uint8_t> infer_payload_, infer_frame_;
+  WireFrame infer_reply_;
 };
 
 }  // namespace strata::worker
