@@ -16,6 +16,8 @@
 #include <thread>
 #include <vector>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 
 using namespace strata::worker;
@@ -69,7 +71,25 @@ struct Config {
     int exchanges = kDefaultExchanges;
     int deadline_ms = kDefaultDeadlineMs;
     bool accepted_nodelay = false;
+    std::string bind_ip = "127.0.0.1";
+    std::string allow_peer_ip = "127.0.0.1";
+    std::string route = "loopback";
+    bool bind_ip_explicit = false;
+    bool allow_peer_ip_explicit = false;
 };
+
+in_addr selected_ipv4(const std::string& text, const char* name) {
+    in_addr address{};
+    require(::inet_pton(AF_INET, text.c_str(), &address) == 1, std::string(name) + " must be numeric IPv4");
+    const uint32_t host = ntohl(address.s_addr);
+    require(host != INADDR_ANY && host != INADDR_BROADCAST && (host & 0xf0000000u) != 0xe0000000u,
+            std::string(name) + " must select one unicast IPv4 address");
+    return address;
+}
+
+bool is_loopback(in_addr address) {
+    return (ntohl(address.s_addr) & 0xff000000u) == 0x7f000000u;
+}
 
 constexpr size_t source_request_bytes(uint8_t tokens) {
     return kHeaderBytes + kInferFixed + (size_t) tokens * kMaxK * (1 + 2 + 4) +
@@ -97,6 +117,63 @@ void validate(Config& c) {
     require(c.warmup >= 0 && c.warmup <= 1000000, "warmup is outside 0..1000000");
     require(c.exchanges >= 1 && c.exchanges <= 100000000, "exchanges are outside 1..100000000");
     require(c.deadline_ms >= 1 && c.deadline_ms <= 3600000, "deadline-ms is outside 1..3600000");
+    require(c.bind_ip_explicit == c.allow_peer_ip_explicit,
+            "--bind-ip and --allow-peer-ip must be selected together");
+    const in_addr bind = selected_ipv4(c.bind_ip, "bind-ip");
+    const in_addr peer = selected_ipv4(c.allow_peer_ip, "allow-peer-ip");
+    require(c.route == "loopback" || c.route == "direct-lan",
+            "route must be loopback or direct-lan");
+    if (c.bind_ip_explicit) {
+        require(c.route == "direct-lan", "an explicit bind and peer require --route direct-lan");
+        require(!is_loopback(bind) && !is_loopback(peer),
+                "direct-lan bind and peer addresses must not be loopback");
+    }
+}
+
+bool listen_fixture(const Config& c, uint16_t& port, sock_fd& out, std::string& error) {
+    if (!c.bind_ip_explicit) return sock::listen_loopback(port, out, error);
+    out = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (out == kBadFd) { error = "fixture socket failed"; return false; }
+    int one = 1;
+    ::setsockopt(out, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr = selected_ipv4(c.bind_ip, "bind-ip");
+    address.sin_port = htons(port);
+    if (::bind(out, (sockaddr*) &address, sizeof address) != 0 || ::listen(out, 1) != 0) {
+        error = "fixture bind/listen failed for " + c.bind_ip + ":" + std::to_string(port);
+        sock::close_fd(out);
+        return false;
+    }
+    socklen_t length = sizeof address;
+    if (::getsockname(out, (sockaddr*) &address, &length) != 0) {
+        error = "fixture getsockname failed";
+        sock::close_fd(out);
+        return false;
+    }
+    port = ntohs(address.sin_port);
+    return true;
+}
+
+// Fixture-only exposure restriction. This exact source-address comparison is not authentication.
+bool peer_is_allowed(sock_fd fd, const Config& c, std::string& actual, std::string& error) {
+    sockaddr_in peer{};
+    socklen_t length = sizeof peer;
+    if (::getpeername(fd, (sockaddr*) &peer, &length) != 0 || peer.sin_family != AF_INET) {
+        error = "accepted peer address unavailable";
+        return false;
+    }
+    char text[INET_ADDRSTRLEN]{};
+    if (!::inet_ntop(AF_INET, &peer.sin_addr, text, sizeof text)) {
+        error = "accepted peer address could not be formatted";
+        return false;
+    }
+    actual = text;
+    if (peer.sin_addr.s_addr != selected_ipv4(c.allow_peer_ip, "allow-peer-ip").s_addr) {
+        error = "accepted peer " + actual + " is not allowed";
+        return false;
+    }
+    return true;
 }
 
 InferRequest representative_request(const Config& c) {
@@ -188,12 +265,12 @@ void print_distribution(const char* role, const char* phase, const char* scope,
     const auto& d = std::strcmp(scope, "handler") == 0 ? stats.handler :
                     std::strcmp(scope, "send") == 0 ? stats.send :
                     std::strcmp(scope, "receive") == 0 ? stats.receive : stats.rtt;
-    std::printf("CPU_RPC_REPLAY_V1 role=%s phase=%s scope=%s transport_only=1 expert_compute=0 "
+    std::printf("CPU_RPC_REPLAY_V1 role=%s phase=%s scope=%s route=%s transport_only=1 expert_compute=0 "
                 "accepted_nodelay=%d T=%u entries=%u source_request_bytes=%zu source_reply_bytes=%zu "
                 "request_bytes=%zu reply_bytes=%zu completed=%llu failures=%llu completed_wire_bytes=%llu "
                 "samples=%llu mean_us=%.1f p50_bucket_upper_us=%llu p95_bucket_upper_us=%llu "
                 "p99_bucket_upper_us=%llu max_us=%.1f\n",
-                role, phase, scope, c.accepted_nodelay ? 1 : 0, c.tokens, c.entries,
+                role, phase, scope, c.route.c_str(), c.accepted_nodelay ? 1 : 0, c.tokens, c.entries,
                 source_request_bytes(c.tokens), source_reply_bytes(c.tokens), c.request_bytes, c.reply_bytes,
                 (unsigned long long) stats.completed, (unsigned long long) stats.failures,
                 (unsigned long long) stats.wire_bytes, (unsigned long long) d.count,
@@ -234,6 +311,9 @@ int run_client(const std::string& host, uint16_t port, const Config& c) {
     Fd fd;
     std::string error;
     require(sock::connect_host(host, port, c.deadline_ms, fd.value, error), error);
+    std::printf("CPU_RPC_REPLAY_CONNECTED_V1 host=%s port=%u route=%s transport_only=1 expert_compute=0\n",
+                host.c_str(), port, c.route.c_str());
+    std::fflush(stdout);
     auto request = request_frame(c);
     PhaseStats warmup, measure;
     uint64_t sequence = 0;
@@ -252,6 +332,11 @@ int run_server(sock_fd listener, const Config& c) {
     Fd peer;
     require(sock::accept_one(listener, peer.value, c.deadline_ms, c.accepted_nodelay),
             "accept failed or timed out");
+    std::string actual_peer, peer_error;
+    require(peer_is_allowed(peer.value, c, actual_peer, peer_error), peer_error);
+    std::printf("CPU_RPC_REPLAY_ACCEPTED_V1 peer=%s allowed_peer=%s route=%s source_ip_filter_only=1\n",
+                actual_peer.c_str(), c.allow_peer_ip.c_str(), c.route.c_str());
+    std::fflush(stdout);
     auto reply = reply_frame(c);
     PhaseStats warmup, measure;
     const int total = c.warmup + c.exchanges;
@@ -360,6 +445,12 @@ void options(int argc, char** argv, int start, Config& c) {
         else if (arg == "--deadline-ms")
             c.deadline_ms = option_number<int>(next("--deadline-ms"), "--deadline-ms");
         else if (arg == "--accepted-nodelay") c.accepted_nodelay = true;
+        else if (arg == "--bind-ip") { c.bind_ip = next("--bind-ip"); c.bind_ip_explicit = true; }
+        else if (arg == "--allow-peer-ip") {
+            c.allow_peer_ip = next("--allow-peer-ip");
+            c.allow_peer_ip_explicit = true;
+        }
+        else if (arg == "--route") c.route = next("--route");
         else throw std::runtime_error("unknown option: " + arg);
     }
     validate(c);
@@ -375,7 +466,8 @@ void usage() {
     std::fprintf(stderr,
         "usage: cpu_rpc_replay [--self-check | --loopback | --serve PORT | --connect HOST PORT] [options]\n"
         "options: --tokens N --entries N --request-bytes N --reply-bytes N --warmup N "
-        "--exchanges N --deadline-ms N [--accepted-nodelay]\n");
+        "--exchanges N --deadline-ms N [--accepted-nodelay] [--route loopback|direct-lan] "
+        "[--bind-ip IPV4 --allow-peer-ip IPV4]\n");
 }
 
 } // namespace
@@ -385,16 +477,20 @@ int main(int argc, char** argv) {
         Config c;
         if (argc == 1 || std::string(argv[1]) == "--self-check") {
             options(argc, argv, argc == 1 ? 1 : 2, c);
+            require(c.route == "loopback" && !c.bind_ip_explicit,
+                    "self-check mode does not accept external route or peer controls");
             framing_self_check(c);
             if (argc != 1) return 0;
         }
         const std::string mode = argc == 1 ? "--loopback" : argv[1];
         if (mode == "--loopback") {
             options(argc, argv, argc == 1 ? 1 : 2, c);
+            require(c.route == "loopback" && !c.bind_ip_explicit,
+                    "loopback mode does not accept external route or peer controls");
             Fd listener;
             uint16_t bound = 0;
             std::string error;
-            require(sock::listen_loopback(bound, listener.value, error), error);
+            require(listen_fixture(c, bound, listener.value, error), error);
             std::exception_ptr failure;
             int server_rc = 1;
             std::thread server([&] { try { server_rc = run_server(listener.value, c); }
@@ -409,12 +505,16 @@ int main(int argc, char** argv) {
         if (mode == "--serve" && argc >= 3) {
             const uint16_t requested = port(argv[2], true);
             options(argc, argv, 3, c);
+            require((c.route == "direct-lan") == c.bind_ip_explicit,
+                    "direct-lan server mode requires explicit --bind-ip and --allow-peer-ip");
             Fd listener;
             uint16_t bound = requested;
             std::string error;
-            require(sock::listen_loopback(bound, listener.value, error), error);
-            std::printf("CPU_RPC_REPLAY_LISTENING_V1 address=127.0.0.1 port=%u accepted_nodelay=%d "
-                        "transport_only=1 expert_compute=0\n", bound, c.accepted_nodelay ? 1 : 0);
+            require(listen_fixture(c, bound, listener.value, error), error);
+            std::printf("CPU_RPC_REPLAY_LISTENING_V1 address=%s port=%u allowed_peer=%s route=%s "
+                        "source_ip_filter_only=1 accepted_nodelay=%d transport_only=1 expert_compute=0\n",
+                        c.bind_ip.c_str(), bound, c.allow_peer_ip.c_str(), c.route.c_str(),
+                        c.accepted_nodelay ? 1 : 0);
             std::fflush(stdout);
             return run_server(listener.value, c);
         }
@@ -422,6 +522,10 @@ int main(int argc, char** argv) {
             const std::string host = argv[2];
             const uint16_t target = port(argv[3], false);
             options(argc, argv, 4, c);
+            require(!c.bind_ip_explicit, "--bind-ip and --allow-peer-ip are server-only");
+            if (c.route == "direct-lan")
+                require(!is_loopback(selected_ipv4(host, "direct LAN host")),
+                        "direct LAN host must not be loopback");
             return run_client(host, target, c);
         }
         usage();
