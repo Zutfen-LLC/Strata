@@ -1,10 +1,11 @@
 # Parallel local weight loading
 
-The CPU worker can read and verify independent experts concurrently. Add `--local-load-threads 2`
-or `--local-load-threads 4` to its existing local-source command. Values 1–4 are accepted; the default
-is 1 and uses the existing serial, file-sorted loader. `--workers` still controls inference only.
+The CPU worker reads and verifies independent experts with four loading lanes by default. Use
+`--local-load-threads 1` for the existing serial, file-sorted loader, or explicitly select 2 or 4.
+Values 1–4 are accepted. `--workers` still controls inference only.
 The count is local configuration, not a new wire field. Upload-only setup and manifest preparation
-are unchanged. This candidate is source/static-review only; builds and executable tests are **NOT RUN**.
+are unchanged. The owner selected four as the default after the supplied Hermes comparison below.
+The default-selection follow-up is statically reviewed; its executable checks are **NOT RUN locally**.
 
 The loader keeps the existing batch limit of 32 experts and writes into the one budgeted final arena.
 Each lane owns a contiguous range of experts in that batch, reads each expert's present roles, then
@@ -33,7 +34,15 @@ and first touch. The engine's READY handshake is another elapsed scope. Do not a
 subtract clocks across hosts. Loaded bytes count completed read chunks; verified bytes count bytes
 processed by each forward/reverse pair once, including work before failure.
 
-The [Hermes handoff](../validation/CPU-LOCAL-LOADING-20261024.md) defines focused 1/2/4-thread gates and
-an independent loading comparison after the hosts return. It keeps this change separate from
-[inference buffer reuse PR #6](https://github.com/Zutfen-LLC/Strata/pull/6). No speedup or runtime
-compatibility has been established for this candidate.
+Hermes supplied results at `723c5a45cd0fe289cb57c7c3d1e504c068bd0cf8`: on 02 with eight 32 GB DIMMs,
+251.5 GiB usable RAM at 2133 MT/s, engine-to-READY took 206.8 s / 114.6 s / 68.5 s with 1 / 2 / 4 lanes.
+The observed four-lane time was 66.9% lower than one lane. Each completed the same 116,135,731,200-byte
+arena, with zero inference. These are supplied results, not local execution or an independently read
+report. T4 process counters were `read_bytes=0`, `rchar=116135731200`; this is not a cold-storage speedup
+claim. T1/T2 cache residency was inferred only. Per-TID captures failed, and overlapping lane-time sums
+do not prove distinct physical cores. No successful load was repeated; wrapper failures were retained.
+
+The [Hermes handoff](../validation/CPU-LOCAL-LOADING-20261024.md) records the supplied receipt and the
+two small default-selection checks still needed. It keeps this change separate from
+[inference buffer reuse PR #6](https://github.com/Zutfen-LLC/Strata/pull/6). Keep the existing T4 worker
+resident; this default change does not require a new full-model campaign.

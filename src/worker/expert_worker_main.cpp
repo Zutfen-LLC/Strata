@@ -29,7 +29,7 @@ void usage() {
         "[--deadline-ms N] [--verbose] [--tcp-nodelay] [--rpc-timing] "
         "[--residency-ms N | --residency-forever]\n"
         "       [--local-root DIR --local-manifest FILE] [--local-upload-fallback] [--local-setup-ms N]\n"
-        "       [--local-load-threads N] (1..4, default 1; separate from inference --workers)\n"
+        "       [--local-load-threads N] (1..4, default 4; separate from inference --workers)\n"
         "       [--bind-ip IPv4 --allow-peer-ip IPv4 [--allow-peer-ip IPv4 ...]]\n"
         "  binds 127.0.0.1 by default; LAN needs exact peers and an operator-managed firewall\n"
         "  source filtering provides neither authentication nor encryption; trusted LAN only\n");

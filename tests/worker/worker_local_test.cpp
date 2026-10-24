@@ -415,11 +415,21 @@ void binary(Fixture &f, const char *executable, const char *loading_threads = nu
     }
     ::close(pipefd[0]);
     check(done && WIFEXITED(status) && WEXITSTATUS(status) == 0, "actual worker binary clean shutdown");
+    const int expected_lanes = loading_threads ? std::stoi(loading_threads) : 4;
+    if (expected_lanes > 1)
+        check(log.find("local loading lanes=" + std::to_string(expected_lanes) + ";") != std::string::npos,
+              "omitted loading flag selects four lanes; explicit parallel count overrides it");
+    else
+        check(log.find("local loading lanes=") == std::string::npos,
+              "explicit one loading thread retains the serial path");
+    check(log.find("2 pool workers") != std::string::npos, "loading selection leaves inference worker count separate");
     std::printf("%s", log.c_str());
 }
 } // namespace
 int main(int argc, char **argv) {
     try {
+        check(WorkerOptions{}.local_load_threads == 4 && WorkerOptions{}.workers == 0,
+              "service loading default is four; inference worker default is unchanged");
         Fixture f;
         if (argc == 3 && std::string(argv[1]) == "--binary")
             binary(f, argv[2]);

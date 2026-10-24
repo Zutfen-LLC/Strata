@@ -480,7 +480,7 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, siz
 }
 
 // Each batch writes at most 32 blobs directly into the assigned arena. Ranges are
-// sorted by file and offset by default. Opt-in lanes own disjoint experts and join before any ACK.
+// sorted by file and offset with one lane. Parallel lanes own disjoint experts and join before any ACK.
 // There is no second weight buffer or mmap payload.
 void ExpertWorkerService::Impl::on_local_load(sock_fd fd, const uint8_t *p, size_t n) {
     auto refuse = [&](uint16_t st) {
