@@ -2,8 +2,12 @@
 
 The source witness is sanitized `27392d03`, not exact private runtime bytes. Its completed W13/W14
 driver waited the full 420 seconds on its own unreaped guardian. Its separate Popen proposal was
-explicitly unexercised. The corrections below remain **NOT RUN** until Hermes executes the synthetic
-suite; no historical run is validation of these edits.
+explicitly unexercised. Hermes reports that the synthetic suite at `4916b4a4` ran 20 tests on controller
+Python 3.13.5: 19 passed, one reference-fixture error, 7.825 seconds, exit 1, clean cleanup. The fixture
+failed to select its registered asset after checking a missing binding; the later JSON/schema paths
+were not reached. The additive fixture correction and focused rerun are described in [HERMES.md](HERMES.md).
+These are supplied Hermes results, not locally executed checks. All executable desktop checks remain
+**NOT RUN**; no historical model run validates these edits.
 
 | Observed wrapper problem / static defect | Correction and synthetic case |
 | --- | --- |

@@ -97,10 +97,14 @@ class HarnessTests(unittest.TestCase):
         spawn.assert_not_called()
         ref = self.root / 'reference.json'; ref.write_text('{broken')
         self.cfg['assets']['reference'] = str(ref); self.arm['requests'] = [0]; self.arm['restart'] = False
+        self.arm['reference'] = 'reference'
         self.cfg['attach_root'] = str(self.root); self.cfg['attached_worker_idle'] = True
-        with self.assertRaises(json.JSONDecodeError): self.stage()
+        with patch('subprocess.Popen') as spawn, self.assertRaises(json.JSONDecodeError): self.stage()
+        spawn.assert_not_called()
         ref.write_text(json.dumps({'requests': []}))
-        with self.assertRaises(KeyError): self.stage()
+        with patch('subprocess.Popen') as spawn, self.assertRaises(KeyError): self.stage()
+        spawn.assert_not_called()
+        self.assertFalse(pathlib.Path(self.cfg['run_root']).exists())
 
     def test_single_staging_operation_never_overwrites_pins(self):
         root = self.stage(); pins = (root / 'pins.json').read_bytes()
