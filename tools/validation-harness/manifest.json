@@ -1,0 +1,28 @@
+{
+  "handoff": "strata-harness-sanitized-20261024",
+  "created_utc": "2026-10-24",
+  "origin": "local retention root (harness + PR7 drivers) plus the live W13/W14 campaign root on the execution host",
+  "sanitization": "hostnames, user/home paths, LAN IPs, GPU UUIDs, model paths and campaign-root absolutes replaced with __PLACEHOLDER__ tokens; no credentials, logs, receipts, model data or runtime identifiers included",
+  "files": {
+    "harness/campaign.py": "campaign core: identities, run_arm, wait_session, placement asserts",
+    "harness/owner.py": "engine broker with bounded drains and socket control",
+    "harness/worker_owner.py": "worker guardian",
+    "harness/monitor.py": "independent resource monitor",
+    "harness/worker_control.py": "status/unload/stop control client",
+    "harness/clockmon.py": "1 Hz clock/thermal journal",
+    "harness/freq_ctl.py": "cpufreq transitions with receipts",
+    "drivers/pr7_loadcmp.py": "PR7 loading comparison attempt-1 driver",
+    "drivers/pr7_loadcmp2.py": "PR7 continuation driver (wait_session + recovery)",
+    "drivers/pr7_build_gates_05.sh": "serial build + 11 ctest gates driver",
+    "drivers/pr7-def4-build-gates-05.sh": "default-four focused validation driver",
+    "drivers/pr7_link_03.sh": "incremental CUDA link gate",
+    "drivers/timed_run.py": "timing/RSS wrapper",
+    "drivers/recover_t2.py": "T2 recovery utility",
+    "drivers/watch_loadcmp.py": "freeze-race watcher (provenance)",
+    "w13w14/w13w14.py": "RECOMMENDED worker-count driver (zombie-reap fix; NOT YET EXERCISED)",
+    "w13w14/as-run/w13w14.py": "exact executed driver (sanitized paths only)",
+    "w13w14/config.template.json": "placeholder config template",
+    "REGRESSIONS.md": "five documented launcher cases incl. the 420 s zombie-poll regression",
+    "README.md": "source map + usage sketch"
+  }
+}
