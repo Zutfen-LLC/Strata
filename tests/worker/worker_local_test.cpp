@@ -340,7 +340,7 @@ void negotiation_budget(Fixture &f) {
         std::printf("NEGOTIATION mode=%d elapsed_ms=%lld\n", mode, (long long)ms);
     }
 }
-void binary(Fixture &f, const char *executable) {
+void binary(Fixture &f, const char *executable, const char *loading_threads = nullptr) {
     int pipefd[2];
     require(::pipe(pipefd) == 0, "pipe");
     const auto pid = ::fork();
@@ -350,7 +350,7 @@ void binary(Fixture &f, const char *executable) {
         ::dup2(pipefd[1], 2);
         ::close(pipefd[1]);
         const std::string root = f.root.string(), manifest = (f.root / "local.manifest").string();
-        const char *args[] = {executable,
+        std::vector<const char *> args{executable,
                               "--port",
                               "0",
                               "--workers",
@@ -360,9 +360,13 @@ void binary(Fixture &f, const char *executable) {
                               "--local-root",
                               root.c_str(),
                               "--local-manifest",
-                              manifest.c_str(),
-                              nullptr};
-        ::execv(executable, const_cast<char **>(args));
+                              manifest.c_str()};
+        if (loading_threads) {
+            args.push_back("--local-load-threads");
+            args.push_back(loading_threads);
+        }
+        args.push_back(nullptr);
+        ::execv(executable, const_cast<char **>(args.data()));
         _exit(127);
     }
     ::close(pipefd[1]);
@@ -411,14 +415,26 @@ void binary(Fixture &f, const char *executable) {
     }
     ::close(pipefd[0]);
     check(done && WIFEXITED(status) && WEXITSTATUS(status) == 0, "actual worker binary clean shutdown");
+    const int expected_lanes = loading_threads ? std::stoi(loading_threads) : 4;
+    if (expected_lanes > 1)
+        check(log.find("local loading lanes=" + std::to_string(expected_lanes) + ";") != std::string::npos,
+              "omitted loading flag selects four lanes; explicit parallel count overrides it");
+    else
+        check(log.find("local loading lanes=") == std::string::npos,
+              "explicit one loading thread retains the serial path");
+    check(log.find("2 pool workers") != std::string::npos, "loading selection leaves inference worker count separate");
     std::printf("%s", log.c_str());
 }
 } // namespace
 int main(int argc, char **argv) {
     try {
+        check(WorkerOptions{}.local_load_threads == 4 && WorkerOptions{}.workers == 0,
+              "service loading default is four; inference worker default is unchanged");
         Fixture f;
         if (argc == 3 && std::string(argv[1]) == "--binary")
             binary(f, argv[2]);
+        else if (argc == 5 && std::string(argv[1]) == "--binary" && std::string(argv[3]) == "--load-threads")
+            binary(f, argv[2], argv[4]);
         else {
             parity(f);
             mixed(f);

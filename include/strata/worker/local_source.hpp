@@ -6,6 +6,7 @@
 #include <functional>
 namespace strata::worker {
 inline constexpr uint32_t kLocalVersion = 1, kLocalBatchMax = 32;
+inline constexpr int kMaxLocalLoadThreads = 4;
 inline constexpr size_t kLocalManifestMax = 8u << 20;
 struct LocalFile {
     std::string name;
@@ -43,6 +44,9 @@ class LocalSource {
     const LocalManifest &manifest() const { return manifest_; }
     int file(uint32_t index, std::string &err); // >=0 descriptor, -1 absent, -2 invalid
     bool read(uint32_t file, uint64_t offset, void *dst, size_t bytes, std::string &err);
+    // Parallel batch reads: file() must open/check every source on the serving thread first.
+    // No file(), open() or close_files() may run until all readers join. Tables/stamps stay immutable.
+    bool read_opened(uint32_t file, uint64_t offset, void *dst, size_t bytes, std::string &err) const;
     void close_files();
 
   private:

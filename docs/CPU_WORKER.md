@@ -47,6 +47,10 @@ Options: `--port P` (0 picks a free port and prints it), `--memory-budget-mib N`
 `--deadline-ms N` (budget per full socket send/read, default 10000), `--verbose` (one identity/status line per
 request; still no payloads are logged).
 
+For local weight setup, `--local-load-threads N` selects 1–4 loading lanes, separate from inference
+`--workers`. The default is 4; explicit 1 keeps the serial reader. See [parallel local loading](cpu-worker-local/PARALLEL_LOADING.md)
+for memory bounds, timing interpretation and validation status.
+
 ## The service API
 
 One persistent connection, one outstanding request at a time, every frame

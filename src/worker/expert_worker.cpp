@@ -6,6 +6,7 @@
 #include "strata/worker/expert_worker.hpp"
 
 #include "strata/worker/local_source.hpp"
+#include "local_loader.hpp"
 #include "wire_sock.hpp"
 #include <algorithm>
 
@@ -479,7 +480,8 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, siz
 }
 
 // Each batch writes at most 32 blobs directly into the assigned arena. Ranges are
-// sorted by file and offset. There is no second weight buffer or mmap payload.
+// sorted by file and offset with one lane. Parallel lanes own disjoint experts and join before any ACK.
+// There is no second weight buffer or mmap payload.
 void ExpertWorkerService::Impl::on_local_load(sock_fd fd, const uint8_t *p, size_t n) {
     auto refuse = [&](uint16_t st) {
         fail(st);
@@ -580,6 +582,46 @@ void ExpertWorkerService::Impl::on_local_load(sock_fd fd, const uint8_t *p, size
             dst += r.bytes;
         }
     }
+    auto complete = [&] {
+        counters->local_setup_ns = mono_ns() - local_start_ns;
+        std::vector<uint8_t> reply;
+        put64(reply, session);
+        put32(reply, count);
+        put64(reply, counters->local_bytes);
+        put64(reply, counters->local_hits);
+        put64(reply, counters->local_misses);
+        put64(reply, counters->local_read_ns);
+        put64(reply, counters->local_verify_ns);
+        put64(reply, counters->local_setup_ns);
+        for (const auto &e : entries) reply.push_back(e.hit ? 1 : 0);
+        send_frame(fd, MSG_LOCAL_LOAD_ACK, ST_OK, reply);
+    };
+    if (opt.local_load_threads > 1) {
+        std::vector<LocalLoadTask> tasks;
+        tasks.reserve(entries.size());
+        for (const auto& e : entries)
+            tasks.push_back({e.l, e.e, arena.get() + slot_off[e.slot], e.present});
+        // Preflight above opened every present source and froze its stamp. Only this serving thread
+        // can close files, invalidate the session or free the arena, after this synchronous join.
+        const auto result = load_local_parallel(*local, fmt, tasks, opt.local_load_threads, cancelled);
+        counters->local_bytes += result.bytes;
+        counters->loaded_bytes += result.bytes;
+        counters->verified_bytes += result.verified_bytes;
+        counters->local_read_ns += result.read_ns;
+        counters->local_verify_ns += result.verify_ns;
+        if (result.status != ST_OK || cancelled()) {
+            abort(result.status != ST_OK ? result.status : ST_DEADLINE,
+                  result.error.empty() ? "parallel local load failed or cancelled" : result.error);
+            return;
+        }
+        for (const auto& e : entries) if (e.hit) {
+            local_attempt[e.slot] = 1;
+            slot_filled[e.slot] = fmt.bytes;
+            ++counters->local_hits;
+        }
+        complete();
+        return;
+    }
     std::sort(reads.begin(), reads.end(), [](const Read &a, const Read &b) {
         return a.file < b.file || (a.file == b.file && a.offset < b.offset);
     });
@@ -646,19 +688,7 @@ void ExpertWorkerService::Impl::on_local_load(sock_fd fd, const uint8_t *p, size
         abort(ST_DEADLINE, "deadline or cancellation");
         return;
     }
-    counters->local_setup_ns = mono_ns() - local_start_ns;
-    std::vector<uint8_t> reply;
-    put64(reply, session);
-    put32(reply, count);
-    put64(reply, counters->local_bytes);
-    put64(reply, counters->local_hits);
-    put64(reply, counters->local_misses);
-    put64(reply, counters->local_read_ns);
-    put64(reply, counters->local_verify_ns);
-    put64(reply, counters->local_setup_ns);
-    for (const auto &e : entries)
-        reply.push_back(e.hit ? 1 : 0);
-    send_frame(fd, MSG_LOCAL_LOAD_ACK, ST_OK, reply);
+    complete();
 }
 
 void ExpertWorkerService::Impl::on_upload(sock_fd fd, const uint8_t* p, size_t n) {
@@ -1123,6 +1153,10 @@ bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
     if (impl_->opt.local_root.empty() != impl_->opt.local_manifest.empty() ||
         impl_->opt.local_setup_ms <= 0) {
         err = "local root and manifest must both be configured, with a positive setup budget";
+        return false;
+    }
+    if (impl_->opt.local_load_threads < 1 || impl_->opt.local_load_threads > kMaxLocalLoadThreads) {
+        err = "local loading threads must be 1..4";
         return false;
     }
     if (!impl_->opt.local_root.empty()) {
