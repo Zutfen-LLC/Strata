@@ -10,6 +10,14 @@ or tier/spec/handoff. One evidence gap remains: tests inspect codec/client/tier 
 but worker scratch and receive capacities have no direct assertion. Their retention is established
 only by reading the code until remote execution. No allocation or RSS measurement is claimed.
 
+Post-swap hardware update supplied by the owner: 02 has eight 32 GB DIMMs (256 GB installed;
+post-boot verification pending); 05 reports 94.2 GiB. Neither has a resident model after shutdown.
+The former 05 CPU partition of 116,135,731,200 bytes cannot fit on 05 now. Small fixtures and compatible
+builds may still use 05. All full-model comparisons below use **02's local worker path with the
+unchanged validated placement**, after the parent/Hermes verifies the new hardware baseline and usable
+headroom. Establish both baseline and candidate on that same post-swap configuration. Do not reload
+the former full partition on 05. No host execution accompanies this documentation update.
+
 The synchronous CPU client retains its inference payload, contiguous frame and receive payload.
 The single serving worker retains decoded inputs, activation scratch, jobs, lookup, rows, partials,
 encoded reply and send storage. Receive storage survives successive frames on one connection; upload
@@ -105,15 +113,18 @@ NOT RUN; do not claim those backends from the CPU/CUDA results or expand this in
 ## One small warm baseline / candidate / baseline comparison
 
 Only after correctness gates pass, use the retained runtime driver and its exact current workload.
-Resolve the current engine and CPU-worker identities, binary paths/hashes and owning guardian before
-any service action. This document grants no new live-worker replacement permission. The operator must
-authorize the named replacements in its execution session. A running old worker cannot execute the
+On 02, confirm the reported post-swap DIMMs and usable capacity, then record the current CPU policy,
+affinity, topology and absence of a resident model. Resolve the intended engine/worker service,
+binary paths/hashes and owning guardian, verifying absence or identity of its PID before any service
+action. This document grants no new service permission. The operator must authorize the named
+startup/replacement actions in its execution session. A running old worker cannot execute the
 new worker code merely because the engine changed: full-candidate comparison needs both ELFs.
 Replacing a worker releases its useful CPU weight arena and requires loading/verifying the same
 partition again. Retain baseline ELFs for the final baseline arm and rollback. Avoid concurrent weight
 arenas unless the existing plan explicitly provides the memory. Leave useful verified weights resident
 between requests and after the final baseline arm; never unload merely to collect a report.
 
+Load and verify the same partition on 02 for the fresh A0 baseline; record that cold setup separately.
 Use serial arms A0 (baseline engine + worker), B (candidate engine + worker), A1 (the identical saved
 baseline engine + worker). Keep the SAME current CPU policy, clocks/power limits, pool size, affinity,
 physical topology, local/remote GPUs, transport/NIC state, NODELAY/timing flags, model, partition,
