@@ -2,14 +2,15 @@
 //
 // Deliberately small: blocking sockets with a poll() total budget on every full send/recv, full-read/full-write or
 // failure, no partial-frame reuse.  A short read, EOF, a deadline or a malformed frame closes the
-// connection - the caller never continues on stale bytes.  Loopback only by policy: the listener binds
-// 127.0.0.1; the hardware recipe forwards a real link over an owned SSH tunnel.
+// connection - the caller never continues on stale bytes. Loopback remains the default; the CPU worker
+// can explicitly select one unicast IPv4 address and exact source peers on a trusted LAN.
 #pragma once
 
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -65,10 +66,20 @@ bool connect_numeric_controlled(const std::string &host, uint16_t port, int dead
 /// Binds and listens on 127.0.0.1:port (port 0 picks a free one; `port` receives it).  Loopback only.
 bool listen_loopback(uint16_t& port, sock_fd& out, std::string& err);
 
+// Validate before opening model sources or sockets. Empty peers are safe only on loopback.
+// Stored peer addresses are in network byte order, as returned by accept(). No DNS or CIDR matching.
+bool listener_policy(const std::string& bind_ip, const std::vector<std::string>& peers,
+                     std::vector<uint32_t>& allowed, std::string& err);
+bool listen_ipv4(const std::string& bind_ip, uint16_t& port, sock_fd& out, std::string& err);
+
 /// Accepts one connection (deadline in ms; false on error/timeout). `tcp_nodelay` is deliberately
 /// per-call: CPU-worker experiments may enable it without changing GPU-worker accepted sockets.
 /// When requested, failure to set the option closes the accepted descriptor and returns false.
 bool accept_one(sock_fd listener, sock_fd& out, int deadline_ms, bool tcp_nodelay = false);
+
+// CPU-worker opt-in: reject the kernel-reported source before NODELAY or any protocol I/O.
+bool accept_allowed(sock_fd listener, sock_fd& out, int deadline_ms, bool tcp_nodelay,
+                    const std::vector<uint32_t>& allowed_peers);
 
 /// Connects to host:port (deadline in ms).
 bool connect_host(const std::string& host, uint16_t port, int deadline_ms, sock_fd& out, std::string& err);

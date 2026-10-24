@@ -2,8 +2,8 @@
 //
 //   strata-expert-worker [--port P] [--memory-budget-mib N] [--workers N] [--deadline-ms N] [--verbose]
 //
-// Binds 127.0.0.1 only (the hardware recipe forwards a real link over an owned SSH tunnel; the worker
-// itself never listens publicly) and serves one connection at a time until SIGINT/SIGTERM.
+// Binds 127.0.0.1 by default. Explicit LAN binding requires exact numeric source peers.
+// Serves one connection at a time until SIGINT/SIGTERM. Source filtering is not authentication.
 #include "strata/worker/expert_worker.hpp"
 
 #include "wire_sock.hpp"
@@ -27,7 +27,9 @@ void usage() {
         "[--deadline-ms N] [--verbose] [--tcp-nodelay] [--rpc-timing] "
         "[--residency-ms N | --residency-forever]\n"
         "       [--local-root DIR --local-manifest FILE] [--local-upload-fallback] [--local-setup-ms N]\n"
-        "  binds 127.0.0.1 only; serves one loopback connection at a time\n");
+        "       [--bind-ip IPv4 --allow-peer-ip IPv4 [--allow-peer-ip IPv4 ...]]\n"
+        "  binds 127.0.0.1 by default; LAN needs exact peers and an operator-managed firewall\n"
+        "  source filtering provides neither authentication nor encryption; trusted LAN only\n");
 }
 }  // namespace
 
@@ -63,6 +65,11 @@ int main(int argc, char** argv) {
         else if (a == "--memory-budget-mib") opt.memory_budget = (uint64_t) next("--memory-budget-mib") << 20;
         else if (a == "--workers") opt.workers = (int) next("--workers");
         else if (a == "--deadline-ms") opt.deadline_ms = (int) next("--deadline-ms");
+        else if (a == "--bind-ip" || a == "--allow-peer-ip") {
+            if (i + 1 >= argc) { usage(); return 2; }
+            if (a == "--bind-ip") opt.bind_ip = argv[++i];
+            else opt.allow_peer_ips.emplace_back(argv[++i]);
+        }
         else if (a == "--local-root" || a == "--local-manifest") {
             if (i + 1 >= argc) {
                 usage();
@@ -101,10 +108,13 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata-worker: %s\n", err.c_str());
         return 1;
     }
-    std::fprintf(stderr, "strata-worker: listening on 127.0.0.1:%u (budget %llu MiB, %d pool workers, "
+    std::fprintf(stderr, "strata-worker: listening on %s:%u (budget %llu MiB, %d pool workers, "
                          "accepted TCP_NODELAY %s, RPC timing %s)\n",
-                 (unsigned) port, (unsigned long long) (opt.memory_budget >> 20), opt.workers,
+                 opt.bind_ip.c_str(), (unsigned) port, (unsigned long long) (opt.memory_budget >> 20), opt.workers,
                  opt.accepted_tcp_nodelay ? "on" : "off", opt.rpc_timing ? "on" : "off");
+    for (const auto& peer : opt.allow_peer_ips)
+        std::fprintf(stderr, "strata-worker: allowed source %s (trusted LAN; no authentication/encryption)\n",
+                     peer.c_str());
     std::fflush(stderr);
     // run() has no signal hook: poll the flag beside it and stop the service when it lands.
     std::thread watcher([&] {

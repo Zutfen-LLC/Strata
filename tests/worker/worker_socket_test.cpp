@@ -79,10 +79,14 @@ int main() {
     std::string error;
     check(sock::listen_loopback(port, listener, error), "loopback listener for accepted option");
     if (listener != kBadFd) {
-        for (bool enabled : {false, true}) {
+        std::vector<uint32_t> allowed;
+        check(sock::listener_policy("127.0.0.1", {"127.0.0.1"}, allowed, error), "exact socket peer policy");
+        for (int arm = 0; arm < 4; ++arm) {
+            const bool enabled = arm % 2, filtered = arm >= 2;
             sock_fd client = kBadFd, accepted = kBadFd;
             std::thread connector([&] { sock::connect_host("127.0.0.1", port, 1000, client, error); });
-            const bool accepted_ok = sock::accept_one(listener, accepted, 1000, enabled);
+            const bool accepted_ok = filtered ? sock::accept_allowed(listener, accepted, 1000, enabled, allowed)
+                                              : sock::accept_one(listener, accepted, 1000, enabled);
             connector.join();
             check(accepted_ok && client != kBadFd, "loopback connection for accepted option");
             int actual = -1;
@@ -97,6 +101,17 @@ int main() {
         sock_fd none = kBadFd;
         check(!sock::accept_one(listener, none, 10, true) && none == kBadFd,
               "accepted-option path preserves the accept timeout");
+        check(!sock::accept_allowed(listener, none, 10, true, allowed) && none == kBadFd,
+              "filtered accept preserves timeout and invalid descriptor");
+        sock::close_fd(listener);
+    }
+    port = 0;
+    check(sock::listen_ipv4("127.0.0.2", port, listener, error), "explicit numeric listener binds selected address");
+    if (listener != kBadFd) {
+        sockaddr_in actual{}; socklen_t size = sizeof actual;
+        check(::getsockname(listener, (sockaddr*)&actual, &size) == 0 &&
+              ntohl(actual.sin_addr.s_addr) == 0x7f000002u && port == ntohs(actual.sin_port),
+              "numeric listener does not silently bind a wildcard or the default address");
         sock::close_fd(listener);
     }
     std::printf("worker_socket_test: read=%lldms write=%lldms failures=%d\n",

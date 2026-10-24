@@ -1,7 +1,8 @@
 // include/strata/worker/expert_worker.hpp - inferswarm #348: the resident CPU-expert worker service.
 //
 // Holds one model's CPU-owned expert blobs in a memory-budgeted arena and computes weighted partial sums
-// with Strata's native CPU kernels (strata::kernels::cpu), over one loopback TCP connection.  The service
+// with Strata's native CPU kernels (strata::kernels::cpu), over one TCP connection (loopback by default).
+// The service
 // is the server half of the wire contract in expert_wire.hpp; see docs/CPU_WORKER.md for the full protocol
 // and the minimal local reproduction.
 //
@@ -40,6 +41,8 @@ struct WorkerOptions {
     uint32_t upload_chunk_max = kUploadChunkMax;   ///< advertised data cap, 1..kUploadChunkMax
     bool accepted_tcp_nodelay = false; ///< opt-in checked TCP_NODELAY on CPU-worker accepted sockets only
     bool rpc_timing = false; ///< opt-in fixed-memory aggregate timing; never logs individual RPCs
+    std::string bind_ip = "127.0.0.1"; ///< numeric unicast IPv4 only; never wildcard or DNS
+    std::vector<std::string> allow_peer_ips; ///< exact numeric IPv4 peers; required for non-loopback bind
 };
 
 /// #348 scope 8: what the service counts.  Identities and statuses are logged; prompts, activations and
@@ -66,7 +69,7 @@ public:
     explicit ExpertWorkerService(WorkerOptions options = {});
     ~ExpertWorkerService();
 
-    /// Binds 127.0.0.1:port (0 = a free port, reported back).  Loopback only, by policy.
+    /// Binds options.bind_ip:port (0 = a free port, reported back). Non-loopback requires exact peers.
     bool listen(uint16_t& port, std::string& err);
 
     /// Serves connections until stop() (call from a dedicated thread); each connection to EOF.

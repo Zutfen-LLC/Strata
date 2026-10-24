@@ -1,6 +1,6 @@
 # The resident CPU-expert worker (`strata-expert-worker`)
 
-The worker is a small loopback service that holds one model's CPU-owned expert blobs in RAM and computes
+The worker is a small service, bound to loopback by default, that holds one model's CPU-owned expert blobs in RAM and computes
 their weighted partial sums with Strata's native CPU kernels (`ggml-cpu` arithmetic through
 `native_expert.hpp`). A GPU engine process keeps its model, router and cache on its own machine and sends
 the CPU-owned experts' work here. It is opt-in and experimental: nothing in the default engine path uses
@@ -21,9 +21,24 @@ cmake --build build-worker --target strata-expert-worker
 ```
 
 No CUDA/HIP/SYCL toolkit is involved; the target links only `strata_kernels_cpu` (and ggml-cpu). The
-listener binds **127.0.0.1 only** - there is no flag to bind a public address. To reach it from another
-machine, forward a port over an SSH tunnel you own (for example
+listener binds **127.0.0.1 by default**. To reach it through an authenticated, encrypted connection,
+forward a port over an SSH tunnel you own (for example
 `ssh -L 7431:127.0.0.1:7431 inferswarm05`) and point the client at the tunnel's local end.
+
+For an operator-controlled trusted LAN, explicitly select a local address with `--bind-ip IPv4` and
+repeat `--allow-peer-ip IPv4` for each permitted source. A non-loopback bind without peers is refused.
+Addresses must be numeric unicast IPv4; wildcards, hostnames, IPv6 and CIDR ranges are refused. The
+worker compares the kernel-reported source against the exact list immediately after accepting a
+connection, before reading frames or dispatching session, residency or control operations. A denied
+connection closes without a protocol reply. When a list is supplied, even loopback callers must match it.
+Clients and `tools/worker_control.py --host IPv4` use the selected address without wire changes.
+
+Source-address filtering provides **neither authentication nor encryption**. Session IDs are not
+credentials. Use this mode only on a trusted LAN with an operator-managed firewall limiting the worker's
+interface, port and source peers. Strata never installs firewall rules. An allowed host, any process on
+it, or a host able to impersonate its address can send inference and destructive unload/stop controls.
+Keep the SSH route when that boundary is insufficient. See the [LAN and NIC operator guide](cpu-worker-lan/README.md)
+and the [Hermes handoff](cpu-worker-lan/HERMES.md).
 
 Options: `--port P` (0 picks a free port and prints it), `--memory-budget-mib N` (default 131072),
 `--workers N` (CPU expert-pool worker threads; 0 = the pool's default plan for the machine),
@@ -126,8 +141,9 @@ cmake --build build-worker --target expert_worker_test expert_worker_e2e_test
   with their own packed fixtures and parity tests.
 - One uniform layout per model (a native pack with per-layer formats is future work; the manifest has
   one geometry).
-- One connection, one outstanding request; no pipelining, no concurrency, no auth (session identity is
-  correlation, not authentication - the loopback bind plus an owned tunnel is the boundary).
+- One connection, one outstanding request; no pipelining, no concurrency, no authentication. The default
+  boundary is loopback plus an owned tunnel; explicit LAN mode relies on the operator's trusted network
+  and firewall, with an exact source allowlist.
 - No engine integration in the worker itself: the engine side (`--remote-cpu-experts`, above) lives in
   `ExpertWorkerTier` + the dispatch/verifier glue and keeps this service untouched.
 - Windows: this correction's nonblocking/select path was not built or run there; validation is Linux

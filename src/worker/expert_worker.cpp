@@ -142,6 +142,7 @@ struct ExpertWorkerService::Impl {
     WorkerCounters* counters = nullptr;
     RpcTimingCounters* timing = nullptr;
     sock_fd listener = kBadFd;
+    std::vector<uint32_t> allowed_peers;
     std::atomic<bool> stopping{false};
 
     enum class State { Empty, Setup, Ready };
@@ -1103,6 +1104,8 @@ ExpertWorkerService::~ExpertWorkerService() {
 }
 
 bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
+    if (!sock::listener_policy(impl_->opt.bind_ip, impl_->opt.allow_peer_ips, impl_->allowed_peers, err))
+        return false;
     if (impl_->opt.residency_ms < 0 || impl_->opt.residency_ms > kMaxResidencyMs ||
         (impl_->opt.residency_forever && impl_->opt.residency_ms != 0) ||
         ((impl_->opt.residency_ms || impl_->opt.residency_forever) && impl_->opt.deadline_ms <= 0)) {
@@ -1127,7 +1130,8 @@ bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
         if (!impl_->local->open(impl_->opt.local_root, impl_->opt.local_manifest, err))
             return false;
     }
-    return sock::listen_loopback(port, impl_->listener, err);
+    return impl_->opt.bind_ip == "127.0.0.1" ? sock::listen_loopback(port, impl_->listener, err)
+                                          : sock::listen_ipv4(impl_->opt.bind_ip, port, impl_->listener, err);
 }
 
 void ExpertWorkerService::run() {
@@ -1135,7 +1139,10 @@ void ExpertWorkerService::run() {
         impl_->expire_resident();
         sock_fd fd = kBadFd;
         if (impl_->listener == kBadFd) break;
-        if (!sock::accept_one(impl_->listener, fd, 100, impl_->opt.accepted_tcp_nodelay)) continue;
+        const bool accepted = impl_->allowed_peers.empty()
+            ? sock::accept_one(impl_->listener, fd, 100, impl_->opt.accepted_tcp_nodelay)
+            : sock::accept_allowed(impl_->listener, fd, 100, impl_->opt.accepted_tcp_nodelay, impl_->allowed_peers);
+        if (!accepted) continue;
         impl_->serve_connection(fd);
     }
     impl_->void_session();
