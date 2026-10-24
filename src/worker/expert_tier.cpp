@@ -381,13 +381,16 @@ void ExpertWorkerTier::run_requests() {
         request_wake_.wait(lock, [this] { return pending_ || stopping_; });
         if (stopping_ && !pending_) break;
         pending_ = false;
+        // post() waited for the previous exchange and invalidated its result under this mutex.
+        // Transfer that capacity to the socket owner before unlocking; finish() waits for !busy_.
+        InferReply r;
+        r.partials.swap(reply_.partials);
         const uint64_t exchange_start = mono_ns();
         const double queue_ms = (double) (exchange_start - posted_ns_) / 1e6;
         lock.unlock();
 
         bool ok = false;
         std::string e;
-        InferReply r;
         RpcExchangeTiming measured;
         try {
             ok = client_.infer(req_, r, e, rpc_timing_.enabled() ? &measured : nullptr);

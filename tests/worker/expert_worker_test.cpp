@@ -15,6 +15,7 @@
 #include "ggml.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -25,6 +26,15 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace strata::worker {
+// Capacity inspection only, on the synchronous client's owning thread. No allocation instrumentation.
+struct RpcWorkspaceTestAccess {
+    static std::array<size_t, 3> capacities(const ExpertWorkerClient& c) {
+        return {c.infer_payload_.capacity(), c.infer_frame_.capacity(), c.infer_reply_.payload.capacity()};
+    }
+};
+}
 
 namespace {
 
@@ -207,6 +217,85 @@ bool setup_ack(Raw& raw, uint64_t& sid) {
 
 bool same_bits(const std::vector<float>& a, const std::vector<float>& b) {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+
+// Frozen scalar little-endian reference, independent of the production codec and its wrappers.
+void reference_word(std::vector<uint8_t>& out, uint64_t value, int bytes) {
+    for (int i = 0; i < bytes; ++i) out.push_back((uint8_t) (value >> (i * 8)));
+}
+void reference_float(std::vector<uint8_t>& out, float value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    reference_word(out, bits, 4);
+}
+std::vector<uint8_t> reference_request(const InferRequest& r) {
+    std::vector<uint8_t> out;
+    for (auto value : {r.session, r.model_id, r.partition_id, r.sequence}) reference_word(out, value, 8);
+    reference_word(out, r.layer, 2);
+    out.push_back(r.T); out.push_back(r.K);
+    for (auto value : r.mask) out.push_back(value != 0 ? 1 : 0);
+    for (auto value : r.ids) reference_word(out, value, 2);
+    for (auto value : r.weights) reference_float(out, value);
+    for (auto value : r.activations) reference_float(out, value);
+    return out;
+}
+
+void codec_workspace_reuse() {
+    using namespace strata::worker;
+    std::vector<uint8_t> payload, frame, ack;
+    InferRequest decoded;
+    InferReply reply, decoded_reply;
+    std::array<size_t, 8> warm{};
+    const int tokens[] = {8, 1, 2, 1};
+    const int ranks[] = {10, 1, 3, 2};
+    for (int pass = 0; pass < 3; ++pass) for (int step = 0; step < 4; ++step) {
+        InferRequest r;
+        r.session = 0x8877665544332211ull; r.model_id = 29; r.partition_id = 31;
+        r.sequence = 100 + pass * 4 + step; r.layer = 1;
+        r.T = tokens[step]; r.K = ranks[step];
+        const size_t count = (size_t) r.T * r.K;
+        r.mask.resize(count); r.ids.resize(count); r.weights.resize(count);
+        for (size_t i = 0; i < count; ++i) {
+            r.mask[i] = step == 1 ? 0 : (i % 3 ? 7 : 0);
+            r.ids[i] = i % kExperts;
+            r.weights[i] = i % 2 ? -0.f : 0.125f * (float) i;
+        }
+        r.activations.assign((size_t) r.T * kEmbd, (float) (step + pass) * -0.25f);
+        check(encode_infer(r, kEmbd, payload), "reuse request encodes");
+        const auto expected = reference_request(r);
+        check(payload == expected, "reused request is byte-identical to the scalar reference");
+        encode_frame(frame, MSG_INFER, ST_OK, payload.data(), payload.size());
+        std::vector<uint8_t> expected_frame{'S', 'E', 'W', '1', MSG_INFER, 0, 0, 0};
+        reference_word(expected_frame, expected.size(), 8);
+        expected_frame.insert(expected_frame.end(), expected.begin(), expected.end());
+        check(frame == expected_frame, "reused contiguous frame preserves exact bytes");
+        check(decode_infer(payload.data(), payload.size(), kLayers, kExperts, kEmbd, decoded),
+              "reuse request decodes");
+        check(reference_request(decoded) == expected, "reused decoded fields contain no stale tail");
+        reply.session = r.session; reply.sequence = r.sequence;
+        reply.partials.assign((size_t) r.T * kEmbd, step == 1 ? 0.f : -0.375f);
+        encode_infer_ack(reply, ack);
+        std::vector<uint8_t> expected_ack;
+        reference_word(expected_ack, reply.session, 8); reference_word(expected_ack, reply.sequence, 8);
+        for (float value : reply.partials) reference_float(expected_ack, value);
+        check(ack == expected_ack && encode_infer_ack(reply) == expected_ack,
+              "reused reply and compatibility wrapper preserve scalar reference bytes");
+        check(decode_infer_ack(ack.data(), ack.size(), kEmbd, r.T, decoded_reply) &&
+                  same_bits(reply.partials, decoded_reply.partials), "reused reply has exact bits and shape");
+        const std::array<size_t, 8> capacities{payload.capacity(), frame.capacity(), ack.capacity(),
+            decoded.mask.capacity(), decoded.ids.capacity(), decoded.weights.capacity(),
+            decoded.activations.capacity(), decoded_reply.partials.capacity()};
+        if (pass == 0 && step == 0) warm = capacities;
+        check(capacities == warm, "codec capacities remain at the warm high-water mark");
+        check(!decode_infer(payload.data(), payload.size() - 1, kLayers, kExperts, kEmbd, decoded),
+              "truncated request is refused between valid reused decodes");
+    }
+    InferRequest small;
+    small.T = small.K = 1; small.mask = {1}; small.ids = {2}; small.weights = {1.f};
+    small.activations.assign(kEmbd, 0.f);
+    std::vector<uint8_t> small_payload;
+    check(encode_infer(small, kEmbd, small_payload) && small_payload.capacity() < kInferPayloadMax,
+          "a fresh T1 encoder does not reserve the T8 maximum");
 }
 
 // one request, transported and direct, compared bitwise
@@ -444,6 +533,93 @@ void happy_path_and_parity() {
     check(cl.status(st, err) && st.ready == 1 && st.requests >= 6 && st.setup_weight_bytes > 0 &&
               st.infer_in_bytes > 0 && st.infer_out_bytes > 0 && st.cpu_service_ns > 0,
           "the counters saw the whole session");
+    cl.close();
+}
+
+void inference_workspace_reuse() {
+    using namespace strata::worker;
+    Svc svc(WorkerOptions{.memory_budget = 64ull << 20, .workers = 2, .deadline_ms = 4000});
+    if (!svc.start()) { check(false, "reuse service starts"); return; }
+    auto [m, blobs] = make_world(818);
+    NativeFmt fmt;
+    std::string err;
+    check(strata::kernels::cpu::native_fmt(kGu, kD, kEmbd, kFf, fmt, err), "reuse native format");
+    ExpertWorkerClient cl;
+    if (!cl.connect_host("127.0.0.1", svc.port, 4000, err) || !cl.setup(m, err)) {
+        check(false, "reuse setup"); return;
+    }
+    for (const auto& [key, blob] : blobs)
+        check(cl.upload(key.first, key.second, blob.data(), (uint32_t) blob.size(), err), "reuse upload");
+    check(cl.mark_ready(err), "reuse ready");
+    std::array<size_t, 3> warm{};
+    const int tokens[] = {8, 1, 2, 1}, ranks[] = {3, 10, 2, 1};
+    uint64_t sequence = 1;
+    InferReply got;
+    size_t reply_capacity = 0;
+    for (int pass = 0; pass < 3; ++pass) for (int step = 0; step < 4; ++step) {
+        InferRequest r;
+        r.session = cl.session(); r.model_id = m.model_id; r.partition_id = m.partition_id;
+        r.sequence = sequence++; r.layer = 0; r.T = tokens[step]; r.K = ranks[step];
+        const size_t count = (size_t) r.T * r.K;
+        r.mask.assign(count, 0); r.ids.assign(count, 11); r.weights.resize(count);
+        const uint16_t owned[] = {2, 5, 9};
+        std::vector<const uint8_t*> per_entry(count, nullptr);
+        for (size_t i = 0; i < count; ++i) {
+            r.weights[i] = (i % 2 ? -0.25f : 0.5f) + pass * 0.125f;
+            if (step == 0 || step == 3 || (step == 2 && i == 3)) {
+                r.mask[i] = 1; r.ids[i] = owned[i % 3];
+                per_entry[i] = blobs.at({0, r.ids[i]}).data();
+            }
+        }
+        r.activations.resize((size_t) r.T * kEmbd);
+        Rng rng(41 + pass * 4 + step); rng.fill(r.activations);
+        if (step == 2) {
+            auto refused = r;
+            refused.T = 1; refused.K = 10;
+            refused.mask.assign(10, 1); refused.ids.assign(10, 2); refused.weights.assign(10, 1.f);
+            refused.activations.resize(kEmbd);
+            check(!cl.infer(refused, got, err) && cl.last_status() == ST_BAD_REQUEST,
+                  "too many expert uses is refused after warm dense and zero work");
+            // A refused request must not consume this sequence or leave stale validation scratch.
+        }
+        check(cl.infer(r, got, err), "alternating reuse request serves");
+        std::vector<float> want;
+        check(ExpertWorkerService::direct_native_partial(fmt, r.T, r.K, r.mask.data(), r.weights.data(),
+                  r.activations.data(), per_entry.data(), want, err), "alternating reuse reference");
+        check(got.sequence == r.sequence && same_bits(got.partials, want),
+              "T8/T1/T2/T1 dense/zero/sparse partials are bitwise the fresh reference");
+        const auto capacities = RpcWorkspaceTestAccess::capacities(cl);
+        if (pass == 0 && step == 0) { warm = capacities; reply_capacity = got.partials.capacity(); }
+        check(capacities == warm && got.partials.capacity() == reply_capacity,
+              "client payload/frame/receive and caller reply retain warm capacities");
+    }
+    // New setup on the same connection, then reconnect to another geometry. Neither may use old rows.
+    for (int embd : {128, 256}) {
+        if (embd == 256) {
+            cl.close();
+            check(RpcWorkspaceTestAccess::capacities(cl) == std::array<size_t, 3>{},
+                  "close releases inference buffers before reconnect");
+            check(cl.connect_host("127.0.0.1", svc.port, 4000, err), "reuse geometry reconnect");
+        }
+        SetupManifest changed = m;
+        changed.model_id += embd; changed.n_embd = embd; changed.n_ff = 64;
+        changed.n_layers = 1; changed.n_expert = 4; changed.partition = {2};
+        NativeFmt small;
+        check(strata::kernels::cpu::native_fmt(kGu, kD, embd, 64, small, err), "changed geometry format");
+        const auto blob = make_blob(embd, small);
+        check(cl.setup(changed, err) && cl.upload(0, 1, blob.data(), (uint32_t) blob.size(), err) &&
+                  cl.mark_ready(err), "changed geometry setup and ready");
+        InferRequest r;
+        r.session = cl.session(); r.model_id = changed.model_id; r.partition_id = changed.partition_id;
+        r.sequence = 1; r.T = 1; r.K = 1; r.mask = {1}; r.ids = {1}; r.weights = {-0.5f};
+        r.activations.assign(embd, -0.125f);
+        const uint8_t* ptr = blob.data();
+        std::vector<float> want;
+        check(cl.infer(r, got, err) && ExpertWorkerService::direct_native_partial(small, 1, 1,
+                  r.mask.data(), r.weights.data(), r.activations.data(), &ptr, want, err) &&
+                  same_bits(got.partials, want), "geometry changes produce exact fresh-sized partials");
+    }
+    check(cl.unload(err), "reuse session unloads normally");
     cl.close();
 }
 
@@ -868,7 +1044,9 @@ int main(int argc, char** argv) {
     for (uint32_t cap : {65536u, 512u*1024, 1024u*1024}) setup_cap_parity(cap, 0, false);
     if (argc == 2 && std::strcmp(argv[1], "--setup-only") == 0) return fails == 0 ? 0 : 1;
     codec_tests();
+    codec_workspace_reuse();
     happy_path_and_parity();
+    inference_workspace_reuse();
     inference_rejections();
     setup_rejections();
     restart_and_disconnect();
