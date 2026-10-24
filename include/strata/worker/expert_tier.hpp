@@ -15,6 +15,7 @@
 #pragma once
 
 #include "strata/worker/expert_client.hpp"
+#include "strata/worker/rpc_timing.hpp"
 
 #include <atomic>
 #include <condition_variable>

@@ -5,6 +5,13 @@ This is a source-validation and later controlled-measurement handoff. The candid
 concurrency, polling, deadlines, frame shapes or GPU accepted sockets. Do not combine it with the
 unpublished multi-CPU work at `b770d280a65893d1df92b76b679380d76afade3b`.
 
+Hermes found one compile-only defect in published candidate
+`66235df177368a6e9e3b79afc9f6838cc4af1f71`: `expert_tier.hpp` did not directly include
+`rpc_timing.hpp`. On CPUworker05 the worker, `rpc_timing_test`, `worker_socket_test`,
+`expert_worker_test` and `expert_worker_e2e_test` built and passed, while `expert_tier_test` failed to
+compile. The CUDA `strata` target failed for the same reason on host03. The additive correction includes
+the missing direct dependency; those two failed targets still require remote validation.
+
 The two controls are independent and default off:
 
 - Worker `--tcp-nodelay` requests checked `TCP_NODELAY` on each accepted CPU-worker descriptor. Omit it
@@ -30,32 +37,47 @@ Do this first. It does not touch a running service, model asset or retained bina
 
 ```sh
 SRC=/path/to/clean/candidate/Strata
-test "$(git -C "$SRC" rev-parse HEAD^)" = 9bf66c042c06e1b3a1840d131b7444333ce9e502
+test "$(git -C "$SRC" rev-parse HEAD^)" = 66235df177368a6e9e3b79afc9f6838cc4af1f71
+git -C "$SRC" merge-base --is-ancestor 9bf66c042c06e1b3a1840d131b7444333ce9e502 HEAD
 git -C "$SRC" status --short
 git -C "$SRC" diff --check HEAD^
 git -C "$SRC" diff --name-only HEAD^
 ```
 
-Confirm the changed paths are Valinor source, focused tests, CMake wiring and this documentation only.
+Confirm the correction changes only the affected public headers and this documentation.
 Do not build or run from the live worker checkout.
 
-## 2. Later approved serial build and focused fixtures
+## 2. Approved split build and focused fixtures
 
-Use a new build directory. Do not overwrite or delete retained engine/worker binaries. Do not touch model
-shards, local manifests, partition files, tunnels or unrelated processes. Record the original binary paths
-and SHA-256 hashes before building.
+Keep the validated split topology: build the CPU worker and all CPU fixtures on CPUworker05, and build the
+CUDA engine on host03. Reuse each host's retained build directory, Makefiles generator and pinned
+dependencies; do not switch generators, refresh dependencies or invent a CPU-only `strata` target on05.
+Direct runtime outputs to new correction-specific directories so retained binaries are not overwritten.
+Do not touch model shards, local manifests, partition files, tunnels or unrelated processes. Record old
+binary paths and SHA-256 hashes first.
 
 ```sh
-SRC=/path/to/clean/candidate/Strata
-BUILD=/path/to/new/build-cpu-rpc-latency
-sha256sum /path/to/retained/strata /path/to/retained/strata-expert-worker
-cmake -S "$SRC" -B "$BUILD" -G Ninja \
-  -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build "$BUILD" -j1 --target \
-  strata-expert-worker strata rpc_timing_test worker_socket_test \
+SRC05=/path/to/clean/correction/Strata
+BUILD05=/path/to/retained/cpu-worker-build
+BIN05=/path/to/new/correction-binaries
+test "$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$BUILD05/CMakeCache.txt")" = "Unix Makefiles"
+test ! -e "$BIN05" && mkdir -m 700 "$BIN05"
+cmake -S "$SRC05" -B "$BUILD05" -DSTRATA_BUILD_TESTS=ON \
+  -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$BIN05"
+cmake --build "$BUILD05" --parallel 1 --target \
+  strata-expert-worker rpc_timing_test worker_socket_test \
   expert_worker_test expert_worker_e2e_test expert_tier_test
-ctest --test-dir "$BUILD" -V -j1 -R \
+ctest --test-dir "$BUILD05" -V -j1 -R \
   '^(rpc_timing_test|worker_socket_test|expert_worker_test|expert_worker_e2e_test|expert_tier_test)$'
+
+SRC03=/path/to/clean/correction/Strata
+BUILD03=/path/to/retained/cuda-build
+BIN03=/path/to/new/correction-binaries
+test "$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$BUILD03/CMakeCache.txt")" = "Unix Makefiles"
+test ! -e "$BIN03" && mkdir -m 700 "$BIN03"
+cmake -S "$SRC03" -B "$BUILD03" -DSTRATA_BUILD_TESTS=ON \
+  -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$BIN03"
+cmake --build "$BUILD03" --parallel 1 --target strata
 ```
 
 Preserve configure/build logs and each fixture's output. Report passed, failed and not run separately.

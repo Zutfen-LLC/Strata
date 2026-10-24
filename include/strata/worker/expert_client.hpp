@@ -10,7 +10,9 @@
 #include "strata/worker/local_source.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace strata::worker {
