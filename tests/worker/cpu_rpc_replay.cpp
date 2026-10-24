@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 
@@ -131,28 +132,8 @@ void validate(Config& c) {
 }
 
 bool listen_fixture(const Config& c, uint16_t& port, sock_fd& out, std::string& error) {
-    if (!c.bind_ip_explicit) return sock::listen_loopback(port, out, error);
-    out = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (out == kBadFd) { error = "fixture socket failed"; return false; }
-    int one = 1;
-    ::setsockopt(out, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr = selected_ipv4(c.bind_ip, "bind-ip");
-    address.sin_port = htons(port);
-    if (::bind(out, (sockaddr*) &address, sizeof address) != 0 || ::listen(out, 1) != 0) {
-        error = "fixture bind/listen failed for " + c.bind_ip + ":" + std::to_string(port);
-        sock::close_fd(out);
-        return false;
-    }
-    socklen_t length = sizeof address;
-    if (::getsockname(out, (sockaddr*) &address, &length) != 0) {
-        error = "fixture getsockname failed";
-        sock::close_fd(out);
-        return false;
-    }
-    port = ntohs(address.sin_port);
-    return true;
+    // The shared explicit listener is nonblocking: readiness lost to a reset cannot strand accept().
+    return sock::listen_ipv4(c.bind_ip, port, out, error);
 }
 
 // Fixture-only exposure restriction. This exact source-address comparison is not authentication.
@@ -310,7 +291,7 @@ bool client_exchange(sock_fd fd, std::vector<uint8_t>& request, uint64_t sequenc
 int run_client(const std::string& host, uint16_t port, const Config& c) {
     Fd fd;
     std::string error;
-    require(sock::connect_host(host, port, c.deadline_ms, fd.value, error), error);
+    require(sock::connect_numeric_controlled(host, port, c.deadline_ms, {}, fd.value, error), error);
     std::printf("CPU_RPC_REPLAY_CONNECTED_V1 host=%s port=%u route=%s transport_only=1 expert_compute=0\n",
                 host.c_str(), port, c.route.c_str());
     std::fflush(stdout);
@@ -371,6 +352,30 @@ int run_server(sock_fd listener, const Config& c) {
 }
 
 void framing_self_check(const Config& c) {
+    {
+        Fd listener;
+        uint16_t bound = 0;
+        std::string error;
+        require(listen_fixture(c, bound, listener.value, error), error);
+        const int flags = ::fcntl(listener.value, F_GETFL, 0);
+        require(flags >= 0 && (flags & O_NONBLOCK), "replay listener could block after stale readiness");
+        Fd reset;
+        require(sock::connect_numeric_controlled("127.0.0.1", bound, c.deadline_ms, {}, reset.value, error), error);
+        linger immediate{1, 0};
+        require(::setsockopt(reset.value, SOL_SOCKET, SO_LINGER, &immediate, sizeof immediate) == 0,
+                "configure owned reset peer");
+        sock::close_fd(reset.value);
+        Fd accepted;
+        // The reset may remain queued or vanish before accept; either result must be bounded.
+        sock::accept_one(listener.value, accepted.value, 5);
+        try {
+            run_client("localhost", bound, c);
+            require(false, "replay unexpectedly resolved a hostname");
+        } catch (const std::runtime_error& failure) {
+            require(std::string(failure.what()).find("numeric IPv4") != std::string::npos,
+                    "replay connect did not reject DNS before opening a socket");
+        }
+    }
     auto frame = request_frame(c);
     {
         int fds[2];
@@ -409,7 +414,8 @@ void framing_self_check(const Config& c) {
                 kind == 0 ? "malformed magic was accepted" :
                 kind == 1 ? "truncated payload was accepted" : "receive deadline was not finite");
     }
-    std::puts("CPU_RPC_REPLAY_SELF_CHECK_V1 fragmented=pass malformed=pass truncated=pass timeout=pass");
+    std::puts("CPU_RPC_REPLAY_SELF_CHECK_V1 fragmented=pass malformed=pass truncated=pass timeout=pass "
+              "listener_nonblocking=pass reset_accept=pass numeric_connect=pass");
 }
 
 uint64_t number(const char* text, const char* name) {
@@ -464,7 +470,7 @@ uint16_t port(const char* text, bool allow_zero) {
 
 void usage() {
     std::fprintf(stderr,
-        "usage: cpu_rpc_replay [--self-check | --loopback | --serve PORT | --connect HOST PORT] [options]\n"
+        "usage: cpu_rpc_replay [--self-check | --loopback | --serve PORT | --connect IPv4 PORT] [options]\n"
         "options: --tokens N --entries N --request-bytes N --reply-bytes N --warmup N "
         "--exchanges N --deadline-ms N [--accepted-nodelay] [--route loopback|direct-lan] "
         "[--bind-ip IPV4 --allow-peer-ip IPV4]\n");

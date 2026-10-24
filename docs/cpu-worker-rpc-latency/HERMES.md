@@ -1,5 +1,9 @@
 # CPU-worker RPC latency: Hermes handoff
 
+Historical, revision-specific handoff. Its pinned source gate and build recipe apply only to the
+candidate described below. For the current branch use [the cohesive worker handoff](../cpu-worker-lan/HERMES.md);
+do not retarget these older CMake caches to a new source directory. Earlier evidence is retained here.
+
 This is a source-validation and later controlled-measurement handoff. The candidate is based on
 `9bf66c042c06e1b3a1840d131b7444333ce9e502`. It does not change expert arithmetic, ownership,
 concurrency, polling, deadlines, frame shapes or GPU accepted sockets. Do not combine it with the

@@ -1,5 +1,50 @@
 # Native CPU-worker LAN and NIC profile: Hermes handoff
 
+## Full-branch review follow-up: family refusal and replay setup
+
+The full review compares main `202542af5128ee6ba1842d615dde4baf97899125` with the ten commits through
+`5da76ec54d42ab0dbde99182224ba835823c62bc`, including GPU groups, the persistent CPU client, timing,
+replay and LAN/NIC controls. Independent static review found a missing family refusal for the new CPU
+timing flag, plus unbounded connect/accept setup in the replay fixture. The additive correction rejects
+that flag before Qwen3.6-family setup in native-ON/OFF builds and reuses bounded numeric connection and
+nonblocking listener helpers in the fixture. The earlier latency handoff is now marked historical.
+No expert arithmetic, placement, residency, GPU group or CPU communication-thread logic is changed.
+
+This follow-up supersedes the narrower CQE-only instructions below for the final review commit. All
+new executable checks are **NOT RUN locally**. After the parent supplies the exact `CANDIDATE` and clean
+source checkouts, use the previously approved source/build bindings and retained toolchain/dependencies.
+Do not retarget a CMake cache to a different source path; use the fresh-build procedure below if needed.
+Keep native-ON and native-OFF build directories separate. Missing compatible native-OFF or backend
+builders are explicit blockers, not permission to install packages or alter a live worker.
+
+Only these remote checks are affected:
+
+```sh
+set -eu
+# On 05: rebuild the model-free replay fixture only, from the exact candidate source.
+cmake --build "$BUILD05" --parallel 1 --target cpu_rpc_replay
+"$BIN05/cpu_rpc_replay" --self-check
+ctest --test-dir "$BUILD05" -V -j1 -R '^cpu_rpc_replay$'
+"$BIN05/cpu_rpc_replay" --loopback --tokens 2 --entries 9 --warmup 8 --exchanges 64
+
+# On 03: rebuild strata in the matching native-ON and separate native-OFF source/build bindings.
+cmake --build "$ON_BUILD03" --parallel 1 --target strata
+cmake --build "$OFF_BUILD03" --parallel 1 --target strata
+python "$SRC03/tests/worker/worker_family_cli_test.py" --engine "$ON_BIN03/strata" --native-experts on
+python "$SRC03/tests/worker/worker_disabled_cli_test.py" --engine "$OFF_BIN03/strata"
+python "$SRC03/tests/worker/worker_family_cli_test.py" --engine "$OFF_BIN03/strata" --native-experts off
+```
+
+Resolve each source/build/output variable from its exact approved receipt before running; the two 03
+configurations may have distinct source paths. Require both to be at `CANDIDATE` with no unrelated edits.
+The family fixtures use a header-only synthetic GGUF and hide GPU devices. They must return feature
+refusal before model/device initialization, including when the main parser consumed the flag as an
+option-shaped value. The replay self-check must report nonblocking listener, reset-peer accept and
+numeric-connect checks as passed; T=1 and T=2 loopback runs must have zero failures and exact counts.
+No external listener, physical-LAN timing campaign, NIC command, inference or resident-worker restart
+is needed for these fixes. Build the changed family source on other applicable supported backends before
+claiming compatibility; report missing HIP/SYCL/Windows/Metal coverage as NOT RUN.
+
 ## ethtool CQE correction: Python validation and read-only discovery only
 
 The user reports that `a2ce6164eb31292ce6b43e79fe41ecf9f8ccc058` built the CUDA engine on 03 and the CPU

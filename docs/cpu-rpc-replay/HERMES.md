@@ -49,6 +49,11 @@ production client's existing TCP_NODELAY behavior.
 
 ## Build and local gates
 
+The merge-review correction uses bounded numeric IPv4 connection setup and a nonblocking listener for
+both replay routes. Hostnames are refused before DNS. Its self-check also covers the selected listener
+flags, a reset queued peer and hostname refusal. Rebuild/run only `cpu_rpc_replay` for this fixture-only
+change; the current [focused follow-up](../cpu-worker-lan/HERMES.md) names the other affected CLI gates.
+
 Build the immutable commit once on CPUworker05 using its existing pinned toolchain, dependency cache and
 Unix Makefiles build directory. Engine02 has no retained compatible dependency cache, so do not configure
 or build there. A missing compatible cache on CPUworker05 is a blocker; do not install, refresh dependencies,

@@ -20,6 +20,7 @@ def main():
         cases = (("--remote-cpu-experts", "127.0.0.1:1"),
                  ("--remote-cpu-local-manifest", absent),
                  ("--remote-cpu-local-fallback",), ("--remote-cpu-resident",),
+                 ("--remote-cpu-rpc-timing",),
                  ("--remote-cpu-setup-ms", "600000"), ("--remote-cpu-deadline-ms", "10000"),
                  ("--remote-gpu-experts", "127.0.0.1:1"), ("--remote-gpu-plan", absent),
                  ("--remote-gpu-worker", "127.0.0.1:1", absent),

@@ -3738,6 +3738,14 @@ int strata::qwen35::run(int argc, char** argv) {
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
+        if (a == "--remote-cpu-rpc-timing") {
+#ifndef STRATA_NATIVE_EXPERTS
+            std::fprintf(stderr, "strata-q36: %s requires STRATA_NATIVE_EXPERTS=ON; this build excludes the remote CPU-expert worker\n", a.c_str());
+#else
+            std::fprintf(stderr, "strata-q36: %s is unsupported by this family; remote CPU workers require qwen4exp verify windows\n", a.c_str());
+#endif
+            return 2;
+        }
         if (a == "--remote-gpu-worker" || a == "--remote-gpu-experts" || a == "--remote-gpu-plan" ||
             a == "--remote-gpu-setup-ms" || a == "--remote-gpu-deadline-ms") {
 #ifndef STRATA_NATIVE_EXPERTS

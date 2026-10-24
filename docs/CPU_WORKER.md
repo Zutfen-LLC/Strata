@@ -167,7 +167,8 @@ The latency diagnostic is also default-off. Start only the CPU worker with `--tc
 latency histograms. The flags are independent, so socket behavior can be compared without timing overhead.
 The engine reports client-side aggregates with its existing worker report. The worker reports its aggregate
 only when it stops cleanly; stopping or replacing a worker unloads its arena and must be a separate approved
-operation. See [the Hermes latency handoff](cpu-worker-rpc-latency/HERMES.md).
+operation. Use [the current Hermes handoff](cpu-worker-lan/HERMES.md) for validation of this branch.
+The [earlier latency handoff](cpu-worker-rpc-latency/HERMES.md) preserves its revision-specific evidence.
 
 The model-free [representative RPC replay handoff](cpu-rpc-replay/HERMES.md) uses the same CPU wire frame
 and persistent socket seam with fixed synthetic payloads. It is a transport/scheduling diagnostic, not an
