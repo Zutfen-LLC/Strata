@@ -363,6 +363,46 @@ bool LocalSource::read(uint32_t index, uint64_t off, void *dst, size_t n, std::s
     return true;
 #endif
 }
+bool LocalSource::read_opened(uint32_t index, uint64_t off, void *dst, size_t n, std::string &err) const {
+#ifdef _WIN32
+    err = "worker-local sources require POSIX";
+    return false;
+#else
+    if (index >= files_.size() || files_[index] < 0 || off > manifest_.files[index].bytes ||
+        n > manifest_.files[index].bytes - off) {
+        err = "invalid or unopened parallel local read range";
+        return false;
+    }
+    const int fd = files_[index];
+    auto unchanged = [&] {
+        struct stat st{};
+        if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+            (uint64_t)st.st_size != manifest_.files[index].bytes)
+            return false;
+        const std::array<uint64_t, 6> stamp{(uint64_t)st.st_dev, (uint64_t)st.st_ino,
+#ifdef __APPLE__
+            (uint64_t)st.st_mtimespec.tv_sec, (uint64_t)st.st_mtimespec.tv_nsec,
+            (uint64_t)st.st_ctimespec.tv_sec, (uint64_t)st.st_ctimespec.tv_nsec
+#else
+            (uint64_t)st.st_mtim.tv_sec, (uint64_t)st.st_mtim.tv_nsec,
+            (uint64_t)st.st_ctim.tv_sec, (uint64_t)st.st_ctim.tv_nsec
+#endif
+        };
+        return stamp == stamps_[index];
+    };
+    if (!unchanged()) {
+        err = "local source changed during parallel setup";
+        return false;
+    }
+    ssize_t got;
+    do { got = ::pread(fd, dst, n, (off_t)off); } while (got < 0 && errno == EINTR);
+    if (got != (ssize_t)n || !unchanged()) {
+        err = "short, failed or changed parallel local slice read";
+        return false;
+    }
+    return true;
+#endif
+}
 bool prepare_local_manifest(const std::string &pack, const std::string &shard, uint16_t nl, uint16_t ne,
                             LocalManifest &out, std::string &err, const std::function<bool()> &cancelled) {
     using namespace strata::kernels::cpu;

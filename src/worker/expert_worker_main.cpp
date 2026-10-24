@@ -5,10 +5,12 @@
 // Binds 127.0.0.1 by default. Explicit LAN binding requires exact numeric source peers.
 // Serves one connection at a time until SIGINT/SIGTERM. Source filtering is not authentication.
 #include "strata/worker/expert_worker.hpp"
+#include "strata/worker/local_source.hpp"
 
 #include "wire_sock.hpp"
 
 #include <atomic>
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -27,6 +29,7 @@ void usage() {
         "[--deadline-ms N] [--verbose] [--tcp-nodelay] [--rpc-timing] "
         "[--residency-ms N | --residency-forever]\n"
         "       [--local-root DIR --local-manifest FILE] [--local-upload-fallback] [--local-setup-ms N]\n"
+        "       [--local-load-threads N] (1..4, default 4; separate from inference --workers)\n"
         "       [--bind-ip IPv4 --allow-peer-ip IPv4 [--allow-peer-ip IPv4 ...]]\n"
         "  binds 127.0.0.1 by default; LAN needs exact peers and an operator-managed firewall\n"
         "  source filtering provides neither authentication nor encryption; trusted LAN only\n");
@@ -80,6 +83,17 @@ int main(int argc, char** argv) {
             opt.local_upload_fallback = true;
         else if (a == "--local-setup-ms")
             opt.local_setup_ms = (int)next("--local-setup-ms");
+        else if (a == "--local-load-threads") {
+            if (i + 1 >= argc) { usage(); return 2; }
+            errno = 0;
+            char* end = nullptr;
+            const auto value = std::strtoll(argv[++i], &end, 10);
+            if (errno || !*argv[i] || *end || value < 1 || value > strata::worker::kMaxLocalLoadThreads) {
+                std::fprintf(stderr, "strata-worker: local loading threads must be 1..4\n");
+                return 2;
+            }
+            opt.local_load_threads = (int)value;
+        }
         else if (a == "--residency-ms") {
             if (i + 1 >= argc) { usage(); return 2; }
             char* end = nullptr;
@@ -115,6 +129,9 @@ int main(int argc, char** argv) {
     for (const auto& peer : opt.allow_peer_ips)
         std::fprintf(stderr, "strata-worker: allowed source %s (trusted LAN; no authentication/encryption)\n",
                      peer.c_str());
+    if (opt.local_load_threads > 1)
+        std::fprintf(stderr, "strata-worker: local loading lanes=%d; read/verify are summed lane work, "
+                             "setup is elapsed wall time (scopes overlap)\n", opt.local_load_threads);
     std::fflush(stderr);
     // run() has no signal hook: poll the flag beside it and stop the service when it lands.
     std::thread watcher([&] {
