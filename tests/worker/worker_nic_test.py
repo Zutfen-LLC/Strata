@@ -12,13 +12,18 @@ SPEC = importlib.util.spec_from_file_location("worker_nic", Path(__file__).resol
 nic = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(nic)
 
+# Synthetic context plus the exact line reported by remote ethtool 6.14.2 discovery.
+# This is not a full retained hardware capture.
+COALESCE = ("Coalesce parameters for fixture0:\nAdaptive RX: off  TX: off\n"
+            "CQE mode RX: n/a  TX: n/a\nrx-usecs: 3\ntx-usecs: 0\n")
+
 
 def state():
     return {"identity": {"interface": "fixture0", "driver": "e1000e", "driver_version": "fixture",
                          "bus_info": "fixture-pci", "pci_vendor": "fixture-vendor", "pci_device": "fixture-device",
                          "host_id_sha256": "fixture-host", "permanent_mac": "02:00:00:00:00:01"},
-            "boot_id": "fixture-boot", "coalesce": {"rx-usecs": "3", "tx-usecs": "0", "adaptive-rx": "off"},
-            "driver_raw": "synthetic", "coalesce_raw": "synthetic", "coalesce_diagnostic": ""}
+            "boot_id": "fixture-boot", "coalesce": nic.fields(COALESCE),
+            "driver_raw": "synthetic", "coalesce_raw": COALESCE, "coalesce_diagnostic": ""}
 
 
 class Fake:
@@ -96,6 +101,7 @@ class ProfileTests(unittest.TestCase):
         for section, key, value in (("identity", "bus_info", "other"),
                                     ("identity", "host_id_sha256", "other-host"),
                                     ("identity", "permanent_mac", "02:00:00:00:00:02"),
+                                    ("coalesce", "cqe-mode-rx", "on"),
                                     ("coalesce", "tx-usecs", "1")):
             self.backend.state = state()
             self.backend.state[section][key] = value
@@ -183,6 +189,45 @@ class ProfileTests(unittest.TestCase):
         with patch.object(nic.subprocess, "run", side_effect=nic.subprocess.TimeoutExpired("ethtool", 10)):
             with self.assertRaisesRegex(nic.ProfileError, "uncertain"):
                 nic.Ethtool().command("-C", "fixture0", "rx-usecs", "0")
+
+    def test_ethtool_6142_cqe_metadata_is_preserved_without_numeric_conversion(self):
+        self.assertEqual(nic.fields("CQE mode RX: n/a  TX: n/a\n"),
+                         {"cqe-mode-rx": "n/a", "cqe-mode-tx": "n/a"})
+        self.assertEqual(nic.fields("  CQE mode RX: on  TX: off\n"),
+                         {"cqe-mode-rx": "on", "cqe-mode-tx": "off"})
+        self.assertTrue(nic.capability(state())["supported"])
+        original = copy.deepcopy(self.backend.state["coalesce"])
+        self.apply(profile="low-latency")
+        self.assertEqual(self.backend.state["coalesce"]["cqe-mode-rx"], "n/a")
+        self.assertEqual(self.backend.state["coalesce"]["cqe-mode-tx"], "n/a")
+        self.apply(restore=True)
+        self.assertEqual(self.backend.state["coalesce"], original)
+        self.assertEqual(self.backend.writes, [("fixture0", "0"), ("fixture0", "3")])
+
+    def test_cqe_metadata_drift_is_not_discarded_during_restore_or_readback(self):
+        original_set = self.backend.set_rx
+
+        def drift(interface, value):
+            original_set(interface, value)
+            self.backend.state["coalesce"]["cqe-mode-tx"] = "on"
+
+        with patch.object(self.backend, "set_rx", side_effect=drift):
+            with self.assertRaisesRegex(nic.ProfileError, "readback differs"):
+                self.apply(profile="low-latency")
+        with self.assertRaisesRegex(nic.ProfileError, "drift"):
+            self.apply(restore=True)
+        self.assertEqual(self.backend.writes, [("fixture0", "0")])
+
+    def test_malformed_and_duplicate_paired_lines_remain_errors(self):
+        for line in ("CQE mode RX: n/a", "CQE mode RX: n/a TX: n/a extra",
+                     "CQE mode RX: unknown TX: n/a", "Other mode RX: n/a TX: n/a", "rx-usecs: 3 extra"):
+            with self.subTest(line=line), self.assertRaises(nic.ProfileError):
+                nic.fields(line)
+        cqe = "CQE mode RX: n/a  TX: n/a\n"
+        for text in (cqe + cqe, "cqe-mode-rx: off\n" + cqe, cqe + "cqe-mode-rx: off\n",
+                     "Adaptive RX: off TX: off\nAdaptive RX: on TX: on\n"):
+            with self.subTest(text=text), self.assertRaisesRegex(nic.ProfileError, "duplicate"):
+                nic.fields(text)
 
     def test_invalid_snapshot_and_cli_missing_snapshot_never_reach_backend(self):
         self.snapshot.write_text('{"schema": 1, "original": {}}')

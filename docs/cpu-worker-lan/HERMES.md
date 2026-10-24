@@ -1,5 +1,45 @@
 # Native CPU-worker LAN and NIC profile: Hermes handoff
 
+## ethtool CQE correction: Python validation and read-only discovery only
+
+The user reports that `a2ce6164eb31292ce6b43e79fe41ecf9f8ccc058` built the CUDA engine on 03 and the CPU
+worker/11 targets on 05, and that 05 CTest passed 11/11 plus the Python NIC/control fixtures. Real read-only
+NIC discovery on both tested hosts then failed on the ethtool 6.14.2 line `CQE mode RX: n/a  TX: n/a`.
+This receipt is user-attributed, not local execution evidence. The correction preserves CQE RX/TX as
+text fields in snapshots and full-map drift checks. It does not change C++ sources or build inputs.
+
+This correction is local-only until separately published or transferred. Set `CORRECTION` to its exact
+commit from the final handoff. Use a clean source checkout acquired through the authorized parent path;
+the a2ce6164 base is already published. Run the Python suite on 05, then read-only discovery on each of
+the same two tested hosts with its previously identified physical NIC. No C++ rebuild or repeated CTest
+campaign is needed for this Python/documentation-only delta. The original full-feature recipe below
+is retained as context, not a request to repeat it for this correction.
+
+```sh
+set -eu
+: "${SRC:?clean exact correction source checkout}"
+: "${CORRECTION:?exact local correction commit supplied by the parent}"
+test "$(git -C "$SRC" rev-parse HEAD)" = "$CORRECTION"
+test -z "$(git -C "$SRC" status --porcelain)"
+git -C "$SRC" merge-base --is-ancestor a2ce6164eb31292ce6b43e79fe41ecf9f8ccc058 HEAD
+git -C "$SRC" diff --name-only a2ce6164eb31292ce6b43e79fe41ecf9f8ccc058 HEAD
+# On 05, fake backend only:
+python "$SRC/tests/worker/worker_nic_test.py"
+# On each previously tested host, read-only against its exact previously identified NIC:
+: "${NIC_IFACE:?previously identified physical e1000e interface on this host}"
+python "$SRC/tools/worker_nic.py" discover --interface "$NIC_IFACE"
+```
+
+Require the correction delta to contain only the NIC Python tool, its Python fixture and this handoff.
+Discovery must preserve `cqe-mode-rx` and `cqe-mode-tx` as literal `n/a`, retain numeric text for the
+actual `rx-usecs` setting, and report no coalesce parser diagnostic. For the previously supported exact
+host/NIC identity with mode 0 or 3, require `capability.supported=true`. Save output and exit status. Stop
+on any different unsupported/malformed line and provide the full retained output before broadening the
+parser. Do not run snapshot/apply/restore, NIC writes, inference, firewall changes or live-worker actions
+as part of this correction check. Correction tests and discovery are **NOT RUN locally**.
+
+## Original feature handoff
+
 **Status: source and static review only. All builds, tests, NIC commands and inference NOT RUN locally.**
 No dependencies were installed and no fleet SSH, host settings changes, push, merge or deployment was
 performed. Do not build or run tests on Geekom or Valinor. This handoff describes later remote work; it

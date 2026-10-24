@@ -31,17 +31,24 @@ def fields(text):
     """Retain every coalesce setting, including unsupported/n/a values, for drift checks."""
     result = {}
     for line in text.splitlines():
-        adaptive = re.fullmatch(r"\s*Adaptive RX:\s*(\S+)\s+TX:\s*(\S+)\s*", line)
-        if adaptive:
-            result.update({"adaptive-rx": adaptive[1], "adaptive-tx": adaptive[2]})
-            continue
-        match = re.fullmatch(r"\s*([a-z][a-z0-9-]*):\s*(\S+)\s*", line)
-        if match:
-            if match[1] in result:
-                raise ProfileError(f"duplicate ethtool field {match[1]}; inspect output manually")
-            result[match[1]] = match[2]
-        elif line.strip() and not line.startswith("Coalesce parameters for "):
-            raise ProfileError(f"unrecognized coalesce output {line.strip()!r}; inspect before changing settings")
+        paired = re.fullmatch(r"\s*(Adaptive|CQE mode) RX:\s*(\S+)\s+TX:\s*(\S+)\s*", line)
+        if paired:
+            if paired[1] == "CQE mode" and any(value not in ("on", "off", "n/a") for value in paired.group(2, 3)):
+                raise ProfileError(f"unrecognized CQE mode value {line.strip()!r}; inspect before changing settings")
+            prefix = "adaptive" if paired[1] == "Adaptive" else "cqe-mode"
+            parsed = {prefix + "-rx": paired[2], prefix + "-tx": paired[3]}
+        else:
+            match = re.fullmatch(r"\s*([a-z][a-z0-9-]*):\s*(\S+)\s*", line)
+            if match:
+                parsed = {match[1]: match[2]}
+            elif line.strip() and not line.startswith("Coalesce parameters for "):
+                raise ProfileError(f"unrecognized coalesce output {line.strip()!r}; inspect before changing settings")
+            else:
+                continue
+        for key, value in parsed.items():
+            if key in result:
+                raise ProfileError(f"duplicate ethtool field {key}; inspect output manually")
+            result[key] = value
     return result
 
 
