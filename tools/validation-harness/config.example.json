@@ -1,0 +1,184 @@
+{
+  "host": "__EXECUTION_HOST__",
+  "run_root": "__NEW_PRIVATE_OUTPUT_ROOT__",
+  "assets": {
+    "engine": "__ABS_ENGINE_PATH__",
+    "worker": "__ABS_WORKER_PATH__",
+    "manifest": "__ABS_MANIFEST_PATH__",
+    "requests": "__ABS_RETAINED_REQUEST_FILE__"
+  },
+  "model_paths": [
+    "__MODEL_GGUF_PATH__",
+    "__NATIVE_PACK_DIR__",
+    "__EXPERT_PROFILE_PATH__",
+    "__LOCAL_MODEL_ROOT__"
+  ],
+  "argv": [
+    "@engine",
+    "--serve",
+    "--native",
+    "__MODEL_GGUF_PATH__",
+    "--pack",
+    "__NATIVE_PACK_DIR__",
+    "--greedy",
+    "--pool-workers",
+    "2",
+    "--pool-affinity",
+    "all",
+    "--ple-io",
+    "direct",
+    "--expert-cache",
+    "__GPU0_EXPERT_SLOTS__",
+    "--expert-cache-per-layer",
+    "--expert-profile",
+    "__EXPERT_PROFILE_PATH__",
+    "--vram-reserve-mib",
+    "__VRAM_RESERVE_MIB__",
+    "--adapt-every",
+    "0",
+    "--adapt-swaps",
+    "0",
+    "--pcie-frac",
+    "0",
+    "--short-read",
+    "64",
+    "--prefill",
+    "64",
+    "--prompt-cache",
+    "0",
+    "--spec",
+    "2",
+    "--suffix-draft",
+    "0",
+    "--lookup-chain",
+    "0",
+    "--pipeline-windows",
+    "0",
+    "--max-context",
+    "1024",
+    "--expert-cache-device1",
+    "__GPU1_EXPERT_SLOTS__",
+    "--remote-expert-opt",
+    "--mmap-experts",
+    "--remote-cpu-experts",
+    "127.0.0.1:27431",
+    "--remote-cpu-deadline-ms",
+    "10000",
+    "--remote-cpu-local-manifest",
+    "@manifest",
+    "--remote-cpu-resident",
+    "--remote-cpu-setup-ms",
+    "600000"
+  ],
+  "worker_argv": [
+    "@worker",
+    "--port",
+    "27431",
+    "--memory-budget-mib",
+    "__WORKER_MEMORY_BUDGET_MIB__",
+    "--workers",
+    "2",
+    "--deadline-ms",
+    "10000",
+    "--local-root",
+    "__LOCAL_MODEL_ROOT__",
+    "--local-manifest",
+    "@manifest",
+    "--local-load-threads",
+    "4",
+    "--local-setup-ms",
+    "600000",
+    "--residency-forever"
+  ],
+  "env": {
+    "OMP_NUM_THREADS": "2",
+    "PATH": "/usr/bin:/bin",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+    "STRATA_IO_PF_THREADS": "2",
+    "STRATA_ROUTE_TAIL_SKIP": "0",
+    "STRATA_LOOKAHEAD": "0",
+    "STRATA_LOOKAHEAD_STATS": "0",
+    "STRATA_FS_SLOTS": "0"
+  },
+  "worker_env": {
+    "PATH": "/usr/bin:/bin",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "OMP_NUM_THREADS": "2"
+  },
+  "monitor_env": {
+    "PATH": "/usr/bin:/bin",
+    "LANG": "C",
+    "LC_ALL": "C"
+  },
+  "gpu_uuids": [
+    "__GPU_UUID_0__",
+    "__GPU_UUID_1__"
+  ],
+  "worker_host": "127.0.0.1",
+  "port": 27431,
+  "worker_bytes": "__EXPECTED_ARENA_BYTES__",
+  "startup_seconds": 2450,
+  "worker_start_seconds": 120,
+  "request_seconds": 1810,
+  "shutdown_seconds": 420,
+  "cleanup_seconds": 90,
+  "final_worker": "retain",
+  "failure_worker": "retain",
+  "arms": [
+    {
+      "workers": 2,
+      "loader_threads": 4,
+      "caller_mask": [
+        0
+      ],
+      "pool_masks": [
+        [
+          1
+        ],
+        [
+          2
+        ]
+      ],
+      "engine_main_mask": [
+        0
+      ],
+      "placement_markers": [
+        "__EXPECTED_PLACEMENT_MARKER__"
+      ],
+      "name": "load",
+      "restart": true,
+      "requests": []
+    },
+    {
+      "workers": 2,
+      "loader_threads": 4,
+      "caller_mask": [
+        0
+      ],
+      "pool_masks": [
+        [
+          1
+        ],
+        [
+          2
+        ]
+      ],
+      "engine_main_mask": [
+        0
+      ],
+      "placement_markers": [
+        "__EXPECTED_PLACEMENT_MARKER__"
+      ],
+      "name": "warm",
+      "restart": false,
+      "requests": [
+        0,
+        1,
+        2
+      ]
+    }
+  ]
+}
