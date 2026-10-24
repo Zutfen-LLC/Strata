@@ -15,6 +15,10 @@ def main():
     parser.add_argument("--control", required=True)
     parser.add_argument("--restricted-listener", action="store_true", help="also exercise the real CLI peer allowlist")
     args = parser.parse_args()
+    for value in ("0", "-1", "5", "garbage", "2x", "999999999999999999999999"):
+        result = subprocess.run([args.worker, "--local-load-threads", value], capture_output=True, timeout=5)
+        if result.returncode != 2 or b"listening on" in result.stderr:
+            raise RuntimeError(f"invalid local loading thread count {value!r} was not refused")
     for value in ("-1", "86400001", "garbage", "999999999999999999999999"):
         result = subprocess.run([args.worker, "--residency-ms", value], capture_output=True, timeout=5)
         if result.returncode != 2:
