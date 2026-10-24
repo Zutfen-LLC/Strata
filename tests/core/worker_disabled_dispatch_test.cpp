@@ -22,7 +22,7 @@ int main() {
                     output[0] == 123.0f && output[1] == -456.0f;
     // The network-GPU pointer is opaque too: native-OFF must refuse before dereferencing either tier.
     dispatch.worker = nullptr;
-    dispatch.gpu_worker = reinterpret_cast<strata::worker::GpuWorkerTier*>(opaque_worker);
+    dispatch.gpu_worker = reinterpret_cast<strata::worker::GpuWorkerGroup*>(opaque_worker);
     dispatch.failed = false;
     dispatch.fail = nullptr;
     strata::core::expert_pool_dispatch_multi(dispatch, nullptr, nullptr, 1, 1, output);

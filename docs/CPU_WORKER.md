@@ -1,6 +1,6 @@
 # The resident CPU-expert worker (`strata-expert-worker`)
 
-The worker is a small loopback service that holds one model's CPU-owned expert blobs in RAM and computes
+The worker is a small service, bound to loopback by default, that holds one model's CPU-owned expert blobs in RAM and computes
 their weighted partial sums with Strata's native CPU kernels (`ggml-cpu` arithmetic through
 `native_expert.hpp`). A GPU engine process keeps its model, router and cache on its own machine and sends
 the CPU-owned experts' work here. It is opt-in and experimental: nothing in the default engine path uses
@@ -21,9 +21,26 @@ cmake --build build-worker --target strata-expert-worker
 ```
 
 No CUDA/HIP/SYCL toolkit is involved; the target links only `strata_kernels_cpu` (and ggml-cpu). The
-listener binds **127.0.0.1 only** - there is no flag to bind a public address. To reach it from another
-machine, forward a port over an SSH tunnel you own (for example
+listener binds **127.0.0.1 by default**. To reach it through an authenticated, encrypted connection,
+forward a port over an SSH tunnel you own (for example
 `ssh -L 7431:127.0.0.1:7431 inferswarm05`) and point the client at the tunnel's local end.
+
+For an operator-controlled trusted LAN, explicitly select a local address with `--bind-ip IPv4` and
+repeat `--allow-peer-ip IPv4` for each permitted source. A non-loopback bind without peers is refused.
+Addresses must be numeric unicast IPv4; wildcards, hostnames, IPv6 and CIDR ranges are refused. The
+worker compares the kernel-reported source against the exact list immediately after accepting a
+connection, before reading frames or dispatching session, residency or control operations. A denied
+connection closes without a protocol reply. When a list is supplied, even loopback callers must match it.
+Clients and `tools/worker_control.py --host IPv4` use the selected address without wire changes.
+LAN mode has one selected endpoint, so local control must use `--host` with that address and its actual
+source must be listed. Explicit bind/peer policies require a positive `--deadline-ms` (default 10000).
+
+Source-address filtering provides **neither authentication nor encryption**. Session IDs are not
+credentials. Use this mode only on a trusted LAN with an operator-managed firewall limiting the worker's
+interface, port and source peers. Strata never installs firewall rules. An allowed host, any process on
+it, or a host able to impersonate its address can send inference and destructive unload/stop controls.
+Keep the SSH route when that boundary is insufficient. See the [LAN and NIC operator guide](cpu-worker-lan/README.md)
+and the [Hermes handoff](cpu-worker-lan/HERMES.md).
 
 Options: `--port P` (0 picks a free port and prints it), `--memory-budget-mib N` (default 131072),
 `--workers N` (CPU expert-pool worker threads; 0 = the pool's default plan for the machine),
@@ -126,8 +143,9 @@ cmake --build build-worker --target expert_worker_test expert_worker_e2e_test
   with their own packed fixtures and parity tests.
 - One uniform layout per model (a native pack with per-layer formats is future work; the manifest has
   one geometry).
-- One connection, one outstanding request; no pipelining, no concurrency, no auth (session identity is
-  correlation, not authentication - the loopback bind plus an owned tunnel is the boundary).
+- One connection, one outstanding request; no pipelining, no concurrency, no authentication. The default
+  boundary is loopback plus an owned tunnel; explicit LAN mode relies on the operator's trusted network
+  and firewall, with an exact source allowlist.
 - No engine integration in the worker itself: the engine side (`--remote-cpu-experts`, above) lives in
   `ExpertWorkerTier` + the dispatch/verifier glue and keeps this service untouched.
 - Windows: this correction's nonblocking/select path was not built or run there; validation is Linux
@@ -143,9 +161,25 @@ The engine side is **opt-in and default-off**: `strata --serve --remote-cpu-expe
 untouched. Header and payload reads have separate budgets; connection establishment and native kernel
 execution are not preempted by this setting. The pieces:
 
+The latency diagnostic is also default-off. Start only the CPU worker with `--tcp-nodelay` to test checked
+`TCP_NODELAY` on its accepted descriptor; GPU-worker accepts still use the unchanged default. Add
+`--rpc-timing` to the CPU worker and `--remote-cpu-rpc-timing` to the engine for fixed-memory aggregate
+latency histograms. The flags are independent, so socket behavior can be compared without timing overhead.
+The engine reports client-side aggregates with its existing worker report. The worker reports its aggregate
+only when it stops cleanly; stopping or replacing a worker unloads its arena and must be a separate approved
+operation. Use [the current Hermes handoff](cpu-worker-lan/HERMES.md) for validation of this branch.
+The [earlier latency handoff](cpu-worker-rpc-latency/HERMES.md) preserves its revision-specific evidence.
+
+The model-free [representative RPC replay handoff](cpu-rpc-replay/HERMES.md) uses the same CPU wire frame
+and persistent socket seam with fixed synthetic payloads. It is a transport/scheduling diagnostic, not an
+expert-compute benchmark, and its external fixture port requires separate explicit authorization.
+
 - **The tier** (`strata::worker::ExpertWorkerTier`, `strata_worker_tier`, CPU-only like the service):
-  owns the client, the frozen ownership bitmap, one in-flight request on its own thread, and the failure
-  latch.  `tests/worker/expert_tier_test` runs its whole lifecycle against the real in-process service.
+  owns the client, the frozen ownership bitmap, one in-flight request slot on one persistent communication
+  thread, and the failure latch. The thread starts at the first nonempty post, preserving the former
+  posting thread's inherited affinity; the tier sets no affinity. Its OS thread id, queue time, exchange
+  time and caller finish wait are aggregate report fields for live placement and timing checks.
+  `tests/worker/expert_tier_test` runs its whole lifecycle against the real in-process service.
 - **The partition is derived, never configured**: at startup, after CUDA0's cache, every stage cache and
   every helper tier (`--expert-cache-device1..3`) is filled, the complement - every expert no GPU tier
   holds - becomes the worker's.  Every routed expert keeps exactly one executing owner.  Setup streams
@@ -155,7 +189,7 @@ execution are not preempted by this setting. The pieces:
 - **In a verify window** (`expert_pool_dispatch_multi`), after the GPU's plan is published, the peer
   launched and the helpers begun - and before the local pool's own work - the worker entries' frame goes
   out (activations, ids, routing weights, ownership mask; nothing for a window with no owned entry).  The
-  round trip overlaps the local CPU jobs; `finish` joins before anything downstream may commit.
+  round trip overlaps the local CPU jobs; `finish` waits before anything downstream may commit.
 - **The merge reuses the helper tiers' mechanism** (`RemoteExpertOpt`): the worker's entries' per-entry
   rows are zeroed (the GPU's own weighted combine adds nothing for them) and its already-weighted partial
   is added on top of the combined result, after every helper tier's partial - one contribution each,

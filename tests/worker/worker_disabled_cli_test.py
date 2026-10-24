@@ -20,8 +20,10 @@ def main():
         cases = (("--remote-cpu-experts", "127.0.0.1:1"),
                  ("--remote-cpu-local-manifest", absent),
                  ("--remote-cpu-local-fallback",), ("--remote-cpu-resident",),
+                 ("--remote-cpu-rpc-timing",),
                  ("--remote-cpu-setup-ms", "600000"), ("--remote-cpu-deadline-ms", "10000"),
                  ("--remote-gpu-experts", "127.0.0.1:1"), ("--remote-gpu-plan", absent),
+                 ("--remote-gpu-worker", "127.0.0.1:1", absent),
                  ("--remote-gpu-setup-ms", "600000"), ("--remote-gpu-deadline-ms", "10000"))
         for knobs in cases:
             # Both bare modifiers and real-looking invocations must stop at feature refusal,

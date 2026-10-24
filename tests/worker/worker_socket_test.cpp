@@ -7,6 +7,8 @@
 #include <thread>
 #include <vector>
 #include <sys/socket.h>
+#include <netinet/tcp.h>
+#include <fcntl.h>
 
 using namespace strata::worker;
 using Clock = std::chrono::steady_clock;
@@ -70,6 +72,51 @@ int main() {
     sock::close_fd(fd[1]);
     check(!sock::send_all(fd[0], large.data(), large.size(), 250), "disconnected full-cap send fails");
     sock::close_fd(fd[0]);
+
+    // Accepted CPU-worker TCP_NODELAY is a per-accept opt-in. The default arm also guards GPU callers,
+    // which continue to use accept_one's default argument and must not inherit this experiment.
+    uint16_t port = 0;
+    sock_fd listener = kBadFd;
+    std::string error;
+    check(sock::listen_loopback(port, listener, error), "loopback listener for accepted option");
+    if (listener != kBadFd) {
+        std::vector<uint32_t> allowed;
+        check(sock::listener_policy("127.0.0.1", {"127.0.0.1"}, allowed, error), "exact socket peer policy");
+        for (int arm = 0; arm < 4; ++arm) {
+            const bool enabled = arm % 2, filtered = arm >= 2;
+            sock_fd client = kBadFd, accepted = kBadFd;
+            std::thread connector([&] { sock::connect_host("127.0.0.1", port, 1000, client, error); });
+            const bool accepted_ok = filtered ? sock::accept_allowed(listener, accepted, 1000, enabled, allowed)
+                                              : sock::accept_one(listener, accepted, 1000, enabled);
+            connector.join();
+            check(accepted_ok && client != kBadFd, "loopback connection for accepted option");
+            int actual = -1;
+            socklen_t option_bytes = sizeof actual;
+            check(accepted_ok && ::getsockopt(accepted, IPPROTO_TCP, TCP_NODELAY, &actual, &option_bytes) == 0,
+                  "accepted descriptor TCP_NODELAY is readable");
+            check(actual == (enabled ? 1 : 0), enabled ? "accepted TCP_NODELAY opt-in is on"
+                                                       : "accepted TCP_NODELAY baseline stays off");
+            sock::close_fd(client);
+            sock::close_fd(accepted);
+        }
+        sock_fd none = kBadFd;
+        check(!sock::accept_one(listener, none, 10, true) && none == kBadFd,
+              "accepted-option path preserves the accept timeout");
+        check(!sock::accept_allowed(listener, none, 10, true, allowed) && none == kBadFd,
+              "filtered accept preserves timeout and invalid descriptor");
+        sock::close_fd(listener);
+    }
+    port = 0;
+    check(sock::listen_ipv4("127.0.0.2", port, listener, error), "explicit numeric listener binds selected address");
+    if (listener != kBadFd) {
+        sockaddr_in actual{}; socklen_t size = sizeof actual;
+        check(::getsockname(listener, (sockaddr*)&actual, &size) == 0 &&
+              ntohl(actual.sin_addr.s_addr) == 0x7f000002u && port == ntohs(actual.sin_port),
+              "numeric listener does not silently bind a wildcard or the default address");
+        const int flags = ::fcntl(listener, F_GETFL, 0);
+        check(flags >= 0 && (flags & O_NONBLOCK), "explicit listener cannot block after stale poll readiness");
+        sock::close_fd(listener);
+    }
     std::printf("worker_socket_test: read=%lldms write=%lldms failures=%d\n",
                 (long long) read_ms, (long long) write_ms, fails);
     return fails ? 1 : 0;

@@ -15,8 +15,10 @@
 #pragma once
 
 #include "strata/worker/expert_client.hpp"
+#include "strata/worker/rpc_timing.hpp"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -41,6 +43,7 @@ public:
         int setup_ms = 600000;
         std::function<bool()> cancelled;
         int deadline_ms = 10000;          ///< per-frame deadline (setup, upload, infer)
+        bool rpc_timing = false;           ///< fixed-memory per-host aggregates; default path has no clocks
         const char* model_name = "model";
         uint16_t gu_type = 8, d_type = 8; ///< GGML_TYPE_Q8_0 - the one layout the worker runs
         uint16_t n_layers = 0, n_expert = 0, n_embd = 0, n_ff = 0;
@@ -82,7 +85,7 @@ public:
     /// and `partials()` is then not this window's - the contribution reads as zero).
     bool served() const { return served_; }
 
-    /// Joins the request thread.  True: the window is served - `partials()` when the last post() actually
+    /// Waits for the persistent request thread.  True: the window is served - `partials()` when the last post() actually
     /// sent a frame, otherwise (a zero-work window) the worker contributes nothing and the engine treats
     /// the partial as zero.  False: the tier is dead; the engine aborts without committing.  Always safe
     /// to call after post() - also after a post() that returned false.
@@ -105,16 +108,24 @@ public:
         uint64_t requests = 0;             ///< INFER frames sent (zero-work windows send none)
         uint64_t entries = 0;              ///< routed (token, expert) entries this tier executed
         uint64_t failures = 0;
+        uint64_t communication_thread_id = 0; ///< OS thread id for affinity inspection (0 before first work)
+        uint64_t communication_thread_starts = 0; ///< one for the tier's lifetime after first nonempty post
         double setup_ms = 0;               ///< open()'s wall time (connect + upload + ready), kept apart
         double request_ms = 0;             ///< post->finish wall time, client side (network + service)
         double wait_ms = 0;                ///< the part of that the caller waited after its own work
+        double queue_ms = 0;               ///< publish until the persistent communication thread takes the slot
+        double exchange_ms = 0;            ///< client INFER send/reply duration on that thread
     };
     const Stats& stats() const { return st_; }
+    const RpcTimingCounters& rpc_timing() const { return rpc_timing_; }
+    bool rpc_timing_enabled() const { return rpc_timing_.enabled(); }
+    void reset_rpc_timing() { rpc_timing_.reset(); }
+    void record_result_merge(uint64_t ns) { rpc_timing_.add_phase(RpcTimingPhase::ClientResultMerge, ns); }
     /// One evidence line for the engine's report (identities and counters, never payloads).
     void report(std::string& out) const;
 
 private:
-    void run_request();
+    void run_requests();
     void die(const std::string& why);
 
     ExpertWorkerClient client_;
@@ -123,19 +134,27 @@ private:
     size_t stride_ = 0;
     uint64_t model_id_ = 0, partition_id_ = 0;
     uint64_t sequence_ = 0;
-    uint64_t posted_ms_ = 0;
+    uint64_t posted_ns_ = 0;
     bool ready_ = false;
     std::atomic<bool> dead_{false};
     std::string dead_why_;
 
-    // one in-flight request (post -> finish), executed on this thread so the round trip overlaps the
-    // engine's local CPU work; finish() joins before anything downstream may commit.
+    // One persistent communication thread and one in-flight request slot.  The thread is created by the
+    // first nonempty post(), not open(), so it inherits the same dispatcher affinity as the former
+    // per-request threads.  No affinity is changed here; communication_thread_id exposes it for inspection.
+    mutable std::mutex request_mutex_;
+    std::condition_variable request_wake_;
+    std::condition_variable request_done_;
     std::thread th_;
+    bool stopping_ = false;
+    bool pending_ = false;
+    bool busy_ = false;
     InferRequest req_;
     InferReply reply_;
     bool posted_ = false;
     bool served_ = false;
     Stats st_;
+    RpcTimingCounters rpc_timing_;
 };
 
 }  // namespace strata::worker

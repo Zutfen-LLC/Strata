@@ -7,11 +7,13 @@
 #include "strata/worker/expert_tier.hpp"
 #include "strata/worker/expert_worker.hpp"
 #include "strata/worker/gpu_client.hpp"
+#include "strata/worker/gpu_group.hpp"
 #include "strata/worker/gpu_worker.hpp"
 #include "strata/worker/setup_keepalive.hpp"
 #include "ggml.h"
 #include <cuda_runtime.h>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -106,11 +108,28 @@ struct Services {
     std::unique_ptr<ExpertWorkerService> cpu;
     std::unique_ptr<GpuWorkerService> cuda;
     std::thread ct, gt;
+    std::vector<std::unique_ptr<GpuWorkerService>> extra;
+    std::vector<std::thread> extra_threads;
     ~Services() {
         if (cuda) cuda->stop(); if (gt.joinable()) gt.join();
+        for(auto& s:extra)s->stop();for(auto& t:extra_threads)if(t.joinable())t.join();
         if (cpu) cpu->stop(); if (ct.joinable()) ct.join();
     }
-    void stop_gpu() { cuda->stop(); if (gt.joinable()) gt.join(); }
+};
+// Keep the socket/status alive until an inference is actually submitted. This
+// forces the failure to occur after CPU submission, independent of idle probes.
+class ControlledLoss final : public GpuExecutor {
+public:
+    std::unique_ptr<GpuExecutor> real=create_cuda_gpu_executor(0);
+    std::atomic<bool> lose{false};
+    bool prepare(const GpuPlan& p,uint64_t reserve,GpuCache& c,GpuCounters& stats,std::string& err) override {
+        return real->prepare(p,reserve,c,stats,err);
+    }
+    bool infer(const GpuPlan& p,const InferRequest& r,InferReply& out,std::string& err) override {
+        if(lose.load()){err="controlled executor loss after CPU submission";return false;}
+        return real->infer(p,r,out,err);
+    }
+    void release(GpuCounters& c) override {real->release(c);}
 };
 struct Plan {
     int32_t counts[3]{}, start[129]{}, dst[128]{}, tok[128]{}, start2[65]{};
@@ -167,7 +186,9 @@ bool delayed_acquisition_keeps_cpu_ready(const fs::path& root, const cpu::Native
                  "same CPU session remains READY without any inference or residency renewal");
 }
 }
-int main() {
+int main(int argc,char** argv) {
+    const int workers=argc==2 && std::strcmp(argv[1],"--single")==0 ? 1 : 3;
+    if(argc>1 && !(argc==2 && workers==1)) {std::fprintf(stderr,"usage: gpu_worker_dispatch_test [--single]\n");return 2;}
     std::string err;
     cpu::NativeFmt f;
     if (!check(cpu::native_fmt(8, 8, H, FF, f, err), "bounded Q8_0 layout")) return 1;
@@ -191,14 +212,25 @@ int main() {
     GpuPlan assigned;
     if (!check(make_gpu_plan(metadata, {{0, 2}, {0, 3}}, assigned, err), "explicit GPU subset")) return 1;
     if (!delayed_acquisition_keeps_cpu_ready(root, f, source, assigned)) return 1;
+    std::vector<GpuPlan> plans(workers);
+    for(int i=0;i<workers;++i)if(!check(make_gpu_plan(metadata,{{0,(uint16_t)(i+2)}},plans[i],err),"disjoint GPU assignment"))return 1;
     Services services;
     WorkerOptions co; co.workers = 1; co.memory_budget = 64ull << 20;
     services.cpu = std::make_unique<ExpertWorkerService>(co);
-    GpuWorkerOptions go; go.plan = assigned; go.cache_root = (root / "cache").string(); go.cache_budget = 32ull << 20;
-    services.cuda = std::make_unique<GpuWorkerService>(go, create_cuda_gpu_executor(0));
+    GpuWorkerOptions go; go.plan = plans[0]; go.cache_root = (root / "cache").string(); go.cache_budget = 32ull << 20;
+    auto loss_executor=std::make_unique<ControlledLoss>();auto* controlled_loss=loss_executor.get();
+    services.cuda = std::make_unique<GpuWorkerService>(go, std::move(loss_executor));
     uint16_t cp = 0, gp = 0;
     if (!check(services.cpu->listen(cp, err), "CPU listen") || !check(services.cuda->listen(gp, err), "CUDA listen")) return 1;
     services.ct = std::thread([&] { services.cpu->run(); }); services.gt = std::thread([&] { services.cuda->run(); });
+    std::vector<uint16_t> gpu_ports{gp};
+    for(int i=1;i<workers;++i) {
+        go.plan=plans[i];go.cache_root=(root/("cache-"+std::to_string(i))).string();fs::create_directory(go.cache_root);
+        auto worker=std::make_unique<GpuWorkerService>(go,create_cuda_gpu_executor(0));uint16_t port=0;
+        if(!check(worker->listen(port,err),"additional CUDA listener"))return 1;
+        auto* service=worker.get();services.extra.push_back(std::move(worker));
+        services.extra_threads.emplace_back([service]{service->run();});gpu_ports.push_back(port);
+    }
     ExpertWorkerTier cpu_tier;
     ExpertWorkerTier::Open cop;
     cop.port = cp; cop.n_layers = 1; cop.n_expert = E; cop.n_embd = H; cop.n_ff = FF;
@@ -208,9 +240,10 @@ int main() {
         std::memcpy(dst, source.blobs[(size_t)e].data(), n); return true;
     };
     cop.fetch = fetch;
-    GpuWorkerTier gpu_tier;
-    GpuWorkerTier::Open gop; gop.port = gp; gop.plan = assigned; gop.fetch = fetch;
-    if (!check(cpu_tier.open(cop, err), "CPU READY") || !check(gpu_tier.open(gop, err), "CUDA resident READY")) return 1;
+    GpuWorkerGroup gpu_tier;
+    std::vector<GpuWorkerTier::Open> gpu_options(workers);
+    for(int i=0;i<workers;++i) {gpu_options[i].port=gpu_ports[i];gpu_options[i].plan=plans[i];gpu_options[i].fetch=fetch;}
+    if (!check(cpu_tier.open(cop, err), "CPU READY") || !check(gpu_tier.open(gpu_options, err), "CUDA workers READY")) return 1;
     check(cpu_tier.holds(0, 2) && gpu_tier.holds(0, 2), "CPU duplicate weights remain resident");
     strata::core::RemoteExpertOpt merge;
     if (!check(merge.init(err), "real merge tables")) return 1;
@@ -230,7 +263,7 @@ int main() {
         merge.begin(weights.data(), 0, T);
         strata::core::expert_pool_dispatch_multi(d, x.data(), ids, T, K, rows.data());
         merge.end();
-        if (!d.failed) check(d.gpu_worker_entries == 4 && d.worker_entries == 12,
+        if (!d.failed) check(d.gpu_worker_entries == 2*workers && d.worker_entries == 16-2*workers,
             "each routed occurrence belongs to exactly one network executor");
         return d.failed;
     };
@@ -243,7 +276,7 @@ int main() {
     std::vector<uint8_t> cpu_mask(T * K);
     std::vector<const uint8_t*> entry_blobs(T * K, nullptr);
     for (int i = 0; i < T * K; ++i) {
-        cpu_mask[i] = ids[i] >= 4;
+        cpu_mask[i] = ids[i] >= 2+workers;
         if (cpu_mask[i]) entry_blobs[i] = source.blobs[(size_t)ids[i]].data();
         if (ids[i] >= 2) check(std::all_of(rows.data()+i*H, rows.data()+(i+1)*H,
             [](float v) { return v == 0; }), "all network rows zero before weighted merge");
@@ -260,9 +293,12 @@ int main() {
     }
     bool nonzero = false;
     for (size_t i = 0; i < expected.size(); ++i) {
-        // accumulate_host adds GPU04 then CPU05 to zero; combine adds that sum to primary output.
-        expected[i] = base[i] + (gpu_tier.partials()[i] + cpu_ref[i]);
-        nonzero = nonzero || gpu_tier.partials()[i] != 0;
+        // Exactly the production order: helper sum, endpoint 0/1/2, CPU, local add.
+        float remote=0.f;
+        for(size_t p=0;p<gpu_tier.size();++p) {
+            remote=remote+gpu_tier.partials(p)[i];nonzero=nonzero||gpu_tier.partials(p)[i]!=0;
+        }
+        expected[i] = base[i] + (remote + cpu_ref[i]);
     }
     check(nonzero, "CUDA04 contributed nonzero executed output");
     Allocation merged(base.size()*sizeof(float));
@@ -292,7 +328,7 @@ int main() {
     // the failed latch and commit neither partial; no fallback or retry.
     WorkerStatusInfo before_loss, after_loss;
     if (!check(cpu_tier.status(before_loss, err), "CPU counters before GPU loss")) return 1;
-    services.stop_gpu();
+    controlled_loss->lose.store(true);
     Plan lost_plan;
     check(dispatch(rows, lost_plan), "GPU loss fails the affected request");
     check(gpu_tier.dead(), "GPU loss latches dead; no invisible CPU retry");
@@ -306,10 +342,11 @@ int main() {
     merge.combine((float*)merged.p, nullptr, 0, T, nullptr, 0, nullptr);
     if (!gpu(cudaMemcpy(failed_sum.data(), merged.p, failed_sum.size()*sizeof(float), cudaMemcpyDeviceToHost))) return 1;
     check(std::all_of(failed_sum.begin(), failed_sum.end(), [](float v) { return v == 0; }),
-          "GPU post failure committed neither remote partial");
-    check(std::all_of(rows.begin(), rows.end(), [](float v) { return v == -11.5f; }),
-          "GPU post failure returned before publishing any CPU result row");
+          "asynchronous GPU failure committed no remote partial");
+    // post() may return before the controlled failure is observed. Network
+    // staging rows can therefore have been zeroed; they are not a committed
+    // remote result. The real combine readback above verifies that contract.
     check(source.reads == 0, "GPU loss never falls back to local source");
-    std::printf("CPU_FIRST_DISPATCH_V1 failures=%d (real dispatcher, CPU tier, network CUDA and merge)\n", failures);
+    std::printf("MULTI_GPU_DISPATCH_V1 workers=%d failures=%d (real dispatcher, CPU tier, network CUDA and merge)\n", workers,failures);
     return failures ? 1 : 0;
 }

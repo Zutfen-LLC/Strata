@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#include <utility>
 #ifndef _WIN32
 #include <fcntl.h>
 #endif
@@ -56,6 +57,11 @@ bool wait_fd(sock_fd fd, bool write, const Budget &budget, const std::function<b
 bool nonblocking(sock_fd fd) {
     u_long mode = 1;
     return ::ioctlsocket((SOCKET) fd, FIONBIO, &mode) == 0;
+}
+#else
+bool nonblocking(sock_fd fd) {
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    return flags >= 0 && ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
 }
 #endif
 
@@ -174,6 +180,41 @@ bool connect_numeric_controlled(const std::string &host, uint16_t port, int dead
     return true;
 }
 
+namespace {
+bool unicast_ipv4(const std::string& text, in_addr& address) {
+    if (text.find('\0') != std::string::npos || ::inet_pton(AF_INET, text.c_str(), &address) != 1)
+        return false;
+    const uint32_t host = ntohl(address.s_addr);
+    // Exclude unspecified/"this network", multicast, reserved and limited broadcast addresses.
+    return (host >> 24) != 0 && (host >> 24) < 224;
+}
+}
+
+bool listener_policy(const std::string& bind_ip, const std::vector<std::string>& peers,
+                     std::vector<uint32_t>& allowed, std::string& err) {
+    allowed.clear();
+    in_addr address{};
+    if (!unicast_ipv4(bind_ip, address)) {
+        err = "bind IP must be one numeric unicast IPv4 address (no wildcard, hostname or CIDR)";
+        return false;
+    }
+    if ((ntohl(address.s_addr) >> 24) != 127 && peers.empty()) {
+        err = "non-loopback bind requires at least one exact --allow-peer-ip; use a trusted LAN and firewall";
+        return false;
+    }
+    std::vector<uint32_t> parsed;
+    for (const auto& peer : peers) {
+        if (!unicast_ipv4(peer, address)) {
+            err = "each allowed peer must be one numeric unicast IPv4 address (no wildcard, hostname or CIDR)";
+            return false;
+        }
+        if (std::find(parsed.begin(), parsed.end(), address.s_addr) == parsed.end())
+            parsed.push_back(address.s_addr);
+    }
+    allowed = std::move(parsed);
+    return true;
+}
+
 bool listen_loopback(uint16_t& port, sock_fd& out, std::string& err) {
     out = ::socket(AF_INET, SOCK_STREAM, 0);
     if (out == kBadFd) { err = "socket() failed"; return false; }
@@ -198,11 +239,75 @@ bool listen_loopback(uint16_t& port, sock_fd& out, std::string& err) {
     return true;
 }
 
-bool accept_one(sock_fd listener, sock_fd& out, int deadline_ms) {
+bool listen_ipv4(const std::string& bind_ip, uint16_t& port, sock_fd& out, std::string& err) {
+    out = kBadFd;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    if (!unicast_ipv4(bind_ip, addr.sin_addr)) {
+        err = "listener needs a numeric unicast IPv4 address";
+        return false;
+    }
+    out = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (out == kBadFd) { err = "socket() failed"; return false; }
+    // poll readiness can disappear when a queued peer resets. Never block in accept after that race.
+    if (!nonblocking(out)) {
+        err = "nonblocking listener setup failed";
+        close_fd(out);
+        return false;
+    }
+    int one = 1;
+    ::setsockopt(out, SOL_SOCKET, SO_REUSEADDR, (const char*) &one, sizeof one);
+    addr.sin_port = htons(port);
+    if (::bind(out, (sockaddr*) &addr, sizeof addr) != 0) {
+        err = "bind " + bind_ip + ":" + std::to_string(port) + " failed";
+        close_fd(out);
+        return false;
+    }
+    if (::listen(out, 1) != 0) {   // one persistent connection: a second caller waits, none is dropped
+        err = "listen failed";
+        close_fd(out);
+        return false;
+    }
+    socklen_t len = sizeof addr;
+    if (::getsockname(out, (sockaddr*) &addr, &len) == 0) port = ntohs(addr.sin_port);
+    return true;
+}
+
+bool accept_one(sock_fd listener, sock_fd& out, int deadline_ms, bool tcp_nodelay) {
     const Budget budget(deadline_ms);
     if (!wait_fd(listener, false, budget)) return false;
     out = ::accept(listener, nullptr, nullptr);
-    return out != kBadFd;
+    if (out == kBadFd) return false;
+    if (tcp_nodelay) {
+        int one = 1;
+        if (::setsockopt(out, IPPROTO_TCP, TCP_NODELAY, (const char*) &one, sizeof one) != 0) {
+            close_fd(out);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool accept_allowed(sock_fd listener, sock_fd& out, int deadline_ms, bool tcp_nodelay,
+                    const std::vector<uint32_t>& allowed_peers) {
+    out = kBadFd;
+    if (!accept_one(listener, out, deadline_ms)) return false;
+    sockaddr_in peer{};
+    socklen_t peer_size = sizeof peer;
+    if (::getpeername(out, (sockaddr*)&peer, &peer_size) != 0 || peer_size != sizeof peer ||
+        peer.sin_family != AF_INET ||
+        std::find(allowed_peers.begin(), allowed_peers.end(), peer.sin_addr.s_addr) == allowed_peers.end()) {
+        close_fd(out);
+        return false;
+    }
+    if (tcp_nodelay) {
+        int one = 1;
+        if (::setsockopt(out, IPPROTO_TCP, TCP_NODELAY, (const char*) &one, sizeof one) != 0) {
+            close_fd(out);
+            return false;
+        }
+    }
+    return true;
 }
 
 bool connect_host(const std::string& host, uint16_t port, int deadline_ms, sock_fd& out, std::string& err) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded loopback/owned-forward control for strata-expert-worker (no weights or prompts)."""
+"""Bounded CPU-worker control over loopback, owned forward or allowlisted trusted LAN (no weights/prompts)."""
 import argparse
 import json
 import socket
@@ -57,7 +57,7 @@ def status(sock):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("status", "unload", "stop"))
-    parser.add_argument("--host", default="127.0.0.1", help="numeric IPv4 worker or owned SSH forward")
+    parser.add_argument("--host", default="127.0.0.1", help="numeric IPv4 worker, trusted LAN or owned SSH forward")
     parser.add_argument("--port", type=int, default=7431)
     args = parser.parse_args()
     socket.inet_pton(socket.AF_INET, args.host)  # no DNS wait

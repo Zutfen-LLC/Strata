@@ -13,16 +13,28 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worker", required=True)
     parser.add_argument("--control", required=True)
+    parser.add_argument("--restricted-listener", action="store_true", help="also exercise the real CLI peer allowlist")
     args = parser.parse_args()
     for value in ("-1", "86400001", "garbage", "999999999999999999999999"):
         result = subprocess.run([args.worker, "--residency-ms", value], capture_output=True, timeout=5)
         if result.returncode != 2:
             raise RuntimeError(f"invalid residency value {value!r} returned {result.returncode}")
+    # Fail closed before listening. No physical interface is opened by these negative cases.
+    for extra in (("--bind-ip", "0.0.0.0"), ("--bind-ip", "192.0.2.1"),
+                  ("--bind-ip", "localhost"), ("--allow-peer-ip", "192.0.2.0/24"),
+                  ("--bind-ip", "127.0.0.1", "--allow-peer-ip", "224.0.0.1"),
+                  ("--allow-peer-ip", "127.0.0.1", "--deadline-ms", "0"),
+                  ("--allow-peer-ip", "127.0.0.1", "--deadline-ms", "garbage")):
+        result = subprocess.run([args.worker, *extra], capture_output=True, timeout=5)
+        if result.returncode != 1 or b"listening on" in result.stderr:
+            raise RuntimeError(f"unsafe listener policy was not refused: {extra!r}")
     with tempfile.TemporaryDirectory(prefix="worker-control-") as directory:
         log = Path(directory) / "worker.log"
+        listener = (["--bind-ip", "127.0.0.1", "--allow-peer-ip", "127.0.0.1",
+                     "--allow-peer-ip", "127.0.0.3", "--tcp-nodelay"] if args.restricted_listener else [])
         with log.open("w") as output:
             child = subprocess.Popen([args.worker, "--port", "0", "--workers", "2",
-                                      "--memory-budget-mib", "1", "--residency-ms", "1000"],
+                                      "--memory-budget-mib", "1", "--residency-ms", "1000", *listener],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=output)
         try:
             deadline = time.monotonic() + 5
