@@ -1762,6 +1762,11 @@ if(STRATA_NATIVE_EXPERTS)
     # the minimal local reproduction: the real binary on a real loopback port (docs/CPU_WORKER.md).
     # POSIX-only on purpose (fork/execv); the Windows socket path is built but not yet test-covered.
     if(NOT WIN32)
+      add_executable(cpu_rpc_replay tests/worker/cpu_rpc_replay.cpp)
+      target_include_directories(cpu_rpc_replay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+      target_link_libraries(cpu_rpc_replay PRIVATE strata_expert_worker)
+      add_test(NAME cpu_rpc_replay COMMAND cpu_rpc_replay)
+      set_tests_properties(cpu_rpc_replay PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
       add_executable(worker_socket_test tests/worker/worker_socket_test.cpp)
       target_include_directories(worker_socket_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
       target_link_libraries(worker_socket_test PRIVATE strata_expert_worker)

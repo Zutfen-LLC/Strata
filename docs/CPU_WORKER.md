@@ -151,6 +151,10 @@ The engine reports client-side aggregates with its existing worker report. The w
 only when it stops cleanly; stopping or replacing a worker unloads its arena and must be a separate approved
 operation. See [the Hermes latency handoff](cpu-worker-rpc-latency/HERMES.md).
 
+The model-free [representative RPC replay handoff](cpu-rpc-replay/HERMES.md) uses the same CPU wire frame
+and persistent socket seam with fixed synthetic payloads. It is a transport/scheduling diagnostic, not an
+expert-compute benchmark, and its external fixture port requires separate explicit authorization.
+
 - **The tier** (`strata::worker::ExpertWorkerTier`, `strata_worker_tier`, CPU-only like the service):
   owns the client, the frozen ownership bitmap, one in-flight request slot on one persistent communication
   thread, and the failure latch. The thread starts at the first nonempty post, preserving the former
