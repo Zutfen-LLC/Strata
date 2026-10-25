@@ -15,6 +15,17 @@ the parent, not execution or independent private raw-receipt auditing by this co
 | Shuffle + LZ4 | 5.05% | 0 / 32 |
 | Zstd level 1 | 7.33% | 0 / 32 |
 
+The clarified retained summary gives these totals over the same 32 frames:
+
+| Codec | Modeled wire time saved | Sum of per-frame encode/decode p50 costs | Sum of per-frame encode/decode p95 costs |
+| --- | --- | --- | --- |
+| Shuffle + LZ4 | 0.936 ms | 5.932 ms | 6.126 ms |
+| Zstd level 1 | 1.355 ms | 6.259 ms | 6.481 ms |
+
+Thus summed p50 codec cost exceeds modeled wire savings by 4.996 / 4.904 ms, respectively;
+using the summed p95 costs gives 5.190 / 5.126 ms. These sums of frame statistics describe serial
+costs, not measured elapsed time for a pipeline or an end-to-end percentile.
+
 The proposed policy chooses raw throughout. The diagnostic intentionally still timed every candidate;
 the measured compression costs are not a production fallback implementation. A faster link reduces
 the available wire-time saving, so it does not rescue a negative serialized codec-plus-link result.
@@ -37,9 +48,12 @@ For an illustrative 100000-byte reply, raw transmission is 800 microseconds; tho
 40.40–58.64 microseconds. The fixed selector's p95 codec budget would be 32.32–46.91 microseconds.
 Actual frames were evaluated with their own measured costs; every codec/frame failed that margin.
 Failure of the 80% selector alone does not prove all serial net savings were negative, nor identify
-which stage would dominate a pipeline. Per-frame encode/decode distributions must be used to test
-whether either stage exceeds raw-link service time before claiming ideal-overlap viability. No pooled
-percentile or measured pipeline gain is available. This is a retained-data question, not a new run.
+which stage would dominate a pipeline. The clarified totals above do establish aggregate serial
+overhead, but some of that work could overlap transmission in a true chunk pipeline. Per-frame,
+stage-separated costs and dependency/queue schedules are needed to compute achievable overlap;
+encode-plus-decode sums alone cannot do that. The zero-cost byte-saving ceiling remains unchanged.
+No pooled percentile or measured pipeline gain is available. This is a retained-data question,
+not a new run; incremental row streaming is being reviewed separately.
 
 Aggregation semantics checked in source: `raw_bytes` is the production reply payload, excluding its
 16-byte outer header. `wire_bytes` adds that header and an 8-byte allowance for compressed replies.
@@ -49,7 +63,9 @@ supplied byte-reduction summary; its precise header/denominator convention was n
 recomputed from private metrics here. The executable has no aggregate percentile: each printed p50/p95
 is nearest-rank over 64 timings for ONE frame/codec. The fixed selector adds that frame's encode p95
 and decode p95; this is a conservative screening statistic, not a measured end-to-end p95 or a pooled
-percentile. Combined timing-percentile interpretation remains pending the operator's clarification.
+percentile. Hermes clarified that its timing table used the median across 32 frame-specific p50s/p95s,
+not a pooled percentile. The cost totals above instead SUM the corresponding per-frame encode and
+decode statistics. Neither operation reconstructs the pooled 2048 individual timing observations.
 
 Coverage remains one original prompt through its first-logit row, including prefill and the final
 prompt token. It is not a long generated-token distribution. No resident state was changed.
