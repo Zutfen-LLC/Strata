@@ -11,6 +11,12 @@ existing 50 ms cancellable poll loop. Partial I/O, EOF, error returns and zero-l
 No environment variable changes production behavior. Diagnostic counters belong to each I/O thread.
 Windows keeps its existing nonblocking setup/select implementation; Windows execution is NOT RUN.
 
+Independent static Standards and Spec reviews completed. Standards found that broad timeout-only
+assertions could miss budget renewal; the corrected trickle/EINTR cases deliver ALL requested bytes
+after the original deadline, so renewal would wrongly succeed. Cancellation observations precede
+thread cleanup. The correction was re-reviewed; no remaining concrete finding. Spec found no blocker.
+No compiler, executable test, replay or fleet operation ran in this coding thread.
+
 The existing `cpu_rpc_replay` gains `--operation-first`, `--row-entries N` and bounded `--exact-rtt`.
 It prebuilds production-schema exact-row replies at real retained sizes, with deterministic synthetic
 contents. This is a transport-size replay, not native expert computation or real-row compression.

@@ -49,28 +49,31 @@ void test(bool first) {
         counts = {}; const auto start = Clock::now();
         const bool ok = sending ? sock::send_all_diagnostic(p.fd[0], data.data(), data.size(), 0, [&] { return cancel.load(); }, policy)
                                 : sock::recv_all_diagnostic(p.fd[0], data.data(), data.size(), 0, [&] { return cancel.load(); }, policy);
+        const bool observed_cancel = cancel.load(); const auto io_ms = elapsed(start);
         canceller.join();
-        need(!ok && elapsed(start) < 1000, "infinite-budget stalled I/O remains cancellable");
+        need(!ok && observed_cancel && io_ms < 1000, "infinite-budget stalled I/O remains cancellable");
         if (sending) need(counts.sent_bytes > 0 && counts.sent_bytes < data.size(), "cancelled partial send returns failure");
     }
     {
         Pair p; int cap = 4096; ::setsockopt(p.fd[0], SOL_SOCKET, SO_SNDBUF, &cap, sizeof cap);
         std::vector<uint8_t> data(1u << 20, 42); counts = {}; auto start = Clock::now();
         need(!sock::send_all_diagnostic(p.fd[0], data.data(), data.size(), 80, {}, policy), "stalled send deadline");
-        need(elapsed(start) < 1000 && counts.sent_bytes && counts.sent_bytes < data.size(), "partial send keeps one deadline");
+        need(elapsed(start) >= 50 && elapsed(start) < 1000 && counts.sent_bytes && counts.sent_bytes < data.size(), "partial send keeps one deadline");
     }
     {
         Pair p; std::atomic<bool> stop{false};
         std::thread trickle([&] {
-            for (int i = 0; i < 20 && !stop; ++i) {
+            // All requested bytes arrive by 160 ms: renewing a 100 ms budget would wrongly succeed.
+            for (int i = 0; i < 8 && !stop; ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 const char byte = 'x'; if (::send(p.fd[1], &byte, 1, MSG_NOSIGNAL) != 1) break;
             }
         });
-        char data[100]; counts = {}; const auto start = Clock::now();
+        char data[8]; counts = {}; const auto start = Clock::now();
         const bool ok = sock::recv_all_diagnostic(p.fd[0], data, sizeof data, 100, {}, policy);
+        const auto io_ms = elapsed(start);
         stop = true; trickle.join();
-        need(!ok && elapsed(start) < 1000 && counts.received_bytes > 0, "trickle progress never renews deadline");
+        need(!ok && io_ms >= 70 && io_ms < 1000 && counts.received_bytes > 0, "trickle progress never renews deadline");
     }
     {
         Pair p; int cap = 4096; ::setsockopt(p.fd[0], SOL_SOCKET, SO_SNDBUF, &cap, sizeof cap);
@@ -92,13 +95,18 @@ void test(bool first) {
         Pair p; struct sigaction action{}, old{}; action.sa_handler = signal_noop; sigemptyset(&action.sa_mask);
         need(sigaction(SIGUSR1, &action, &old) == 0, "temporary EINTR handler");
         const auto target = pthread_self();
-        std::thread signals([&] { for (int i = 0; i < 4; ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10)); pthread_kill(target, SIGUSR1);
-        } });
+        std::thread signals([&] {
+            for (int i = 0; i < 6; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20)); pthread_kill(target, SIGUSR1);
+            }
+            // A renewed EINTR budget would accept this byte after the original deadline.
+            const char byte = 'x'; ::send(p.fd[1], &byte, 1, MSG_NOSIGNAL);
+        });
         char byte; counts = {}; const auto start = Clock::now();
         const bool ok = sock::recv_all_diagnostic(p.fd[0], &byte, 1, 100, {}, policy);
+        const auto io_ms = elapsed(start);
         signals.join(); sigaction(SIGUSR1, &old, nullptr);
-        need(!ok && counts.interrupted > 0 && elapsed(start) < 1000, "EINTR retries preserve absolute deadline");
+        need(!ok && counts.interrupted > 0 && io_ms >= 70 && io_ms < 1000, "EINTR retries preserve absolute deadline");
     }
 }
 }
