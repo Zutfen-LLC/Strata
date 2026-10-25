@@ -55,63 +55,322 @@ also identify missing capability. A zero-work peer sends no inference and adds n
 No peers eligible means no sender quantization. One unsupported token scale selects raw for
 all eligible peers in that window; no partially packed request is sent.
 
-## Prescriptive offline Hermes handoff (NOT RUN)
+## First-role 05 offline handoff (NOT RUN)
 
-Parent dispatch only. Do not contact the fleet runtime at e145df6e or worker 809314 on02.
-No model GEN, service reload/replacement, install, firewall, deployment or live A/B.
-Do not set a real deployment qualification ID or start a worker binary against model assets.
-Synthetic integration tests create their own in-process services on ephemeral loopback ports;
-the capture proof opens no sockets and reads one digest-verified expert blob at a time.
+Run only this marked block for the first useful result. It contains the full role05 source,
+configuration, build, per-test guards and production-codec capture comparison. It does not
+invoke the old setup/relay recipes. Role02 and CUDA/HIP/SYCL compilation remain separate
+later gates; they do not block this first-role CPU result. Live A/B remains separately scoped.
 
-1. Bind the exact new published commit as `PIN`. Preserve all retained sources/builds/ELFs.
-   Use fresh isolated source, build and evidence directories. Reuse the role-specific archive,
-   retained compiler/cache bindings, native flag equality gate and ggml-base PIC correction from
-   [role05 proof handoff](CPU-PACKED-ACTIVATION-PROOF-20261025.md) and
-   [role02 handoff](CPU-PACKED-ACTIVATION-ROLE02-20261025.md). Do not infer role02 flags from05.
-   Only the fresh offline build disables GPU backends. Record compiler identity and effective
-   native commands for all five retained targets, with `warning_only=0` before execution.
-2. Build these targets in that verified fresh CPU build (bounded job count 2, 600 s limit):
+The bindings are the verified successful role05 proof archive/cache and existing ggml source.
+The block never treats the proof archive as a git checkout, changes its cache, installs a
+package, launches a model worker or contacts a retained service. It fetches the exact `PIN`
+only into the verified clean compression git source, then creates a fresh source archive.
+Do not execute this block from the desktop.
 
-   ```sh
-   timeout --signal=TERM --kill-after=5s 600s cmake --build "$NEW_BUILD" --parallel 2 --target \
-     cpu_packed_wire_test cpu_worker_group_test cpu_packed_activation_proof expert_worker_test \
-     expert_tier_test worker_residency_test worker_service_residency_test
-   ```
+Export the full published commit containing this document as `PIN`. The three default fresh
+paths are `/home/hermes/strata-pr10-wire05-20261025-r1-src`, the matching `-build`, and `-out`.
+They may be explicitly rebound before extraction; all must be absent with existing parents.
+An occupied path is a stop, not permission to delete, resume or invent another attempt.
+Extract between the exact BEGIN/END markers into a fresh private file and run it with bash.
 
-   Keep full build logs and ELF hashes. Build failures stop the stage. Separately compile the
-   touched engine CLI in isolated CUDA, HIP and SYCL builds before review; record unavailable
-   backends as NOT RUN. Do not execute those engine binaries or mutate shared runtime builds.
-3. Reuse the prior admission checks (>=10 GiB available and cgroup headroom), bounded execution
-   wrapper (2 GiB address space/RSS, zero owned swap, unchanged host OOM count), and parent
-   watchdog. Run each gate serially with a fresh log, 180 s timeout and no tiny inherited file-size
-   limit. Synthetic tests create small temporary Q8 fixtures, with no downloaded model:
+Configuration comes from `/home/hermes/strata-pr10-packed-06bbd809-build/CMakeCache.txt`,
+whose source is the retained proof archive. No global or target PIC correction is added:
+role05 already succeeded. Native flags, source-specific flags/defines and compiler identity
+must match all five retained targets before building. The only permitted effective flag
+difference is the new worker codec's `third_party/ggml` include directory. Warning waivers
+are zero. All cache differences are saved explicitly, including source/build/output relocation,
+the unchanged external ggml binding, disabled GPU backends and disconnected dependency mode.
+No mismatch triggers automatic tuning or continuation.
 
-   ```sh
-   ctest --test-dir "$NEW_BUILD" --output-on-failure --no-tests=error -j1 \
-     -R '^(cpu_packed_wire_test|cpu_worker_group_test|cpu_worker_group_packed_test|cpu_packed_activation_check|expert_worker_test|expert_tier_test|worker_residency_test|worker_service_residency_test)$'
-   ```
+Each executable test runs alone with an absolute 180-second process watchdog. CTest's default
+is also 180 seconds; shorter registered test timeouts remain, and the watchdog caps a longer
+registered timeout (such as expert_worker_test's 600 seconds). Capture pack/rows retain their
+180-second internal guard and 190-second outer limit.
+The wrapper reuses the proof's 10 GiB admission, 8 GiB active floor, 2 GiB address-space/RSS,
+zero owned swap and unchanged OOM gates, checks cgroup ancestry, and records per-invocation
+logs/receipts. It signals only positive PIDs descended from its own child with matching start
+identities. The capture proof keeps its existing internal guard too. No small inherited file-size
+limit is applied to synthetic fixtures. Any failure stops the block and retains partial evidence.
 
-   Require explicit Passed for every named test; a missing test or skip is not a pass. The new
-   wire gate mutates version, format, width, block count, masks, IDs, lengths and nonfinite scales;
-   exercises receiver negotiation, stale identity, replay, ownership, count and finite-weight
-   refusals; verifies raw scalar bytes and exact packed/native scratch. The packed group gate
-   checks weighted and entry-row replies against existing independent exact native references,
-   one/two peers, mixed capability, T4/T8 raw fallback, resident reconnect, old-status compatibility,
-   malformed capability refusal and once-per-union packing. Existing default tests remain required.
-4. With the SHA-verified original capture/manifest and read-only roots, rerun the bounded `--pack`
-   and `--rows` handoffs on both retained native role builds. The same proof now routes every
-   supported fixture through the production codec/restorer before its existing exact native-row,
-   ordered-partial and retained-capture gates. Keep every old SPA1/SRA1 artifact. New artifact
-   bytes must `cmp` exactly with the retained proof artifacts and with the other role's new
-   artifacts; preserve hashes and comparison logs. No gate or tolerance changes. A failure stops.
-5. Retain the `PACKED_PLACEMENT` lines from the synthetic packed group test: wall time, pack_ns,
-   calls, rows, actual request/reply bytes and per-peer raw/packed counts. They show offline
-   placement cost and sharing only; synthetic loopback timings are not LAN latency or TPS.
-   Report each role/build separately, with raw versus packed workload/configuration and all
-   fallbacks. Do not average across different native builds or add overlapping peer timings.
+```sh
+# BEGIN PACKED_WIRE_ROLE05
+set -euo pipefail
+umask 077
+: "${PIN:?export the full published commit containing this block}"
+export PIN
+export NEW_SRC="${NEW_SRC:-/home/hermes/strata-pr10-wire05-20261025-r1-src}"
+export NEW_BUILD="${NEW_BUILD:-/home/hermes/strata-pr10-wire05-20261025-r1-build}"
+export RUN_ROOT="${RUN_ROOT:-/home/hermes/strata-pr10-wire05-20261025-r1-out}"
+export GIT_OPTIONAL_LOCKS=0
+python3 -B - <<'PY'
+import hashlib,json,os,pathlib,re,resource,shlex,signal,subprocess,time
+P=pathlib.Path; env=os.environ; pin=env['PIN']
+assert re.fullmatch('[0-9a-f]{40}',pin), 'full commit PIN required'
+git=P('/home/hermes/strata-pr10-compress-74ffe391-src')
+base_pin='e5685da112f9e75262176635743b0790586d88c3'
+oldsrc=P('/home/hermes/strata-pr10-packed-06bbd809-src') # archive, never use git here
+old=P('/home/hermes/strata-pr10-packed-06bbd809-build')
+ggml=P('/home/hermes/strata-cand-66235df1-build-cpu/_deps/strata_llamacpp-src')
+cap=P('/home/hermes/strata-pr10-micro-bc8e5754-20261025-05/cpu-capture.bin')
+manifest=P('/home/hermes/strata-wl-metadata/local.manifest')
+model=P('/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66')
+retained=P('/home/hermes/strata-pr10-packed-06bbd809-20261025-05')
+src,build,out=(P(env[k]) for k in ('NEW_SRC','NEW_BUILD','RUN_ROOT'))
+for p in (src,build,out):
+    assert p.is_absolute() and p.parent.is_dir() and not p.exists() and not p.is_symlink(), 'fresh absolute paths required'
+assert len({src,build,out})==3 and not any(a in b.parents for a in (src,build,out) for b in (src,build,out) if a!=b)
+assert model.is_dir() and oldsrc.is_dir()
+out.mkdir(mode=0o700)
+def save(name,value):
+    with (out/name).open('x') as f: json.dump(value,f,indent=2)
+def output(argv): return subprocess.check_output([str(x) for x in argv],text=True,timeout=30).strip()
+def digest(p):
+    h=hashlib.sha256()
+    with p.open('rb') as f:
+        for data in iter(lambda:f.read(1<<20),b''): h.update(data)
+    return h.hexdigest()
+inputs={str(cap):'218bd2e9210ea7cbe641e3e09d7be5f060c5691d630ee6357935eb240f983208',
+    str(manifest):'8cc9a1ca01ded6b747628522f3fc896c6ca315583461e9c3826edda8b8f62318',
+    str(retained/'activations.spa'):'531d113d5d110fa4a53fa464ca8e504f913945d8af233113040f2d0dd6af2e0a',
+    str(retained/'rows-same-build.sra'):'0aaeb0762418bc150d7c4ca2e6c168e38b5069fb2df825cb94dd75312a6d727d'}
+assert cap.stat().st_size==37544692
+for path,want in inputs.items(): assert digest(P(path))==want, 'retained input hash: '+path
+save('input-hashes.json',inputs)
+assert output(['git','-C',git,'rev-parse','HEAD'])==base_pin
+assert not output(['git','-C',git,'status','--porcelain'])
+assert output(['git','-C',ggml,'rev-parse','HEAD'])=='3cf03257f219afbe7334045ff7c6a06ac68c627d'
+assert not output(['git','-C',ggml,'status','--porcelain'])
+assert (ggml/'ggml/include/ggml.h').is_file()
+# Same admission/active limits as the successful proof; no inherited arithmetic overrides.
+overrides=('STRATA_FORCE_ISA STRATA_FORCE_AVX2 STRATA_NO_AVXVNNI STRATA_CPU_YMM STRATA_KQ256 '
+    'STRATA_NO_IQ128 STRATA_NO_IQ256 STRATA_NO_IQ512 STRATA_CPU_IQ_ALL_EXACT1 STRATA_IQ_MT_MIN '
+    'STRATA_IQ3S_MT1 STRATA_NO_IQ4NL STRATA_IQ_GATHER STRATA_IQ256_GATHER STRATA_IQ_PREFETCH '
+    'STRATA_NO_Q8K_AVX1 STRATA_NO_Q8K_AVX2 STRATA_NO_TQ_KERNELS STRATA_NO_NVFP4_512 STRATA_NO_NVFP4_256').split()
+assert not any(k in env for k in overrides), 'inherited native override requires a new binding'
+assert not any(k in env for k in ('LD_PRELOAD','LD_LIBRARY_PATH','CFLAGS','CXXFLAGS','CPPFLAGS','LDFLAGS','CMAKE_ARGS'))
+def vm(path,key):
+    return int(re.search(r'^'+re.escape(key)+r':?\s+(\d+)',P(path).read_text(),re.M)[1])
+oom=vm('/proc/vmstat','oom_kill')
+def capacity(need):
+    available=vm('/proc/meminfo','MemAvailable')*1024
+    assert available>=need, 'host memory admission/active floor'
+    def unescape(s):return re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),s)
+    mounts=[]
+    for line in P('/proc/self/mountinfo').read_text().splitlines():
+        left,right=line.split(' - ',1); fields=left.split()
+        if right.split()[0]=='cgroup2' and unescape(fields[3])=='/':mounts.append(P(unescape(fields[4])))
+    assert len(mounts)==1, 'full cgroup2 ancestry must be visible'
+    membership=[s.split(':',2)[2] for s in P('/proc/self/cgroup').read_text().splitlines() if s.startswith('0::')]
+    assert len(membership)==1 and membership[0].startswith('/') and '..' not in P(membership[0]).parts
+    mount=mounts[0];p=mount.joinpath(*P(membership[0]).parts[1:]);rows=[]
+    while p!=mount:
+        current=int((p/'memory.current').read_text());row={'path':str(p),'current':current}
+        for key in ('memory.max','memory.high'):
+            value=(p/key).read_text().strip();assert value=='max' or int(value)-current>=need, 'cgroup headroom'
+            row[key]=value
+        rows.append(row)
+        p=p.parent
+    assert vm('/proc/vmstat','oom_kill')==oom, 'new host OOM event'
+    return {'available':available,'cgroups':rows,'oom_kill':oom}
+def process(pid):
+    try:
+        fields=P(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
+        return fields[19],int(fields[1]) # birth tick and PPID
+    except FileNotFoundError:return None
+def identity(pid):
+    info=process(pid);return info[0] if info else None
+def descendants(root,root_stamp):
+    found=[];todo=[(root,root_stamp)];seen=set()
+    while todo:
+        pid,stamp=todo.pop()
+        if stamp is None or (pid,stamp) in seen or identity(pid)!=stamp:continue
+        seen.add((pid,stamp));found.append((pid,stamp))
+        # Include children forked by scheduler threads, pin birth/PPID before traversal.
+        for children in P(f'/proc/{pid}/task').glob('*/children'):
+            try:candidates=[int(x) for x in children.read_text().split()]
+            except FileNotFoundError:continue
+            for candidate in candidates:
+                info=process(candidate)
+                if info and info[1]==pid and identity(pid)==stamp:todo.append((candidate,info[0]))
+    return found
+# One bounded invocation at a time, tracking only its own positive PIDs/start identities.
+# No process-group signals, service discovery, resident checks or external PID actions.
+def run(name,argv,seconds,guarded=False):
+    admission=capacity(10<<30);save(name+'-admission.json',admission)
+    owned=set();peak=0;start=time.monotonic();failure=None
+    def limits():
+        if guarded:resource.setrlimit(resource.RLIMIT_AS,(2<<30,2<<30))
+        soft,hard=resource.getrlimit(resource.RLIMIT_FSIZE)
+        resource.setrlimit(resource.RLIMIT_FSIZE,(hard,hard))
+    with (out/(name+'.log')).open('xb') as log:
+        child=subprocess.Popen([str(x) for x in argv],stdout=log,stderr=subprocess.STDOUT,preexec_fn=limits)
+        root_stamp=identity(child.pid);assert root_stamp is not None, 'cannot pin child identity'
+        owned.add((child.pid,root_stamp))
+        def collect():
+            live=set()
+            for pid,stamp in list(owned):live.update(descendants(pid,stamp))
+            owned.update(live);return live
+        try:
+            while True:
+                live=collect()
+                if time.monotonic()-start>seconds:raise RuntimeError('absolute timeout')
+                if vm('/proc/vmstat','oom_kill')!=oom:raise RuntimeError('new host OOM event')
+                if guarded:
+                    capacity(8<<30);rss=0
+                    for pid,stamp in live:
+                        if identity(pid)!=stamp:continue
+                        try:
+                            status=P(f'/proc/{pid}/status').read_text()
+                            assert not re.search(r'^VmSwap:\s+[1-9]',status,re.M), 'owned swap'
+                            match=re.search(r'^VmRSS:\s+(\d+)',status,re.M)
+                            rss+=(int(match[1])*1024 if match else 0)
+                        except FileNotFoundError:pass
+                    peak=max(peak,rss);assert rss<=2<<30, 'aggregate owned RSS above 2 GiB'
+                rc=child.poll()
+                if rc is not None:
+                    assert rc==0, f'exit {rc}'
+                    assert not any(identity(pid)==stamp and pid!=child.pid for pid,stamp in owned), 'owned child survived command'
+                    break
+                time.sleep(.05)
+        except BaseException as exc:
+            failure=str(exc)
+            # Refresh children before stopping; never signal a PID whose identity changed.
+            collect()
+            for sig in (signal.SIGTERM,signal.SIGKILL):
+                collect()
+                for pid,stamp in sorted(owned,reverse=True):
+                    if identity(pid)==stamp:
+                        try:os.kill(pid,sig)
+                        except ProcessLookupError:pass
+                try:child.wait(timeout=5)
+                except subprocess.TimeoutExpired:pass
+                if sig==signal.SIGTERM:time.sleep(.1)
+            raise
+        finally:
+            save(name+'-receipt.json',{'argv':[str(x) for x in argv],'elapsed_s':time.monotonic()-start,
+                'returncode':child.poll(),'failure':failure,'peak_owned_rss_bytes':peak,
+                'owned_pid_birth_pairs':sorted(owned),'oom_kill_before':oom,'oom_kill_after':vm('/proc/vmstat','oom_kill')})
+# Fetch only into the already verified clean git object source; do not checkout there.
+run('fetch',['git','-C',git,'fetch','origin',pin],90)
+assert output(['git','-C',git,'rev-parse',pin+'^{commit}'])==pin
+archive=out/'source.tar'
+with archive.open('xb') as f:subprocess.run(['git','-C',str(git),'archive',pin],stdout=f,check=True,timeout=30)
+src.mkdir(mode=0o700)
+subprocess.run(['tar','-xf',str(archive),'-C',str(src)],check=True,timeout=30)
+def cache(path):
+    result={}
+    for line in path.read_text().splitlines():
+        m=re.match(r'([^:#]+):([^=]+)=(.*)',line)
+        if m:result[m[1]]=(m[2],m[3])
+    return result
+ret=cache(old/'CMakeCache.txt')
+assert ret['CMAKE_HOME_DIRECTORY'][1]==str(oldsrc)
+for key,want in {'CMAKE_BUILD_TYPE':'Release','STRATA_NATIVE_EXPERTS':'ON','STRATA_BUILD_TESTS':'ON',
+                 'STRATA_ENABLE_CUDA':'OFF'}.items():assert ret[key][1]==want,(key,ret.get(key))
+assert ret['CMAKE_GENERATOR'][1]=='Unix Makefiles', 'flags.make equality recipe is fixed to retained generator'
+for k,(kind,value) in ret.items():
+    if kind not in ('INTERNAL','STATIC') and re.fullmatch(r'CMAKE_(TOOLCHAIN_FILE|SYSROOT.*|SYSTEM_.*|OSX_.*|STAGING_PREFIX|LINKER_TYPE|PROJECT_.*INCLUDE.*)',k):
+        assert not value, 'unsupported retained cross/toolchain/include setting: '+k
+keys=[k for k,(kind,value) in ret.items() if kind not in ('INTERNAL','STATIC') and
+    (k.startswith(('STRATA_','GGML_')) or
+     re.fullmatch(r'CMAKE_(C|CXX)_(COMPILER.*|FLAGS.*|STANDARD.*|EXTENSIONS|LINKER_LAUNCHER|LINK_WHAT_YOU_USE|VISIBILITY_PRESET)',k) or
+     re.fullmatch(r'CMAKE_(INTERPROCEDURAL_OPTIMIZATION.*|(EXE|SHARED|MODULE|STATIC)_LINKER_FLAGS.*|AR|RANLIB|LINKER|NM|OBJDUMP|STRIP|POSITION_INDEPENDENT_CODE|BUILD_TYPE|MAKE_PROGRAM|VISIBILITY_INLINES_HIDDEN|LINK_WHAT_YOU_USE|BUILD_RPATH|INSTALL_RPATH|SKIP_RPATH|SKIP_BUILD_RPATH|BUILD_WITH_INSTALL_RPATH|INSTALL_RPATH_USE_LINK_PATH|LINK_SEARCH_START_STATIC|LINK_SEARCH_END_STATIC)',k))]
+values={k:(ret[k][0] if ret[k][0] in ('BOOL','STRING','PATH','FILEPATH') else 'STRING',ret[k][1]) for k in keys}
+values.update(STRATA_GGML_DIR=('PATH',str(ggml)),STRATA_ENABLE_CUDA=('BOOL','OFF'),
+    STRATA_ENABLE_HIP=('BOOL','OFF'),STRATA_ENABLE_SYCL=('BOOL','OFF'),
+    FETCHCONTENT_FULLY_DISCONNECTED=('BOOL','ON'),CMAKE_EXPORT_COMPILE_COMMANDS=('BOOL','ON'),
+    CMAKE_RUNTIME_OUTPUT_DIRECTORY=('PATH',str(out/'bin')),CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=('PATH',str(out/'bin')))
+with (out/'initial.cmake').open('x') as f:
+    for k,(kind,value) in sorted(values.items()):
+        assert ']===]' not in value
+        f.write(f'set({k} [===[{value}]===] CACHE {kind} "" FORCE)\n')
+save('configuration-inputs.json',{'pin':pin,'retained_archive':str(oldsrc),'retained_build':str(old),
+    'ggml':str(ggml),'changes':{k:{'retained':ret.get(k),'candidate':v} for k,v in values.items() if ret.get(k)!=v},
+    'intentional_effective_flag_delta':{'strata_expert_worker':'add only -I@SRC/third_party/ggml'},
+    'warning_waivers':0,'pic_override':'none; exact retained flags required'})
+(out/'retained-CMakeCache.txt').write_bytes((old/'CMakeCache.txt').read_bytes())
+(out/'uname.txt').write_text(output(['uname','-a'])+'\n');(out/'lscpu.txt').write_text(output(['lscpu'])+'\n')
+run('configure',['cmake','-S',src,'-B',build,'-G',ret['CMAKE_GENERATOR'][1],'-C',out/'initial.cmake'],90)
+actual=cache(build/'CMakeCache.txt')
+for k,v in values.items():assert actual.get(k)==v, 'requested cache value changed: '+k
+save('configuration-differences.json',{k:{'retained':ret.get(k),'candidate':actual.get(k)}
+    for k in sorted(set(ret)|set(actual)) if ret.get(k)!=actual.get(k)})
+(out/'candidate-CMakeCache.txt').write_bytes((build/'CMakeCache.txt').read_bytes())
+replacements={str(oldsrc):'@SRC',str(src):'@SRC',str(old):'@BUILD',str(build):'@BUILD',str(ggml):'@GGML'}
+for k in ('CMAKE_RUNTIME_OUTPUT_DIRECTORY','CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE'):
+    if ret.get(k,('',''))[1]:replacements[ret[k][1]]='@BIN'
+replacements[str(out/'bin')]='@BIN'
+def normalize(s):
+    for a,b in sorted(replacements.items(),key=lambda kv:len(kv[0]),reverse=True):s=s.replace(a,b)
+    return s
+report={}
+for target in ('strata_kernels_cpu','strata_expert_worker','strata_worker_tier','ggml-cpu','ggml-base'):
+    pair=[]
+    for root in (old,build):
+        paths=list(root.rglob(f'CMakeFiles/{target}.dir/flags.make'));assert len(paths)==1,(target,paths)
+        pair.append([normalize(line.strip()) for line in paths[0].read_text().splitlines() if '=' in line])
+    adjusted=[line.replace(' -I@SRC/third_party/ggml','') if line.startswith(('C_INCLUDES =','CXX_INCLUDES =')) else line for line in pair[1]] if target=='strata_expert_worker' else pair[1]
+    report[target]={'retained':pair[0],'candidate':pair[1],'equal_after_declared_include_delta':pair[0]==adjusted}
+save('native-flags-comparison.json',report)
+assert all(v['equal_after_declared_include_delta'] for v in report.values()), 'native flag mismatch; no warning/PIC waiver or continuation'
+for lang in ('C','CXX'):
+    identities=[]
+    for root in (old,build):
+        paths=list((root/'CMakeFiles').glob(f'*/CMake{lang}Compiler.cmake'));assert len(paths)==1
+        text=paths[0].read_text();identities.append({k:re.search(r'^set\('+k+r'\s+(.*?)\)$',text,re.M)[1]
+            for k in (f'CMAKE_{lang}_COMPILER',f'CMAKE_{lang}_COMPILER_ID',f'CMAKE_{lang}_COMPILER_VERSION')})
+    save(lang+'-compiler-identities.json',identities);assert identities[0]==identities[1]
+targets=['cpu_packed_wire_test','cpu_worker_group_test','cpu_packed_activation_proof','expert_worker_test',
+         'expert_tier_test','worker_residency_test','worker_service_residency_test']
+run('build',['cmake','--build',build,'--parallel','2','--verbose','--target',*targets],600)
+(out/'compile_commands.json').write_bytes((build/'compile_commands.json').read_bytes())
+for target in targets:
+    paths=list(build.rglob(f'CMakeFiles/{target}.dir/link.txt'));assert len(paths)==1
+    text=paths[0].read_text();(out/(target+'-link.txt')).write_text(text)
+    assert not re.search(r'(?:lib)?(?:cuda\w*|cublas\w*|amdhip\w*|sycl\w*|nvrtc\w*|strata_engine)(?:[.\s/-]|$)|libstrata_kernels\.a',text,re.I), 'GPU/engine link dependency'
+save('ELF-hashes.json',{str(p):digest(p) for p in (out/'bin').iterdir() if p.is_file()})
+# The former proof artifact gate remains exact, including all existing numerical assertions.
+tests=['cpu_packed_wire_test','cpu_worker_group_test','cpu_worker_group_packed_test','cpu_packed_activation_check',
+       'expert_worker_test','expert_tier_test','worker_residency_test','worker_service_residency_test']
+listing=json.loads(output(['ctest','--test-dir',build,'--show-only=json-v1']))
+assert all(sum(t['name']==name for t in listing['tests'])==1 for name in tests)
+for name in tests:
+    run(name,['ctest','--test-dir',build,'-V','--no-tests=error','--timeout','180','-j1','-R','^'+name+'$'],180,True)
+    text=(out/(name+'.log')).read_text()
+    assert re.search(re.escape(name)+r'.*Passed',text) and not re.search('Skipped|Not Run|FAILED',text)
+proof=out/'bin/cpu_packed_activation_proof'
+run('pack',[proof,'--pack',cap,out/'activations.spa'],190,True)
+assert re.search(r'^PACKED_DONE ok=1 records=16 bytes=92884 weights_read=0$',(out/'pack.log').read_text(),re.M)
+run('cmp-pack',['cmp',out/'activations.spa',retained/'activations.spa'],30,True)
+run('rows',[proof,'--rows',cap,manifest,model,retained/'activations.spa',out/'rows-same-build.sra'],190,True)
+lines=(out/'rows.log').read_text().splitlines();metrics=[x for x in lines if x.startswith('PACKED_ROWS ')];done=[x for x in lines if x.startswith('PACKED_ROWS_DONE ')]
+assert len(done)==1 and 'records=16 ' in done[0] and len(metrics)==48
+fields=[dict(word.split('=',1) for word in line.split()[1:]) for line in metrics]
+assert len({(v['record'],v['peer']) for v in fields})==48
+assert all(v['row_bits']=='1' and v['partial_bits']=='1' and v['capture_bits']==str(int(v['peer']=='-1')) for v in fields)
+assert done[0]=='PACKED_ROWS_DONE ok=1 records=16 packed_reference_bits=1 same_build_rows_bits=1 retained_capture_bits=1 cross_build_rows=REQUIRES_CMP sockets=0 worker_loads=0 model_GEN=0'
+run('cmp-rows',['cmp',out/'rows-same-build.sra',retained/'rows-same-build.sra'],30,True)
+assert digest(out/'activations.spa')==inputs[str(retained/'activations.spa')]
+assert digest(out/'rows-same-build.sra')==inputs[str(retained/'rows-same-build.sra')]
+assert output(['git','-C',git,'rev-parse','HEAD'])==base_pin and not output(['git','-C',git,'status','--porcelain'])
+assert not output(['git','-C',ggml,'status','--porcelain'])
+save('terminal-result.json',{'pin':pin,'role':'05','tests':tests,'production_codec_retained_pack_cmp':True,
+    'production_codec_retained_rows_cmp':True,'artifact_hashes':{n:digest(out/n) for n in ('activations.spa','rows-same-build.sra')},
+    'native_flags_equal_after_declared_include_delta':True,'warning_waivers':0,
+    'role02':'NOT RUN','backend_compilation':'NOT RUN','live_AB':'NOT RUN'})
+print('PACKED_WIRE_ROLE05 PASS pin='+pin+' evidence='+str(out),flush=True)
+PY
+# END PACKED_WIRE_ROLE05
+```
 
-Passed here: `git diff --check` and focused source review only. Review found missing edge-fixture
-routing metadata and timing that excluded sender packing; both were corrected. These are static
-checks, not compiler or runtime evidence. Executable gates, placement measurements and backend
-builds are NOT RUN on this desktop. Live end-to-end latency remains outside this handoff and
-requires a separately specified parent-controlled session after all offline gates.
+A terminal role05 PASS establishes this build's focused CPU wire/default regressions and exact
+production-codec agreement with its retained SPA1/SRA1 artifacts. It does not establish role02
+wire compatibility, universal native equivalence, long decode, LAN latency or TPS. Keep the
+`PACKED_PLACEMENT` and `PACKED_WIRE_COST` lines as offline cost samples with their workload
+and build provenance; packing is included in opt-in wall time. No speedup follows from byte
+reduction alone. Return `terminal-result.json`, native/configuration comparisons, per-test logs,
+resource receipts and artifact hashes to the parent. Do not proceed to another role or live A/B.
+
+Desktop checks remain static: whitespace, block syntax and focused review. No block, compiler,
+test executable or fleet command has been run here.
