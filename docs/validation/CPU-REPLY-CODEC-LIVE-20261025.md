@@ -1,5 +1,8 @@
 # Reply codec: fixed local live comparison
 
+This local comparison is completed. Its named ownership/receipt blocks remain referenced by the
+[fixed distributed handoff](CPU-ROWS-SPLIT-20261025.md); do not repeat its builds or local comparison.
+
 Runtime source is **e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb** throughout. This handoff is
 documentation only; the later documentation SHA is not a new runtime candidate. Parent authorization
 covers the comparison, one controlled replacement/reload and bounded prelaunch staging corrections.

@@ -17,7 +17,7 @@ The parent reports that the split arm failed every frozen first-logit screen and
 local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
 or raw-receipt inspection by this coding thread. **Do not rerun that campaign or either duplicate-arena
 diagnostic.** The codec benchmark has completed. The current authorized next step is the
-[fixed local live handoff](CPU-REPLY-CODEC-LIVE-20261025.md), runtime source e145df6e. All executable
+[fixed row-mode distributed handoff](CPU-ROWS-SPLIT-20261025.md), runtime source e145df6e. All executable
 commands in this historical file are no longer authorization to repeat prior work.
 
 ### Completed reply codec checks (historical commands)
