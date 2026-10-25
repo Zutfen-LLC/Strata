@@ -130,6 +130,66 @@ class HarnessTests(unittest.TestCase):
         self.cfg['port'] += 1
         with self.assertRaisesRegex(ValueError, 'port mismatch'): self.stage()
 
+    def test_cpu_route_legacy_default_preserves_argv(self):
+        root = self.stage()
+        with patch.object(bundle.shutil, 'which', return_value='/synthetic/nvidia-smi'): cfg = bundle.verify(root)
+        self.assertNotIn('cpu_route', cfg)
+        derived = driver.arm_config(cfg, cfg['arms'][0])
+        self.assertEqual(derived['argv'], cfg['argv'])
+        self.assertEqual(derived['argv'].count('--remote-cpu-experts'), 1)
+        self.assertNotIn('--remote-cpu-worker', derived['argv'])
+        self.assertEqual(bundle.cpu_route_flag(dict(cfg, cpu_route='legacy')), '--remote-cpu-experts')
+
+    def test_cpu_route_single_group_survives_staging_and_arm_selection(self):
+        self.cfg['cpu_route'] = 'group'
+        self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')] = '--remote-cpu-worker'
+        with patch('subprocess.Popen') as spawn: root = self.stage()
+        spawn.assert_not_called()
+        with patch.object(bundle.shutil, 'which', return_value='/synthetic/nvidia-smi'): cfg = bundle.verify(root)
+        original = (root / 'config.json').read_bytes()
+        derived = driver.arm_config(cfg, cfg['arms'][0])
+        self.assertEqual(derived['cpu_route'], 'group')
+        self.assertEqual(derived['argv'], cfg['argv'])
+        self.assertEqual(derived['argv'].count('--remote-cpu-worker'), 1)
+        self.assertNotIn('--remote-cpu-experts', derived['argv'])
+        self.assertEqual(derived['argv'][derived['argv'].index('--remote-cpu-worker') + 1], '127.0.0.1:27431')
+        self.assertEqual(derived['argv'][derived['argv'].index('--remote-cpu-local-manifest') + 1], cfg['assets']['manifest'])
+        self.assertEqual(original, (root / 'config.json').read_bytes())
+
+    def test_cpu_route_invalid_conflicting_and_duplicate_flags_refused(self):
+        baseline = copy.deepcopy(self.cfg)
+        cases = [('unknown', 'other', ['--remote-cpu-experts']),
+                 ('wrong-legacy', 'legacy', ['--remote-cpu-worker']),
+                 ('wrong-group', 'group', ['--remote-cpu-experts']),
+                 ('both', 'group', ['--remote-cpu-worker', '--remote-cpu-experts']),
+                 ('duplicate', 'group', ['--remote-cpu-worker', '--remote-cpu-worker'])]
+        for name, route, flags in cases:
+            with self.subTest(name=name):
+                self.cfg = copy.deepcopy(baseline); self.cfg['cpu_route'] = route
+                index = self.cfg['argv'].index('--remote-cpu-experts')
+                del self.cfg['argv'][index:index + 2]
+                for flag in flags: self.cfg['argv'] += [flag, '127.0.0.1:27431']
+                with patch('subprocess.Popen') as spawn, self.assertRaises(ValueError): self.stage()
+                spawn.assert_not_called(); self.assertFalse(pathlib.Path(self.cfg['run_root']).exists())
+
+    def test_cpu_route_exact_endpoint_and_manifest_bindings(self):
+        baseline = copy.deepcopy(self.cfg)
+        for route in ('legacy', 'group'):
+            for fault in ('endpoint', 'engine-manifest', 'worker-manifest'):
+                with self.subTest(route=route, fault=fault):
+                    self.cfg = copy.deepcopy(baseline); self.cfg['cpu_route'] = route
+                    flag = bundle.cpu_route_flag(self.cfg)
+                    self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')] = flag
+                    if fault == 'endpoint':
+                        self.cfg['argv'][self.cfg['argv'].index(flag) + 1] = '127.0.0.1:27432'
+                    else:
+                        argv = self.cfg['argv'] if fault == 'engine-manifest' else self.cfg['worker_argv']
+                        manifest = '--remote-cpu-local-manifest' if fault == 'engine-manifest' else '--local-manifest'
+                        argv[argv.index(manifest) + 1] = '@requests'
+                    with patch('subprocess.Popen') as spawn, self.assertRaisesRegex(ValueError, 'binding mismatch|endpoint mismatch'):
+                        self.stage()
+                    spawn.assert_not_called(); self.assertFalse(pathlib.Path(self.cfg['run_root']).exists())
+
     def test_reserved_names_and_missing_monitor_path_fail_before_start(self):
         for name in ('assets', 'WORKER', 'WORKER-before-other'):
             with self.subTest(name=name):

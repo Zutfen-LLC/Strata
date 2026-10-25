@@ -48,6 +48,12 @@ def imports(directory):
                     raise ValueError('missing import in ' + name + ': ' + first)
 
 
+def cpu_route_flag(cfg):
+    route = cfg.get('cpu_route', 'legacy')
+    if route not in ('legacy', 'group'): raise ValueError('cpu_route must be legacy or group')
+    return '--remote-cpu-worker' if route == 'group' else '--remote-cpu-experts'
+
+
 def validate(cfg, source):
     imports(source)  # parse sources and resolve dependencies; never import the side-effecting owners
     if cfg.get('role') == 'worker': return validate_worker(cfg)
@@ -83,7 +89,10 @@ def validate(cfg, source):
     if value(cfg['worker_argv'], '--port') != str(cfg['port']): raise ValueError('worker/control port mismatch')
     if '--bind-ip' in cfg['worker_argv'] and value(cfg['worker_argv'], '--bind-ip') != cfg['worker_host']:
         raise ValueError('worker/control address mismatch')
-    if value(cfg['argv'], '--remote-cpu-experts') != cfg['worker_host'] + ':' + str(cfg['port']):
+    route_flag = cpu_route_flag(cfg)
+    other_flag = '--remote-cpu-experts' if route_flag == '--remote-cpu-worker' else '--remote-cpu-worker'
+    if other_flag in cfg['argv']: raise ValueError('cpu_route conflicts with engine argv')
+    if value(cfg['argv'], route_flag) != cfg['worker_host'] + ':' + str(cfg['port']):
         raise ValueError('engine/control endpoint mismatch')
     def resolve(arg): return cfg['assets'][arg[1:]] if arg.startswith('@') else arg
     for argv, flag in [(cfg['argv'], '--remote-cpu-local-manifest'), (cfg['worker_argv'], '--local-manifest')]:

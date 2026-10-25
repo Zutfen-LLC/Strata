@@ -169,5 +169,17 @@ for t in threads:t.join()
         arm['peer_bytes']=[1024,2048]
         with self.assertRaisesRegex(ValueError,'exact CPU arena total'):bundle.validate_peers(cfg)
 
+    def test_explicit_group_route_survives_single_peer_argv_rewrite(self):
+        self.cfg['cpu_route']='group'
+        self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')]='--remote-cpu-worker'
+        root,definition=self.configuration()
+        with patch.object(bundle.shutil,'which',return_value='/synthetic/nvidia-smi'):cfg=bundle.verify(root)
+        selected=driver.arm_config(cfg,cfg['arms'][0])
+        self.assertEqual(selected['argv'].count('--remote-cpu-worker'),1)
+        self.assertNotIn('--remote-cpu-experts',selected['argv'])
+        self.assertEqual(selected['argv'][selected['argv'].index('--remote-cpu-worker')+1],
+                         cfg['worker_host']+':'+str(cfg['port']))
+        self.assertEqual(selected['worker_bytes'],2048);self.assertEqual(selected['communication_limit'],1)
+
 
 if __name__=='__main__':unittest.main()

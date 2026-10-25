@@ -41,8 +41,8 @@ def arm_config(cfg, arm):
         selected=[next(p for p in cfg['worker_peers'] if p['name']==name) for name in arm['cpu_peers']]
         result['worker_bytes']=arm['peer_bytes'][0]
         result['communication_limit']=len(selected)
-        argv=result['argv'];index=argv.index('--remote-cpu-experts');del argv[index:index+2]
-        if len(selected)==1:argv+=['--remote-cpu-experts',selected[0]['endpoint']+':'+str(selected[0]['port'])]
+        argv=result['argv'];route_flag=bundle.cpu_route_flag(cfg);index=argv.index(route_flag);del argv[index:index+2]
+        if len(selected)==1:argv+=[route_flag,selected[0]['endpoint']+':'+str(selected[0]['port'])]
         else:
             for peer in selected:argv+=['--remote-cpu-worker',peer['endpoint']+':'+str(peer['port'])]
     return result

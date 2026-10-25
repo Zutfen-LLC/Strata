@@ -73,9 +73,14 @@ restart entry; the final arm is local-only. This first trial does not adopt an u
 | A1-load | true | [] | [local] | [116135731200] |
 | A1 | false | [0,1,2] | [local] | [116135731200] |
 
-All entries explicitly carry the existing workers/loaders/masks/placement markers. The base engine
-argv keeps one `--remote-cpu-experts` binding for preflight; arm selection replaces it with two
-`--remote-cpu-worker` bindings only for B. One-peer arms retain the legacy option. Keep the same
+All entries explicitly carry the existing workers/loaders/masks/placement markers.
+By default, the base engine argv keeps one `--remote-cpu-experts` binding for preflight; arm selection replaces it
+with two `--remote-cpu-worker` bindings only for B. One-peer arms retain the legacy option. To test
+one-member group execution explicitly, set top-level `cpu_route: "group"` and replace that one argv
+flag with `--remote-cpu-worker`, keeping the exact control endpoint and trusted manifest. Omission
+or `cpu_route: "legacy"` requires the legacy flag. Conflicting, duplicate or mismatched bindings are
+refused before staging. The explicit choice survives single-peer argv construction; two-peer arms
+still use group mode. A warm single-endpoint config needs no `worker_peers` fields. Keep the same
 engine/worker assets across arms to isolate placement. Retain policy applies to the final local worker;
 the second subset is stopped/reaped before A1. Do not use `attach_root` for this restart sequence.
 

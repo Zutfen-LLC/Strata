@@ -15,7 +15,7 @@ The original full-model comparison at 9ed478e5543885e019205512f2450ab4336d393e h
 The parent reports that the split arm failed every frozen first-logit screen and was slower; the
 local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
 or raw-receipt inspection by this coding thread. **Do not rerun that campaign or either duplicate-arena
-diagnostic.** Only the single-member group procedure below is current. All other executable commands
+diagnostic.** Only the live-engine one-member group procedure below is current. All other executable commands
 in this file are historical, not authorization to repeat prior work.
 
 ### Current status: resident-monitor incident; duplicate-arena diagnostics withdrawn
@@ -54,7 +54,114 @@ changes or another diagnostic load. Parent owns restoring only the normal full r
 loaders/twelve inference workers and the unchanged original guard policy. This coding task launches
 nothing and makes no zero-swap or timing-qualification claim.
 
-### Current next step: saved-capture single-member group replay (zero GEN)
+### Current next step: one warm live-engine group request
+
+The parent supplies a preliminary PASS for the `b224ef87f73d5da9724cb1f8f2a87859fc4adfbd`
+single-member saved replay in5s; its full receipt is pending. Do not repeat it. The next discriminator
+uses the retained original engine, one full resident worker and the original prompt0 GEN256 line.
+This exercises live engine/group interaction without two-peer state or another arena. The original
+split-model numerical/performance verdict remains failed.
+
+This additive change touches only the existing Python harness, focused regressions and docs.
+Top-level `cpu_route` defaults to `"legacy"`; explicit `"group"` requires exactly one
+`--remote-cpu-worker` in base argv, bound to the same worker/control endpoint. The opposite flag,
+duplicates, invalid route values or endpoint/manifest mismatches are refused before staging or
+owner startup. The selected route survives `arm_config`, including existing single-peer rewriting.
+The omitted-field legacy argv and existing two-peer sequencing remain unchanged. No new sequencer,
+worker guard, engine feature or C++ build is introduced.
+
+Hermes runs these focused Python tests once on its controller, with exact candidate source and
+the retained Python. No model, GPU, native binary or package installation is needed:
+
+```sh
+cd "$SRC/tools/validation-harness/tests"
+timeout --signal=TERM --kill-after=5s 120s python3 -B -m unittest -v \
+  test_harness.HarnessTests.test_cpu_route_legacy_default_preserves_argv \
+  test_harness.HarnessTests.test_cpu_route_single_group_survives_staging_and_arm_selection \
+  test_harness.HarnessTests.test_cpu_route_invalid_conflicting_and_duplicate_flags_refused \
+  test_harness.HarnessTests.test_cpu_route_exact_endpoint_and_manifest_bindings \
+  test_peers.PeerTests.test_explicit_group_route_survives_single_peer_argv_rewrite \
+  test_peers.PeerTests.test_membership_config_keeps_exact_total_and_legacy_primary_path \
+  test_harness.HarnessTests.test_worker_controls_never_queue_behind_engine_session
+```
+
+These tests are authored, **NOT RUN on Geekom/Valinor**. After they pass, copy the existing private
+warm-attach config and change only the following fields. Use the new source pin for harness helpers,
+but keep the retained `9ed478e` engine and full worker binaries; verify their complete recorded
+hashes rather than relying on the supplied prefixes `66750645` and `e9f25fa5`.
+
+| Config field | One-request value/delta |
+| --- | --- |
+| `run_root` | New private output root; never overwrite an earlier bundle |
+| `cpu_route` | `"group"` |
+| engine `argv` | Replace the one `--remote-cpu-experts` token with `--remote-cpu-worker`; keep its existing numeric loopback endpoint and all other arguments |
+| `attach_root`, `attached_worker_idle` | Current recovery receipt root, whose `WORKER/identities.json` must match the live guardian/worker/monitor; `true` after exclusive idle verification |
+| `final_worker`, `failure_worker` | Both `"retain"` |
+| `worker_bytes` | `116135731200` |
+| `assets.engine`, `assets.worker`, manifest/model/profile/request assets | Retained original bindings; no binary replacement or asset regeneration |
+| `assets.reference` | Existing retained A0 summary JSON with the original request1 token array and worker-entry count |
+| `arms` | Exactly one copied warm arm, named `G1`, `restart:false`, `requests:[0]`, `reference:"reference"` |
+| arm workers/loaders/masks and engine/worker policy | Keep12/4, caller0/pool1..12 and all retained engine/GPU/environment settings |
+| arm `placement_markers` | Keep960 primary/1378 helper/22238 CPU markers; replace any legacy CPU-ready marker with `fixed CPU group ready peers=1`; require `cache_hit=1 reused=116135731200 B` and `setup network=0 B local=0 B hits=0 misses=0` |
+| `capture_first_logits` | `true`; remove global `STRATA_DUMP_FIRST_LOGITS` so the driver supplies a unique prefix |
+| `env.STRATA_CPU_CAPTURE` | Remove; no new host capture |
+| `worker_peers`, arm `cpu_peers` / `peer_bytes` | Omit; this is one attached full resident, no remote controls |
+
+Keep `--remote-cpu-local-manifest`, `--remote-cpu-resident`, native assets, primary/helper GPU placement,
+prompt cache, greedy/speculative settings, budgets and all deadlines unchanged. Do not retain both
+CPU endpoint flags. `requests:[0]` sends the exact first GEN256 line from the retained request asset,
+then waits for its complete DONE and QUIT/reaping. Its A0 output is213 tokens;256 is a cap, not an
+expected token count. The existing reference gate compares the complete token array and entries.
+
+Before launch, Hermes must verify the current original guardian/worker/monitor identities, owned
+listener, complete idle forever-resident116135731200B arena, VmSwap0 and healthy unchanged resource
+guard. Preserve the fixed prelaunch swap ceiling, MemAvailable>=8GiB and unchanged OOM counters.
+The retained engine has normal resident negotiation, **not a reuse-only switch**: an empty arena
+could load. Do not launch if the live resident preflight fails. A mismatched complete cache is
+refused by the worker without replacing it. Same placement/manifest/geometry and one group member
+produce the same full partition (`ordinal % 1`), so require an observed cache hit/reused116135731200B
+and zero new local-load/upload bytes at READY before GEN. Do not issue worker STATUS/STOP/UNLOAD
+while the engine owner is alive; inspect the existing READY log and retained session receipts.
+The configured placement markers enforce those reuse/zero-load observations before the existing
+driver sends GEN; a missing marker fails the arm without changing its sequence.
+
+Use the unchanged staging/run entry points after the focused tests and parent dispatch:
+
+```sh
+python3 -B "$SRC/tools/validation-harness/harness/bundle.py" --config "$PRIVATE_CONFIG"
+python3 -B "$RUN_ROOT/run.py" --run-root "$RUN_ROOT"
+```
+
+The first operation mechanically stages/hashes the new helpers and unchanged assets once; it starts
+no owner. After complete engine-owner reaping, require the original resident still complete, idle and
+forever, with resident/loaded/verified/peak bytes and allocation/unload/expiry counters unchanged,
+zero new local-load/upload bytes, no failures and VmSwap0. Preserve stdout, first-logit file and
+failure receipts even if the token reference gate fails. No automatic repeat or restore load.
+
+Compare the new `G1-first-logits.0` to the retained A0 prompt0 raw-F32 file with the existing bounded
+`read()`/`compare()` functions (the comparator CLI expects three pairs). This invokes one pair without
+adding a script or changing any numerical threshold. The retained row is993280B of raw F32, with no
+count header:
+
+```sh
+PYTHONPATH="$SRC/tools/validation-harness" python3 -B -c '
+import json, pathlib, sys
+import compare_logits as c
+a, b = map(pathlib.Path, sys.argv[1:])
+metrics = c.compare(c.read(a), c.read(b))
+metrics["bitwise_equal"] = a.read_bytes() == b.read_bytes()
+print(json.dumps(metrics, indent=2, allow_nan=False))
+raise SystemExit(0 if metrics["bitwise_equal"] and metrics["numeric_pass"] else 1)
+' "$A0_PROMPT0_FIRST_RAW_F32" "$RUN_ROOT/G1-first-logits.0"
+```
+
+Return one flat receipt: source/helper/engine/worker/config pins, exact sent line, DONE213 and complete
+token equality, raw-F32 length/finite/bit comparison plus unchanged error metrics, placement/affinity,
+observed setup cache hit, zero new load/upload bytes, final owned cache/resource accounting and
+cleanup. This is one diagnostic request, not a performance campaign. A failure is preserved; a pass
+does not clear two-peer/subset/remote behavior or the original failed split comparison.
+
+### Completed single-member saved replay — preliminary supplied PASS; historical commands
 
 The parent reports normal full residency restored with the retained worker binary, four loaders and
 twelve inference workers. That is a supplied snapshot, not a live check by this coding thread.
