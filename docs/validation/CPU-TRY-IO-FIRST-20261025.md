@@ -4,6 +4,29 @@ Tracks [#12](https://github.com/Zutfen-LLC/Strata/issues/12), within parent #11.
 remain separate in #14. No scatter/gather, framing-copy change, chunk streaming, prefix reduction,
 compression integration, worker replacement or GEN is included. Consumer 1 Gb/s remains the baseline.
 
+## Supplied terminal loopback result
+
+Hermes reports PASS at `e5685da112f9e75262176635743b0790586d88c3`: five focused tests in 1.89 seconds,
+15 retained shapes, both policies, 1024 measured exchanges per shape/policy, all bytes and counts exact.
+Try-first RTT p50 improved in 14 of 15 shapes by 1.6–30.0 microseconds; T2-N12 regressed by
+1.4 microseconds. The median ACROSS the 15 shape-specific p50 values was 111.0 microseconds poll-first
+versus 94.9 try-first. This is not a pooled latency statistic or a traffic-weighted model result.
+
+| Both-role measured helper counters | Poll-first | Try-first |
+| --- | --- | --- |
+| Poll calls | 96034 | 30732 |
+| Receive attempts | 65314 | 97496 |
+| Send attempts | 30720 | 30720 |
+| Would-block events | Not supplied | 30732 |
+| EINTR | 0 | 0 |
+
+The path exchanges some polls for additional nonblocking receive attempts; it does not eliminate
+all readiness waits. Counters exclude connection setup and warmup, and are not system-wide tracing.
+One pair per shape establishes no noise band, LAN result or live TPS benefit. Production defaults
+remain poll-first. The shared e145df6e runtime and resident worker were untouched. These are supplied
+Hermes results, not execution or independent private raw-receipt auditing by this coding thread.
+The loopback recipe below is retained evidence; do not repeat its successful gates.
+
 Existing production socket entrypoints still select poll-first. An explicit per-call diagnostic policy
 attempts nonblocking send/receive first, polls only after would-block, and retries EINTR without
 renewing the absolute full-I/O budget. Cancellation is checked before each attempt and throughout the
@@ -169,6 +192,16 @@ If the parent later establishes an already-permitted fixture listener and exact 
 the SAME binary already supports bounded `--serve`/`--connect --route direct-lan` with numeric bind
 and allowed-peer controls; only `--operation-first` differs between arms. That is a later handoff,
 conditional on the loopback evidence, not an automatic network action here.
+
+Minimal requirements for that later controlled LAN A/B: parent verifies an already-permitted exact
+bind/source/fixture-port tuple, current absence of a listener on that fixture port, and an existing
+execution route that can launch the replay without changing the forced worker key. Use the SAME
+hashed e5685da1 replay ELF at both ends, the retained 15 shapes, unchanged NODELAY/deadline/counts,
+one connection per arm and bounded owned server cleanup. Change only the I/O-policy flag. Start the
+owned server before its matching client; require exact bytes, zero failures and owner/listener absence
+afterward. Report per-shape RTT and per-role counts separately. No build, worker port reuse, firewall
+change, settings change or model work is needed. Current permission/binding verification remains
+pending with the parent; no LAN action was attempted here.
 
 Report per-shape A/B mean, exact RTT p50/p95/p99/max and poll/send/recv/would-block counts. One pair
 per shape establishes no noise band. Keep server/client scopes separate; this microbenchmark cannot
