@@ -72,6 +72,8 @@ struct Config {
     int exchanges = kDefaultExchanges;
     int deadline_ms = kDefaultDeadlineMs;
     bool accepted_nodelay = false;
+    bool operation_first = false, exact_rtt = false;
+    int row_entries = -1;
     std::string bind_ip = "127.0.0.1";
     std::string allow_peer_ip = "127.0.0.1";
     std::string route = "loopback";
@@ -100,6 +102,10 @@ constexpr size_t source_request_bytes(uint8_t tokens) {
 constexpr size_t source_reply_bytes(uint8_t tokens) {
     return kHeaderBytes + 16 + (size_t) tokens * kMaxNEmbd * 4;
 }
+size_t selected_reply_bytes(const Config& c) {
+    return c.row_entries < 0 ? source_reply_bytes(c.tokens) :
+        kHeaderBytes + 20 + size_t(c.row_entries) * (2 + size_t(kMaxNEmbd) * 4);
+}
 
 static_assert(source_request_bytes(1) == 10362, "representative CPU request size drifted");
 static_assert(source_reply_bytes(1) == 10272, "representative CPU reply size drifted");
@@ -109,14 +115,19 @@ static_assert(source_reply_bytes(2) == 20512, "two-token CPU reply size drifted"
 void validate(Config& c) {
     require(c.tokens >= 1 && c.tokens <= kMaxT, "tokens must be 1..8");
     require(c.entries <= (uint32_t) c.tokens * kMaxK, "entries exceed T*K");
+    require(c.row_entries >= -1 && c.row_entries <= c.tokens * kMaxK, "row entries exceed T*K");
+    if (c.row_entries >= 0) c.entries = (uint32_t)c.row_entries;
     if (!c.request_bytes) c.request_bytes = source_request_bytes(c.tokens);
-    if (!c.reply_bytes) c.reply_bytes = source_reply_bytes(c.tokens);
+    if (!c.reply_bytes) c.reply_bytes = selected_reply_bytes(c);
     require(c.request_bytes >= kHeaderBytes + kInferFixed && c.request_bytes <= kInferFrameMax,
             "request frame bytes are outside CPU INFER bounds");
-    require(c.reply_bytes >= kHeaderBytes + 16 && c.reply_bytes <= kHeaderBytes + kReplyPayloadMax,
+    require(c.reply_bytes >= kHeaderBytes + 16 && c.reply_bytes <= kHeaderBytes +
+            (c.row_entries < 0 ? kReplyPayloadMax : kEntryRowsPayloadMax),
             "reply frame bytes are outside CPU INFER_ACK bounds");
+    if (c.row_entries >= 0) require(c.reply_bytes == selected_reply_bytes(c), "row reply size must match exact schema");
     require(c.warmup >= 0 && c.warmup <= 1000000, "warmup is outside 0..1000000");
     require(c.exchanges >= 1 && c.exchanges <= 100000000, "exchanges are outside 1..100000000");
+    if (c.exact_rtt) require(c.exchanges <= 4096 && c.warmup <= 4096, "exact RTT samples limited to 4096 per phase");
     require(c.deadline_ms >= 1 && c.deadline_ms <= 3600000, "deadline-ms is outside 1..3600000");
     require(c.bind_ip_explicit == c.allow_peer_ip_explicit,
             "--bind-ip and --allow-peer-ip must be selected together");
@@ -191,6 +202,15 @@ std::vector<uint8_t> request_frame(const Config& c) {
 }
 
 std::vector<uint8_t> reply_frame(const Config& c) {
+    if (c.row_entries >= 0) {
+        auto request = representative_request(c);
+        std::vector<float> rows(size_t(c.tokens) * kMaxK * kMaxNEmbd);
+        for (size_t i = 0; i < rows.size(); ++i) rows[i] = (int(i % 257) - 128) * .015625f;
+        std::vector<uint8_t> payload, frame;
+        require(encode_infer_rows_ack(request, kMaxNEmbd, rows.data(), payload), "row fixture encode");
+        encode_frame(frame, MSG_INFER_ROWS_ACK, ST_OK, payload.data(), payload.size());
+        return frame;
+    }
     InferReply reply;
     reply.session = kSession;
     reply.sequence = 1;
@@ -212,9 +232,10 @@ void set_reply_sequence(std::vector<uint8_t>& frame, uint64_t sequence) {
     write_u64(frame.data() + kHeaderBytes + 8, sequence);
 }
 
-bool receive_frame(sock_fd fd, size_t payload_cap, int deadline_ms, WireFrame& frame, std::string& error) {
+bool receive_frame(sock_fd fd, size_t payload_cap, int deadline_ms, WireFrame& frame, std::string& error,
+                   sock::IoDiagnostic diagnostic = {}) {
     uint8_t header[kHeaderBytes];
-    if (!sock::recv_all(fd, header, sizeof header, deadline_ms)) {
+    if (!sock::recv_all_diagnostic(fd, header, sizeof header, deadline_ms, {}, diagnostic)) {
         error = "closed, truncated or timed out reading header";
         return false;
     }
@@ -229,7 +250,7 @@ bool receive_frame(sock_fd fd, size_t payload_cap, int deadline_ms, WireFrame& f
     frame.msg = (uint16_t) (header[4] | header[5] << 8);
     frame.status = (uint16_t) (header[6] | header[7] << 8);
     frame.payload.resize((size_t) bytes);
-    if (bytes && !sock::recv_all(fd, frame.payload.data(), frame.payload.size(), deadline_ms)) {
+    if (bytes && !sock::recv_all_diagnostic(fd, frame.payload.data(), frame.payload.size(), deadline_ms, {}, diagnostic)) {
         error = "truncated or timed out reading payload";
         return false;
     }
@@ -239,7 +260,23 @@ bool receive_frame(sock_fd fd, size_t payload_cap, int deadline_ms, WireFrame& f
 struct PhaseStats {
     uint64_t completed = 0, failures = 0, wire_bytes = 0;
     RpcLatencyDistribution rtt, send, receive, handler;
+    sock::IoCounts io;
+    std::vector<uint64_t> exact_rtt;
 };
+void print_io(const char* role, const Config& c, const PhaseStats& stats) {
+    const auto& v = stats.io;
+    std::printf("CPU_RPC_REPLAY_IO role=%s phase=measure operation_first=%d row_entries=%d polls=%llu sends=%llu receives=%llu would_block=%llu interrupted=%llu sent_bytes=%llu received_bytes=%llu\n",
+        role, c.operation_first, c.row_entries, (unsigned long long)v.polls, (unsigned long long)v.sends,
+        (unsigned long long)v.receives, (unsigned long long)v.would_block, (unsigned long long)v.interrupted,
+        (unsigned long long)v.sent_bytes, (unsigned long long)v.received_bytes);
+    if (!stats.exact_rtt.empty()) {
+        auto values = stats.exact_rtt; std::sort(values.begin(), values.end());
+        auto at = [&](size_t percent) { return values[(values.size() * percent + 99) / 100 - 1]; };
+        std::printf("CPU_RPC_REPLAY_EXACT role=%s phase=measure operation_first=%d samples=%zu p50_ns=%llu p95_ns=%llu p99_ns=%llu max_ns=%llu\n",
+            role, c.operation_first, values.size(), (unsigned long long)at(50), (unsigned long long)at(95),
+            (unsigned long long)at(99), (unsigned long long)values.back());
+    }
+}
 
 void print_distribution(const char* role, const char* phase, const char* scope,
                         const Config& c, const PhaseStats& stats) {
@@ -252,7 +289,7 @@ void print_distribution(const char* role, const char* phase, const char* scope,
                 "samples=%llu mean_us=%.1f p50_bucket_upper_us=%llu p95_bucket_upper_us=%llu "
                 "p99_bucket_upper_us=%llu max_us=%.1f\n",
                 role, phase, scope, c.route.c_str(), c.accepted_nodelay ? 1 : 0, c.tokens, c.entries,
-                source_request_bytes(c.tokens), source_reply_bytes(c.tokens), c.request_bytes, c.reply_bytes,
+                source_request_bytes(c.tokens), selected_reply_bytes(c), c.request_bytes, c.reply_bytes,
                 (unsigned long long) stats.completed, (unsigned long long) stats.failures,
                 (unsigned long long) stats.wire_bytes, (unsigned long long) d.count,
                 d.count ? (double) d.total_ns / d.count / 1000.0 : 0.0,
@@ -260,12 +297,12 @@ void print_distribution(const char* role, const char* phase, const char* scope,
                 (unsigned long long) d.percentile_us(99), (double) d.max_ns / 1000.0);
 }
 
-bool client_exchange(sock_fd fd, std::vector<uint8_t>& request, uint64_t sequence,
+bool client_exchange(sock_fd fd, std::vector<uint8_t>& request, std::vector<uint8_t>& expected, uint64_t sequence,
                      const Config& c, PhaseStats& stats) {
     set_request_sequence(request, sequence);
     const auto rtt_start = Clock::now();
     const auto send_start = Clock::now();
-    if (!sock::send_all(fd, request.data(), request.size(), c.deadline_ms)) {
+    if (!sock::send_all_diagnostic(fd, request.data(), request.size(), c.deadline_ms, {}, {c.operation_first, &stats.io})) {
         ++stats.failures;
         return false;
     }
@@ -273,16 +310,20 @@ bool client_exchange(sock_fd fd, std::vector<uint8_t>& request, uint64_t sequenc
     const auto receive_start = Clock::now();
     WireFrame reply;
     std::string error;
-    if (!receive_frame(fd, c.reply_bytes - kHeaderBytes, c.deadline_ms, reply, error) ||
-        reply.msg != MSG_INFER_ACK || reply.status != ST_OK || reply.payload.size() + kHeaderBytes != c.reply_bytes ||
+    if (!receive_frame(fd, c.reply_bytes - kHeaderBytes, c.deadline_ms, reply, error, {c.operation_first, &stats.io}) ||
+        reply.msg != (c.row_entries < 0 ? MSG_INFER_ACK : MSG_INFER_ROWS_ACK) || reply.status != ST_OK || reply.payload.size() + kHeaderBytes != c.reply_bytes ||
         reply.payload.size() < 16 || read_u64(reply.payload.data()) != kSession ||
         read_u64(reply.payload.data() + 8) != sequence) {
         ++stats.failures;
         return false;
     }
+    const auto receive_ns = ns_since(receive_start), rtt_ns = ns_since(rtt_start);
+    set_reply_sequence(expected, sequence);
+    if (std::memcmp(reply.payload.data(), expected.data() + kHeaderBytes, reply.payload.size())) { ++stats.failures; return false; }
     stats.send.add(send_ns);
-    stats.receive.add(ns_since(receive_start));
-    stats.rtt.add(ns_since(rtt_start));
+    stats.receive.add(receive_ns);
+    stats.rtt.add(rtt_ns);
+    if (c.exact_rtt) stats.exact_rtt.push_back(rtt_ns);
     ++stats.completed;
     stats.wire_bytes += c.request_bytes + c.reply_bytes;
     return true;
@@ -296,16 +337,19 @@ int run_client(const std::string& host, uint16_t port, const Config& c) {
                 host.c_str(), port, c.route.c_str());
     std::fflush(stdout);
     auto request = request_frame(c);
+    auto expected = reply_frame(c);
     PhaseStats warmup, measure;
+    if (c.exact_rtt) { warmup.exact_rtt.reserve(c.warmup); measure.exact_rtt.reserve(c.exchanges); }
     uint64_t sequence = 0;
     bool healthy = true;
     for (int i = 0; i < c.warmup && healthy; ++i)
-        healthy = client_exchange(fd.value, request, ++sequence, c, warmup);
+        healthy = client_exchange(fd.value, request, expected, ++sequence, c, warmup);
     for (int i = 0; i < c.exchanges && healthy; ++i)
-        healthy = client_exchange(fd.value, request, ++sequence, c, measure);
+        healthy = client_exchange(fd.value, request, expected, ++sequence, c, measure);
     print_distribution("client", "warmup", "rtt", c, warmup);
     for (const char* scope : {"rtt", "send", "receive"})
         print_distribution("client", "measure", scope, c, measure);
+    print_io("client", c, measure);
     return healthy ? 0 : 1;
 }
 
@@ -319,6 +363,7 @@ int run_server(sock_fd listener, const Config& c) {
                 actual_peer.c_str(), c.allow_peer_ip.c_str(), c.route.c_str());
     std::fflush(stdout);
     auto reply = reply_frame(c);
+    auto expected = request_frame(c);
     PhaseStats warmup, measure;
     const int total = c.warmup + c.exchanges;
     bool healthy = true;
@@ -326,7 +371,7 @@ int run_server(sock_fd listener, const Config& c) {
         WireFrame request;
         std::string error;
         PhaseStats& stats = i < c.warmup ? warmup : measure;
-        if (!receive_frame(peer.value, c.request_bytes - kHeaderBytes, c.deadline_ms, request, error) ||
+        if (!receive_frame(peer.value, c.request_bytes - kHeaderBytes, c.deadline_ms, request, error, {c.operation_first, &stats.io}) ||
             request.msg != MSG_INFER || request.status != ST_OK ||
             request.payload.size() + kHeaderBytes != c.request_bytes || request.payload.size() < 32 ||
             read_u64(request.payload.data()) != kSession) {
@@ -334,10 +379,14 @@ int run_server(sock_fd listener, const Config& c) {
             healthy = false;
             break;
         }
+        set_request_sequence(expected, (uint64_t)i + 1);
+        if (std::memcmp(request.payload.data(), expected.data() + kHeaderBytes, request.payload.size())) {
+            ++stats.failures; healthy = false; break;
+        }
         const auto handler_start = Clock::now(); // complete request received; no decode or expert compute
         const uint64_t sequence = read_u64(request.payload.data() + 24);
         set_reply_sequence(reply, sequence);
-        if (!sock::send_all(peer.value, reply.data(), reply.size(), c.deadline_ms)) {
+        if (!sock::send_all_diagnostic(peer.value, reply.data(), reply.size(), c.deadline_ms, {}, {c.operation_first, &stats.io})) {
             ++stats.failures;
             healthy = false;
             break;
@@ -348,6 +397,7 @@ int run_server(sock_fd listener, const Config& c) {
     }
     print_distribution("server", "warmup", "handler", c, warmup);
     print_distribution("server", "measure", "handler", c, measure);
+    print_io("server", c, measure);
     return healthy ? 0 : 1;
 }
 
@@ -451,6 +501,9 @@ void options(int argc, char** argv, int start, Config& c) {
         else if (arg == "--deadline-ms")
             c.deadline_ms = option_number<int>(next("--deadline-ms"), "--deadline-ms");
         else if (arg == "--accepted-nodelay") c.accepted_nodelay = true;
+        else if (arg == "--operation-first") c.operation_first = true;
+        else if (arg == "--exact-rtt") c.exact_rtt = true;
+        else if (arg == "--row-entries") c.row_entries = option_number<int>(next("--row-entries"), "--row-entries");
         else if (arg == "--bind-ip") { c.bind_ip = next("--bind-ip"); c.bind_ip_explicit = true; }
         else if (arg == "--allow-peer-ip") {
             c.allow_peer_ip = next("--allow-peer-ip");
@@ -473,7 +526,7 @@ void usage() {
         "usage: cpu_rpc_replay [--self-check | --loopback | --serve PORT | --connect IPv4 PORT] [options]\n"
         "options: --tokens N --entries N --request-bytes N --reply-bytes N --warmup N "
         "--exchanges N --deadline-ms N [--accepted-nodelay] [--route loopback|direct-lan] "
-        "[--bind-ip IPV4 --allow-peer-ip IPV4]\n");
+        "[--bind-ip IPV4 --allow-peer-ip IPV4] [--operation-first] [--exact-rtt] [--row-entries N]\n");
 }
 
 } // namespace
