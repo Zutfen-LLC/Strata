@@ -167,6 +167,20 @@ struct ExpertWorkerService::Impl {
     uint64_t service_log_bytes = 0;
     bool service_log_suppressed = false;
 
+    // Only the serving thread touches this storage, after validation and until the pool has parked.
+    // Sizes are bounded by kMaxT/kMaxK and the negotiated geometry. Never retain an upload here.
+    struct InferenceWorkspace {
+        InferRequest request;
+        InferReply reply;
+        std::vector<uint8_t> nact, payload;
+        std::vector<strata::kernels::cpu::ExpertJobMulti> jobs;
+        std::vector<int16_t> job_of;
+        std::vector<float> rows;
+        std::vector<uint16_t> ids;
+        std::vector<int> uses;
+    } scratch;
+    std::vector<uint8_t> send_buffer;
+
     void logf(const char* fmt, ...) {
         va_list ap;
         va_start(ap, fmt);
@@ -211,6 +225,7 @@ struct ExpertWorkerService::Impl {
                mono_ns() - idle_since_ns >= (uint64_t)opt.residency_ms * 1000000;
     }
     void unload_weights(const char* reason) {
+        scratch = {};
         if (arena_bytes) logf("cache unload: reason=%s bytes=%llu", reason, (unsigned long long)arena_bytes);
         resident_complete = false;
         resident_identity = {};
@@ -225,6 +240,8 @@ struct ExpertWorkerService::Impl {
         fmt = {};
     }
     void void_session() {
+        scratch = {};
+        std::vector<uint8_t>().swap(send_buffer);
         state = State::Empty;
         local_mode = false;
         local_attempt.clear();
@@ -323,6 +340,8 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
         return false;
     }
     if (magic != kWireMagic || len > cap) { malformed = true; return false; }
+    // Avoid geometric growth from a smaller upload buffer spilling over the retained inference cap.
+    if (f.msg == MSG_INFER) f.payload.reserve((size_t) len);
     f.payload.resize((size_t) len);
     if (len > 0 && !sock::recv_all_controlled(fd, f.payload.data(), f.payload.size(), opt.deadline_ms, cancelled)) return false;
     return true;
@@ -331,7 +350,7 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
 bool ExpertWorkerService::Impl::send_frame(sock_fd fd, uint16_t msg, uint16_t status,
                                            const std::vector<uint8_t>& payload) {
     if (payload.size() > kMaxFrameBytes) return false;
-    std::vector<uint8_t> buf;
+    auto& buf = send_buffer;
     encode_frame(buf, msg, status, payload.data(), payload.size());
     // An admitted inference reply is active work: its existing I/O deadline still applies.
     // Telemetry/setup/refusal replies must not pin idle weights behind a slow reader.
@@ -848,7 +867,8 @@ bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float
         if (measured) measured->prepare = mono_ns() - prepare_start;
         return true;   // zero CPU work: the reply is a zero partial, not an error
     }
-    std::vector<uint8_t> nact((size_t) T * strata::kernels::cpu::kNativeActBytes, 0);
+    auto& nact = scratch.nact;
+    nact.assign((size_t) T * strata::kernels::cpu::kNativeActBytes, 0);
     for (int t = 0; t < T; ++t) {
         bool tok = false;
         for (int j = 0; j < K; ++j) tok = tok || r.mask[(size_t) t * K + j] != 0;
@@ -857,11 +877,13 @@ bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float
                                                    nact.data() + (size_t) t * kNativeActBytes);
     }
     // distinct experts in first-appearance order; an expert's entries keep frame order (duplicates too)
-    std::vector<ExpertJobMulti> jobs;
+    auto& jobs = scratch.jobs;
+    jobs.clear();
     jobs.reserve(r.mask.size());
-    std::vector<int16_t> job_of((size_t) manifest.n_expert, -1);
-    std::vector<int32_t> entry_slot;   ///< per owned entry: its blob's arena offset, for the reference
-    std::vector<float> rows((size_t) T * K * H, 0.f);
+    auto& job_of = scratch.job_of;
+    job_of.assign((size_t) manifest.n_expert, -1);
+    auto& rows = scratch.rows;
+    rows.assign((size_t) T * K * H, 0.f);
     for (int i = 0; i < T * K; ++i) {
         if (r.mask[i] == 0) continue;
         const uint16_t e = r.ids[i];
@@ -930,7 +952,7 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
         reply(ST_WRONG_STATE, {});
         return;
     }
-    InferRequest r;
+    auto& r = scratch.request;
     if (!decode_infer(p, n, manifest.n_layers, manifest.n_expert, manifest.n_embd, r)) {
         fail(ST_BAD_REQUEST);
         reply(ST_BAD_REQUEST, {});
@@ -975,8 +997,10 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
     // one expert at most kMaxT times among the owned entries: the pool's job arrays are MAXT wide, so a
     // routing that repeats one expert more often than the window has tokens cannot be expressed
     {
-        std::vector<uint16_t> id;
-        std::vector<int> uses;
+        auto& id = scratch.ids;
+        auto& uses = scratch.uses;
+        id.clear();
+        uses.clear();
         for (size_t i = 0; i < r.mask.size(); ++i) {
             if (r.mask[i] == 0) continue;
             size_t q = 0;
@@ -1000,12 +1024,12 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
     for (size_t i = 0; i < r.activations.size(); ++i)
         if (!std::isfinite(r.activations[i])) { fail(ST_NONFINITE); reply(ST_NONFINITE, {}); return; }
 
-    std::vector<float> partials;
+    auto& rep = scratch.reply;
     std::string err;
     finish_decode();
     ExecuteTiming measured;
     if (measure) measured = {};
-    if (!execute(r, partials, err, measure ? &measured : nullptr)) {
+    if (!execute(r, rep.partials, err, measure ? &measured : nullptr)) {
         logf("inference refused: %s", err.c_str());
         fail(ST_NOT_OWNED);
         reply(ST_NOT_OWNED, {});
@@ -1021,12 +1045,11 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
     if (opt.verbose > 0)
         logf("infer session %llx seq %llu layer %u T %u K %u: ok", (unsigned long long) session,
              (unsigned long long) r.sequence, r.layer, r.T, r.K);
-    InferReply rep;
     rep.session = session;
     rep.sequence = r.sequence;
-    rep.partials = std::move(partials);
     const uint64_t encode_start = measure ? mono_ns() : 0;
-    const auto payload = encode_infer_ack(rep);
+    auto& payload = scratch.payload;
+    encode_infer_ack(rep, payload);
     reply(ST_OK, payload, encode_start);
 }
 
@@ -1062,8 +1085,8 @@ void ExpertWorkerService::Impl::on_cache_status(sock_fd fd) {
 }
 
 void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
+    WireFrame f;
     while (!stopping.load(std::memory_order_acquire)) {
-        WireFrame f;
         bool malformed = false;
         if (!recv_frame(fd, f, malformed)) {
             if (malformed) {
@@ -1118,6 +1141,9 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
             send_frame(fd, MSG_STATUS_ACK, ST_PROTOCOL, {});
             break;
         }
+        // Inference receive storage survives the next request; large setup/upload staging does not.
+        if (f.payload.capacity() > kInferPayloadMax)
+            std::vector<uint8_t>().swap(f.payload);
     }
     sock::close_fd(fd);
     expire_resident();

@@ -17,6 +17,7 @@
 #include "ggml.h"
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -29,6 +30,16 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+namespace strata::worker {
+struct RpcWorkspaceTestAccess {
+    static std::array<size_t, 5> capacities(const ExpertWorkerTier& t) {
+        std::lock_guard<std::mutex> lock(t.request_mutex_);
+        return {t.req_.mask.capacity(), t.req_.ids.capacity(), t.req_.weights.capacity(),
+                t.req_.activations.capacity(), t.reply_.partials.capacity()};
+    }
+};
+}
 
 namespace {
 
@@ -262,6 +273,34 @@ void parity_battery(const NativeFmt& fmt, BlobMap& blobs, uint16_t port) {
             check(direct_window(fmt, blobs, layer, ids, weights, x, owned, T, K, want),
                   "the direct reference ran");
             check(same_bits(want, got), "transported partials are bitwise the direct call");
+        }
+    }
+    // Recycle the finished reply under the existing one-slot synchronization. Shrinking windows must
+    // keep the T8 capacity, while zero-work posts must expose no stale contribution.
+    {
+        const int tokens[] = {8, 1, 2, 1}, ranks[] = {3, 1, 2, 1};
+        std::array<size_t, 5> warm{};
+        for (int pass = 0; pass < 3; ++pass) for (int step = 0; step < 4; ++step) {
+            const int T = tokens[step], K = ranks[step];
+            std::vector<int32_t> ids((size_t) T * K);
+            std::vector<float> weights(ids.size()), x((size_t) T * kEmbd);
+            std::vector<uint8_t> owned(ids.size(), step == 1 ? 0 : 1);
+            const int32_t experts[] = {2, 5, 9};
+            for (size_t i = 0; i < ids.size(); ++i) {
+                ids[i] = experts[i % 3]; weights[i] = (i % 2 ? -0.5f : 0.25f) + pass * 0.125f;
+                if (step == 2 && i != ids.size() - 1) owned[i] = 0;
+            }
+            Rng changed(88 + pass * 4 + step);
+            for (auto& value : x) value = changed.next();
+            std::vector<float> got, want;
+            check(run_window(tier, 0, ids, weights, x, owned, T, K, got, err),
+                  "tier T8/T1/T2/T1 window completes");
+            check(direct_window(fmt, blobs, 0, ids, weights, x, owned, T, K, want) && same_bits(want, got),
+                  "tier dense/zero/sparse reuse agrees bitwise with fresh direct partials");
+            const auto capacities = strata::worker::RpcWorkspaceTestAccess::capacities(tier);
+            if (pass == 0 && step == 0) warm = capacities;
+            check(capacities == warm, "request copies and recycled reply retain warm T8 capacities");
+            check(tier.served() == (step != 1), "zero-work reuse cannot expose the previous partial");
         }
     }
     // a zero-ownership window (expert 4 of layer 0 is not owned): no frame, zero contribution
