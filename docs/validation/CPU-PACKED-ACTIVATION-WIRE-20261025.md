@@ -55,7 +55,11 @@ also identify missing capability. A zero-work peer sends no inference and adds n
 No peers eligible means no sender quantization. One unsupported token scale selects raw for
 all eligible peers in that window; no partially packed request is sent.
 
-## First-role 05 offline handoff (NOT RUN)
+## First-role 05 offline handoff (desktop NOT RUN; first attempt stopped)
+
+The parent reports that the first attempt passed configuration gates, then stopped during the
+build monitor's process-disappearance race. For the existing r1 roots, use the exact resume
+below. Do not rerun this fresh-root block or discard the preserved attempt.
 
 Run only this marked block for the first useful result. It contains the full role05 source,
 configuration, build, per-test guards and production-codec capture comparison. It does not
@@ -177,7 +181,7 @@ def process(pid):
     try:
         fields=P(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
         return fields[19],int(fields[1]) # birth tick and PPID
-    except FileNotFoundError:return None
+    except (FileNotFoundError,ProcessLookupError):return None
 def identity(pid):
     info=process(pid);return info[0] if info else None
 def descendants(root,root_stamp):
@@ -187,9 +191,11 @@ def descendants(root,root_stamp):
         if stamp is None or (pid,stamp) in seen or identity(pid)!=stamp:continue
         seen.add((pid,stamp));found.append((pid,stamp))
         # Include children forked by scheduler threads, pin birth/PPID before traversal.
-        for children in P(f'/proc/{pid}/task').glob('*/children'):
-            try:candidates=[int(x) for x in children.read_text().split()]
-            except FileNotFoundError:continue
+        try:tasks=list(P(f'/proc/{pid}/task').iterdir())
+        except (FileNotFoundError,ProcessLookupError):continue
+        for task in tasks:
+            try:candidates=[int(x) for x in (task/'children').read_text().split()]
+            except (FileNotFoundError,ProcessLookupError):continue
             for candidate in candidates:
                 info=process(candidate)
                 if info and info[1]==pid and identity(pid)==stamp:todo.append((candidate,info[0]))
@@ -225,7 +231,7 @@ def run(name,argv,seconds,guarded=False):
                             assert not re.search(r'^VmSwap:\s+[1-9]',status,re.M), 'owned swap'
                             match=re.search(r'^VmRSS:\s+(\d+)',status,re.M)
                             rss+=(int(match[1])*1024 if match else 0)
-                        except FileNotFoundError:pass
+                        except (FileNotFoundError,ProcessLookupError):pass
                     peak=max(peak,rss);assert rss<=2<<30, 'aggregate owned RSS above 2 GiB'
                 rc=child.poll()
                 if rc is not None:
@@ -374,3 +380,153 @@ resource receipts and artifact hashes to the parent. Do not proceed to another r
 
 Desktop checks remain static: whitespace, block syntax and focused review. No block, compiler,
 test executable or fleet command has been run here.
+
+## Resume role05 after the compiler-child disappearance race
+
+Parent-supplied result: fetch, archive, configuration, all five native-flag comparisons and both
+compiler-identity gates passed at `fa39c2f60d0e3b6c3154469b40b569dcd43f8479`. The build monitor
+then raised `ProcessLookupError` (ESRCH) while reading an exited compiler child's `/proc/PID/stat`.
+The failure handler terminated the build. No test, pack or rows gate ran. This is a handoff-monitor
+failure, not a product-code failure or numerical outcome. Preserve all original logs and receipts.
+
+The correction catches only ENOENT/ESRCH for transient process stat, task-directory, children and
+status reads. Permission, I/O, parse and other errors still fail. Birth identity, parent relationship,
+memory, cancellation and timeout checks are unchanged. The resume below loads those corrected
+helpers and the identical build/test/artifact tail from the published block above. Only log names
+get `resume1-` prefixes; numerical assertions and target/test lists are unchanged. No new monitor,
+source extraction, reconfiguration or repeat of passed stages is involved.
+
+Export the full correction commit as `RESUME_PIN`, then run this exact block. It uses the existing
+`r1-src`, `r1-build`, and `r1-out` paths. It fetches only the correction document through the verified
+git object source; the configured product source stays at the original archive pin. A prior resume,
+missing passed-stage receipt, cache mismatch, or surviving original owned PID stops before building.
+The original configuration/failure evidence is hashed into fresh resume provenance, never replaced.
+
+```sh
+# BEGIN PACKED_WIRE_ROLE05_RESUME
+set -euo pipefail
+umask 077
+: "${RESUME_PIN:?export the full published correction commit}"
+export RESUME_PIN
+python3 -B - <<'PY'
+import ast,hashlib,json,os,pathlib,re,subprocess
+P=pathlib.Path; correction=os.environ['RESUME_PIN']
+assert re.fullmatch('[0-9a-f]{40}',correction), 'full correction PIN required'
+git=P('/home/hermes/strata-pr10-compress-74ffe391-src')
+assert subprocess.check_output(['git','-C',str(git),'rev-parse','HEAD'],text=True).strip()=='e5685da112f9e75262176635743b0790586d88c3'
+assert not subprocess.check_output(['git','-C',str(git),'status','--porcelain'],text=True).strip()
+subprocess.run(['git','-C',str(git),'fetch','origin',correction],check=True,timeout=90)
+assert subprocess.check_output(['git','-C',str(git),'rev-parse',correction+'^{commit}'],text=True).strip()==correction
+text=subprocess.check_output(['git','-C',str(git),'show',correction+':docs/validation/CPU-PACKED-ACTIVATION-WIRE-20261025.md'],text=True,timeout=30)
+# Exact anchored markers distinguish the original block from this resume's own source text.
+block=re.search(r'^# BEGIN PACKED_WIRE_ROLE05\n(.*?)^# END PACKED_WIRE_ROLE05$',text,re.M|re.S)
+assert block
+body=block[1].split("python3 -B - <<'PY'\n",1)[1].rsplit('\nPY\n',1)[0]
+ast.parse(body)
+# Reuse bindings, pure helpers and corrected monitor; omit fresh-root/fetch/configure stages.
+prefix=body[:body.index('for p in (src,build,out):')]
+helpers=body[body.index('def save(name,value):'):body.index('assert cap.stat().st_size==37544692')]
+guards=body[body.index('# Same admission/active limits'):body.index('# Fetch only into')]
+tail=body[body.index("targets=['cpu_packed_wire_test'"):]
+assert guards.count('except (FileNotFoundError,ProcessLookupError):')==4
+assert 'except FileNotFoundError:' not in guards
+assert guards.count('except ProcessLookupError:')==1 # existing positive-PID signal race only
+# Name-only changes. Preserve the exact build, test, pack, rows and cmp invocations/gates.
+assert tail.count("text=(out/(name+'.log')).read_text()") == 1
+assert tail.count("(out/'pack.log').read_text()") == 1
+assert tail.count("(out/'rows.log').read_text()") == 1
+tail=tail.replace("text=(out/(name+'.log')).read_text()","text=(out/('resume1-'+name+'.log')).read_text()")
+tail=tail.replace("(out/'pack.log').read_text()","(out/'resume1-pack.log').read_text()")
+tail=tail.replace("(out/'rows.log').read_text()","(out/'resume1-rows.log').read_text()")
+os.environ.update(PIN='fa39c2f60d0e3b6c3154469b40b569dcd43f8479',
+    NEW_SRC='/home/hermes/strata-pr10-wire05-20261025-r1-src',
+    NEW_BUILD='/home/hermes/strata-pr10-wire05-20261025-r1-build',
+    RUN_ROOT='/home/hermes/strata-pr10-wire05-20261025-r1-out')
+checks=r'''
+assert all(p.is_dir() for p in (src,build,out)), 'existing configured r1 roots required'
+prior=['configuration-inputs.json','configuration-differences.json','native-flags-comparison.json',
+       'C-compiler-identities.json','CXX-compiler-identities.json','candidate-CMakeCache.txt',
+       'build.log','build-admission.json','build-receipt.json','source.tar']
+assert all((out/n).is_file() for n in prior), 'preserved passed-stage/failure receipts required'
+assert list(out.glob('resume1-*'))==[out/'resume1-command.py'], 'resume1 is single-use; preserve any prior attempt'
+assert (build/'CMakeCache.txt').read_bytes()==(out/'candidate-CMakeCache.txt').read_bytes(), 'configured cache changed'
+configuration=json.loads((out/'configuration-inputs.json').read_text())
+assert configuration['pin']==pin and configuration['warning_waivers']==0
+flags=json.loads((out/'native-flags-comparison.json').read_text())
+assert set(flags)=={'strata_kernels_cpu','strata_expert_worker','strata_worker_tier','ggml-cpu','ggml-base'}
+assert all(v['equal_after_declared_include_delta'] for v in flags.values())
+for language in ('C','CXX'):
+    pair=json.loads((out/(language+'-compiler-identities.json')).read_text())
+    assert len(pair)==2 and pair[0]==pair[1]
+# Read-only binding checks against the passed receipts, without reconfiguration/compilers.
+for path,want in inputs.items():assert digest(P(path))==want, 'original input binding changed: '+path
+assert output(['git','-C',ggml,'rev-parse','HEAD'])=='3cf03257f219afbe7334045ff7c6a06ac68c627d'
+assert not output(['git','-C',ggml,'status','--porcelain'])
+import tarfile
+objects={}
+for item in output(['git','-C',git,'ls-tree','-r','-z',pin]).split('\0'):
+    if item:
+        meta,name=item.split('\t',1);mode,kind,oid=meta.split();objects[name]=(mode,kind,oid)
+archive_paths=set()
+with tarfile.open(out/'source.tar') as archive:
+    assert archive.pax_headers.get('comment')==pin, 'retained archive pin changed'
+    for member in archive.getmembers():
+        if member.isdir():continue
+        assert member.isfile() or member.issym(), 'unexpected archive member'
+        relative=P(member.name);assert not relative.is_absolute() and '..' not in relative.parts
+        path=src/relative;archive_paths.add(member.name)
+        data=member.linkname.encode() if member.issym() else archive.extractfile(member).read()
+        mode,kind,oid=objects[member.name];assert kind=='blob'
+        assert hashlib.sha1(('blob '+str(len(data))+'\0').encode()+data).hexdigest()==oid, 'archive differs from pinned git blob'
+        if member.issym():assert mode=='120000' and path.is_symlink() and os.readlink(path)==member.linkname
+        else:
+            assert mode in ('100644','100755') and not path.is_symlink()
+            assert path.resolve().is_relative_to(src) and path.read_bytes()==data, 'configured source changed: '+member.name
+assert {str(p.relative_to(src)) for p in src.rglob('*') if p.is_file() or p.is_symlink()}==archive_paths, 'source extras/missing files'
+replacements={str(oldsrc):'@SRC',str(src):'@SRC',str(old):'@BUILD',str(build):'@BUILD',str(ggml):'@GGML'}
+for target in flags:
+    paths=list(build.rglob(f'CMakeFiles/{target}.dir/flags.make'));assert len(paths)==1
+    lines=[line.strip() for line in paths[0].read_text().splitlines() if '=' in line]
+    for before,after in sorted(replacements.items(),key=lambda kv:len(kv[0]),reverse=True):
+        lines=[line.replace(before,after) for line in lines]
+    assert lines==flags[target]['candidate'], 'generated flags changed: '+target
+for language in ('C','CXX'):
+    paths=list((build/'CMakeFiles').glob(f'*/CMake{language}Compiler.cmake'));assert len(paths)==1
+    text=paths[0].read_text()
+    fields={k:re.search(r'^set\('+k+r'\s+(.*?)\)$',text,re.M)[1]
+        for k in (f'CMAKE_{language}_COMPILER',f'CMAKE_{language}_COMPILER_ID',f'CMAKE_{language}_COMPILER_VERSION')}
+    assert fields==json.loads((out/(language+'-compiler-identities.json')).read_text())[1], 'generated compiler identity changed'
+# No later stage ran. Every output this unchanged tail may create must still be absent.
+for name in ('compile_commands.json','ELF-hashes.json','terminal-result.json','activations.spa','rows-same-build.sra',
+             'cpu_packed_wire_test.log','cpu_worker_group_test.log','cpu_worker_group_packed_test.log',
+             'cpu_packed_activation_check.log','expert_worker_test.log','expert_tier_test.log',
+             'worker_residency_test.log','worker_service_residency_test.log','pack.log','rows.log'):
+    assert not (out/name).exists(), 'later-stage output already present: '+name
+for target in ('cpu_packed_wire_test','cpu_worker_group_test','cpu_packed_activation_proof','expert_worker_test',
+               'expert_tier_test','worker_residency_test','worker_service_residency_test'):
+    assert not (out/(target+'-link.txt')).exists(), 'later-stage link receipt already present'
+original=json.loads((out/'build-receipt.json').read_text())
+assert original['failure'] is not None and original['returncode'] is not None, 'interrupted build cleanup unconfirmed'
+assert original['returncode']!=0, 'expected interrupted build receipt'
+assert not any(identity(int(pid))==stamp for pid,stamp in original['owned_pid_birth_pairs']), 'original owned process still alive; stop without signalling it'
+save('resume1-provenance.json',{'product_pin':pin,'correction_pin':os.environ['RESUME_PIN'],
+    'preserved_evidence_sha256':{name:digest(out/name) for name in prior},
+    'existing_source':str(src),'existing_build':str(build),'reconfigure':False,'repeat_passed_stages':False})
+_original_run=run
+def run(name,argv,seconds,guarded=False):
+    return _original_run('resume1-'+name,argv,seconds,guarded)
+'''
+program=prefix+helpers+guards+checks+tail
+ast.parse(program)
+resume=P(os.environ['RUN_ROOT'])/'resume1-command.py'
+with resume.open('x') as f:f.write(program)
+# Same monitor and unchanged tail; begin with the interrupted incremental build.
+exec(compile(program,str(resume),'exec'),{'__name__':'__main__'})
+PY
+# END PACKED_WIRE_ROLE05_RESUME
+```
+
+The resume is **NOT RUN** on this desktop. Static syntax/extraction and focused review are separate
+from Hermes execution. Report the old monitor failure and the resume outcome separately. Retain
+`resume1-command.py`, `resume1-provenance.json`, all `resume1-*.log`/receipts and unchanged artifact
+gates. No automatic second resume, role02, backend campaign or live A/B follows.
