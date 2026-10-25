@@ -6,6 +6,19 @@ socket default, model run or dependency changes are included. Desktop executable
 Independent focused static review found an incorrect codec call signature; it was corrected and
 rereviewed with no remaining blocking finding. Static review is not compiler or runtime evidence.
 
+The parent reports the role05 same-build screen **PASS** at
+`06bbd80930f6b1a3b19656e924d1e5c76cc348f1`: CTest 1/1 (0.30 s), 16 selected records,
+48 full/peer row comparisons and retained full partials bit-exact. Pack took 0.13 s;
+rows took 9.11 s with about 77 MB peak memory. Edge case6's unsupported native scale is the
+expected refusal case. SPA1 is 92884 bytes, SHA256
+`531d113d5d110fa4a53fa464ca8e504f913945d8af233113040f2d0dd6af2e0a`;
+SRA1 is 8110340 bytes, SHA256
+`0aaeb0762418bc150d7c4ca2e6c168e38b5069fb2df825cb94dd75312a6d727d`.
+Reported proof ELF SHA256 is
+`352872b6f623383b69ba6d2116a36ddbbc2b891d96745cc60d4f4d2b69ca3e33`.
+These are supplied Hermes results, not desktop execution or private receipt inspection.
+No worker contact or GEN was reported. **Cross-build comparison remains pending.**
+
 The current request carries 10240 F32 bytes per 2560-value token. Native Q8_0 quantization already
 produces 2720 bytes on workers. This proof serializes that existing result; it neither recovers the
 original F32 bits nor introduces a different quantizer. Requests accounted for 18.67% of the supplied
@@ -92,8 +105,9 @@ manifest SHA256 is `8cc9a1ca01ded6b747628522f3fc896c6ca315583461e9c3826edda8b8f6
 
 Export `BASE_SRC`, `BASE_PIN`, `CPU_BUILD`, exact published `PIN`, `CAPTURE`, and fresh absolute
 `NEW_SRC`, `NEW_BUILD`, `RUN_ROOT` (all absent, existing parents). Export `ROLE=05` for provenance.
-The other role needs the parent's verified source/cache/SHA/compiler/ISA and identical-capture
-bindings; do not guess paths or use the resident's port. For arithmetic it also needs verified
+Role02 uses its real retained Release CUDA cache, with GPU backends deliberately disabled only
+for the offline proof. See [the separate role02 relay/build handoff](CPU-PACKED-ACTIVATION-ROLE02-20261025.md).
+Do not substitute role05 native settings, guess dependency paths or use the resident's port. For arithmetic it also needs verified
 `MANIFEST` and `LOCAL_ROOT` bindings. Missing other-role bindings block cross-build evidence only.
 
 Fetch the exact PIN into an existing isolated source through GitHub, without checking it out there.
@@ -124,6 +138,8 @@ set -euo pipefail
 umask 077
 : "${ROLE:?}" "${BASE_SRC:?}" "${BASE_PIN:?}" "${CPU_BUILD:?}" "${PIN:?}" "${CAPTURE:?}" "${NEW_SRC:?}" "${NEW_BUILD:?}" "${RUN_ROOT:?}"
 export ROLE BASE_SRC BASE_PIN CPU_BUILD PIN CAPTURE NEW_SRC NEW_BUILD RUN_ROOT
+export GIT_OPTIONAL_LOCKS=0
+PROJECT_OBJECTS=${CANDIDATE_GIT:-$BASE_SRC}
 test "$(git -C "$BASE_SRC" rev-parse HEAD)" = "$BASE_PIN"
 test -z "$(git -C "$BASE_SRC" status --porcelain)"
 test ! -e "$RUN_ROOT"; test ! -e "$NEW_SRC"; test ! -e "$NEW_BUILD"
@@ -131,8 +147,8 @@ test -x /usr/bin/time
 test "$(wc -c < "$CAPTURE")" = 37544692
 mkdir -m 700 "$RUN_ROOT" "$NEW_SRC"
 printf '%s  %s\n' 218bd2e9210ea7cbe641e3e09d7be5f060c5691d630ee6357935eb240f983208 "$CAPTURE" | sha256sum -c - > "$RUN_ROOT/input-hashes.log"
-test "$(git -C "$BASE_SRC" rev-parse "$PIN^{commit}")" = "$PIN"
-git -C "$BASE_SRC" archive "$PIN" | tar -x -C "$NEW_SRC"
+test "$(git -C "$PROJECT_OBJECTS" rev-parse "$PIN^{commit}")" = "$PIN"
+git -C "$PROJECT_OBJECTS" archive "$PIN" | tar -x -C "$NEW_SRC"
 python3 -B - <<'PY'
 import os,pathlib,re,subprocess,json
 e=os.environ; cache={}
@@ -141,9 +157,14 @@ for line in (pathlib.Path(e['CPU_BUILD'])/'CMakeCache.txt').read_text().splitlin
     m=re.match(r'([^:#]+):([^=]+)=(.*)',line)
     if m: cache[m[1]]=(m[2],m[3])
 assert cache['CMAKE_HOME_DIRECTORY'][1]==e['BASE_SRC']
-assert cache['CMAKE_BUILD_TYPE'][1]=='Release' and cache['STRATA_ENABLE_CUDA'][1]=='OFF'
+assert e['ROLE'] in ('05','02')
+assert cache['CMAKE_BUILD_TYPE'][1]=='Release'
+assert cache['STRATA_ENABLE_CUDA'][1]==('ON' if e['ROLE']=='02' else 'OFF')
 assert cache['STRATA_NATIVE_EXPERTS'][1]=='ON' and cache['STRATA_BUILD_TESTS'][1]=='ON'
-ggml=cache.get('STRATA_GGML_DIR',('PATH',''))[1] or str(pathlib.Path(e['CPU_BUILD'])/'_deps/strata_llamacpp-src')
+assert cache.get('STRATA_HIP_GFX906',('BOOL','OFF'))[1]=='OFF'
+retained_ggml=cache.get('STRATA_GGML_DIR',('PATH',''))[1] or str(pathlib.Path(e['CPU_BUILD'])/'_deps/strata_llamacpp-src')
+ggml=e['GGML_RELAY_SRC'] if e['ROLE']=='02' else retained_ggml
+assert pathlib.Path(ggml).is_absolute()
 assert (pathlib.Path(ggml)/'ggml/include/ggml.h').is_file()
 assert subprocess.check_output(['git','-C',ggml,'rev-parse','HEAD'],text=True).strip()=='3cf03257f219afbe7334045ff7c6a06ac68c627d'
 assert not subprocess.check_output(['git','-C',ggml,'status','--porcelain'],text=True).strip()
@@ -155,8 +176,11 @@ for k,(t,v) in cache.items():
 keys=[k for k,(t,v) in cache.items() if t not in ('INTERNAL','STATIC') and
       (k.startswith('STRATA_') or k.startswith('GGML_') or
        re.fullmatch(r'CMAKE_(C|CXX)_(COMPILER.*|FLAGS.*|STANDARD.*|EXTENSIONS|LINKER_LAUNCHER|LINK_WHAT_YOU_USE|VISIBILITY_PRESET)',k) or
-       re.fullmatch(r'CMAKE_(INTERPROCEDURAL_OPTIMIZATION.*|(EXE|SHARED|MODULE|STATIC)_LINKER_FLAGS.*|AR|RANLIB|LINKER|NM|OBJDUMP|STRIP|POSITION_INDEPENDENT_CODE|BUILD_TYPE|MAKE_PROGRAM|VISIBILITY_INLINES_HIDDEN|LINK_WHAT_YOU_USE)',k))]
+       re.fullmatch(r'CMAKE_(INTERPROCEDURAL_OPTIMIZATION.*|(EXE|SHARED|MODULE|STATIC)_LINKER_FLAGS.*|AR|RANLIB|LINKER|NM|OBJDUMP|STRIP|POSITION_INDEPENDENT_CODE|BUILD_TYPE|MAKE_PROGRAM|VISIBILITY_INLINES_HIDDEN|LINK_WHAT_YOU_USE|BUILD_RPATH|INSTALL_RPATH|SKIP_RPATH|SKIP_BUILD_RPATH|BUILD_WITH_INSTALL_RPATH|INSTALL_RPATH_USE_LINK_PATH|LINK_SEARCH_START_STATIC|LINK_SEARCH_END_STATIC)',k))]
 values={k:cache[k] for k in keys}
+intentional={k:dict(retained=values.get(k),proof=v) for k,v in dict(
+    STRATA_GGML_DIR=('PATH',ggml),STRATA_ENABLE_CUDA=('BOOL','OFF'),
+    STRATA_ENABLE_HIP=('BOOL','OFF'),STRATA_ENABLE_SYCL=('BOOL','OFF')).items()}
 values.update(STRATA_GGML_DIR=('PATH',ggml),FETCHCONTENT_FULLY_DISCONNECTED=('BOOL','ON'),
     STRATA_ENABLE_CUDA=('BOOL','OFF'),STRATA_ENABLE_HIP=('BOOL','OFF'),STRATA_ENABLE_SYCL=('BOOL','OFF'),
     CMAKE_EXPORT_COMPILE_COMMANDS=('BOOL','ON'),
@@ -169,7 +193,7 @@ with (r/'initial.cmake').open('x') as f:
         if kind not in ('BOOL','STRING','PATH','FILEPATH'): kind='STRING'
         f.write(f'set({key} [===[{value}]===] CACHE {kind} "" FORCE)\n')
 (r/'generator.txt').write_text(cache['CMAKE_GENERATOR'][1])
-with (r/'build-provenance.json').open('x') as f: json.dump(dict(role=e['ROLE'],pin=e['PIN'],base=e['BASE_PIN'],values=values),f,indent=2)
+with (r/'build-provenance.json').open('x') as f: json.dump(dict(role=e['ROLE'],pin=e['PIN'],base=e['BASE_PIN'],project_objects=e.get('CANDIDATE_GIT',e['BASE_SRC']),retained_ggml=retained_ggml,ggml=ggml,intentional=intentional,values=values),f,indent=2)
 for lang in ('C','CXX'):
     compiler=cache[f'CMAKE_{lang}_COMPILER'][1]
     (r/f'{lang}-compiler.txt').write_bytes(subprocess.check_output([compiler,'--version']))
@@ -191,6 +215,45 @@ for line in (r/'proof-CMakeCache.txt').read_text().splitlines():
     if m: actual[m[1]]=m[3]
 for key,(kind,value) in json.loads((r/'build-provenance.json').read_text())['values'].items():
     assert actual.get(key)==value, f'configuration changed: {key}'
+PY
+python3 -B - <<'PY'
+import os,pathlib,re,json
+if os.environ['ROLE']!='02': raise SystemExit(0)
+e=os.environ; r=pathlib.Path(e['RUN_ROOT']); provenance=json.loads((r/'build-provenance.json').read_text())
+old=pathlib.Path(e['CPU_BUILD']); new=pathlib.Path(e['NEW_BUILD'])
+replacements={e['BASE_SRC']:'@SRC',e['NEW_SRC']:'@SRC',str(old):'@BUILD',str(new):'@BUILD',
+              provenance['retained_ggml']:'@GGML',provenance['ggml']:'@GGML'}
+def normalize(s):
+    for k in sorted(replacements,key=len,reverse=True): s=s.replace(k,replacements[k])
+    return s
+report={}
+for target in ('strata_kernels_cpu','strata_expert_worker','strata_worker_tier','ggml-cpu','ggml-base'):
+    pairs=[]
+    for root in (old,new):
+        found=list(root.rglob(f'CMakeFiles/{target}.dir/flags.make'))
+        assert len(found)==1, f'missing/ambiguous retained native flags: {target}'
+        text=found[0].read_text()
+        # Retain ordinary assignments AND CMake's commented source-specific options/defines.
+        pairs.append([normalize(line.strip()) for line in text.splitlines() if '=' in line])
+    report[target]=dict(retained=pairs[0],proof=pairs[1],equal=pairs[0]==pairs[1])
+with (r/'native-flags-comparison.json').open('x') as f: json.dump(report,f,indent=2)
+assert all(v['equal'] for v in report.values()), 'effective native compile flags differ'
+for language in ('C','CXX'):
+    versions=[]
+    for root in (old,new):
+        found=list((root/'CMakeFiles').glob(f'*/CMake{language}Compiler.cmake'))
+        assert len(found)==1, 'missing/ambiguous compiler identity'
+        text=found[0].read_text()
+        fields={k:re.search(r'^set\('+k+r'\s+(.*?)\)$',text,re.M).group(1)
+                for k in (f'CMAKE_{language}_COMPILER',f'CMAKE_{language}_COMPILER_ID',f'CMAKE_{language}_COMPILER_VERSION')}
+        versions.append(fields)
+    assert versions[0]==versions[1], 'retained compiler executable/identity/version changed'
+    with (r/f'{language}-retained-proof-identity.json').open('x') as f: json.dump(versions,f,indent=2)
+links=list(new.rglob('CMakeFiles/cpu_packed_activation_proof.dir/link.txt'))
+assert len(links)==1, 'missing/ambiguous proof link command'
+link=links[0].read_text(); (r/'proof-link-command.txt').write_text(link)
+assert not re.search(r'(?:lib)?(?:cuda\w*|cublas\w*|amdhip\w*|sycl\w*|nvrtc\w*|strata_engine)(?:[.\s/-]|$)|libstrata_kernels\.a',link,re.I), 'GPU/engine link dependency'
+print('ROLE02_NATIVE_FLAGS ok=1 targets=5 compiler_identity_bits=1 gpu_backend_delta=explicit')
 PY
 sha256sum "$RUN_ROOT/bin/cpu_packed_activation_proof" > "$RUN_ROOT/elf.sha256"
 # Runtime overrides are not guessed. Refuse inherited arithmetic/ISA overrides for this fixed run.
