@@ -181,28 +181,12 @@ budgets, EINTR, EOF, peer errors and full fragmented transfers under BOTH polici
 all executable tests are NOT RUN here. Expected loopback work under a minute after a small incremental
 CPU build; the entire replay set has a 180-second external ceiling and each arm a 15-second ceiling.
 
-## LAN boundary
+## LAN handoff
 
-The retained `docs/cpu-rpc-replay/HERMES.md` LAN recipe explicitly required a separately approved
-temporary firewall rule, and its old addresses/port permissions are not current binding evidence.
-No fresh approved fixture listener/port receipt was supplied for this patch. Therefore this handoff
-does NOT launch a LAN listener, reuse a worker port, append a command to the forced worker key or
-request any security change. Loopback is independently useful and is not blocked by that limitation.
-If the parent later establishes an already-permitted fixture listener and exact source binding,
-the SAME binary already supports bounded `--serve`/`--connect --route direct-lan` with numeric bind
-and allowed-peer controls; only `--operation-first` differs between arms. That is a later handoff,
-conditional on the loopback evidence, not an automatic network action here.
-
-Minimal requirements for that later controlled LAN A/B: parent verifies an already-permitted exact
-bind/source/fixture-port tuple, current absence of a listener on that fixture port, and an existing
-execution route that can launch the replay without changing the forced worker key. Use the SAME
-hashed e5685da1 replay ELF at both ends, the retained 15 shapes, unchanged NODELAY/deadline/counts,
-one connection per arm and bounded owned server cleanup. Change only the I/O-policy flag. Start the
-owned server before its matching client; require exact bytes, zero failures and owner/listener absence
-afterward. Report per-shape RTT and per-role counts separately. No build, worker port reuse, firewall
-change, settings change or model work is needed. Current permission/binding verification remains
-pending with the parent; no LAN action was attempted here.
-
-Report per-shape A/B mean, exact RTT p50/p95/p99/max and poll/send/recv/would-block counts. One pair
-per shape establishes no noise band. Keep server/client scopes separate; this microbenchmark cannot
-establish live model TPS or justify production-default adoption. Preserve the resident service.
+The current bounded handoff is [CPU-TRY-IO-LAN-20261025.md](CPU-TRY-IO-LAN-20261025.md).
+It supersedes the older LAN boundary and stale address/permission examples in
+`docs/cpu-rpc-replay/HERMES.md` for issue #12 only. The supplied current tuple is
+02 10.0.0.180 to 05 10.0.0.123 over eno1, TCP 17531. The user approved a temporary
+restriction of that fixture tuple to source 02, followed by removal. Execution still
+requires the exact firewall chain binding and retained ELF hash. LAN and TPS results
+remain NOT RUN; the supplied loopback evidence above is unchanged.
