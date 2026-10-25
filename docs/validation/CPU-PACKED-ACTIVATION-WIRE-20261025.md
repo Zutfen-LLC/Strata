@@ -1,5 +1,13 @@
 # Issue #14: opt-in packed activation request contract
 
+**Current role05 continuation:** use [the short direct commands](CPU-PACKED-WIRE-ROLE05-DIRECT.sh)
+under Hermes's established external RSS/swap guard. The bespoke resume wrappers below are
+superseded execution history. The latest wrapper stopped before building on Windows archive
+line endings; no test/pack/rows result followed. The direct commands check compiled sources,
+headers and CMake inputs with Git filters, then use timeout/ulimit/time and the existing proof
+admission script. Existing r1 source/build and all prior receipts stay in place.
+
+
 This stage follows the [sampled proof](CPU-PACKED-ACTIVATION-PROOF-20261025.md).
 Raw F32 stays the default. Replies and original entry order stay unchanged. No streaming,
 compression, placement, socket policy, resident reload or live model run is included.
