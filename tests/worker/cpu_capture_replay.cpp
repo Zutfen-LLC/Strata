@@ -118,8 +118,8 @@ int main(int argc,char** argv){
             const auto subset_error=err;WorkerCacheInfo final_cache;ExpertWorkerClient final_check;
             const bool preserved=final_check.connect_local(argv[5],(uint16_t)port,5000,{},err) &&
                 final_check.cache_status(final_cache,err) && unchanged(before,final_cache);final_check.close();
-            std::printf("CPU_LOCAL_SUBSETS ok=%d full_resident_unchanged=%d peers_checked=%u groups_checked=%u owned_reaped=%d peak_owned_rss=%llu min_available=%llu\n",
-                matched,preserved,subsets.peers_checked,subsets.groups_checked,subsets.reaped,
+            std::printf("CPU_SEQUENTIAL_SUBSETS ok=%d full_cache_unchanged=%d peers_checked=%u completed_peers=%u released_peers=%u max_live_children=%u concurrent_group=NOT_RUN owned_reaped=%d peak_owned_rss=%llu min_available=%llu\n",
+                matched,preserved,subsets.peers_checked,subsets.completed_peers,subsets.released_peers,subsets.max_live_children,subsets.reaped,
                 (unsigned long long)subsets.peak_rss,(unsigned long long)subsets.min_available);
             if(!matched)std::fprintf(stderr,"local subset failure: %s\n",subset_error.c_str());
             if(!preserved)std::fprintf(stderr,"full resident final verification failure: %s\n",err.c_str());

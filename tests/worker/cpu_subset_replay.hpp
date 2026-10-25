@@ -14,7 +14,7 @@
 namespace strata::worker::diagnostic {
 struct SubsetConfig {
     std::string binary,local_root,output_root;
-    uint64_t expected_bytes=0,reserve_bytes=8ull<<30,max_owned_rss=120ull<<30;
+    uint64_t expected_bytes=0,reserve_bytes=8ull<<30,max_owned_rss=60ull<<30;
     int workers=12,loaders=4,frame_ms=10000,setup_ms=600000,total_ms=1500000,caller=0;
     std::vector<int> pool;
 };
@@ -23,7 +23,7 @@ inline uint64_t number(const std::string& s){uint64_t n=0;const auto got=std::fr
 inline uint64_t temporary_bytes(const CpuCaptureFile& f){
     strata::kernels::cpu::NativeFmt fmt;std::string err;
     need(strata::kernels::cpu::native_fmt(8,8,f.setup.n_embd,f.setup.n_ff,fmt,err),err);
-    return f.setup.owned_count()*(uint64_t)fmt.bytes;
+    return ((f.setup.owned_count()+1)/2)*(uint64_t)fmt.bytes; // peak: only the larger half is live
 }
 inline SubsetConfig read_subset_config(const std::string& path,const CpuCaptureFile& f,const LocalManifest& m){
     need(std::filesystem::path(path).is_absolute(),"subset config must be absolute");
@@ -43,10 +43,10 @@ inline SubsetConfig read_subset_config(const std::string& path,const CpuCaptureF
     while(std::getline(cpus,cpu,',')){auto n=number(cpu);need(n<1024,"pool CPU outside bounds");c.pool.push_back((int)n);}
     need(c.pool.size()==(size_t)c.workers,"one pool CPU per configured worker required");
     need(f.setup.owned_count()>=2 && c.expected_bytes==temporary_bytes(f) && c.expected_bytes>0 && c.reserve_bytes>=8ull<<30 &&
-         c.reserve_bytes<=64ull<<30 && c.max_owned_rss<=120ull<<30 &&
+         c.reserve_bytes<=64ull<<30 && c.max_owned_rss<=60ull<<30 &&
          c.max_owned_rss>=c.expected_bytes+kCpuCaptureLimit,"subset arena/RSS/reserve bounds mismatch");
     rlimit address_space{};need(::getrlimit(RLIMIT_AS,&address_space)==0,"read inherited address-space limit");
-    need(address_space.rlim_cur==RLIM_INFINITY || address_space.rlim_cur>=c.expected_bytes/2+(1ull<<30),
+    need(address_space.rlim_cur==RLIM_INFINITY || address_space.rlim_cur>=c.expected_bytes+(1ull<<30),
          "inherited address-space cap too small for a subset worker");
     for(const auto& p:{c.binary,c.local_root,c.output_root})need(std::filesystem::path(p).is_absolute(),"subset paths must be absolute");
     need(::access(c.binary.c_str(),X_OK)==0 && std::filesystem::is_regular_file(c.binary),"subset worker not executable");
@@ -82,9 +82,9 @@ inline bool cgroup_room(const std::filesystem::path& directory,uint64_t required
     return true;
 }
 struct SubsetGuard {
-    const SubsetConfig& cfg;uint64_t start=millis(),peak=0,min_available=UINT64_MAX,oom=0;
+    const SubsetConfig& cfg;uint64_t start=millis(),peak=0,current_rss=0,min_available=UINT64_MAX,oom=0;
     std::map<std::string,std::map<std::string,uint64_t>> cgroup_oom;
-    Child* children[2]{};
+    Child* child=nullptr; // one live temporary process; never a handle for the full resident
     explicit SubsetGuard(const SubsetConfig& c):cfg(c){
         oom=proc_numbers("/proc/vmstat").at("oom_kill");
         std::ifstream input("/proc/self/cgroup");std::string line;bool found=false;
@@ -103,17 +103,17 @@ struct SubsetGuard {
         const auto available=proc_numbers("/proc/meminfo").at("MemAvailable");min_available=std::min(min_available,available);
         need(available>=cfg.reserve_bytes+(before_load?cfg.expected_bytes:0),"MemAvailable below configured arena/reserve guard");
         uint64_t rss=0;
-        for(pid_t p:{::getpid(),children[0]?children[0]->pid:-1,children[1]?children[1]->pid:-1})if(p>0){
+        for(pid_t p:{::getpid(),child?child->pid:-1})if(p>0){
             const auto status=proc_numbers("/proc/"+std::to_string(p)+"/status");
             need(status.at("VmSwap")==0,"owned VmSwap must remain zero");rss+=status.at("VmRSS");}
-        peak=std::max(peak,rss);need(rss<=cfg.max_owned_rss,"aggregate additional owned RSS exceeds configured bound");
+        current_rss=rss;peak=std::max(peak,rss);need(rss<=cfg.max_owned_rss,"aggregate additional owned RSS exceeds configured bound");
         need(proc_numbers("/proc/vmstat").at("oom_kill")==oom,"new host OOM kill");
         for(const auto& entry:cgroup_oom){
             need(cgroup_room(std::filesystem::path(entry.first).parent_path(),cfg.reserve_bytes+(before_load?cfg.expected_bytes:0)),
                  "finite cgroup memory.max/high headroom insufficient");
             const auto current=proc_numbers(entry.first);
             for(const auto& counter:entry.second)need(current.at(counter.first)==counter.second,"new cgroup OOM event");}
-        for(auto* child:children)if(child){need(child->pid>0,"owned worker already exited");child->pump();}
+        if(child){need(child->pid>0,"owned worker already exited");child->pump();}
     }
 };
 // Two references occupy <=96MiB: every captured reply has an equally sized activation block in the file.
@@ -131,7 +131,11 @@ struct MaskedReferences {
         std::copy(v.begin(),v.end(),peer[p].begin()+offsets[record]);
     }
 };
-struct SubsetReport {uint32_t peers_checked=0,groups_checked=0;uint64_t peak_rss=0,min_available=0,manual_ms=0;pid_t children[2]{-1,-1};bool reaped=false;};
+struct SubsetReport {
+    uint32_t peers_checked=0,completed_peers=0,released_peers=0,max_live_children=0;
+    uint64_t peak_rss=0,min_available=0,manual_ms=0;
+    pid_t children[2]{-1,-1};bool reaped=false;
+};
 inline std::vector<uint8_t> peer_mask(const CpuCaptureFile& f,const InferRequest& r,const std::vector<int8_t>& owners,int peer){
     auto mask=r.mask;for(size_t j=0;j<mask.size();++j)mask[j]=mask[j] && owners[(size_t)r.layer*f.setup.n_expert+r.ids[j]]==peer;return mask;
 }
@@ -148,90 +152,74 @@ inline bool run_local_subsets(const CpuCaptureFile& f,const LocalManifest& local
         for(size_t i=0;i<f.records.size();++i){need(reference.offsets[i]==values,"masked reference offset mismatch");values+=f.records[i].partials.size();}
         need(values<=kCpuCaptureLimit/8 && reference.peer[0].size()==values && reference.peer[1].size()==values,"masked reference layout mismatch");
         for(const auto& peer:reference.peer)need(std::all_of(peer.begin(),peer.end(),[](float v){return std::isfinite(v);}),"reference nonfinite");
-        guard.check(true);need(cfg.expected_bytes==temporary_bytes(f),"temporary arena total mismatch");
+        guard.check(true);need(cfg.expected_bytes==temporary_bytes(f),"peak temporary arena mismatch");
         need(::mkdir(cfg.output_root.c_str(),0700)==0,"exclusive local subset output root");
         const auto owners=cpu_capture_owners(f.setup);const size_t stride=(f.setup.n_expert+7)/8;
         std::vector<ExpertWorkerTier::Open> options(2);
         strata::kernels::cpu::NativeFmt fmt;need(strata::kernels::cpu::native_fmt(8,8,f.setup.n_embd,f.setup.n_ff,fmt,err),err);
-        auto launch=[&](int p){ChildSpec s;s.binary=cfg.binary;s.root=cfg.local_root;s.manifest=manifest_path;
-            s.workers=cfg.workers;s.loaders=cfg.loaders;s.frame_ms=cfg.frame_ms;s.setup_ms=cfg.setup_ms;s.setup_cpus=cfg.pool;
+        // Pure existing ownership validation. Ports are placeholders only; no group is opened/run.
+        for(int p=0;p<2;++p){auto& o=options[p];o.host="127.0.0.1";o.port=(uint16_t)(p+1);o.local=&local;o.resident=true;
+            o.n_layers=f.setup.n_layers;o.n_expert=f.setup.n_expert;o.n_embd=f.setup.n_embd;o.n_ff=f.setup.n_ff;
+            o.gu_type=o.d_type=8;o.setup_ms=cfg.setup_ms;o.deadline_ms=cfg.frame_ms;o.partition.assign(f.setup.partition.size(),0);
+            for(int l=0;l<o.n_layers;++l)for(int e=0;e<o.n_expert;++e)if(owners[(size_t)l*o.n_expert+e]==p)
+                o.partition[(size_t)l*stride+e/8]|=(uint8_t)(1u<<(e%8));
+            o.cancelled=[&]{guard.check();return false;};}
+        need(ExpertWorkerGroup::validate(options,f.setup.partition,err),err);
+        for(int p=0;p<2;++p){
+            need(!guard.child && report.released_peers==(uint32_t)p,"previous temporary subset not released");
+            guard.check(true); // fresh one-half headroom before each process/load
+            ChildSpec spec;spec.binary=cfg.binary;spec.root=cfg.local_root;spec.manifest=manifest_path;
+            spec.workers=cfg.workers;spec.loaders=cfg.loaders;spec.frame_ms=cfg.frame_ms;spec.setup_ms=cfg.setup_ms;spec.setup_cpus=cfg.pool;
             const auto elapsed=millis()-guard.start;need(elapsed<(uint64_t)cfg.total_ms,"local subset startup total deadline");
-            s.start_ms=(int)std::min<uint64_t>(10000,(uint64_t)cfg.total_ms-elapsed);
-            s.setup_cpus.push_back(cfg.caller);s.log_path=cfg.output_root+"/peer"+std::to_string(p)+".log";
-            uint64_t owned=0;for(int8_t owner:owners)owned+=owner==p;
-            s.budget_mib=(owned*fmt.bytes+((1u<<20)-1))>>20;return s;};
-        {
-            Child a(launch(0));report.children[0]=a.pid;guard.children[0]=&a;
-            Child b(launch(1));report.children[1]=b.pid;guard.children[1]=&b;
-            std::printf("LOCAL_SUBSET_OWNED peer0_pid=%d port=%u peer1_pid=%d port=%u temporary_arena_bytes=%llu\n",
-                a.pid,(unsigned)a.port,b.pid,(unsigned)b.port,(unsigned long long)cfg.expected_bytes);std::fflush(stdout);
-            struct Detach {SubsetGuard& g;~Detach(){g.children[0]=g.children[1]=nullptr;}} detach{guard};
-            for(int p=0;p<2;++p){auto& o=options[p];o.host="127.0.0.1";o.port=p?b.port:a.port;o.local=&local;o.resident=true;
-                o.n_layers=f.setup.n_layers;o.n_expert=f.setup.n_expert;o.n_embd=f.setup.n_embd;o.n_ff=f.setup.n_ff;
-                o.gu_type=o.d_type=8;o.setup_ms=cfg.setup_ms;o.deadline_ms=cfg.frame_ms;o.partition.assign(f.setup.partition.size(),0);
-                for(int l=0;l<o.n_layers;++l)for(int e=0;e<o.n_expert;++e)if(owners[(size_t)l*o.n_expert+e]==p)
-                    o.partition[(size_t)l*stride+e/8]|=(uint8_t)(1u<<(e%8));
-                o.cancelled=[&]{guard.check();return false;};}
-            need(ExpertWorkerGroup::validate(options,f.setup.partition,err),err);
-            // Existing group acquisition keeps the first READY peer alive while loading the second.
-            const auto load_start=millis();
-            {ExpertWorkerGroup load;need(load.open(options,f.setup.partition,err),err);load.close();}
-            std::printf("LOCAL_SUBSET_LOAD wall_ms=%llu (separate from replay; serial setup)\n",(unsigned long long)(millis()-load_start));
-            a.compute_affinity(cfg.caller,cfg.pool);b.compute_affinity(cfg.caller,cfg.pool);guard.check();
-            for(auto& o:options)o.resident_reuse_only=true;
+            spec.start_ms=(int)std::min<uint64_t>(10000,(uint64_t)cfg.total_ms-elapsed);
+            spec.setup_cpus.push_back(cfg.caller);spec.log_path=cfg.output_root+"/peer"+std::to_string(p)+".log";
+            const auto bytes=(uint64_t)std::count(owners.begin(),owners.end(),(int8_t)p)*fmt.bytes;
+            need(bytes && bytes<=cfg.expected_bytes,"one-half arena budget mismatch");
+            spec.budget_mib=(bytes+((1u<<20)-1))>>20;
             {
-                ExpertWorkerTier peers[2];need(peers[0].open(options[0],err) && peers[1].open(options[1],err),err);
+            Child child(spec);report.children[p]=child.pid;guard.child=&child;report.max_live_children=1;
+            struct Detach {SubsetGuard& g;~Detach(){g.child=nullptr;}} detach{guard};
+            std::printf("LOCAL_SUBSET_OWNED peer=%d pid=%d port=%u live_arena_bytes=%llu\n",p,child.pid,
+                (unsigned)child.port,(unsigned long long)bytes);std::fflush(stdout);
+            auto option=options[p];option.port=child.port;
+            {
+                const auto load_start=millis();ExpertWorkerTier tier;need(tier.open(option,err),err);
+                std::printf("LOCAL_SUBSET_LOAD peer=%d wall_ms=%llu (separate from replay)\n",p,(unsigned long long)(millis()-load_start));
+                child.compute_affinity(cfg.caller,cfg.pool);guard.check();
                 const auto manual_start=millis();
                 for(size_t i=0;i<f.records.size();++i){guard.check();const auto& r=f.records[i];const auto& q=r.request;
-                    for(auto& peer:peers)need(peer.keepalive_if_idle(err),err);
+                    need(tier.keepalive_if_idle(err),err);
                     if(before_manual)before_manual(); // bounded synthetic timing seam; CLI never supplies one
-                    std::vector<int32_t> ids(q.ids.begin(),q.ids.end());bool posted=true;
-                    for(int p=0;p<2;++p){auto mask=peer_mask(f,q,owners,p);
-                        if(!peers[p].post(q.layer,q.activations.data(),ids.data(),q.weights.data(),mask.data(),q.T,q.K,err)){posted=false;break;}}
-                    for(auto& peer:peers)if(!peer.keepalive_if_idle(err))posted=false;
-                    // Always drain both, including a failed publication. No result is compared early.
-                    std::string failure;for(auto& peer:peers){std::string why;if(!peer.finish(why)){posted=false;if(failure.empty())failure=why;}}
-                    need(posted,err.empty()?failure:err);
-                    for(int p=0;p<2;++p){const auto got=tier_partial(peers[p],r.partials.size());
-                        need(!std::memcmp(got.data(),reference.peer[p].data()+reference.offsets[i],got.size()*4),
-                             "subset peer "+std::to_string(p)+" bit mismatch at record "+std::to_string(i));++report.peers_checked;}
+                    std::vector<int32_t> ids(q.ids.begin(),q.ids.end());auto mask=peer_mask(f,q,owners,p);
+                    bool posted=tier.post(q.layer,q.activations.data(),ids.data(),q.weights.data(),mask.data(),q.T,q.K,err);
+                    if(!tier.keepalive_if_idle(err))posted=false;
+                    const bool finished=tier.finish(err);need(posted && finished,err);
+                    const auto got=tier_partial(tier,r.partials.size());
+                    need(!std::memcmp(got.data(),reference.peer[p].data()+reference.offsets[i],got.size()*4),
+                         "subset peer "+std::to_string(p)+" bit mismatch at record "+std::to_string(i));++report.peers_checked;
                 }
-                report.manual_ms=millis()-manual_start;
-            }
-            {
-                ExpertWorkerGroup group;need(group.open(options,f.setup.partition,err),err);
-                for(size_t i=0;i<f.records.size();++i){guard.check();const auto& r=f.records[i];const auto& q=r.request;
-                    std::vector<int32_t> ids(q.ids.begin(),q.ids.end());
-                    need(group.post(q.layer,q.activations.data(),ids.data(),q.weights.data(),q.mask.data(),q.T,q.K,err),err);
-                    need(group.finish(err),err);
-                    const auto ma=peer_mask(f,q,owners,0),mb=peer_mask(f,q,owners,1);
-                    const bool active0=std::find(ma.begin(),ma.end(),1)!=ma.end(),active1=std::find(mb.begin(),mb.end(),1)!=mb.end();
-                    std::vector<float> expected(r.partials.size(),0.f);const auto offset=reference.offsets[i];
-                    if(active0 || active1)std::copy_n(reference.peer[active0?0:1].data()+offset,expected.size(),expected.data());
-                    if(active0 && active1)for(size_t j=0;j<expected.size();++j)expected[j]+=reference.peer[1][offset+j];
-                    std::vector<float> got=group.served()?std::vector<float>(group.partials(),group.partials()+expected.size()):std::vector<float>(expected.size(),0.f);
-                    need(!std::memcmp(got.data(),expected.data(),got.size()*4),"real group/manual sum bit mismatch at record "+std::to_string(i));
-                    ++report.groups_checked;
-                }
-                group.close();
+                report.manual_ms+=millis()-manual_start;tier.close();++report.completed_peers;
             }
             guard.check();
-            for(int p=0;p<2;++p){auto& child=p?b:a;need(child.owns_listener(),"subset accounting requires owned listener");
+            {need(child.owns_listener(),"subset accounting requires owned listener");
                 ExpertWorkerClient c;WorkerCacheInfo cache;WorkerStatusInfo status;
                 need(c.connect_local("127.0.0.1",child.port,cfg.frame_ms,{},err) && c.cache_status(cache,err) && c.status(status,err),err);
-                uint64_t owned=0,requests=0;for(int8_t owner:owners)owned+=owner==p;
+                uint64_t requests=0;
                 for(const auto& r:f.records){const auto mask=peer_mask(f,r.request,owners,p);requests+=std::find(mask.begin(),mask.end(),1)!=mask.end();}
-                const auto bytes=owned*(uint64_t)fmt.bytes;
                 need(cache.complete && !cache.session && cache.resident_bytes==bytes && cache.loaded_bytes==bytes &&
                     cache.verified_bytes==bytes && cache.arena_allocations==1 && !cache.unloads && !cache.expirations &&
-                    cache.idle_remaining_ms==kResidencyNoExpiry && !status.failures && !status.setup_weight_bytes && status.requests==2*requests,
+                    cache.idle_remaining_ms==kResidencyNoExpiry && !status.failures && !status.setup_weight_bytes && status.requests==requests,
                     "subset load/resident/request accounting mismatch");
                 std::printf("LOCAL_SUBSET_CACHE peer=%d bytes=%llu allocations=%llu requests=%llu failures=%llu\n",p,
                     (unsigned long long)bytes,(unsigned long long)cache.arena_allocations,(unsigned long long)status.requests,(unsigned long long)status.failures);
                 c.close();}
-            a.stop();b.stop();need(a.pid<0 && b.pid<0,"owned temporary reap");report.reaped=true;
-            guard.children[0]=guard.children[1]=nullptr;guard.check();
+            child.stop();need(child.pid<0,"owned temporary reap");
+            int status=0;errno=0;need(::waitpid(report.children[p],&status,WNOHANG)<0 && errno==ECHILD,"temporary release not confirmed");
+            guard.child=nullptr;guard.check();++report.released_peers;
+            std::printf("LOCAL_SUBSET_RELEASE peer=%d reaped=1 owned_rss_after=%llu\n",p,(unsigned long long)guard.current_rss);
+            }
         }
+        report.reaped=true;
         report.peak_rss=guard.peak;report.min_available=guard.min_available;return true;
     }catch(const std::exception& failure){err=failure.what();report.peak_rss=monitored?monitored->peak:0;report.min_available=monitored?monitored->min_available:0;
         report.reaped=true;for(pid_t child:report.children)if(child>0){int status=0;errno=0;

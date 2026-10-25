@@ -54,17 +54,22 @@ void test(const char* binary){
     bool unknown=false;try{read_subset_config(config_path,f,fixture.m);}catch(const std::exception&){unknown=true;}
     check(unknown && !fs::exists(binding.output_root),"unknown config refused before child/output creation");
     const auto limits=fixture.root/"synthetic-cgroup";fs::create_directory(limits);
-    {std::ofstream(limits/"memory.current")<<(108ull<<30);std::ofstream(limits/"memory.max")<<(200ull<<30);std::ofstream(limits/"memory.high")<<"max";}
-    check(!cgroup_room(limits,(108ull+8)<<30),"finite shared cap refuses temporary arenas plus reserve despite global RAM");
-    {std::ofstream(limits/"memory.max")<<(256ull<<30);}
-    check(cgroup_room(limits,(108ull+8)<<30),"sufficient finite cgroup headroom");
-    {std::ofstream(limits/"memory.high")<<(200ull<<30);}
-    check(!cgroup_room(limits,(108ull+8)<<30),"finite memory.high checked independently");
+    {std::ofstream(limits/"memory.current")<<(108ull<<30);std::ofstream(limits/"memory.max")<<(150ull<<30);std::ofstream(limits/"memory.high")<<"max";}
+    check(!cgroup_room(limits,(54ull+8)<<30),"finite shared cap refuses one half plus reserve despite global RAM");
+    {std::ofstream(limits/"memory.max")<<(200ull<<30);}
+    check(cgroup_room(limits,(54ull+8)<<30),"sufficient one-half finite cgroup headroom");
+    {std::ofstream(limits/"memory.high")<<(150ull<<30);}
+    check(!cgroup_room(limits,(54ull+8)<<30),"finite memory.high checked independently");
     config.frame_ms=1000;
-    SubsetReport report;require(run_local_subsets(f,fixture.m,full_spec.manifest,references,config,report,err,
-        []{std::this_thread::sleep_for(std::chrono::milliseconds(200));}),err);
-    check(report.peers_checked==2*f.records.size() && report.groups_checked==f.records.size() && report.reaped,
-          "multi-token, signed weights, zero/one-peer, real subset mapping and group/manual bits");
+    SubsetReport report;bool first_release_seen=false;
+    require(run_local_subsets(f,fixture.m,full_spec.manifest,references,config,report,err,[&]{
+        if(report.children[1]>0 && !first_release_seen){int status=0;errno=0;
+            first_release_seen=report.released_peers==1 && ::waitpid(report.children[0],&status,WNOHANG)<0 && errno==ECHILD;
+            check(first_release_seen,"first child reaped before second subset replay");}
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));}),err);
+    check(report.peers_checked==2*f.records.size() && report.completed_peers==2 && report.released_peers==2 &&
+          report.max_live_children==1 && first_release_seen && report.reaped,
+          "sequential subset bits with one live child and release between peers");
     check(report.manual_ms>1000,"consecutive one-peer work exceeds idle deadline before later peer reactivation");
     for(pid_t child:report.children){int status=0;errno=0;check(::waitpid(child,&status,WNOHANG)<0 && errno==ECHILD,"successful temporary child reaped");}
     auto after=cache(full);check(after.complete && !after.session && before.resident_bytes==after.resident_bytes &&
@@ -72,8 +77,9 @@ void test(const char* binary){
         after.arena_allocations==1 && !after.unloads && !after.expirations,"full resident unaffected by subset success");
     references.peer[0][0]+=1;config.output_root=(fixture.root/"mismatch").string();
     check(!run_local_subsets(f,fixture.m,full_spec.manifest,references,config,report,err) &&
-        report.reaped && err.find("subset peer 0 bit mismatch at record 0")!=std::string::npos,"peer failure preserves original cause and reaps both owned children");
-    for(pid_t child:report.children){int status=0;errno=0;check(::waitpid(child,&status,WNOHANG)<0 && errno==ECHILD,"failed temporary child reaped");}
+        report.reaped && report.children[1]<0 && err.find("subset peer 0 bit mismatch at record 0")!=std::string::npos,
+        "first-peer failure reaps its child and never starts the second");
+    for(pid_t child:report.children)if(child>0){int status=0;errno=0;check(::waitpid(child,&status,WNOHANG)<0 && errno==ECHILD,"failed temporary child reaped");}
     after=cache(full);check(after.complete && after.resident_bytes==before.resident_bytes && after.arena_allocations==1 &&
         !after.unloads && !after.expirations,"full resident unaffected by failure cleanup");
     const auto fake=(fixture.root/"fake-worker.sh").string();

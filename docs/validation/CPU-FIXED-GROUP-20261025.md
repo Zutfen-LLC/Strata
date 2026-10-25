@@ -18,7 +18,19 @@ or raw-receipt inspection by this coding thread. **Do not rerun that campaign.**
 is only the bounded diagnostic below. The original commands later in this file remain historical
 procedure, not authorization for another model load.
 
-### Current next step: local subsets from the saved capture (zero GEN)
+### Current next step: sequential subsets from the saved capture (zero GEN)
+
+The supplied run at `6351cde18db499b0c6a28fcad01e6228098914aa` ended with a **resource stop, not
+a numerical failure**. Its CPU build and2/2 CTests passed after an external RLIMIT_FSIZE wrapper
+was corrected to permit synthetic fixture payloads. Full replay again passed960 replies. The first
+temporary half completed58067865600B/11119blobs in66.05s; the second was incomplete when the external
+guard observed422148KiB of swap in the original full worker and terminated replay at176s. Both
+temporary children were reaped. No actual-subset/group numerical outcome was produced. The original
+cache stayed logically complete with unchanged identity; this does not mean physical VmSwap0.
+
+The replacement mode below is numerical-only and sequential. Parent policy permits the original
+worker's existing stable swap at a **freshly measured baseline**, stopping on any increase. It does
+not authorize timing qualification, recovery sweeps, full reload, swapoff, mlock or settings changes.
 
 The parent supplied a completed PASS at `7c0dfce4f88856856c6d33a281824b1aae7dff1b`, whose direct
 parent is `80119730422bfe7071c97420af8f5866344162c9`. CPU checks2/2 and CUDA/native-OFF links passed.
@@ -35,29 +47,28 @@ Those results hold baseline activations/IDs/weights fixed. They do not establish
 propagation, subset slot-map correctness, real concurrent group behavior or remote peer state.
 The failed original model screen remains failed. **Do not recapture, launch an engine or rerun GEN.**
 
-The new optional `--local-subsets CONFIG` mode extends the existing replay program. It collects
-the two masked references during the existing full-resident replay, closes that session, then
-starts exactly two owned loopback workers using the extracted existing diagnostic child helper.
-Each receives the alternating frozen subset through existing trusted local loading. Manual peer
-posts both occur before either wait; every peer reply must bitmatch its full-arena masked reference.
-The same resident subsets then reconnect through the actual `ExpertWorkerGroup`; its output must
-bitmatch the established manual configuration-order sum. No thresholds change, and this is no
-performance or closed-loop acceptance test. There is no remote-subset mode or new protocol/format.
+`--local-subsets CONFIG` now collects both masked references during the mandatory full replay,
+closes that session, then loads/compares/stops/reaps peer0 before starting peer1. Exactly one
+temporary arena is live. Every peer reply must bitmatch its full-arena masked reference. A release
+barrier confirms child reaping and samples replay-only RSS before the next fresh headroom check.
+No two-at-once option remains. Existing static ownership validation is reused; no real group is
+opened or executed. The existing full-replay `grouped` counter is masked arithmetic on the full arena,
+not actual group execution. This is **sequential mapping validation**, with no concurrent-group, remote,
+performance or closed-loop acceptance claim. The capture format/protocol and numerical gates stay.
 
 On the CPU fixture host, use the existing cache/options at the exact new source pin:
 
 ```sh
-cmake -S "$SRC" -B "$CPU_BUILD"
-cmake --build "$CPU_BUILD" --target cpu_capture_test cpu_capture_subset_test cpu_capture_replay cpu_group_numeric_diagnostic --parallel 4
-ctest --test-dir "$CPU_BUILD" --output-on-failure -R '^(cpu_capture_test|cpu_capture_subset_test)$'
+cmake --build "$CPU_BUILD" --target cpu_capture_subset_test cpu_capture_replay --parallel 4
+ctest --test-dir "$CPU_BUILD" --output-on-failure -R '^cpu_capture_subset_test$'
 ```
 
-The subset CTest owns three small synthetic Q8 workers, with no external endpoint/model/engine.
-It checks multi-token requests, signed weights, alternating ownership across layers, zero work,
-an inactive peer across eight delayed one-peer records and later reactivation, actual subset/group
-bits, resource refusal, early child death and failure cleanup while preserving its full fixture.
-The old manual numeric target is built because its child helper was extracted; do not repeat its
-historical seven-case invocation. The fixture dependency may build the CPU test worker; it never
+The subset CTest retains a small full Q8 fixture and runs one synthetic subset at a time, with no
+external endpoint/model/engine. It checks both peer bits, release between peers, maximum one live
+child, delayed zero-work/re-activation, and first-peer failure never starting the second. Existing
+config/resource, finite-cgroup, forged-listener and early-death cases remain. No actual group test
+runs. Bound stdout/stderr separately: a tiny inherited RLIMIT_FSIZE would also kill the synthetic
+weight files. The fixture dependency may build the CPU test worker; it never
 replaces the retained runtime worker. **All new checks are authored and NOT RUN locally.** No
 additional CUDA build or engine launch is needed for this diagnostic-only extension.
 
@@ -67,38 +78,43 @@ private config and replace every placeholder. It is a bounded, 13-key text file:
 key/value pairs; quote paths or CPU lists; duplicate/unknown/missing fields are refused. Bind:
 
 - `worker_binary` to the exact retained full-worker ELF, verified against its recorded executable hash;
-  both temporary workers use it and inherit the retained worker environment, including OMP settings.
+  both sequential workers use it and inherit the retained worker environment, including OMP settings.
 - `local_root` to existing validated local assets; the manifest remains the existing positional CLI
   binding. No model weights are staged/copied and no subset pack is generated.
 - `output_root` to a new directory beneath the existing disk-backed private run root. Use neither
   tmpfs nor `/tmp` for this run. Logs are exclusive mode0600, bounded to1MiB per child.
-- `caller_cpu` / `pool_cpus` to the approved caller and twelve singleton pool CPUs. Both children use
-  that same policy; this numeric test can oversubscribe those CPUs and makes no timing claim. The
+- `caller_cpu` / `pool_cpus` to the approved caller and twelve singleton pool CPUs. Both sequential
+  workers use that same policy; this numeric test makes no timing claim. The
   launcher must allow their union. Children start with that union so loading helpers inherit it;
   final caller/pool masks are applied and verified only after READY, after loading helpers join.
-- Keep the supplied arena/reserve/RSS/deadline values:116135731200B temporary arenas,
-  8589934592B reserve,128849018880B additional owned RSS, workers12/loaders4,
+- Use the updated one-half bounds: `temporary_arena_bytes 58067865600` means maximum live temporary
+  arena, not the sum of both lifetimes. Old116135731200B configs are refused before worker contact.
+  Keep8589934592B reserve,64424509440B (60GiB) additional owned RSS, workers12/loaders4,
   frame10000ms, setup600000ms per peer and total1500000ms for the local-subset phase.
 
-Preserving the full arena plus both temporary arenas needs232271462400B (216.32GiB) **before**
-scratch/system headroom. Supplied read-only runtime evidence found150533742592B MemAvailable and
-zero swap at that moment; this is not a reservation or current approval. Parent must re-establish
+Preserving the full arena plus one temporary arena needs174203596800B (162.24GiB) **before**
+scratch/system headroom. An earlier pre-attempt snapshot found150533742592B MemAvailable and zero
+swap then; it is outdated and is not a reservation or current approval. Parent must re-establish
 exclusive idle use, live headroom and cgroup limits before runtime selection. The program checks
 finite memory.max/high headroom against memory.current along its cgroup ancestry before loading
-(temporary bytes plus reserve) and during work (reserve). Its fresh global preflight also requires
-temporary bytes plus the8GiB reserve available, and subsequent sampled guards require MemAvailable>=8GiB, owned VmSwap0,
-aggregate replay+two-child RSS<=120GiB and unchanged host/cgroup OOM counters. The existing external
+(one half plus reserve, before each child) and during work (reserve). Its fresh global preflight also
+requires one half plus8GiB available; subsequent sampled guards require MemAvailable>=8GiB,
+replay/temporary-worker VmSwap0, aggregate additional RSS<=60GiB and unchanged host/cgroup OOM counters. The existing external
 owned-process/resource guard remains required; samples are not a continuous memory guarantee.
 
 Do not inherit the old synthetic2GiB address-space limit: each temporary worker needs about54.08GiB
-for its arena. The config preflight refuses an address-space cap below half the arena total plus1GiB.
+for its arena. The config preflight refuses an address-space cap below the one-half budget plus1GiB.
 Per-child arena budgets are derived from exact owner counts and rounded up only to MiB; the full
 resident is excluded from the additional-RSS sum. The two flat reference arrays together are capped
 at96MiB. File/config, asset metadata, CPU and address-space validation precede worker contact.
 
 After prior engine owner reaping and parent runtime approval, invoke exactly once under the retained
 guard with the six original trusted bindings, the same saved capture/A0 reference, and no engine.
-The external guard must also retain observation of the original full worker, including VmSwap0:
+The external guard must identify the original worker from its retained receipt, freshly measure its
+stable VmSwap before launch, and stop on any increase throughout full replay, loads and comparisons.
+If normal replay reduces that value, tighten the ceiling to the lowest observed value. Record initial,
+maximum and final VmSwap; do not copy the prior422148KiB value as a fresh baseline or claim zero.
+That pre-existing swap is not counted as available capacity. No recovery/warming campaign is added:
 
 ```sh
 timeout --signal=TERM --kill-after=10s 1800s "$REPLAY" \
@@ -107,18 +123,20 @@ timeout --signal=TERM --kill-after=10s 1800s "$REPLAY" \
 ```
 
 Full replay/logit identity gates still precede temporary loads. The local phase checks owned listener
-inodes before controls, keeps inactive peers alive, requires one verified allocation per subset and
+inodes before controls, keeps zero-work sessions alive, requires one verified allocation per subset and
 zero uploads/failures/unloads/expiry, and checks only active requests were sent. Setup wall time is
-reported separately. Success closes sessions, stops/reaps only the two retained child handles and
-reconnects to verify unchanged full residency. Failures drain/close tiers and signal/reap only those
+reported separately. Each peer closes its session, stops/reaps its retained child and confirms release
+before the next starts. Final metadata checks verify unchanged full cache accounting; the external
+receipt separately establishes the original swap condition. Failures drain/close tiers and signal/reap only those
 owned children; parent death also signals only its children. Uncertain STOP is never resent.
 
-Return `CPU_CAPTURE_REPLAY`, `LOCAL_SUBSET_LOAD`, both `LOCAL_SUBSET_CACHE` lines and
-`CPU_LOCAL_SUBSETS`, source/binary/config/capture pins, resource/OOM/cleanup receipts and final full
-resident accounting. A peer mismatch stops before group comparison; a later group/manual mismatch
-isolates that path. Keep private logs on failure and reconcile owned PIDs before any retry. No full
+Return `CPU_CAPTURE_REPLAY`, per-peer `LOCAL_SUBSET_LOAD/CACHE/RELEASE` lines and
+`CPU_SEQUENTIAL_SUBSETS`, source/binary/config/capture pins, resource/OOM/cleanup receipts and final
+full cache accounting plus measured original VmSwap. Success requires1920 peer-record checks,
+completed_peers2/released_peers2/max_live_children1, and `concurrent_group=NOT_RUN`. A first-peer
+failure prevents the second from starting. Keep private logs on failure and reconcile owned PIDs before any retry. No full
 worker stop/unload/replacement, new generation, remote subset phase or model acceptance is requested.
-Even an all-pass result leaves the live engine adapter/helper-GPU merge, remote peer behavior and
+Even an all-pass result leaves concurrent real-group execution, the live engine adapter/helper-GPU merge, remote peer behavior and
 closed-loop routing/error feedback untested.
 
 ### Completed real-input capture and resident replay (historical commands; do not repeat)
