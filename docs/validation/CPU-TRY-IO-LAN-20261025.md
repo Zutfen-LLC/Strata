@@ -1,7 +1,43 @@
 # Issue #12: bounded 1 Gb/s LAN handoff
 
-Status: **NOT RUN; bindings supplied by parent/Hermes**. Parent/Hermes executes this handoff;
-no fleet commands or executable tests run on the coding desktop. Verified 05 chain:
+Status: **Hermes LAN campaign terminal PASS; no clear latency winner**. The canonical result
+and checked LAN execution acceptance are in [issue #12's Hermes report](https://github.com/Zutfen-LLC/Strata/issues/12#issuecomment-6403447145).
+Do not repeat the completed campaign. No fleet commands or executable tests ran on the coding desktop.
+The following results were supplied by the parent/Hermes; this thread did not independently audit
+private raw receipts.
+
+All 15 shapes × 2 policies passed exact bytes/counts and cleanup on the existing 1 Gb/s link.
+Try-first won p50 in 8/15 shapes; poll-first won 7/15. First-minus-poll p50 deltas ranged from
+-68 to +56 microseconds, with a median about zero and mean -5.9 microseconds across shapes.
+These are summaries across shape-specific p50 values, not pooled or traffic-weighted latency.
+There was one pair per shape and no noise band. The result establishes neither a LAN latency
+winner nor a live model TPS benefit. Production socket defaults remain poll-first.
+
+| Measured helper counters, both roles | Poll-first | Try-first |
+| --- | --- | --- |
+| Poll calls | 132846 | 70703 |
+| Would-block events | Not supplied | 70703 |
+| EINTR | 0 | 0 |
+
+Example exact RTT p50 values, microseconds:
+
+| Shape | Poll-first | Try-first |
+| --- | --- | --- |
+| T1 N1 | 953 | 976 |
+| T1 N7 | 1710 | 1665 |
+| T2 N7 | 1638 | 1663 |
+| T2 N11 | 1876 | 1878 |
+| T2 N14 | 2014 | 1976 |
+
+Hermes confirmed all temporary tagged rules absent, INPUT baseline restored, and zero fixture
+listeners/replay processes. Resident worker 809314 on 02 at loopback port 17431 remained alive
+and untouched. Controller evidence root:
+`/home/zutfen/.hermes/cache/scratch/strata-try-io-lan-20261025-results/`.
+No failed arm was reported; repeat tests and live TPS measurement were not run in this closeout.
+
+## Retained executable handoff (completed; do not rerun)
+
+Verified 05 chain:
 `NFT_FAMILY=ip`, `NFT_TABLE=filter`, `NFT_CHAIN=INPUT`, type filter, hook input, priority filter,
 policy accept. It currently jumps to ts-input. This is an iptables-nft compatibility-managed
 table; retain its marker and every unrelated rule. Use the same narrowly scoped native nft

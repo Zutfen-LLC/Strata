@@ -188,5 +188,9 @@ It supersedes the older LAN boundary and stale address/permission examples in
 `docs/cpu-rpc-replay/HERMES.md` for issue #12 only. The supplied current tuple is
 02 10.0.0.180 to 05 10.0.0.123 over eno1, TCP 17531. The user approved a temporary
 restriction of that fixture tuple to source 02, followed by removal. The parent supplied the exact
-firewall chain binding and retained ELF hash in the linked handoff. LAN and TPS results
-remain NOT RUN; the supplied loopback evidence above is unchanged.
+firewall chain binding and retained ELF hash in the linked handoff. Hermes subsequently reported
+LAN terminal PASS for all 15 shapes × 2 policies and complete fixture cleanup. Try-first won
+p50 in 8/15 shapes and poll-first in 7/15, with a median delta about zero: no clear LAN latency
+winner. See the linked handoff and [canonical issue report](https://github.com/Zutfen-LLC/Strata/issues/12#issuecomment-6403447145).
+Production defaults remain poll-first; no live TPS result exists. The supplied loopback evidence
+above is unchanged. Do not repeat the completed campaign.
