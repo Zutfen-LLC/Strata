@@ -313,3 +313,12 @@ CLI options before resource setup. See the [native-OFF correction and regression
 The [16d065e Hermes receipt](cpu-worker-residency/evidence/hermes-16d065e-receipt.md) is user-attributed;
 its runtime results do not validate the later correction head. HIP is unvalidated and SYCL uses separate
 migrated sources; this worker feature is not claimed for SYCL.
+
+## Packed activation requests (experimental, default off)
+
+Issue #14 adds an opt-in request encoding for the sampled Linux x86-64 native Q8_0 format.
+Both peers need an explicit qualification ID for the verified native build pair. Unsupported
+peers or inputs use raw F32 with reported fallback. Replies keep their existing format.
+See the [wire contract and offline handoff](validation/CPU-PACKED-ACTIVATION-WIRE-20261025.md).
+Builds, offline wire tests and placement measurements for this stage remain pending; the earlier
+sampled proof does not validate this integration or establish a speedup.
