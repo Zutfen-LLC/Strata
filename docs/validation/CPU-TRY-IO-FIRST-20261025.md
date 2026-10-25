@@ -187,6 +187,6 @@ The current bounded handoff is [CPU-TRY-IO-LAN-20261025.md](CPU-TRY-IO-LAN-20261
 It supersedes the older LAN boundary and stale address/permission examples in
 `docs/cpu-rpc-replay/HERMES.md` for issue #12 only. The supplied current tuple is
 02 10.0.0.180 to 05 10.0.0.123 over eno1, TCP 17531. The user approved a temporary
-restriction of that fixture tuple to source 02, followed by removal. Execution still
-requires the exact firewall chain binding and retained ELF hash. LAN and TPS results
+restriction of that fixture tuple to source 02, followed by removal. The parent supplied the exact
+firewall chain binding and retained ELF hash in the linked handoff. LAN and TPS results
 remain NOT RUN; the supplied loopback evidence above is unchanged.
