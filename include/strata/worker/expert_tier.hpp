@@ -44,6 +44,7 @@ public:
         bool resident_reuse_only = false; // diagnostic: refuse empty cache, never load/upload
         bool diagnostic_regroup = false; // diagnostic: sequential virtual peers on the full cache
         bool diagnostic_ordered = false; // diagnostic: shadow full reply, reconstruct rows, exact bit gate
+        std::string packed_qualification; // explicit build-pair eligibility, empty by default
         bool entry_rows = false; // opt-in batched rows; group performs the one ordered reduction
         int setup_ms = 600000;
         std::function<bool()> cancelled;
@@ -84,7 +85,9 @@ public:
     /// entries not owned must not be marked or the worker refuses (`not-owned`) and the tier dies.
     /// Zero marked entries post nothing and return true - check `posted()`.
     bool post(int64_t layer, const float* x, const int32_t* ids, const float* weights, const uint8_t* owned,
-              int n_tok, int k, std::string& err);
+              int n_tok, int k, std::string& err,
+              std::shared_ptr<const PackedActivation> packed = {}, bool group_packed = false);
+    bool packed_enabled() const { return client_.packed_enabled(); }
     bool posted() const { return posted_; }
     /// Whether the LAST window sent a frame and finish() served its reply (a zero-work window: false,
     /// and `partials()` is then not this window's - the contribution reads as zero).
@@ -116,6 +119,8 @@ public:
         uint64_t setup_network_bytes = 0, local_bytes = 0, local_hits = 0, local_misses = 0;
         double connect_setup_ms = 0, local_ms = 0, fetch_upload_ms = 0, ready_ms = 0;
         uint64_t local_read_ns = 0, local_verify_ns = 0;
+        uint64_t packed_requests=0, raw_fallbacks=0, pack_calls=0, quantized_rows=0, pack_ns=0;
+        std::string packed_fallback_reason;
         uint64_t requests = 0;             ///< nonempty INFER windows (normally one frame; diagnostic wire counts below)
         uint64_t entries = 0;              ///< routed (token, expert) entries this tier executed
         uint64_t failures = 0;
@@ -149,7 +154,7 @@ private:
     size_t stride_ = 0;
     uint64_t model_id_ = 0, partition_id_ = 0;
     uint64_t sequence_ = 0;
-    uint64_t posted_ns_ = 0;
+    uint64_t posted_ns_ = 0, published_ns_ = 0;
     bool ready_ = false;
     std::atomic<bool> dead_{false};
     std::string dead_why_;
@@ -168,6 +173,8 @@ private:
     InferReply reply_;
     EntryRowsReply rows_reply_;
     bool entry_rows_=false;
+    std::string packed_qualification_;
+    strata::kernels::cpu::NativeFmt packed_fmt_{};
     bool posted_ = false;
     bool served_ = false;
     Stats st_;

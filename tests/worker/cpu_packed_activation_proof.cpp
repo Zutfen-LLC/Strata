@@ -1,6 +1,7 @@
 // Bounded offline Q8_0 proof. No sockets, worker, arena, or protocol changes.
 #include "local_fixture.hpp"
 #include "cpu_capture_rows.hpp"
+#include "strata/worker/packed_activation.hpp"
 #define GGML_COMMON_DECL_CPP
 #include "ggml-common.h"
 #include <climits>
@@ -89,7 +90,18 @@ Bytes roundtrip(const NativeFmt& f, const InferRequest& q, const Bytes& act, Byt
         std::memcpy(restored.data()+t*kNativeActBytes, row.data(), row.size());
         if (artifact) artifact->insert(artifact->end(), packed.begin(), packed.end());
     }
-    need(act == restored, "native useful bytes or inactive/padding bytes differ"); return restored;
+    need(act == restored, "native useful bytes or inactive/padding bytes differ");
+    std::vector<uint8_t> active(q.T,0);
+    for(size_t i=0;i<q.mask.size();++i)active[i/q.K]|=q.mask[i];
+    std::string why;uint64_t quantized=0;
+    auto wire=q;wire.packed=pack_activation(f,q.activations.data(),active.data(),q.T,why,&quantized);
+    need(bool(wire.packed),"production pack refused supported reference");
+    Bytes payload;InferRequest decoded;
+    need(encode_infer(wire,2560,payload,true) &&
+         decode_infer(payload.data(),payload.size(),kMaxLayers,kMaxExperts,2560,decoded,true),"production wire roundtrip");
+    Bytes production;need(restore_activation(f,*decoded.packed,production),"production restoration");
+    need(production==restored,"production wire native scratch exact diagnostic reference");
+    return production;
 }
 bool bits(const std::vector<float>& a, const std::vector<float>& b) {
     return a.size() == b.size() && !std::memcmp(a.data(), b.data(), a.size()*sizeof(float));
@@ -107,7 +119,7 @@ template<class F> void refuses(F fn) {
     need(rejected, "negative regression unexpectedly accepted");
 }
 void edge_checks(const NativeFmt& f, Bytes& artifact) {
-    InferRequest q; q.T = 2; q.K = 2; q.mask = {1,0,0,0}; q.activations.resize(2*ProofEmbDim);
+    InferRequest q; q.T = 2; q.K = 2; q.mask = {1,0,0,0}; q.activations.resize(2*ProofEmbDim); q.ids.assign(4,0); q.weights.assign(4,0.f);
     const float cases[] = {0.f, -0.f, std::numeric_limits<float>::denorm_min(),
         std::numeric_limits<float>::min(), 1.f, 65504.f, std::numeric_limits<float>::max(), -.125f, .5f, 127.f};
     for (size_t c = 0; c < sizeof(cases)/sizeof(*cases); ++c) {

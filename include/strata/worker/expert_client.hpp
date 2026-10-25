@@ -63,6 +63,8 @@ public:
     /// One bounded inference request; on refusal returns false with `last_status` set.
     bool infer(const InferRequest& r, InferReply& reply, std::string& err,
                RpcExchangeTiming* timing = nullptr);
+    bool negotiate_packed(const std::string& qualification, std::string& err);
+    bool packed_enabled() const { return packed_; }
     bool infer_rows(const InferRequest&, EntryRowsReply&, std::string&, RpcExchangeTiming* = nullptr);
 
     bool status(WorkerStatusInfo& out, std::string& err);
@@ -100,6 +102,7 @@ private:
   uint64_t reused_bytes_ = 0;
   bool local_ = false;
   bool entry_rows_ = false;
+  bool packed_ = false;
   LocalStats local_stats_;
   uint16_t last_status_ = ST_OK;
   // Synchronous, one-in-flight inference storage. Setup/upload frames remain temporary.

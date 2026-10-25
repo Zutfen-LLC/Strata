@@ -1,5 +1,6 @@
 // src/worker/expert_client.cpp - inferswarm #348: the client's frame io and protocol steps.
 #include "strata/worker/expert_client.hpp"
+#include "strata/worker/packed_activation.hpp"
 
 #include "wire_sock.hpp"
 
@@ -54,7 +55,7 @@ bool ExpertWorkerClient::send_frame(uint16_t msg, uint16_t st, const std::vector
         return false;
     }
     std::vector<uint8_t> temporary;
-    auto& buf = msg == MSG_INFER || msg == MSG_INFER_ROWS ? infer_frame_ : temporary;
+    auto& buf = msg == MSG_INFER || msg == MSG_INFER_ROWS || msg == MSG_INFER_PACKED || msg == MSG_INFER_ROWS_PACKED ? infer_frame_ : temporary;
     if(msg==MSG_INFER_ROWS)buf.reserve(kHeaderBytes+payload.size());
     encode_frame(buf, msg, st, payload.data(), payload.size());
     if (!sock::send_all_controlled((sock_fd)fd_, buf.data(), buf.size(), deadline_ms_, setup_cancelled_)) {
@@ -175,6 +176,7 @@ bool ExpertWorkerClient::setup_local(const SetupManifest &m, Digest128 id, bool 
 bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id, bool fallback,
                                     std::string &err, bool resident,bool rows) {
     entry_rows_=false;
+    packed_=false;
     local_ = false;
     local_stats_ = {};
     cache_hit_ = false;
@@ -242,6 +244,24 @@ bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id,
     local_ = id != nullptr;
     entry_rows_=rows;
     return true;
+}
+
+bool ExpertWorkerClient::negotiate_packed(const std::string& qualification,std::string& err) {
+    packed_=false;
+    if(!session_ || !packed_qualification_valid(qualification)){err="invalid packed qualification/session";return false;}
+    std::vector<uint8_t> p;push_u64(p,session_);
+    push_u64(p,std::stoull(qualification,nullptr,16));
+    if(!send_frame(MSG_STATUS,ST_OK,p,err))return false;
+    WireFrame f;if(!recv_frame(MSG_STATUS_ACK,f,err))return false;
+    if(f.status==ST_UNSUPPORTED_LAYOUT && f.payload.empty())return true;
+    // Old SEW1 workers accept up to 16 STATUS bytes and return their normal 59-byte status.
+    // Validate its session/readiness before selecting raw; never reconnect or repeat weight setup.
+    size_t i=0;
+    if(f.status==ST_OK && f.payload.size()==59 && cur_u64(f.payload.data(),59,i)==session_ &&
+       f.payload[58]==1 && (uint16_t(f.payload[56])|(uint16_t(f.payload[57])<<8))<=ST_CACHE_MISMATCH)return true;
+    push_u32(p,kPackedVersion);
+    if(f.status!=ST_OK || f.payload!=p){err="malformed packed capability reply";close();return false;}
+    packed_=true;return true;
 }
 
 bool ExpertWorkerClient::upload(int layer, int expert, const uint8_t *blob, uint32_t blob_bytes,
@@ -388,13 +408,14 @@ bool ExpertWorkerClient::infer(const InferRequest& r, InferReply& reply, std::st
     if (timing) *timing = {};
     const uint64_t send_start = timing ? mono_ns() : 0;
     auto& p = infer_payload_;
-    if (!encode_infer(r, n_embd_, p)) {
+    if (r.packed && !packed_) { err="packed capability was not negotiated"; return false; }
+    if (!encode_infer(r, n_embd_, p, bool(r.packed))) {
         err = "the request is outside the protocol's bounds";
         if (timing) timing->encode_send_ns = mono_ns() - send_start;
         return false;
     }
     if (timing) timing->request_bytes = kHeaderBytes + p.size();
-    if (!send_frame(MSG_INFER, ST_OK, p, err)) {
+    if (!send_frame(r.packed?MSG_INFER_PACKED:MSG_INFER, ST_OK, p, err)) {
         if (timing) timing->encode_send_ns = mono_ns() - send_start;
         return false;
     }
@@ -432,9 +453,10 @@ bool ExpertWorkerClient::infer_rows(const InferRequest& r,EntryRowsReply& reply,
     if(!entry_rows_){err="entry-row capability was not negotiated";return false;}
     const uint64_t start=timing?mono_ns():0;
     auto& p=infer_payload_;
-    if(!encode_infer(r,n_embd_,p)){err="row request outside protocol bounds";return false;}
+    if(r.packed && !packed_){err="packed capability was not negotiated";return false;}
+    if(!encode_infer(r,n_embd_,p,bool(r.packed))){err="row request outside protocol bounds";return false;}
     if(timing)timing->request_bytes=kHeaderBytes+p.size();
-    if(!send_frame(MSG_INFER_ROWS,ST_OK,p,err))return false;
+    if(!send_frame(r.packed?MSG_INFER_ROWS_PACKED:MSG_INFER_ROWS,ST_OK,p,err))return false;
     if(timing)timing->encode_send_ns=mono_ns()-start;
     const uint64_t receive=timing?mono_ns():0;auto& f=infer_reply_;
     if(!recv_frame(MSG_INFER_ROWS_ACK,f,err))return false;
@@ -538,6 +560,7 @@ void ExpertWorkerClient::close() {
     reused_bytes_ = 0;
     local_ = false;
     entry_rows_ = false;
+    packed_ = false;
     setup_cancelled_ = {};
     session_ = 0;
     blob_bytes_ = 0;

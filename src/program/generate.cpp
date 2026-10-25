@@ -576,6 +576,7 @@ struct Options {
     bool remote_cpu_resident = false;
     int remote_cpu_setup_ms = 600000;
     bool remote_cpu_rpc_timing = false;
+    std::string remote_cpu_packed_qualification;
     bool remote_cpu_entry_rows = false;
     int remote_cpu_regroup_diagnostic = -1; // absent: unchanged; 0/1/2: control/regroup/ordered
     bool remote_gpu_experts = false;
@@ -1026,6 +1027,7 @@ void usage() {
                  "  --remote-cpu-worker IPv4:PORT  opt-in fixed CPU group; repeat 1..2 times in ownership/merge order;\n"
                  "                       alternates the frozen CPU complement; requires local manifest\n"
                  "  --remote-cpu-regroup-diagnostic off|on|ordered  reuse-only control, split reduction or exact row reconstruction\n"
+                 "  --remote-cpu-packed-qualification 16_HEX  opt-in verified native build pair; raw fallback reported\n"
                  "  --remote-cpu-entry-rows  opt-in group entry-row replies and original-order CPU reduction; requires capable workers\n"
                  "  --remote-cpu-local-manifest FILE  opt-in trusted slice manifest; needs configured local worker\n"
                  "  --remote-cpu-local-fallback  allow upload for absent local experts (worker must allow it)\n"
@@ -2313,7 +2315,7 @@ int main(int argc, char** argv) {
         "--resident-budget-gib", "--model", "--ctx", "--chunk", "--n", "--force", "--emb",
         "--dump-full-logits", "--bench-pp", "--bench-tg", "--draft-vocab", "--expert-vram",
         "--cpu-threads", "--expert-slots", "--hybrid-rows",
-        "--remote-cpu-experts", "--remote-cpu-worker", "--remote-cpu-local-manifest", "--remote-cpu-setup-ms", "--remote-cpu-deadline-ms", "--remote-cpu-regroup-diagnostic",
+        "--remote-cpu-packed-qualification", "--remote-cpu-experts", "--remote-cpu-worker", "--remote-cpu-local-manifest", "--remote-cpu-setup-ms", "--remote-cpu-deadline-ms", "--remote-cpu-regroup-diagnostic",
     };
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -2331,7 +2333,7 @@ int main(int argc, char** argv) {
 #endif
         }
 #ifndef STRATA_NATIVE_EXPERTS
-        if (a == "--remote-cpu-experts" || a == "--remote-cpu-worker" || a == "--remote-cpu-local-manifest" ||
+        if (a == "--remote-cpu-packed-qualification" || a == "--remote-cpu-experts" || a == "--remote-cpu-worker" || a == "--remote-cpu-local-manifest" ||
             a == "--remote-cpu-local-fallback" || a == "--remote-cpu-resident" ||
             a == "--remote-cpu-setup-ms" || a == "--remote-cpu-deadline-ms" ||
             a == "--remote-cpu-rpc-timing" || a == "--remote-cpu-regroup-diagnostic" || a == "--remote-cpu-entry-rows") {
@@ -2613,6 +2615,7 @@ int main(int argc, char** argv) {
         else if (a == "--remote-cpu-deadline-ms")
             o.remote_cpu_deadline_ms = std::max(100, std::atoi(next("--remote-cpu-deadline-ms")));
         else if (a == "--remote-cpu-rpc-timing") o.remote_cpu_rpc_timing = true;
+        else if (a == "--remote-cpu-packed-qualification") o.remote_cpu_packed_qualification=next("--remote-cpu-packed-qualification");
         else if (a == "--remote-cpu-entry-rows") o.remote_cpu_entry_rows = true;
         else if (a == "--remote-cpu-regroup-diagnostic") {
             const std::string value=next("--remote-cpu-regroup-diagnostic");
@@ -3387,6 +3390,10 @@ int main(int argc, char** argv) {
         !o.remote_cpu_resident || o.remote_cpu_local_manifest.empty() || o.remote_cpu_local_fallback ||
         o.remote_gpu_experts || o.vision || cpu_capture_path)) {
         std::fprintf(stderr,"regroup diagnostic requires one CPU group endpoint, trusted resident reuse, text, no fallback or capture\n");return 2;
+    }
+    if(!o.remote_cpu_packed_qualification.empty() && (o.remote_cpu_workers.empty() || o.remote_cpu_legacy ||
+        cpu_capture_path || o.remote_cpu_regroup_diagnostic>=0)) {
+        std::fprintf(stderr,"packed requests require CPU group and exclude legacy/capture/diagnostic modes\n");return 2;
     }
     if(o.remote_cpu_entry_rows && (o.remote_cpu_workers.empty() || o.remote_cpu_legacy ||
         o.remote_cpu_local_manifest.empty() || cpu_capture_path || o.remote_cpu_regroup_diagnostic>=0)) {
@@ -6792,6 +6799,7 @@ int main(int argc, char** argv) {
         wopen.deadline_ms = o.remote_cpu_deadline_ms;
         wopen.rpc_timing = o.remote_cpu_rpc_timing;
         wopen.entry_rows = o.remote_cpu_entry_rows;
+        wopen.packed_qualification = o.remote_cpu_packed_qualification;
         wopen.resident_reuse_only = cpu_capture_path != nullptr || o.remote_cpu_regroup_diagnostic>=0;
         wopen.diagnostic_regroup = o.remote_cpu_regroup_diagnostic==1;
         wopen.diagnostic_ordered = o.remote_cpu_regroup_diagnostic==2;

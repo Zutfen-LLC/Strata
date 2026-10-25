@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <memory>
 #include <vector>
 
 namespace strata::worker {
@@ -57,6 +58,8 @@ enum MsgType : uint16_t {
     MSG_UNLOAD_ACK = 19,
     MSG_INFER_ROWS = 20,  ///< opt-in: existing INFER request, indexed unweighted entry-row reply
     MSG_INFER_ROWS_ACK = 21,
+    MSG_INFER_PACKED = 23,
+    MSG_INFER_ROWS_PACKED = 24,
     MSG_SHUTDOWN = 11,     ///< c->s: polite stop (a test/tool knob; the engine just closes)
 };
 
@@ -167,6 +170,13 @@ struct SetupManifest {
     }
 };
 
+inline constexpr uint16_t kPackedVersion = 1;
+inline constexpr size_t kPackedRowBytes = 2720;
+struct PackedActivation {
+    uint8_t T = 0;
+    std::vector<uint8_t> active, fields; // T rows; immutable once shared, inactive rows zero
+};
+
 /// One inference request.  `mask`/`ids`/`weights` are T*K entries, entry-major (token t, rank j at t*K+j).
 struct InferRequest {
     uint64_t session = 0, model_id = 0, partition_id = 0, sequence = 0;
@@ -175,6 +185,7 @@ struct InferRequest {
     std::vector<uint8_t> mask;      ///< 1 = this worker computes the entry (it must own ids[i])
     std::vector<uint16_t> ids;
     std::vector<float> weights;
+    std::shared_ptr<const PackedActivation> packed; // optional owned fields, never borrowed scratch
     std::vector<float> activations; ///< T * n_embd finite F32
 };
 
@@ -208,9 +219,9 @@ struct WorkerCacheInfo {
 bool encode_setup_begin(const SetupManifest& m, std::vector<uint8_t>& out);
 bool decode_setup_begin(const uint8_t* p, size_t n, SetupManifest& m);
 /// `n_embd` (the manifest's) sizes the activation block; the wire frame carries no geometry of its own.
-bool encode_infer(const InferRequest& r, uint16_t n_embd, std::vector<uint8_t>& out);
+bool encode_infer(const InferRequest& r, uint16_t n_embd, std::vector<uint8_t>& out, bool packed = false);
 bool decode_infer(const uint8_t* p, size_t n, uint16_t n_layers, uint16_t n_expert, uint16_t n_embd,
-                  InferRequest& r);
+                  InferRequest& r, bool packed = false);
 std::vector<uint8_t> encode_infer_ack(const InferReply& r);
 void encode_infer_ack(const InferReply& r, std::vector<uint8_t>& out);
 bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, InferReply& r);

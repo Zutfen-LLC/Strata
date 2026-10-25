@@ -44,6 +44,10 @@ private:
     uint16_t layers_ = 0, experts_ = 0, H_ = 0;
     int T_ = 0, K_ = 0, interval_ms_ = 50;
     bool entry_rows_=false;
+    strata::kernels::cpu::NativeFmt packed_fmt_{};
+    bool packed_requested_=false;
+    uint64_t pack_calls_=0, quantized_rows_=0, pack_ns_=0;
+    std::string pack_reason_;
     double row_reduce_ms_=0;
     uint64_t posted_ns_ = 0;
     bool ready_ = false, posted_ = false, served_ = false;

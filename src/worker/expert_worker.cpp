@@ -4,6 +4,7 @@
 // the wire contract before anything is allocated or executed, and every failure is a typed status plus a
 // counter bump - a rejected request lets the connection continue, a malformed frame closes it.
 #include "strata/worker/expert_worker.hpp"
+#include "strata/worker/packed_activation.hpp"
 
 #include "strata/worker/local_source.hpp"
 #include "local_loader.hpp"
@@ -152,7 +153,7 @@ struct ExpertWorkerService::Impl {
     SetupManifest manifest{};
     std::unique_ptr<LocalSource> local;
     bool local_mode = false, fallback = false;
-    bool entry_rows = false;
+    bool entry_rows = false, packed = false;
     uint64_t local_start_ns = 0;
     std::vector<uint8_t> local_attempt; // 0 untried, 1 local hit, 2 absent, 3 invalid
     NativeFmt fmt{};
@@ -246,6 +247,7 @@ struct ExpertWorkerService::Impl {
         state = State::Empty;
         local_mode = false;
         entry_rows = false;
+        packed = false;
         local_attempt.clear();
         if (local)
             local->close_files();
@@ -274,7 +276,7 @@ struct ExpertWorkerService::Impl {
     }
     void on_upload(sock_fd fd, const uint8_t* p, size_t n);
     void on_ready(sock_fd fd, const uint8_t* p, size_t n);
-    void on_infer(sock_fd fd, const uint8_t* p, size_t n, uint64_t request_start_ns,bool rows=false);
+    void on_infer(sock_fd fd, const uint8_t* p, size_t n, uint64_t request_start_ns,bool rows=false,bool packed_request=false);
     void on_status(sock_fd fd);
     void on_cache_status(sock_fd fd);
     void serve_connection(sock_fd fd);
@@ -308,6 +310,8 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
     case MSG_UPLOAD:
         cap = kUploadHeadBytes + opt.upload_chunk_max;
         break;
+    case MSG_INFER_PACKED:
+    case MSG_INFER_ROWS_PACKED:
     case MSG_INFER:
     case MSG_INFER_ROWS:
         cap = kInferPayloadMax;
@@ -879,6 +883,9 @@ bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float
         return true;   // zero CPU work: the reply is a zero partial, not an error
     }
     auto& nact = scratch.nact;
+    if(r.packed) {
+        if(!restore_activation(fmt,*r.packed,nact)){err="invalid packed activation";return false;}
+    } else {
     nact.assign((size_t) T * strata::kernels::cpu::kNativeActBytes, 0);
     for (int t = 0; t < T; ++t) {
         bool tok = false;
@@ -886,6 +893,7 @@ bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float
         if (tok)
             strata::kernels::cpu::native_quant_act(fmt, r.activations.data() + (size_t) t * H,
                                                    nact.data() + (size_t) t * kNativeActBytes);
+    }
     }
     // distinct experts in first-appearance order; an expert's entries keep frame order (duplicates too)
     auto& jobs = scratch.jobs;
@@ -929,7 +937,7 @@ bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float
 }
 
 void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
-                                         uint64_t request_start_ns,bool rows_reply) {
+                                         uint64_t request_start_ns,bool rows_reply,bool packed_request) {
     ++counters->requests;
     const bool measure = timing->enabled();
     const uint64_t decode_start = measure ? mono_ns() : 0;
@@ -965,7 +973,8 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
     }
     if(rows_reply && !entry_rows){fail(ST_WRONG_STATE);reply(ST_WRONG_STATE,{});return;}
     auto& r = scratch.request;
-    if (!decode_infer(p, n, manifest.n_layers, manifest.n_expert, manifest.n_embd, r)) {
+    if(packed_request && !packed){fail(ST_WRONG_STATE);reply(ST_WRONG_STATE,{});return;}
+    if (!decode_infer(p, n, manifest.n_layers, manifest.n_expert, manifest.n_embd, r,packed_request)) {
         fail(ST_BAD_REQUEST);
         reply(ST_BAD_REQUEST, {});
         return;
@@ -1138,6 +1147,12 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
             counters->infer_in_bytes += kHeaderBytes + f.payload.size();
             on_infer(fd,f.payload.data(),f.payload.size(),timing->enabled()?mono_ns():0,true);
             break;
+        case MSG_INFER_PACKED:
+        case MSG_INFER_ROWS_PACKED:
+            counters->infer_in_bytes+=kHeaderBytes+f.payload.size();
+            on_infer(fd,f.payload.data(),f.payload.size(),timing->enabled()?mono_ns():0,
+                     f.msg==MSG_INFER_ROWS_PACKED,true);
+            break;
         case MSG_CACHE_STATUS:
             on_cache_status(fd);
             break;
@@ -1148,6 +1163,20 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
             send_frame(fd, MSG_UNLOAD_ACK, ST_OK, {});
             break;
         case MSG_STATUS:
+            if(!f.payload.empty()) {
+                packed=false;
+                Cur c{f.payload.data(),f.payload.size()};
+                const auto sid=c.u64(), qualification=c.u64();
+                if(f.payload.size()!=16 || state!=State::Ready || sid!=session) {
+                    fail(ST_BAD_REQUEST);send_frame(fd,MSG_STATUS_ACK,ST_BAD_REQUEST,{});break;
+                }
+                if(!packed_qualification_valid(opt.packed_qualification) ||
+                   qualification!=std::stoull(opt.packed_qualification,nullptr,16) || !packed_format_supported(fmt)) {
+                    send_frame(fd,MSG_STATUS_ACK,ST_UNSUPPORTED_LAYOUT,{});break;
+                }
+                auto reply=f.payload;put32(reply,kPackedVersion);packed=true;
+                send_frame(fd,MSG_STATUS_ACK,ST_OK,reply);break;
+            }
             on_status(fd);
             break;
         case MSG_SHUTDOWN:

@@ -1686,11 +1686,11 @@ if(STRATA_NATIVE_EXPERTS)
   # kernels above.  CPU-only by construction (strata_kernels_cpu; no CUDA/HIP/SYCL target or toolkit is
   # involved), built here inside STRATA_NATIVE_EXPERTS because its arithmetic is ggml-cpu's.  The engine
   # integration (#349) links this same library from the GPU side.
-  add_library(strata_expert_worker STATIC src/worker/expert_wire.cpp src/worker/expert_worker.cpp
+  add_library(strata_expert_worker STATIC src/worker/packed_activation.cpp src/worker/expert_wire.cpp src/worker/expert_worker.cpp
               src/worker/expert_client.cpp src/worker/wire_sock.cpp src/worker/local_source.cpp
               src/worker/rpc_timing.cpp src/worker/local_loader.cpp)
   target_include_directories(strata_expert_worker PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_include_directories(strata_expert_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+  target_include_directories(strata_expert_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
   target_link_libraries(strata_expert_worker PUBLIC strata_kernels_cpu)
   if(WIN32)
     target_link_libraries(strata_expert_worker PUBLIC ws2_32)
@@ -1854,10 +1854,21 @@ if(STRATA_NATIVE_EXPERTS)
         add_test(NAME cpu_capture_subset_test COMMAND cpu_capture_subset_test $<TARGET_FILE:strata-expert-worker>)
         set_tests_properties(cpu_capture_subset_test PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
       endif()
+      if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+        add_executable(cpu_packed_wire_test tests/worker/cpu_packed_wire_test.cpp)
+        target_include_directories(cpu_packed_wire_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+        target_link_libraries(cpu_packed_wire_test PRIVATE strata_worker_tier)
+        add_test(NAME cpu_packed_wire_test COMMAND cpu_packed_wire_test)
+        set_tests_properties(cpu_packed_wire_test PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+      endif()
       add_executable(cpu_worker_group_test tests/worker/cpu_worker_group_test.cpp)
       target_include_directories(cpu_worker_group_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
       target_link_libraries(cpu_worker_group_test PRIVATE strata_worker_tier)
       add_test(NAME cpu_worker_group_test COMMAND cpu_worker_group_test)
+      if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+        add_test(NAME cpu_worker_group_packed_test COMMAND cpu_worker_group_test --packed)
+        set_tests_properties(cpu_worker_group_packed_test PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+      endif()
       set_tests_properties(cpu_worker_group_test PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
       # Manual diagnostic: two retained worker ELF paths, no model or external port.
       add_executable(cpu_group_numeric_diagnostic EXCLUDE_FROM_ALL tests/worker/cpu_group_numeric_diagnostic.cpp)

@@ -135,12 +135,14 @@ bool decode_setup_begin(const uint8_t* p, size_t n, SetupManifest& m) {
     return true;
 }
 
-bool encode_infer(const InferRequest& r, uint16_t n_embd, std::vector<uint8_t>& out) {
+bool encode_infer(const InferRequest& r, uint16_t n_embd, std::vector<uint8_t>& out, bool packed) {
     if (r.T < 1 || r.T > kMaxT || r.K < 1 || r.K > kMaxK) return false;
     if (n_embd < 1 || n_embd > kMaxNEmbd) return false;
     const size_t n = (size_t) r.T * r.K;
     if (r.mask.size() != n || r.ids.size() != n || r.weights.size() != n) return false;
-    if (r.activations.size() != (size_t) r.T * n_embd) return false;
+    if (!packed && r.activations.size() != (size_t) r.T * n_embd) return false;
+    if (packed && (n_embd != 2560 || r.T > 2 || !r.packed || r.packed->T != r.T ||
+        r.packed->active.size() != r.T || r.packed->fields.size() != (size_t)r.T*kPackedRowBytes)) return false;
     out.clear();
     out.reserve(kInferFixed + n * 7 + r.activations.size() * 4);
     put_u64(out, r.session);
@@ -153,12 +155,26 @@ bool encode_infer(const InferRequest& r, uint16_t n_embd, std::vector<uint8_t>& 
     for (size_t i = 0; i < n; ++i) out.push_back(r.mask[i] != 0 ? 1 : 0);
     for (size_t i = 0; i < n; ++i) put_u16(out, r.ids[i]);
     for (size_t i = 0; i < n; ++i) put_f32(out, r.weights[i]);
-    for (size_t i = 0; i < r.activations.size(); ++i) put_f32(out, r.activations[i]);
+    if (!packed) {
+        for (size_t i = 0; i < r.activations.size(); ++i) put_f32(out, r.activations[i]);
+    } else {
+        put_u16(out,kPackedVersion);put_u16(out,8);put_u16(out,2560);put_u16(out,80);
+        for (size_t t=0;t<r.T;++t) {
+            bool active=false;
+            for (size_t j=0;j<r.K;++j) {if(r.mask[t*r.K+j]>1)return false;active |= r.mask[t*r.K+j]!=0;}
+            if (!active) continue;
+            if (r.packed->active[t]!=1) return false;
+            const auto* row=r.packed->fields.data()+t*kPackedRowBytes;
+            for(size_t b=0;b<80;++b)if((row[b*34+1]&0x7c)==0x7c)return false;
+            out.insert(out.end(),row,row+kPackedRowBytes);
+        }
+    }
     return out.size() <= kInferPayloadMax;
 }
 
 bool decode_infer(const uint8_t* p, size_t n, uint16_t n_layers, uint16_t n_expert, uint16_t n_embd,
-                  InferRequest& r) {
+                  InferRequest& r, bool packed) {
+    r.packed.reset();
     if (n < kInferFixed) return false;   // the fixed fields must be whole before any field is read
     Cursor c{p, n};
     r.session = c.u64();
@@ -170,7 +186,10 @@ bool decode_infer(const uint8_t* p, size_t n, uint16_t n_layers, uint16_t n_expe
     r.K = p[c.i++];
     if (r.T < 1 || r.T > kMaxT || r.K < 1 || r.K > kMaxK) return false;
     const size_t entries = (size_t) r.T * r.K;
-    if (n != kInferFixed + entries + entries * 2 + entries * 4 + (size_t) r.T * n_embd * 4) return false;
+    const size_t metadata=kInferFixed+entries*7;
+    if (!n_embd || n_embd>kMaxNEmbd || n<metadata || n>kInferPayloadMax) return false;
+    if (!packed && n != metadata + (size_t) r.T * n_embd * 4) return false;
+    if (packed && (n_embd!=2560 || r.T>2 || n<metadata+8))return false;
     if (!c.take(entries)) return false;
     r.mask.assign(p + c.i, p + c.i + entries);
     c.i += entries;
@@ -178,8 +197,24 @@ bool decode_infer(const uint8_t* p, size_t n, uint16_t n_layers, uint16_t n_expe
     for (size_t i = 0; i < entries; ++i) r.ids[i] = c.u16();
     r.weights.resize(entries);
     for (size_t i = 0; i < entries; ++i) r.weights[i] = c.f32();
-    r.activations.resize((size_t) r.T * n_embd);
-    for (size_t i = 0; i < r.activations.size(); ++i) r.activations[i] = c.f32();
+    if (!packed) {
+        r.activations.resize((size_t) r.T * n_embd);
+        for (size_t i = 0; i < r.activations.size(); ++i) r.activations[i] = c.f32();
+    } else {
+        r.activations.clear();
+        if(c.u16()!=kPackedVersion || c.u16()!=8 || c.u16()!=2560 || c.u16()!=80)return false;
+        auto a=std::make_shared<PackedActivation>();a->T=r.T;a->active.assign(r.T,0);
+        a->fields.assign((size_t)r.T*kPackedRowBytes,0);
+        for(size_t t=0;t<r.T;++t) {
+            for(size_t j=0;j<r.K;++j) {if(r.mask[t*r.K+j]>1)return false;a->active[t]|=r.mask[t*r.K+j];}
+            if(!a->active[t])continue;
+            if(!c.take(kPackedRowBytes))return false;
+            auto* row=a->fields.data()+t*kPackedRowBytes;c.bytes(row,kPackedRowBytes);
+            for(size_t b=0;b<80;++b)if((row[b*34+1]&0x7c)==0x7c)return false;
+        }
+        if(c.i!=n)return false;
+        r.packed=std::move(a);
+    }
     if (r.layer >= n_layers) return false;
     for (size_t i = 0; i < entries; ++i)
         if (r.ids[i] >= n_expert) return false;

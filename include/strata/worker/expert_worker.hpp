@@ -41,6 +41,7 @@ struct WorkerOptions {
     bool residency_forever = false; ///< explicit service-owned residency; no idle expiry, never implicit at 0
     uint32_t upload_chunk_max = kUploadChunkMax;   ///< advertised data cap, 1..kUploadChunkMax
     bool accepted_tcp_nodelay = false; ///< opt-in checked TCP_NODELAY on CPU-worker accepted sockets only
+    std::string packed_qualification; // empty: raw only; explicit verified build-pair ID
     bool rpc_timing = false; ///< opt-in fixed-memory aggregate timing; never logs individual RPCs
     std::string bind_ip = "127.0.0.1"; ///< numeric unicast IPv4 only; never wildcard or DNS
     std::vector<std::string> allow_peer_ips; ///< exact numeric IPv4 peers; required for non-loopback bind

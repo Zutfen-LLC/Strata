@@ -1,4 +1,5 @@
 #include "strata/worker/cpu_group.hpp"
+#include "strata/worker/packed_activation.hpp"
 #include "strata/worker/setup_keepalive.hpp"
 #include "strata/worker/expert_worker.hpp"
 #include <algorithm>
@@ -30,6 +31,8 @@ bool ExpertWorkerGroup::validate(const std::vector<Open>& options, const std::ve
     std::set<std::pair<std::string,uint16_t>> endpoints;
     std::vector<uint8_t> covered(expected.size(), 0);
     for (const auto& o : options) {
+        if(!o.packed_qualification.empty() && (!packed_qualification_valid(o.packed_qualification) ||
+            o.diagnostic_regroup || o.diagnostic_ordered))return refuse("invalid packed qualification/diagnostic mode");
         CpuEndpoint endpoint;
         if (!parse_cpu_endpoint(o.host + ":" + std::to_string(o.port), endpoint) ||
             !endpoints.emplace(o.host,o.port).second || o.deadline_ms < 1 || o.setup_ms < 1)
@@ -63,6 +66,10 @@ bool ExpertWorkerGroup::open(const std::vector<Open>& options, const std::vector
     if (ready_ || !validate(options,expected,err)) { if(err.empty())err="CPU group already open";return false; }
     layers_=options[0].n_layers;experts_=options[0].n_expert;H_=options[0].n_embd;
     entry_rows_=options[0].entry_rows;row_reduce_ms_=0;
+    packed_requested_=false;pack_calls_=quantized_rows_=pack_ns_=0;pack_reason_.clear();
+    for(const auto& o:options)packed_requested_|=!o.packed_qualification.empty();
+    if(packed_requested_)strata::kernels::cpu::native_fmt(options[0].gu_type,options[0].d_type,
+        H_,options[0].n_ff,packed_fmt_,pack_reason_);
     owners_.assign((size_t)layers_*experts_,-1);stats_={};stopping_=window_=false;
     const size_t stride=(experts_+7u)/8u;
     try {
@@ -149,16 +156,28 @@ bool ExpertWorkerGroup::post(int64_t l,const float* x,const int32_t* ids,const f
         for(int i=0;i<T*K;++i) if(owned[i] && owners_[(size_t)l*experts_+ids[i]]==(int)p)
             masks_[p][i]=active_[p]=1;
     }
+    const auto window_start=packed_requested_?now_ns():0;
+    std::shared_ptr<const PackedActivation> packed;
+    if(packed_requested_) {
+        std::vector<uint8_t> active(T,0);
+        for(size_t p=0;p<peers_.size();++p)if(active_[p] && peers_[p]->packed_enabled())
+            for(int i=0;i<T*K;++i)active[i/K]|=masks_[p][i];
+        if(std::find(active.begin(),active.end(),1)!=active.end()) {
+            uint64_t rows=0;const auto start=now_ns();
+            packed=pack_activation(packed_fmt_,x,active.data(),T,pack_reason_,&rows);
+            ++pack_calls_;quantized_rows_+=rows;pack_ns_+=now_ns()-start;
+        }
+    }
     bool ok=true;
     { std::lock_guard<std::mutex> lock(mutex_);
       if(failed_.load()) {err=reason_;return false;} window_=true;
-      T_=T;posted_ns_=now_ns();posted_=true;
+      T_=T;posted_ns_=packed_requested_?window_start:now_ns();posted_=true;
       try {
         for(size_t p=0;p<peers_.size();++p) {
             // post() copies the input and wakes that peer; never wait for a reply in this loop.
             // Keep the group lock through publication: an inactive peer's post resets its state
             // before taking the tier lock, so its idle keeper must not probe concurrently.
-            if(!peers_[p]->post(l,x,ids,weights,masks_[p].data(),T,K,err)) {ok=false;break;}
+            if(!peers_[p]->post(l,x,ids,weights,masks_[p].data(),T,K,err,peers_[p]->packed_enabled()?packed:nullptr,packed_requested_)) {ok=false;break;}
         }
       } catch(const std::exception& e) {err=e.what();ok=false;}
     }
@@ -227,6 +246,8 @@ void ExpertWorkerGroup::report(std::string& out) const {
     std::ostringstream text;
     text<<"CPU group peers="<<size()<<" "<<(dead()?"DEAD":ready()?"READY":"CLOSED")<<" group_request_wall_ms="<<stats_.request_ms
         <<" caller_wait_ms="<<stats_.wait_ms<<" (peer timings overlap; do not sum as wall time)";
+    if(packed_requested_)text<<" pack_calls="<<pack_calls_<<" quantized_rows="<<quantized_rows_
+        <<" pack_ns="<<pack_ns_<<" pack_fallback_reason="<<pack_reason_;
     if(entry_rows_)text<<" reply_mode=entry_rows row_reduce_ms="<<row_reduce_ms_;
     for(size_t i=0;i<peers_.size();++i) {std::string row;peers_[i]->report(row);
         text<<"\nCPU peer["<<i<<"] "<<endpoints_[i].host<<":"<<endpoints_[i].port<<" "<<row;}

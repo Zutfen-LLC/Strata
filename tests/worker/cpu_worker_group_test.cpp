@@ -1,6 +1,7 @@
 // Fixed CPU groups against real native services/manifest fixtures; no GPU/model.
 #include "local_fixture.hpp"
 #include "strata/worker/cpu_group.hpp"
+#include "strata/worker/packed_activation.hpp"
 #include <cmath>
 #include <condition_variable>
 #include <mutex>
@@ -18,7 +19,7 @@ struct Gate {
 struct Proxy {
     Gate& gate; int index; uint16_t backend,port=0; sock_fd listener=kBadFd;
     std::atomic<bool> stopping{false}; std::thread thread;
-    std::atomic<bool> drop{false},nonfinite{false},overflow{false},refuse_rows{false},wrong_sequence{false};
+    std::atomic<bool> drop{false},nonfinite{false},overflow{false},refuse_rows{false},wrong_sequence{false},old_status{false},bad_caps{false};
     std::atomic<int> setups{0};
     Proxy(Gate& g,int i,uint16_t back):gate(g),index(i),backend(back) {
         std::string err;require(sock::listen_loopback(port,listener,err),err);
@@ -41,6 +42,8 @@ struct Proxy {
             std::vector<uint8_t> request,response;
             while(!stopping.load() && frame(front,request)) {
                 const uint16_t msg=request[4]|(request[5]<<8);
+                const bool probe=msg==MSG_STATUS && request.size()==kHeaderBytes+16;
+                if(probe && old_status)encode_frame(request,MSG_STATUS,ST_OK,nullptr,0);
                 if(msg==MSG_LOCAL_SETUP && refuse_rows && request.size()>=kHeaderBytes+8 && (request[kHeaderBytes+4]&kLocalEntryRows)) {
                     ++setups;std::vector<uint8_t> refused;encode_frame(refused,MSG_LOCAL_SETUP_ACK,ST_LOCAL_UNAVAILABLE,nullptr,0);
                     sock::send_all(front,refused.data(),refused.size(),3000);break; // retained old-worker flag refusal
@@ -51,6 +54,7 @@ struct Proxy {
                     if(drop)break;
                 }
                 if(!sock::send_all(back,request.data(),request.size(),3000) || !frame(back,response))break;
+                if(probe && bad_caps && response.size()==kHeaderBytes+20)response.back()^=1;
                 if((msg==MSG_INFER || msg==MSG_INFER_ROWS) && (nonfinite || overflow) && response.size()>=kHeaderBytes+26) {
                     // INFER_ACK starts session/sequence then F32 partials. Preserve framing/identity.
                     const uint32_t nan=overflow?0x7f7fffffu:0x7fc00000u;
@@ -131,13 +135,15 @@ void reference(Fixture& f,ExpertWorkerGroup& group,const Input& in,int count,boo
     std::printf("CPU_GROUP_NUMERIC T=%d peers=%d max_abs=%.9g max_rel=%.9g max_scaled_rel=%.9g rmse=%.9g atol=1e-4 scaled_rtol=4e-6\n",
         in.T,count,maximum,relative,scaled,std::sqrt(squared/grouped.size()));
 }
-void native(bool rows=false) {
+void native(bool rows=false,int packed_mode=0) {
     Fixture f;auto settings=f.options();settings.residency_forever=true;
-    Service a(settings),b(settings);configuration(f,a,b);std::string err;
+    if(packed_mode)settings.packed_qualification="123456789abcdef1";
+    Service a(settings);if(packed_mode==2)settings.packed_qualification.clear();
+    Service b(settings);configuration(f,a,b);std::string err;
     for(int count:{1,2}) for(int round=0;round<2;++round) {
         auto opts=std::vector<ExpertWorkerTier::Open>{option(f,a.port,count==1?std::vector<uint8_t>{3,3}:std::vector<uint8_t>{1,1})};
         if(count==2)opts.push_back(option(f,b.port,{2,2}));
-        for(auto& o:opts)o.entry_rows=rows;
+        for(auto& o:opts){o.entry_rows=rows;if(packed_mode){o.packed_qualification="123456789abcdef1";o.rpc_timing=true;}}
         // A changed partition must not silently reuse the previous resident arena.
         if(round==0) {ExpertWorkerClient c;connect(c,a);require(c.unload(err),err);c.close();connect(c,b);require(c.unload(err),err);}
         ExpertWorkerGroup group;require(group.open(opts,{3,3},err),err);
@@ -149,6 +155,21 @@ void native(bool rows=false) {
             auto before=group.peer_stats(1).requests;
             require(one.post(group,err)&&group.finish(err),err);
             check(group.peer_stats(1).requests==before,"zero-work peer sends no INFER");
+        }
+        if(packed_mode) {
+            check(group.peer_stats(0).packed_requests>0 && group.peer_stats(0).raw_fallbacks>0,
+                  "T1/T2 packed and unsupported T4/T8 deliberate raw fallback");
+            check(group.peer_stats(0).pack_calls==0 && (count==1 || group.peer_stats(1).pack_calls==0),
+                  "group peers never repeat shared sender quantization");
+            if(count==2 && packed_mode==2)check(group.peer_stats(1).packed_requests==0 && group.peer_stats(1).raw_fallbacks>0,
+                "unqualified peer receives raw alongside packed capable peer");
+            std::string report;group.report(report);
+            check(report.find(count==1?"pack_calls=7 quantized_rows=7":"pack_calls=8 quantized_rows=8")!=std::string::npos,
+                "group quantizes active union exactly once, independent of eligible peer count");
+            std::printf("PACKED_PLACEMENT %s\n",report.c_str());
+            Input borrowed(1);require(borrowed.post(group,err),err);
+            borrowed.x.assign(2560,99.f);borrowed.ids.assign(2,0);borrowed.w.assign(2,99.f);
+            require(group.finish(err),err);Input immutable(1);reference(f,group,immutable,count,rows);
         }
         group.close();
     }
@@ -250,6 +271,23 @@ void row_codec() {
     require(decode_infer_rows_ack(bytes.data(),bytes.size(),kMaxNEmbd,q,reply),"decode maximum rows");
     check(reply.rows.capacity()<=kEntryRowsMax*kMaxNEmbd && reply.indices.capacity()<=kEntryRowsMax,"decoded row retention bounded after warmup");
 }
+void packed_capability() {
+    Fixture f;auto settings=f.options();settings.residency_forever=true;
+    settings.packed_qualification="123456789abcdef1";Service service(settings);Gate gate;
+    for(bool malformed:{false,true}) {
+        Proxy proxy(gate,0,service.port);proxy.old_status=!malformed;proxy.bad_caps=malformed;
+        auto o=option(f,proxy.port,{3,3});o.packed_qualification=settings.packed_qualification;
+        ExpertWorkerTier tier;std::string err;
+        if(malformed)check(!tier.open(o,err) && err=="malformed packed capability reply",
+            "malformed capability fails setup without raw fallback");
+        else {
+            require(tier.open(o,err),err);check(!tier.packed_enabled(),"old peer normal STATUS selects raw without reconnect");
+            gate.all();Input in(1);require(tier.post(0,in.x.data(),in.ids.data(),in.w.data(),in.mask.data(),1,2,err) && tier.finish(err),err);
+            check(tier.stats().packed_requests==0 && tier.stats().raw_fallbacks==1,"old peer still serves raw after capability probe");
+        }
+        tier.close();
+    }
+}
 void row_capability() {
     Fixture f;auto settings=f.options();settings.residency_forever=true;Service service(settings);Gate gate;
     {
@@ -309,7 +347,12 @@ void float_codec_edges() {
     check(!decode_infer_ack(bytes.data(),bytes.size()-1,(uint16_t)legacy_words.size(),1,decoded),"legacy truncated reply refused");
 }
 }
-int main() {
+int main(int argc,char** argv) {
+    if(argc==2 && std::string(argv[1])=="--packed") {
+        try {packed_capability();native(false,1);native(true,1);native(true,2);}
+        catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}
+        std::printf("CPU_PACKED_GROUP failures=%d models=0\n",failures);return failures?1:0;
+    }
     try {row_codec();float_codec_edges();row_capability();native();native(true);setup_failure_and_zero_work();setup_failure_and_zero_work(true);slow_second_setup();
         for(int mode=0;mode<5;++mode)controlled(mode);for(int mode=0;mode<6;++mode)controlled(mode,true);}
     catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}
