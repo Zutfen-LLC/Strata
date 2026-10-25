@@ -576,7 +576,7 @@ struct Options {
     bool remote_cpu_resident = false;
     int remote_cpu_setup_ms = 600000;
     bool remote_cpu_rpc_timing = false;
-    int remote_cpu_regroup_diagnostic = -1; // absent: unchanged; 0/1: reuse-only control/regroup
+    int remote_cpu_regroup_diagnostic = -1; // absent: unchanged; 0/1/2: control/regroup/ordered
     bool remote_gpu_experts = false;
     bool remote_gpu_legacy = false;
     std::vector<strata::worker::GpuEndpoint> remote_gpu_workers;
@@ -1024,7 +1024,7 @@ void usage() {
                  "                       adaptive tiers, resident RAM mirrors, tail skipping).\n"
                  "  --remote-cpu-worker IPv4:PORT  opt-in fixed CPU group; repeat 1..2 times in ownership/merge order;\n"
                  "                       alternates the frozen CPU complement; requires local manifest\n"
-                 "  --remote-cpu-regroup-diagnostic off|on  reuse-only one-worker group control or virtual two-peer reduction\n"
+                 "  --remote-cpu-regroup-diagnostic off|on|ordered  reuse-only control, split reduction or exact row reconstruction\n"
                  "  --remote-cpu-local-manifest FILE  opt-in trusted slice manifest; needs configured local worker\n"
                  "  --remote-cpu-local-fallback  allow upload for absent local experts (worker must allow it)\n"
                  "  --remote-cpu-resident  opt-in persistent worker cache; needs local manifest and worker TTL\n"
@@ -2613,10 +2613,10 @@ int main(int argc, char** argv) {
         else if (a == "--remote-cpu-rpc-timing") o.remote_cpu_rpc_timing = true;
         else if (a == "--remote-cpu-regroup-diagnostic") {
             const std::string value=next("--remote-cpu-regroup-diagnostic");
-            if(o.remote_cpu_regroup_diagnostic!=-1 || (value!="off" && value!="on")) {
-                std::fprintf(stderr,"--remote-cpu-regroup-diagnostic takes exactly one off|on\n");return 2;
+            if(o.remote_cpu_regroup_diagnostic!=-1 || (value!="off" && value!="on" && value!="ordered")) {
+                std::fprintf(stderr,"--remote-cpu-regroup-diagnostic takes exactly one off|on|ordered\n");return 2;
             }
-            o.remote_cpu_regroup_diagnostic=value=="on"?1:0;
+            o.remote_cpu_regroup_diagnostic=value=="ordered"?2:value=="on"?1:0;
         }
         else if (a == "--remote-gpu-experts") {
             o.remote_gpu_experts = o.remote_gpu_legacy = true;
@@ -6786,6 +6786,7 @@ int main(int argc, char** argv) {
         wopen.rpc_timing = o.remote_cpu_rpc_timing;
         wopen.resident_reuse_only = cpu_capture_path != nullptr || o.remote_cpu_regroup_diagnostic>=0;
         wopen.diagnostic_regroup = o.remote_cpu_regroup_diagnostic==1;
+        wopen.diagnostic_ordered = o.remote_cpu_regroup_diagnostic==2;
         wopen.model_name = o.pack.c_str();
         wopen.gu_type = 8;
         wopen.d_type = 8;
@@ -6867,8 +6868,8 @@ int main(int argc, char** argv) {
         } else cpu_opened=worker_tier.open(wopen,err);
         if(!cpu_opened) {std::fprintf(stderr,"strata generate: CPU setup: %s\n",err.c_str());return 1;}
         if(o.remote_cpu_regroup_diagnostic>=0)
-            std::fprintf(stderr,"strata generate: CPU regroup diagnostic=%s reuse_only=1 virtual_peers=2 sequential=1\n",
-                         o.remote_cpu_regroup_diagnostic?"on":"off");
+            std::fprintf(stderr,"strata generate: CPU regroup diagnostic=%s reuse_only=1 sequential=1\n",
+                         o.remote_cpu_regroup_diagnostic==2?"ordered":o.remote_cpu_regroup_diagnostic?"on":"off");
         if(cpu_capture_path) {
             strata::worker::SetupManifest m;
             m.model_id=local_manifest.identity.a;m.gu_type=wopen.gu_type;m.d_type=wopen.d_type;

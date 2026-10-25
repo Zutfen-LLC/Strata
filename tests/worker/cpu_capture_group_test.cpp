@@ -5,6 +5,63 @@
 #include "cpu_regroup.hpp"
 using namespace strata::worker::diagnostic;
 namespace {
+void ordered_checks() {
+    InferRequest q;q.T=2;q.K=3;q.sequence=10;q.ids={0,1,2,3,4,5};q.mask={1,0,1,0,1,0};
+    q.weights={.25f,.7f,-.5f,.9f,2.f,.1f};q.activations={.25f,-.5f,.75f,1.f};
+    const uint16_t H=2;std::vector<float> rows={-4.f,2.f,9.f,9.f,3.f,-8.f,9.f,9.f,-2.f,.125f,9.f,9.f};
+    std::vector<float> reference(4);
+    auto reduce=[&]{ExpertWorkerService::accumulate_partial(q.T,q.K,q.mask.data(),q.weights.data(),rows.data(),H,reference.data());};
+    reduce();uint64_t sequence=10,calls=0,bytes=0;InferReply result;std::string err;int entered=0,fail_at=0;
+    auto exchange=[&](const InferRequest& r,InferReply& reply,std::string& why) {
+        ++entered;
+        check(r.ids==q.ids && r.activations==q.activations && r.sequence==q.sequence+entered-1,
+              "ordered preserves IDs/activation and monotonic sequences");
+        if(entered==fail_at){why="owned exchange refused";return false;}
+        if(entered==1) {
+            check(r.weights==q.weights && r.mask==q.mask,"ordered shadow uses original weights/mask");
+            reply.partials=reference;return true;
+        }
+        check(std::all_of(r.weights.begin(),r.weights.end(),[](float w){return w==1.f;}),"row requests use unit weights");
+        for(size_t i=0;i<r.mask.size();++i)check(r.mask[i]==(q.mask[i] && i%3==size_t(entered-2)),
+            "row rank order and masks are exact");
+        reply.partials.assign(4,0.f);
+        for(int t=0;t<2;++t)for(int rank=0;rank<3;++rank)if(r.mask[t*3+rank]) {
+            const size_t i=t*3+rank;check(q.mask[i]==1,"row cannot acquire GPU entry");
+            std::copy_n(rows.data()+i*H,H,reply.partials.data()+t*H);
+        }
+        return true;
+    };
+    require(ordered_cpu_request(q,H,sequence,exchange,result,calls,bytes,err),err);
+    check(calls==4 && bytes==48 && !std::memcmp(result.partials.data(),reference.data(),16),
+          "shadow plus three unit rank replies reconstruct original weighted bits");
+    reference[0]=std::nextafter(reference[0],std::numeric_limits<float>::infinity());q.sequence=++sequence;entered=0;
+    check(!ordered_cpu_request(q,H,sequence,exchange,result,calls,bytes,err) && result.partials.empty() &&
+          err.find("ordered bit gate mismatch")==0,"one-ULP rounding mismatch is refused without publication");
+    q.mask={1,0,0,1,0,0};reduce();q.sequence=++sequence;entered=0;
+    require(ordered_cpu_request(q,H,sequence,exchange,result,calls,bytes,err),err);
+    check(calls==2,"empty ranks are skipped and one rank can carry different token entries");
+    q.mask={1,0,1,0,1,0};reduce();q.sequence=++sequence;entered=0;fail_at=3;
+    check(!ordered_cpu_request(q,H,sequence,exchange,result,calls,bytes,err) && result.partials.empty() &&
+          calls==3 && err=="owned exchange refused","row failure after shadow/successful row publishes nothing");
+    // A numerically equal sign difference must fail the bit gate, never be normalized away.
+    InferRequest zero;zero.T=zero.K=1;zero.ids={0};zero.mask={1};zero.weights={1.f};zero.activations={0.f};zero.sequence=++sequence;
+    entered=0;
+    check(!ordered_cpu_request(zero,1,sequence,[&](const InferRequest&,InferReply& reply,std::string&) {
+        reply.partials={++entered==1?-0.f:0.f};return true;
+    },result,calls,bytes,err) && result.partials.empty() && err.find("ordered bit gate mismatch")==0,
+          "signed-zero bit mismatch refuses without partial publication");
+    InferRequest maximum;maximum.T=kMaxT;maximum.K=kMaxK;maximum.sequence=++sequence;
+    maximum.ids.assign(kMaxT*kMaxK,0);maximum.mask.assign(kMaxT*kMaxK,1);maximum.weights.assign(kMaxT*kMaxK,1.f);
+    maximum.activations.assign(kMaxT*kMaxNEmbd,0.f);
+    require(ordered_cpu_request(maximum,kMaxNEmbd,sequence,[&](const InferRequest&,InferReply& reply,std::string&) {
+        reply.partials.assign(kMaxT*kMaxNEmbd,0.f);return true;
+    },result,calls,bytes,err),err);
+    check(calls==11 && bytes==819200,"maximum shape bounded to eleven exchanges and819200 row bytes");
+    maximum.T=kMaxT+1;entered=0;
+    check(!ordered_cpu_request(maximum,kMaxNEmbd,sequence,[&](const InferRequest&,InferReply&,std::string&) {
+        ++entered;return true;
+    },result,calls,bytes,err) && !entered && !bytes && result.partials.empty(),"oversize refuses before exchange/rows");
+}
 void regroup_order() {
     SetupManifest m;m.n_layers=2;m.n_expert=5;m.partition={21,18};
     const auto owners=cpu_capture_owners(m); // layer1 IDs1/4 belong to peers1/0, not local parity
@@ -111,6 +168,26 @@ void live_regroup(const Fixture& fixture,const CpuCaptureFile& f,const Child& ch
         "real second-peer refusal drains and publishes no partial result");
     group.close();
 }
+void live_ordered(const Fixture& fixture,const CpuCaptureFile& f,const Child& child) {
+    ExpertWorkerGroup::Open option;option.local=&fixture.m;option.port=child.port;
+    option.resident=option.resident_reuse_only=option.diagnostic_ordered=true;
+    option.n_layers=2;option.n_expert=4;option.n_embd=2560;option.n_ff=640;option.partition=f.setup.partition;
+    ExpertWorkerGroup group;std::string err;require(group.open({option},f.setup.partition,err),err);
+    check(group.peer_stats(0).cache_hit && !group.peer_stats(0).local_bytes && !group.peer_stats(0).setup_network_bytes,
+          "ordered uses the existing complete arena without load/upload");
+    uint64_t active=0;
+    for(const auto& record:f.records) {
+        const auto& q=record.request;std::vector<int32_t> ids(q.ids.begin(),q.ids.end());
+        require(group.post(q.layer,q.activations.data(),ids.data(),q.weights.data(),q.mask.data(),q.T,q.K,err) && group.finish(err),err);
+        check(group.served()==record.sent,"ordered preserves zero-work semantics");
+        if(record.sent) {++active;check(!std::memcmp(group.partials(),record.partials.data(),record.partials.size()*sizeof(float)),
+            "real shadow/row reconstruction is bitwise full reference across live windows");}
+    }
+    const auto& stats=group.peer_stats(0);
+    check(stats.ordered_checked_windows==active && stats.ordered_wire_requests>=2*active &&
+        stats.ordered_max_exchanges<=11 && stats.ordered_peak_row_bytes<=819200,"ordered checked-window and bounded wire/scratch receipts");
+    group.close();
+}
 void test(const char* binary){
     Fixture fixture(4);const auto f=capture(fixture);
     ChildSpec spec;spec.binary=binary;spec.root=fixture.root.string();spec.manifest=(fixture.root/"local.manifest").string();
@@ -148,6 +225,8 @@ void test(const char* binary){
     auto stale=before;++stale.arena_allocations;
     check(!replay_single_group(f,fixture.m,"127.0.0.1",child.port,stale,validated,group,err) &&
         unchanged_resident(before,cache(child)),"changed cache accounting refuses before group setup");
+    live_ordered(fixture,f,child);
+    check(unchanged_resident(before,cache(child)),"ordered disconnect preserves one complete resident arena");
     live_regroup(fixture,f,child);
     check(unchanged_resident(before,cache(child)),"regroup failure disconnect retains the same complete arena");
     check(child.owns_listener(),"fixture still owns its live listener");child.stop();
@@ -156,6 +235,6 @@ void test(const char* binary){
 }
 int main(int argc,char** argv){
     if(argc!=2)return 2;
-    try{regroup_order();test(argv[1]);}catch(const std::exception& e){std::fprintf(stderr,"CPU_CAPTURE_GROUP exception: %s\n",e.what());return 2;}
+    try{ordered_checks();regroup_order();test(argv[1]);}catch(const std::exception& e){std::fprintf(stderr,"CPU_CAPTURE_GROUP exception: %s\n",e.what());return 2;}
     std::printf("CPU_CAPTURE_GROUP_TEST failures=%d\n",failures);return failures?1:0;
 }

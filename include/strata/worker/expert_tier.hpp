@@ -43,6 +43,7 @@ public:
         bool resident = false; // negotiate persistent cache; requires local manifest and worker TTL
         bool resident_reuse_only = false; // diagnostic: refuse empty cache, never load/upload
         bool diagnostic_regroup = false; // diagnostic: sequential virtual peers on the full cache
+        bool diagnostic_ordered = false; // diagnostic: shadow full reply, reconstruct rows, exact bit gate
         int setup_ms = 600000;
         std::function<bool()> cancelled;
         int deadline_ms = 10000;          ///< per-frame deadline (setup, upload, infer)
@@ -117,6 +118,8 @@ public:
         uint64_t entries = 0;              ///< routed (token, expert) entries this tier executed
         uint64_t failures = 0;
         uint64_t regroup_peer_requests[2]{}; // diagnostic wire calls; requests above counts logical windows
+        uint64_t ordered_wire_requests=0, ordered_checked_windows=0;
+        uint64_t ordered_max_exchanges=0, ordered_peak_row_bytes=0;
         uint64_t communication_thread_id = 0; ///< OS thread id for affinity inspection (0 before first work)
         uint64_t communication_thread_starts = 0; ///< one for the tier's lifetime after first nonempty post
         double setup_ms = 0;               ///< open()'s wall time (connect + upload + ready), kept apart
@@ -167,6 +170,7 @@ private:
     RpcTimingCounters rpc_timing_;
     CpuCapture* capture_=nullptr;
     bool diagnostic_regroup_=false;
+    bool diagnostic_ordered_=false;
     std::vector<int8_t> regroup_owners_;
 };
 

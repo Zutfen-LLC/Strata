@@ -90,7 +90,9 @@ ExpertWorkerTier::~ExpertWorkerTier() {
 bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     if (dead_) { err = "the remote CPU-expert worker tier is dead: " + dead_why_; return false; }
     if (ready_) { err = "the remote CPU-expert worker tier is already open"; return false; }
-    if(in.diagnostic_regroup && (!in.resident_reuse_only || !in.resident || !in.local || in.local_fallback)) {
+    if((in.diagnostic_regroup || in.diagnostic_ordered) &&
+       (!in.resident_reuse_only || !in.resident || !in.local || in.local_fallback ||
+        (in.diagnostic_regroup && in.diagnostic_ordered))) {
         err="regroup diagnostic requires trusted resident reuse only without fallback";return false;
     }
     {
@@ -277,6 +279,7 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     st_.local_read_ns = ls.read_ns;
     st_.local_verify_ns = ls.verify_ns;
     diagnostic_regroup_=in.diagnostic_regroup;
+    diagnostic_ordered_=in.diagnostic_ordered;
     if(diagnostic_regroup_)regroup_owners_=cpu_capture_owners(m);
     partition_ = std::move(m.partition);
     n_layers_ = in.n_layers;
@@ -416,16 +419,19 @@ void ExpertWorkerTier::run_requests() {
         std::string e;
         RpcExchangeTiming measured{};
         uint64_t regroup_calls[2]{};
+        uint64_t ordered_calls=0, ordered_rows=0;
         try {
-            if(diagnostic_regroup_) {
-                ok=regroup_cpu_request(req_,regroup_owners_,n_expert_,n_embd_,sequence_,
-                    [&](const InferRequest& q,InferReply& part,std::string& why) {
-                        RpcExchangeTiming wire{};
-                        const bool accepted=client_.infer(q,part,why,rpc_timing_.enabled()?&wire:nullptr);
-                        measured.encode_send_ns+=wire.encode_send_ns;measured.receive_decode_ns+=wire.receive_decode_ns;
-                        measured.request_bytes+=wire.request_bytes;measured.reply_bytes+=wire.reply_bytes;
-                        return accepted;
-                    },r,regroup_calls,e);
+            if(diagnostic_regroup_ || diagnostic_ordered_) {
+                auto exchange=[&](const InferRequest& q,InferReply& part,std::string& why) {
+                    RpcExchangeTiming wire{};
+                    const bool accepted=client_.infer(q,part,why,rpc_timing_.enabled()?&wire:nullptr);
+                    measured.encode_send_ns+=wire.encode_send_ns;measured.receive_decode_ns+=wire.receive_decode_ns;
+                    measured.request_bytes+=wire.request_bytes;measured.reply_bytes+=wire.reply_bytes;
+                    return accepted;
+                };
+                if(diagnostic_ordered_)
+                    ok=ordered_cpu_request(req_,n_embd_,sequence_,exchange,r,ordered_calls,ordered_rows,e);
+                else ok=regroup_cpu_request(req_,regroup_owners_,n_expert_,n_embd_,sequence_,exchange,r,regroup_calls,e);
             } else ok = client_.infer(req_, r, e, rpc_timing_.enabled() ? &measured : nullptr);
         } catch (const std::exception& ex) {
             e = std::string("exception in communication thread: ") + ex.what();
@@ -440,6 +446,11 @@ void ExpertWorkerTier::run_requests() {
 
         lock.lock();
         for(int p=0;p<2;++p)st_.regroup_peer_requests[p]+=regroup_calls[p];
+        if(diagnostic_ordered_) {
+            st_.ordered_wire_requests+=ordered_calls;st_.ordered_checked_windows+=ok?1:0;
+            st_.ordered_max_exchanges=std::max(st_.ordered_max_exchanges,ordered_calls);
+            st_.ordered_peak_row_bytes=std::max(st_.ordered_peak_row_bytes,ordered_rows);
+        }
         st_.queue_ms += queue_ms;
         st_.exchange_ms += (double) (exchange_end - exchange_start) / 1e6;
         if (rpc_timing_.enabled()) {
@@ -533,6 +544,12 @@ void ExpertWorkerTier::report(std::string& out) const {
     if(diagnostic_regroup_) {
         std::snprintf(buf,sizeof buf,"; diagnostic_regroup=on virtual_peer_frames=%llu/%llu (sequential; timings are logical windows)",
             (unsigned long long)st_.regroup_peer_requests[0],(unsigned long long)st_.regroup_peer_requests[1]);
+        out+=buf;
+    }
+    if(diagnostic_ordered_) {
+        std::snprintf(buf,sizeof buf,"; diagnostic_regroup=ordered checked_windows=%llu wire_frames=%llu max_exchanges=%llu peak_row_bytes=%llu (exact shadow bits; sequential; not throughput)",
+            (unsigned long long)st_.ordered_checked_windows,(unsigned long long)st_.ordered_wire_requests,
+            (unsigned long long)st_.ordered_max_exchanges,(unsigned long long)st_.ordered_peak_row_bytes);
         out+=buf;
     }
     const std::string timing = rpc_timing_.report("client");

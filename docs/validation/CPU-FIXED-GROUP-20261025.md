@@ -15,10 +15,161 @@ The original full-model comparison at 9ed478e5543885e019205512f2450ab4336d393e h
 The parent reports that the split arm failed every frozen first-logit screen and was slower; the
 local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
 or raw-receipt inspection by this coding thread. **Do not rerun that campaign or either duplicate-arena
-diagnostic.** Only the live regrouping procedure below is current. All other executable commands
+diagnostic.** Only the ordered-row procedure below is current. All other executable commands
 in this file are historical, not authorization to repeat prior work.
 
-### Current next step: live regrouping on one full resident
+### Current next step: ordered-row exact arithmetic on one full resident
+
+The parent supplies decisive results at `6c4b4cbf8f1592739f003f65b163479b23e3a715`: focused CPU,
+CUDA/native-OFF links and CLI gates passed. RG0 off bitmatched A0 first logits,213 tokens and102724
+entries. RG1 on bitmatched B first logits exactly (993280B); versus A0 maxabs0.7277, relativeL2.0852,
+probability max.00249 and KL.00039 failed the frozen screen, with equal top1. RG1's213 tokens matched
+both A0/B. DONE, final tier report and arm summary all agree RG0 entries102724/RG1 entries102720;
+original B also102720. Reported routed columns6263/6259 and virtual frames11081/11088 are aggregate
+evidence, not a retained per-entry routing explanation. No reload, allocation1, swap/OOM0, engines
+reaped. These are supplied Hermes results, not local execution/private-receipt inspection.
+Regrouping is sufficient to reproduce prompt0 divergence; this does not clear other inputs, physical
+peer correctness or performance. No further off/on regrouping run is requested.
+
+The existing option now accepts `--remote-cpu-regroup-diagnostic ordered`. It retains the same
+one-endpoint/trusted-manifest/text/reuse-only/complete-idle-forever guards and the existing full
+resident. For every nonempty live window it first obtains the normal full-mask shadow reply.
+For each active rank it sends one unit-weight entry per token using the unchanged protocol, skips
+empty ranks, and places returned rows in token/rank order. The existing exported
+`ExpertWorkerService::accumulate_partial` then uses the ORIGINAL mask/weights/frame order. Only
+finite output bit-identical to the shadow is published. Signed-zero and one-ULP differences refuse;
+there is no numerical tolerance or shadow fallback. A failed exchange publishes nothing.
+
+Bounds: at most11 sequential exchanges/window,819200B row storage (T8/K10/H2560), plus bounded
+request/reply/accumulator scratch. No extra weight arena, worker binary/protocol change, model
+reload, GPU graph instrumentation or sequencer. Unit-row transport can expose rounding/batch-shape
+differences; the gate stops rather than assuming equivalence. This deliberately chatty proof is
+separate from any future batched per-entry reply implementation. Its timing is NOT optimized
+production throughput; no protocol optimization belongs in this task.
+
+#### Fresh outputs before builds, then focused gates — authored, NOT RUN locally
+
+Pin this candidate SHA in the existing source/build trees. All variables below are private absolute
+bindings. Reuse retained CMake/native/compiler/ccache settings. Before ANY build, choose new
+disk-backed artifact roots (parents exist, roots MUST NOT exist), preserve cached engine ELFs,
+and use new log names. Do not overwrite old build logs, retained ELFs or prior result roots:
+
+CPU fixture role only:
+
+```sh
+set -e
+umask 077
+mkdir -m 700 "$CPU_ARTIFACT_ROOT"
+cmake --build "$CPU_BUILD" --target cpu_capture_group_test --parallel 4 > "$CPU_ARTIFACT_ROOT/cpu-build.log" 2>&1
+ctest --test-dir "$CPU_BUILD" --output-on-failure -R '^cpu_capture_group_test$' > "$CPU_ARTIFACT_ROOT/cpu-test.log" 2>&1
+```
+
+After that passes, bulk CUDA role only, outside inference. `CUDA_ENGINE_OUTPUT` is the existing
+cached target ELF path; preserve it before the incremental build replaces that cached output:
+
+```sh
+set -e
+umask 077
+mkdir -m 700 "$CUDA_ARTIFACT_ROOT"
+cp -- "$CUDA_ENGINE_OUTPUT" "$CUDA_ARTIFACT_ROOT/prior-engine"
+sha256sum "$CUDA_ARTIFACT_ROOT/prior-engine"
+cmake --build "$CUDA_BUILD" --target strata --parallel 8 > "$CUDA_ARTIFACT_ROOT/cuda-build.log" 2>&1
+cp -- "$CUDA_ENGINE_OUTPUT" "$CUDA_ARTIFACT_ROOT/engine-ordered"
+sha256sum "$CUDA_ARTIFACT_ROOT/engine-ordered"
+python3 -B "$SRC/tests/worker/worker_family_cli_test.py" --engine "$CUDA_ARTIFACT_ROOT/engine-ordered" --native-experts on
+```
+
+Small incremental native-OFF role only, using its local retained output binding `OFF_ENGINE`:
+
+```sh
+set -e
+umask 077
+mkdir -m 700 "$OFF_ARTIFACT_ROOT"
+cp -- "$OFF_ENGINE" "$OFF_ARTIFACT_ROOT/prior-off-engine"
+sha256sum "$OFF_ARTIFACT_ROOT/prior-off-engine"
+cmake --build "$OFF_BUILD" --target strata --parallel 2 > "$OFF_ARTIFACT_ROOT/off-build.log" 2>&1
+python3 -B "$SRC/tests/worker/worker_disabled_cli_test.py" --engine "$OFF_ENGINE"
+python3 -B "$SRC/tests/worker/worker_family_cli_test.py" --engine "$OFF_ENGINE" --native-experts off
+```
+
+Run only the lines belonging to each build role, stop on any failure and return bounded log tails.
+Keep fixture source creation clear of a tiny inherited RLIMIT_FSIZE. The existing focused CTest
+now covers real resident shadow/row bit identity over multi-token/K10/masks/zero work, increasing
+sequences and unchanged cache accounting. Scripted checks cover original input/rank masks/unit
+weights, skipped ranks, row failure after partial progress, one-ULP/signed-zero refusal, oversize
+refusal before exchange, and the exact11-frame/819200B maxima. Prior regrouping cases remain.
+All executable checks here remain NOT RUN by the coding thread; other backends remain unvalidated.
+
+#### Same candidate off control, then one ordered prompt0
+
+Copy the proven G1 private config into two separate new output roots/one-arm configs `EO0` and
+`EO1`; do not precreate the bundle roots. Use the SAME preserved `engine-ordered` bytes in both.
+Keep `cpu_route:"group"`, one existing numeric loopback `--remote-cpu-worker`, `restart:false`,
+`requests:[0]` (original GEN256), current full resident attach receipts/idle check, workers12/loaders4,
+GPU960/1378/CPU22238 placement,116135731200B arena, affinities/turbo/native/model/profile assets.
+No warmups/worker startup; success/failure both retain. No peer configs or `STRATA_CPU_CAPTURE`.
+Use `capture_first_logits:true` with no global dump prefix. Keep per-frame RPC deadlines unchanged;
+set harness `request_seconds:600` for BOTH requests. Up to11 exchanges, repeated activation quantization
+and smaller work batches justify this bounded10-minute diagnostic ceiling, rather than interpreting
+the old decode duration as a reliable timeout. Startup/cleanup/monitor budgets stay unchanged.
+
+Pre-stage `assets.engine` binds the new immutable candidate file; `assets.worker`/`assets.manifest`
+bind existing retained SOURCE files. Normalize engine argv[0] to `@engine`, worker argv[0] to
+`@worker`, engine `--remote-cpu-local-manifest` AND worker `--local-manifest` values to `@manifest`.
+Never leave old absolute argv literals or future bundle paths in assets. Mechanical staging then
+resolves exactly these four tokens. Add `--remote-cpu-regroup-diagnostic off` to EO0 and `ordered`
+to EO1; that value is the only arithmetic change. Both arms keep `reference:"reference"` bound to
+the retained A0 summary, enforcing213 exact tokens/102724 entries. Require existing peers1/cache-hit/
+exact reuse/zero setup load READY markers plus `CPU regroup diagnostic=off reuse_only=1` or
+`CPU regroup diagnostic=ordered reuse_only=1` respectively.
+
+Stage/run EO0 using the existing bundle/run entry points below. Compare `EO0-first-logits.0`
+to retained A0 using the unchanged functions AND raw-byte equality. Require finite993280B, all metrics0,213 exact
+tokens and102724 entries. A failed control stops here; no EO1 staging/launch. Fresh live preflight
+must confirm original owned listener/guardian/worker/monitor, complete idle forever cache, VmSwap0,
+healthy original guard and unchanged OOM. Only then use the same entry points for EO1:
+
+```sh
+set -e
+python3 -B "$SRC/tools/validation-harness/harness/bundle.py" --config "$EO0_PRIVATE_CONFIG"
+python3 -B "$EO0_ROOT/run.py" --run-root "$EO0_ROOT"
+PYTHONPATH="$SRC/tools/validation-harness" python3 -B -c '
+import json,pathlib,sys
+import compare_logits as c
+a,b=map(pathlib.Path,sys.argv[1:]);m=c.compare(c.read(a),c.read(b))
+m["bitwise_equal"]=a.read_bytes()==b.read_bytes()
+print(json.dumps(m,indent=2,allow_nan=False))
+raise SystemExit(0 if m["bitwise_equal"] and m["numeric_pass"] else 1)
+' "$A0_PROMPT0_FIRST_RAW_F32" "$EO0_ROOT/EO0-first-logits.0"
+```
+
+STOP until EO0 token/entry/bitwise-logit gates and idle/cache checks pass. Then:
+
+```sh
+set -e
+python3 -B "$SRC/tools/validation-harness/harness/bundle.py" --config "$EO1_PRIVATE_CONFIG"
+python3 -B "$EO1_ROOT/run.py" --run-root "$EO1_ROOT"
+PYTHONPATH="$SRC/tools/validation-harness" python3 -B -c '
+import json,pathlib,sys
+import compare_logits as c
+a,b=map(pathlib.Path,sys.argv[1:]);m=c.compare(c.read(a),c.read(b))
+m["bitwise_equal"]=a.read_bytes()==b.read_bytes()
+print(json.dumps(m,indent=2,allow_nan=False))
+raise SystemExit(0 if m["bitwise_equal"] and m["numeric_pass"] else 1)
+' "$A0_PROMPT0_FIRST_RAW_F32" "$EO1_ROOT/EO1-first-logits.0"
+```
+
+Frozen screens stay unchanged.
+An internal shadow bit mismatch is a refusal, not a successful diagnostic. Return the first error,
+no retries. Require final report `diagnostic_regroup=ordered`, checked_windows matching nonempty
+logical requests, max_exchanges<=11, peak_row_bytes<=819200 and positive wire_frames. No worker
+STATUS/STOP/UNLOAD during engine ownership; only post-reap checks. Preserve exact outputs, all
+hashes, sent line, internal gate counters, token/logit/entry results and unchanged resident bytes,
+allocation/unloads/expirations/load/upload/resource receipts in one flat result. No full campaign,
+extra capture or additional arena. A passing ordered result supports arithmetic recovery for this
+prompt; it does not establish efficient two-host routing or production throughput.
+
+### Completed live off/on regrouping (historical commands)
 
 The parent supplies a record0 microfixture PASS at `bc8e57541ad9b934774c1b184bf31b757ef3d8cc`:
 independent-full/capture bits matched before children, both actual peer/independent bits and group/manual
