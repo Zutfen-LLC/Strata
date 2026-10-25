@@ -1,0 +1,208 @@
+// Fixed CPU groups against real native services/manifest fixtures; no GPU/model.
+#include "local_fixture.hpp"
+#include "strata/worker/cpu_group.hpp"
+#include <cmath>
+#include <condition_variable>
+#include <mutex>
+#include <algorithm>
+namespace {
+struct Gate {
+    std::mutex mutex; std::condition_variable wake;
+    int entered=0; bool released[2]{}; std::vector<int> completed;
+    bool wait(int n) {std::unique_lock<std::mutex> lock(mutex);return wake.wait_for(lock,std::chrono::seconds(3),[&]{return entered>=n;});}
+    void allow(int i) {std::lock_guard<std::mutex> lock(mutex);released[i]=true;wake.notify_all();}
+    void all() {allow(0);allow(1);}
+};
+// Transparent bounded SEW1 proxy. Only INFER may be held/reordered/refused; all setup/digest/native
+// work still uses the real service. Each proxy thread alone owns its descriptors.
+struct Proxy {
+    Gate& gate; int index; uint16_t backend,port=0; sock_fd listener=kBadFd;
+    std::atomic<bool> stopping{false}; std::thread thread; bool drop=false,nonfinite=false,overflow=false;
+    Proxy(Gate& g,int i,uint16_t back):gate(g),index(i),backend(back) {
+        std::string err;require(sock::listen_loopback(port,listener,err),err);
+        thread=std::thread([this]{run();});
+    }
+    static bool frame(sock_fd fd,std::vector<uint8_t>& bytes) {
+        bytes.resize(kHeaderBytes);
+        if(!sock::recv_all(fd,bytes.data(),bytes.size(),5000))return false;
+        uint64_t n=0;for(int i=0;i<8;++i)n|=(uint64_t)bytes[8+i]<<(8*i);
+        if(n>kMaxFrameBytes)return false;
+        bytes.resize(kHeaderBytes+(size_t)n);
+        return !n || sock::recv_all(fd,bytes.data()+kHeaderBytes,(size_t)n,5000);
+    }
+    void run() {
+        while(!stopping.load()) {
+            sock_fd front=kBadFd,back=kBadFd;
+            if(!sock::accept_one(listener,front,100))continue;
+            std::string err;
+            if(!sock::connect_host("127.0.0.1",backend,3000,back,err)) {sock::close_fd(front);continue;}
+            std::vector<uint8_t> request,response;
+            while(!stopping.load() && frame(front,request)) {
+                const uint16_t msg=request[4]|(request[5]<<8);
+                if(msg==MSG_INFER) {
+                    std::unique_lock<std::mutex> lock(gate.mutex);++gate.entered;gate.wake.notify_all();
+                    if(!gate.wake.wait_for(lock,std::chrono::seconds(3),[&]{return gate.released[index];}))break;
+                    if(drop)break;
+                }
+                if(!sock::send_all(back,request.data(),request.size(),3000) || !frame(back,response))break;
+                if(msg==MSG_INFER && (nonfinite || overflow) && response.size()>=kHeaderBytes+16+4) {
+                    // INFER_ACK starts session/sequence then F32 partials. Preserve framing/identity.
+                    const uint32_t nan=overflow?0x7f7fffffu:0x7fc00000u;
+                    for(int i=0;i<4;++i)response[kHeaderBytes+16+i]=(uint8_t)(nan>>(8*i));
+                }
+                if(!sock::send_all(front,response.data(),response.size(),3000))break;
+                if(msg==MSG_INFER) {std::lock_guard<std::mutex> lock(gate.mutex);gate.completed.push_back(index);gate.wake.notify_all();}
+            }
+            sock::close_fd(front);sock::close_fd(back);
+        }
+    }
+    ~Proxy() {stopping.store(true);gate.all();if(thread.joinable())thread.join();sock::close_fd(listener);}
+};
+ExpertWorkerTier::Open option(const Fixture& f,uint16_t port,std::vector<uint8_t> bits) {
+    ExpertWorkerTier::Open o;o.port=port;o.local=&f.m;o.resident=true;o.setup_ms=5000;o.deadline_ms=3000;
+    o.n_layers=2;o.n_expert=2;o.n_embd=2560;o.n_ff=640;o.gu_type=o.d_type=8;o.partition=std::move(bits);
+    return o;
+}
+void configuration(Fixture& f,Service& a,Service& b) {
+    auto opts=std::vector<ExpertWorkerTier::Open>{option(f,a.port,{1,1}),option(f,b.port,{2,2})};
+    std::string err;check(ExpertWorkerGroup::validate(opts,{3,3},err),"two exhaustive disjoint trusted partitions");
+    auto bad=opts;bad[1].port=bad[0].port;
+    check(!ExpertWorkerGroup::validate(bad,{3,3},err),"duplicate endpoint refused before connecting");
+    bad=opts;bad[1].partition={1,1};check(!ExpertWorkerGroup::validate(bad,{3,3},err),"overlapping ownership refused");
+    bad=opts;bad[1].partition={0,2};check(!ExpertWorkerGroup::validate(bad,{3,3},err),"missing ownership refused");
+    bad=opts;bad[0].partition={1};check(!ExpertWorkerGroup::validate(bad,{3,3},err),"malformed bitmap refused");
+    bad=opts;bad[0].partition={5,1};check(!ExpertWorkerGroup::validate(bad,{3,3},err),"non-CPU/padding ownership refused");
+    auto other=f.m;++other.identity.a;bad=opts;bad[1].local=&other;
+    check(!ExpertWorkerGroup::validate(bad,{3,3},err),"different trusted model refused");
+    bad=opts;bad[1].n_ff=641;check(!ExpertWorkerGroup::validate(bad,{3,3},err),"different geometry refused");
+    check(!ExpertWorkerGroup::validate({}, {3,3},err),"empty endpoint list refused");
+    bad.push_back(opts[0]);check(!ExpertWorkerGroup::validate(bad,{3,3},err),"endpoint bound enforced");
+    CpuEndpoint endpoint;check(parse_cpu_endpoint("127.0.0.1:1234",endpoint) &&
+        !parse_cpu_endpoint("localhost:1234",endpoint) && !parse_cpu_endpoint("127.0.0.1:0",endpoint),"CPU endpoint numeric contract");
+}
+struct Input {
+    int T,K=2;std::vector<int32_t> ids;std::vector<float> x,w;std::vector<uint8_t> mask;
+    explicit Input(int tokens,int ranks=2):T(tokens),K(ranks),ids(T*K),x(T*2560),w(T*K),mask(T*K,1) {
+        for(size_t i=0;i<x.size();++i)x[i]=0.1f*(int(i%11)-5);
+        const float weights[]={.7f,-.3f,.2f,.4f};
+        for(int i=0;i<T*K;++i) {ids[i]=i%2;w[i]=weights[i%K];}
+    }
+    bool post(ExpertWorkerGroup& g,std::string& err) {return g.post(0,x.data(),ids.data(),w.data(),mask.data(),T,K,err);}
+};
+void reference(Fixture& f,ExpertWorkerGroup& group,const Input& in,int count) {
+    std::string err;std::vector<float> grouped,unsplit;
+    std::vector<const uint8_t*> pointers(in.ids.size());
+    for(size_t i=0;i<pointers.size();++i)pointers[i]=f.blobs[in.ids[i]].data();
+    for(int p=0;p<count;++p) {
+        auto mask=in.mask;
+        for(size_t i=0;i<mask.size();++i)mask[i]=mask[i] && (count==1 || in.ids[i]==p);
+        std::vector<float> partial;
+        require(ExpertWorkerService::direct_native_partial(f.fmt,in.T,in.K,mask.data(),in.w.data(),in.x.data(),pointers.data(),partial,err),err);
+        if(p==0)grouped=partial;else for(size_t i=0;i<grouped.size();++i)grouped[i]=grouped[i]+partial[i];
+    }
+    require(ExpertWorkerService::direct_native_partial(f.fmt,in.T,in.K,in.mask.data(),in.w.data(),in.x.data(),pointers.data(),unsplit,err),err);
+    check(!std::memcmp(grouped.data(),group.partials(),grouped.size()*sizeof(float)),"bitwise configuration-ordered grouped native reference");
+    std::vector<double> magnitude(grouped.size(),0.0);
+    for(size_t entry=0;entry<in.ids.size();++entry) {
+        std::vector<uint8_t> one(in.mask.size(),0);one[entry]=in.mask[entry];std::vector<float> contribution;
+        require(ExpertWorkerService::direct_native_partial(f.fmt,in.T,in.K,one.data(),in.w.data(),in.x.data(),pointers.data(),contribution,err),err);
+        for(size_t i=0;i<magnitude.size();++i)magnitude[i]+=std::abs((double)contribution[i]);
+    }
+    double maximum=0,relative=0,scaled=0,squared=0;
+    for(size_t i=0;i<grouped.size();++i) {
+        const double got=group.partials()[i],want=unsplit[i],delta=std::abs(got-want),scale=std::max(1.0,magnitude[i]);
+        require(std::isfinite(got)&&std::isfinite(want),"finite grouped/independent unsplit result");
+        maximum=std::max(maximum,delta);relative=std::max(relative,delta/std::max(1e-12,std::abs(want)));scaled=std::max(scaled,delta/scale);squared+=delta*delta;
+        // Frozen before execution: 4e-6 (~32 float eps) times the independently computed sum of
+        // absolute weighted contributions covers <=10-term regrouping, including cancellation.
+        // The absolute floor is 1e-4. Existing single-tier bitwise gates remain untouched.
+        check(delta<=1e-4+4e-6*magnitude[i],"unsplit envelope 1e-4 + 4e-6*sum_abs_contributions");
+    }
+    std::printf("CPU_GROUP_NUMERIC T=%d peers=%d max_abs=%.9g max_rel=%.9g max_scaled_rel=%.9g rmse=%.9g atol=1e-4 scaled_rtol=4e-6\n",
+        in.T,count,maximum,relative,scaled,std::sqrt(squared/grouped.size()));
+}
+void native() {
+    Fixture f;auto settings=f.options();settings.residency_forever=true;
+    Service a(settings),b(settings);configuration(f,a,b);std::string err;
+    for(int count:{1,2}) for(int round=0;round<2;++round) {
+        auto opts=std::vector<ExpertWorkerTier::Open>{option(f,a.port,count==1?std::vector<uint8_t>{3,3}:std::vector<uint8_t>{1,1})};
+        if(count==2)opts.push_back(option(f,b.port,{2,2}));
+        // A changed partition must not silently reuse the previous resident arena.
+        if(round==0) {ExpertWorkerClient c;connect(c,a);require(c.unload(err),err);c.close();connect(c,b);require(c.unload(err),err);}
+        ExpertWorkerGroup group;require(group.open(opts,{3,3},err),err);
+        if(round)check(group.peer_stats(0).cache_hit,"reconnect reuses matching frozen resident subset");
+        for(int T:{8,1,2,1}) {Input in(T);require(in.post(group,err),err);require(group.finish(err),err);reference(f,group,in,count);}
+        for(int T:{1,2,4}) {Input in(T,4);require(in.post(group,err)&&group.finish(err),err);reference(f,group,in,count);}
+        if(count==2) {
+            Input one(1);one.ids={0,0};one.mask={1,1};one.w={.5f,.5f};
+            auto before=group.peer_stats(1).requests;
+            require(one.post(group,err)&&group.finish(err),err);
+            check(group.peer_stats(1).requests==before,"zero-work peer sends no INFER");
+        }
+        group.close();
+    }
+}
+void controlled(int mode) {
+    Fixture f;auto settings=f.options();settings.residency_forever=true;settings.deadline_ms=3000;
+    Service a(settings);settings.deadline_ms=300;Service b(settings);Gate gate;
+    Proxy pa(gate,0,a.port),pb(gate,1,b.port);pb.drop=mode==1;pb.nonfinite=mode==2;
+    pa.overflow=pb.overflow=mode==4;
+    auto opts=std::vector<ExpertWorkerTier::Open>{option(f,pa.port,{1,1}),option(f,pb.port,{2,2})};
+    opts[1].deadline_ms=1000;ExpertWorkerGroup group;std::string err;require(group.open(opts,{3,3},err),err);
+    struct Release {Gate& gate;~Release(){gate.all();}} release{gate};
+    Input in(1);if(mode==3) {in.ids={0,0};in.w={.5f,.5f};}
+    require(in.post(group,err),err);require(gate.wait(mode==3?1:2),"all active peers reach INFER barrier before any reply");
+    in.x[0]=99;in.ids[0]=1;in.w[0]=99; // copied input lifetime
+    if(mode==3) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(700)); // inactive peer's service idle budget is 300ms
+        gate.allow(0);require(group.finish(err),err);
+        check(!group.dead()&&group.peer_stats(1).requests==0,"short-deadline zero-work peer kept alive during long valid work");
+    } else {
+        gate.allow(1);
+        if(mode!=1) {std::unique_lock<std::mutex> lock(gate.mutex);require(gate.wake.wait_for(lock,std::chrono::seconds(2),[&]{return !gate.completed.empty();}),"peer1 replies first");}
+        bool finished=false,result=false;std::mutex mutex;std::condition_variable wake;
+        std::thread waiter([&]{result=group.finish(err);{std::lock_guard<std::mutex> lock(mutex);finished=true;}wake.notify_all();});
+        struct Join {Gate& gate;std::thread& thread;~Join(){gate.all();if(thread.joinable())thread.join();}} join{gate,waiter};
+        {std::unique_lock<std::mutex> lock(mutex);check(!wake.wait_for(lock,std::chrono::milliseconds(80),[&]{return finished;}),"finish drains still-blocked peer even after another failure");}
+        gate.allow(0);waiter.join();
+        if(mode)check(!result&&group.dead()&&group.partials()==nullptr,"failure/nonfinite exposes no group partial and latches dead");
+        else {require(result,err);
+            {std::unique_lock<std::mutex> lock(gate.mutex);
+             require(gate.wake.wait_for(lock,std::chrono::seconds(2),[&]{return gate.completed.size()==2;}),"proxy completion receipts");
+             check(gate.completed==std::vector<int>({1,0}),"reversed completion order retained independently of merge order");}
+            Input expected(1);reference(f,group,expected,2);}
+    }
+    group.close();
+}
+void setup_failure_and_zero_work() {
+    Fixture f;auto settings=f.options();settings.residency_forever=true;
+    Service a(settings);auto small=settings;small.memory_budget=f.fmt.bytes-1;Service b(small);
+    std::string err;ExpertWorkerGroup broken;
+    check(!broken.open({option(f,a.port,{1,1}),option(f,b.port,{2,2})},{3,3},err)&&broken.dead(),
+          "second-peer setup refusal drains/closes the acquired first peer");
+    ExpertWorkerClient control;connect(control,a);WorkerCacheInfo cache;
+    require(control.cache_status(cache,err),err);
+    check(cache.complete && cache.resident_bytes==2*f.fmt.bytes,"failed group does not gratuitously unload verified first-peer weights");
+    control.close();
+    Service c(settings),d(settings);ExpertWorkerGroup empty;
+    require(empty.open({option(f,c.port,{1,0}),option(f,d.port,{0,2})},{1,2},err),err);
+    Input in(1);in.ids={1,1};in.mask={0,0};
+    require(in.post(empty,err)&&empty.finish(err),err);
+    check(!empty.served()&&empty.partials()==nullptr&&empty.peer_stats(0).requests==0&&empty.peer_stats(1).requests==0,
+          "global zero CPU work exposes no stale partial and sends no INFER");
+}
+void slow_second_setup() {
+    Fixture f;auto settings=f.options();settings.residency_forever=true;settings.deadline_ms=300;Service a(settings),b(settings);
+    auto first=option(f,a.port,{1,1}),second=option(f,b.port,{2,2});
+    first.deadline_ms=second.deadline_ms=1000;bool delayed=false;
+    second.cancelled=[&]{if(!delayed){delayed=true;std::this_thread::sleep_for(std::chrono::milliseconds(700));}return false;};
+    ExpertWorkerGroup group;std::string err;require(group.open({first,second},{3,3},err),err);
+    Input in(1);require(in.post(group,err)&&group.finish(err),err);
+    check(delayed&&!group.dead(),"first READY peer kept alive while the second setup is delayed beyond idle deadline");
+}
+}
+int main() {
+    try {native();setup_failure_and_zero_work();slow_second_setup();for(int mode=0;mode<5;++mode)controlled(mode);}
+    catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}
+    std::printf("CPU_WORKER_GROUP failures=%d models=0\n",failures);return failures?1:0;
+}

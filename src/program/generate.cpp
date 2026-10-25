@@ -24,8 +24,10 @@
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/worker/gpu_endpoint.hpp"
+#include "strata/worker/cpu_endpoint.hpp"
 #ifdef STRATA_NATIVE_EXPERTS
 #include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_group.hpp"
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
 #include "strata/worker/gpu_group.hpp"
@@ -563,7 +565,8 @@ struct Options {
     /// inferswarm #349: the opt-in remote CPU-expert worker (default OFF - without the flag every path
     /// below is untouched).  The worker holds the CPU-owned expert complement of another machine's RAM
     /// and computes its weighted partials; see docs/CPU_WORKER.md and worker/expert_tier.hpp.
-    bool remote_cpu_experts = false;
+    bool remote_cpu_experts = false, remote_cpu_legacy = false;
+    std::vector<strata::worker::CpuEndpoint> remote_cpu_workers;
     std::string remote_cpu_host = "127.0.0.1";   ///< the worker, or the local end of an owned SSH forward
     int remote_cpu_port = 7431;
     int remote_cpu_deadline_ms = 10000;
@@ -1017,6 +1020,8 @@ void usage() {
                  "                       --short-read through the verify windows, and refuses the modes it\n"
                  "                       does not implement (batch slots, layer split, peer, pipeline,\n"
                  "                       adaptive tiers, resident RAM mirrors, tail skipping).\n"
+                 "  --remote-cpu-worker IPv4:PORT  opt-in fixed CPU group; repeat 1..2 times in ownership/merge order;\n"
+                 "                       alternates the frozen CPU complement; requires local manifest\n"
                  "  --remote-cpu-local-manifest FILE  opt-in trusted slice manifest; needs configured local worker\n"
                  "  --remote-cpu-local-fallback  allow upload for absent local experts (worker must allow it)\n"
                  "  --remote-cpu-resident  opt-in persistent worker cache; needs local manifest and worker TTL\n"
@@ -2296,7 +2301,7 @@ int main(int argc, char** argv) {
         "--resident-budget-gib", "--model", "--ctx", "--chunk", "--n", "--force", "--emb",
         "--dump-full-logits", "--bench-pp", "--bench-tg", "--draft-vocab", "--expert-vram",
         "--cpu-threads", "--expert-slots", "--hybrid-rows",
-        "--remote-cpu-experts", "--remote-cpu-local-manifest", "--remote-cpu-setup-ms", "--remote-cpu-deadline-ms",
+        "--remote-cpu-experts", "--remote-cpu-worker", "--remote-cpu-local-manifest", "--remote-cpu-setup-ms", "--remote-cpu-deadline-ms",
     };
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -2314,7 +2319,7 @@ int main(int argc, char** argv) {
 #endif
         }
 #ifndef STRATA_NATIVE_EXPERTS
-        if (a == "--remote-cpu-experts" || a == "--remote-cpu-local-manifest" ||
+        if (a == "--remote-cpu-experts" || a == "--remote-cpu-worker" || a == "--remote-cpu-local-manifest" ||
             a == "--remote-cpu-local-fallback" || a == "--remote-cpu-resident" ||
             a == "--remote-cpu-setup-ms" || a == "--remote-cpu-deadline-ms" ||
             a == "--remote-cpu-rpc-timing") {
@@ -2566,7 +2571,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--remote-expert-opt") o.remote_expert_opt = true;
         else if (a == "--remote-cpu-experts") {
-            o.remote_cpu_experts = true;
+            o.remote_cpu_experts = o.remote_cpu_legacy = true;
             const std::string v = next("--remote-cpu-experts");
             const size_t c = v.rfind(':');
             const int port = c == std::string::npos ? -1 : std::atoi(v.c_str() + c + 1);
@@ -2576,6 +2581,15 @@ int main(int argc, char** argv) {
             }
             o.remote_cpu_host = v.substr(0, c);
             o.remote_cpu_port = port;
+        }
+        else if (a == "--remote-cpu-worker") {
+            strata::worker::CpuEndpoint endpoint;
+            if (!strata::worker::parse_cpu_endpoint(next("--remote-cpu-worker"),endpoint) ||
+                o.remote_cpu_workers.size() >= strata::worker::kMaxCpuWorkers ||
+                std::any_of(o.remote_cpu_workers.begin(),o.remote_cpu_workers.end(),[&](const auto& e){return e.host==endpoint.host && e.port==endpoint.port;})) {
+                std::fprintf(stderr,"--remote-cpu-worker needs 1..2 numeric IPv4:PORT endpoints\n"); return 2;
+            }
+            o.remote_cpu_experts=true; o.remote_cpu_workers.push_back(std::move(endpoint));
         }
         else if (a == "--remote-cpu-local-manifest") o.remote_cpu_local_manifest=next("--remote-cpu-local-manifest");
         else if (a == "--remote-cpu-local-fallback") o.remote_cpu_local_fallback=true;
@@ -3343,6 +3357,9 @@ int main(int argc, char** argv) {
     // inferswarm #349: the remote CPU-expert worker is a bounded, opt-in mode.  It refuses UP FRONT every
     // configuration whose execution path it does not implement, rather than silently running a different
     // one: the modes below are the ones the integration was framed for (see docs/CPU_WORKER.md).
+    if (!o.remote_cpu_workers.empty() && (o.remote_cpu_legacy || o.remote_cpu_local_manifest.empty() || o.remote_gpu_experts)) {
+        std::fprintf(stderr,"fixed CPU group needs its trusted local manifest, excludes legacy --remote-cpu-experts and network GPU mode\n");return 2;
+    }
     if ((!o.remote_cpu_local_manifest.empty() && !o.remote_cpu_experts) ||
         (o.remote_cpu_rpc_timing && !o.remote_cpu_experts) ||
         ((o.remote_cpu_local_fallback || o.remote_cpu_resident) && o.remote_cpu_local_manifest.empty()) || o.remote_cpu_setup_ms<=0) {
@@ -6680,6 +6697,9 @@ int main(int argc, char** argv) {
     // verified the whole set (READY), which this open() waits for.
 #ifdef STRATA_NATIVE_EXPERTS
     strata::worker::ExpertWorkerTier worker_tier;
+    strata::worker::ExpertWorkerGroup cpu_group;
+    const bool grouped_cpu=!o.remote_cpu_workers.empty();
+    auto cpu_stats=[&]() -> const strata::worker::ExpertWorkerTier::Stats& { return grouped_cpu ? cpu_group.stats() : worker_tier.stats(); };
 #ifdef STRATA_NETWORK_CUDA_WORKER
     strata::worker::GpuWorkerGroup gpu_worker_tier;
 #endif
@@ -6722,6 +6742,8 @@ int main(int argc, char** argv) {
                 } else {
                     partition[(size_t) l * stride + (size_t) e / 8] &= (uint8_t) ~(1u << (e % 8));
                 }
+        if(grouped_cpu && g.n_expert%8)for(int l=0;l<g.n_layers;++l)
+            partition[(size_t)l*stride+stride-1]&=(uint8_t)((1u<<(g.n_expert%8))-1u);
         std::fprintf(stderr, "strata generate: remote CPU experts: %llu of %lld experts are no GPU tier's "
                              "(%.2f GiB at Q8_0); the worker partition is frozen at setup\n",
                      (unsigned long long) owned, (long long) (g.n_layers * g.n_expert),
@@ -6796,16 +6818,30 @@ int main(int argc, char** argv) {
         }
 #endif
         const auto wt0 = Clock::now();
-        if (!worker_tier.open(wopen, err)) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-            return 1;
-        }
-        std::fprintf(stderr, "strata generate: remote CPU experts ready on %s:%d in %.1f s (%llu blobs, "
+        bool cpu_opened=false;
+        if(grouped_cpu) {
+            std::vector<strata::worker::ExpertWorkerTier::Open> peers(o.remote_cpu_workers.size(),wopen);
+            for(size_t p=0;p<peers.size();++p) {
+                peers[p].host=o.remote_cpu_workers[p].host;peers[p].port=o.remote_cpu_workers[p].port;
+                peers[p].partition.assign(wopen.partition.size(),0);
+            }
+            size_t ordinal=0;
+            for(int l=0;l<g.n_layers;++l)for(int e=0;e<g.n_expert;++e)
+                if(wopen.partition[(size_t)l*stride+e/8]&(1u<<(e%8))) {
+                    peers[ordinal++%peers.size()].partition[(size_t)l*stride+e/8]|=(uint8_t)(1u<<(e%8));
+                }
+            cpu_opened=cpu_group.open(peers,wopen.partition,err);
+        } else cpu_opened=worker_tier.open(wopen,err);
+        if(!cpu_opened) {std::fprintf(stderr,"strata generate: CPU setup: %s\n",err.c_str());return 1;}
+        if(grouped_cpu)std::fprintf(stderr,"strata generate: fixed CPU group ready peers=%zu in %.1f s (%llu blobs, %.2f GiB verified)\n",
+            cpu_group.size(),std::chrono::duration<double>(Clock::now()-wt0).count(),
+            (unsigned long long)cpu_stats().setup_blobs,(double)cpu_stats().setup_weight_bytes/1073741824.0);
+        else std::fprintf(stderr, "strata generate: remote CPU experts ready on %s:%d in %.1f s (%llu blobs, "
                              "%.2f GiB verified)\n", o.remote_cpu_host.c_str(),
                      o.remote_cpu_port, std::chrono::duration<double>(Clock::now() - wt0).count(),
-                     (unsigned long long) worker_tier.stats().setup_blobs,
-                     (double) worker_tier.stats().setup_weight_bytes / 1073741824.0);
-        std::string setup_report; worker_tier.report(setup_report);
+                     (unsigned long long) cpu_stats().setup_blobs,
+                     (double) cpu_stats().setup_weight_bytes / 1073741824.0);
+        std::string setup_report; if(grouped_cpu)cpu_group.report(setup_report);else worker_tier.report(setup_report);
         std::fprintf(stderr,"strata generate: %s\n",setup_report.c_str());
 #ifdef STRATA_NETWORK_CUDA_WORKER
         if (o.remote_gpu_experts) {
@@ -6874,7 +6910,8 @@ int main(int argc, char** argv) {
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
 #ifdef STRATA_NATIVE_EXPERTS
-    drive.d.worker = o.remote_cpu_experts ? &worker_tier : nullptr;
+    drive.d.worker = o.remote_cpu_experts && !grouped_cpu ? &worker_tier : nullptr;
+    drive.d.cpu_group = grouped_cpu ? &cpu_group : nullptr;
 #ifdef STRATA_NETWORK_CUDA_WORKER
     drive.d.gpu_worker = o.remote_gpu_experts ? &gpu_worker_tier : nullptr;
 #endif
@@ -12630,7 +12667,7 @@ int main(int argc, char** argv) {
             // counts the prompt's windows too, not only the decode's
 #ifdef STRATA_NATIVE_EXPERTS
             const int64_t worker_ent0 = drive.d.worker_entries;
-            const double worker_req_ms0 = worker_tier.stats().request_ms;
+            const double worker_req_ms0 = cpu_stats().request_ms;
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
             const int64_t gpu_worker_ent0 = drive.d.gpu_worker_entries;
@@ -15434,7 +15471,7 @@ int main(int argc, char** argv) {
             if (o.remote_cpu_experts) {
                 std::snprintf(worker_txt, sizeof worker_txt, " worker_entries=%lld worker_req_wall=%.1f",
                               (long long) (drive.d.worker_entries - worker_ent0),
-                              worker_tier.stats().request_ms - worker_req_ms0);
+                              cpu_stats().request_ms - worker_req_ms0);
             }
 #endif
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
@@ -15583,11 +15620,16 @@ int main(int argc, char** argv) {
 #ifdef STRATA_NATIVE_EXPERTS
             if (o.remote_cpu_experts) {   // #349: the request's remote CPU-expert evidence, cumulative tier stats
                 std::string wr;
-                worker_tier.report(wr);
+                if(grouped_cpu)cpu_group.report(wr);else worker_tier.report(wr);
                 std::fprintf(stderr, "strata serve: %s; this request executed %lld routed entries remotely\n", wr.c_str(),
                              (long long) (drive.d.worker_entries - worker_ent0));
                 strata::worker::WorkerStatusInfo wst;
-                if (worker_tier.status(wst, err))   // the worker's own counters: service time is ITS CPU time,
+                if(grouped_cpu) {
+                    for(size_t p=0;p<cpu_group.size();++p) if(cpu_group.peer_status(p,wst,err))
+                        std::fprintf(stderr,"CPU peer[%zu] status requests=%llu failures=%llu service_ns=%llu in=%llu out=%llu\n",p,
+                            (unsigned long long)wst.requests,(unsigned long long)wst.failures,(unsigned long long)wst.cpu_service_ns,
+                            (unsigned long long)wst.infer_in_bytes,(unsigned long long)wst.infer_out_bytes);
+                } else if (worker_tier.status(wst, err))   // the worker's own counters: service time is ITS CPU time,
                     std::fprintf(stderr, "                          worker status: %llu requests, %llu failures, "
                                          "%.1f s CPU service, %.2f MiB in / %.2f MiB out\n",
                                  (unsigned long long) wst.requests, (unsigned long long) wst.failures,

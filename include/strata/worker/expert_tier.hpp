@@ -96,6 +96,8 @@ public:
 
     /// The last worker STATUS (false when unreachable; the tier then stays usable if it was not dead).
     bool status(WorkerStatusInfo& out, std::string& err);
+    // Group-owned idle probe. Skip an occupied slot; serialize the socket with post/status.
+    bool keepalive_if_idle(std::string& err);
 
     struct Stats {
         uint64_t setup_blobs = 0;          ///< owned blobs available (loaded/verified or reused)

@@ -458,6 +458,15 @@ bool ExpertWorkerTier::status(WorkerStatusInfo& out, std::string& err) {
     return true;
 }
 
+bool ExpertWorkerTier::keepalive_if_idle(std::string& err) {
+    std::lock_guard<std::mutex> lock(request_mutex_);
+    if (posted_ || busy_) return true;
+    WorkerStatusInfo out;
+    if (!ready_ || dead_ || !client_.status(out, err)) return false;
+    if (out.session != st_.session || out.ready != 1) {err="CPU session lost while idle";return false;}
+    return true;
+}
+
 void ExpertWorkerTier::report(std::string& out) const {
     std::lock_guard<std::mutex> lock(request_mutex_);
     char buf[1024];

@@ -3738,7 +3738,7 @@ int strata::qwen35::run(int argc, char** argv) {
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--remote-cpu-rpc-timing") {
+        if (a == "--remote-cpu-rpc-timing" || a == "--remote-cpu-worker") {
 #ifndef STRATA_NATIVE_EXPERTS
             std::fprintf(stderr, "strata-q36: %s requires STRATA_NATIVE_EXPERTS=ON; this build excludes the remote CPU-expert worker\n", a.c_str());
 #else
@@ -3758,7 +3758,7 @@ int strata::qwen35::run(int argc, char** argv) {
 #ifndef STRATA_NATIVE_EXPERTS
         // Serve mode ignores unknown options. Worker flags must instead fail before engine setup,
         // even when the main parser's preflight treated one as another option's value.
-        if (a == "--remote-cpu-experts" || a == "--remote-cpu-local-manifest" ||
+        if (a == "--remote-cpu-experts" || a == "--remote-cpu-worker" || a == "--remote-cpu-local-manifest" ||
             a == "--remote-cpu-local-fallback" || a == "--remote-cpu-resident" ||
             a == "--remote-cpu-setup-ms" || a == "--remote-cpu-deadline-ms") {
             std::fprintf(stderr, "strata-q36: %s requires STRATA_NATIVE_EXPERTS=ON; this build excludes the remote CPU-expert worker\n",

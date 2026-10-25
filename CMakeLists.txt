@@ -663,6 +663,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME worker_dispatch_test COMMAND worker_dispatch_test)
       add_test(NAME worker_dispatch_host_zero_test COMMAND ${CMAKE_COMMAND} -E env STRATA_DEC_BATCH=0 $<TARGET_FILE:worker_dispatch_test>)
       set_tests_properties(worker_dispatch_test worker_dispatch_host_zero_test PROPERTIES TIMEOUT 900)
+      if(NOT WIN32)
+        add_executable(cpu_group_dispatch_test tests/core/cpu_group_dispatch_test.cpp)
+        target_include_directories(cpu_group_dispatch_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+        target_link_libraries(cpu_group_dispatch_test PRIVATE strata_engine strata_worker_tier)
+        add_test(NAME cpu_group_dispatch_test COMMAND cpu_group_dispatch_test)
+        set_tests_properties(cpu_group_dispatch_test PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+      endif()
     endif()
     # #326: a native pack's BF16 (--compat-bf16) PLE key stays in the arena; a quantized key row loads as before
     add_executable(native_dense_ple_key_test tests/core/native_dense_ple_key_test.cpp)
@@ -1784,7 +1791,7 @@ if(STRATA_NATIVE_EXPERTS)
   # one in-flight request, the already-weighted partial the verifier's merge consumes).  CPU-only like the
   # service above, so its whole lifecycle is testable without a GPU toolkit; the CUDA engine links it from
   # strata_engine (below) and only moves pointers between it and the verifier's buffers.
-  add_library(strata_worker_tier STATIC src/worker/expert_tier.cpp)
+  add_library(strata_worker_tier STATIC src/worker/expert_tier.cpp src/worker/cpu_group.cpp)
   target_include_directories(strata_worker_tier PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_worker_tier PUBLIC strata_expert_worker)
   # the engine (a GPU-backend target, defined above) drives the tier from its dispatch; this is the one
@@ -1797,6 +1804,11 @@ if(STRATA_NATIVE_EXPERTS)
     # socket (Q8_0 fixtures), transported-vs-direct parity through the tier's own request construction,
     # zero-work windows, sequence handling, the no-local-dereference property and the failure latch
     if(NOT WIN32)
+      add_executable(cpu_worker_group_test tests/worker/cpu_worker_group_test.cpp)
+      target_include_directories(cpu_worker_group_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+      target_link_libraries(cpu_worker_group_test PRIVATE strata_worker_tier)
+      add_test(NAME cpu_worker_group_test COMMAND cpu_worker_group_test)
+      set_tests_properties(cpu_worker_group_test PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
       add_executable(worker_local_test tests/worker/worker_local_test.cpp)
       target_include_directories(worker_local_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
       target_link_libraries(worker_local_test PRIVATE strata_worker_tier)

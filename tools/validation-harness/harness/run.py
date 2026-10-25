@@ -11,6 +11,7 @@ import traceback
 
 import bundle
 import campaign as C
+import peer as remote_peer
 
 
 def option(argv, flag, value):
@@ -34,11 +35,21 @@ def arm_config(cfg, arm):
     result['max_requests'] = len(arm['requests'])
     result['placement_markers'] = arm['placement_markers']
     result['engine_main_mask'] = arm['engine_main_mask']
+    if cfg.get('capture_first_logits'):
+        result['env']=dict(cfg['env'],STRATA_DUMP_FIRST_LOGITS=str(pathlib.Path(cfg['run_root'])/(arm['name']+'-first-logits')))
+    if cfg.get('worker_peers'):
+        selected=[next(p for p in cfg['worker_peers'] if p['name']==name) for name in arm['cpu_peers']]
+        result['worker_bytes']=arm['peer_bytes'][0]
+        result['communication_limit']=len(selected)
+        argv=result['argv'];index=argv.index('--remote-cpu-experts');del argv[index:index+2]
+        if len(selected)==1:argv+=['--remote-cpu-experts',selected[0]['endpoint']+':'+str(selected[0]['port'])]
+        else:
+            for peer in selected:argv+=['--remote-cpu-worker',peer['endpoint']+':'+str(peer['port'])]
     return result
 
 
 def masks(arm, session=None, need_io=False, phase='compute'):
-    if phase not in ('setup', 'ready', 'compute'): raise ValueError('unknown affinity phase')
+    if phase not in ('setup', 'ready', 'compute', 'inspect'): raise ValueError('unknown affinity phase')
     if phase == 'setup' and session is not None: raise RuntimeError('setup masks require an idle worker')
     if phase == 'ready' and session is None: raise RuntimeError('ready masks require an owned session')
     if session is None: C.assert_worker_idle()
@@ -68,12 +79,13 @@ def masks(arm, session=None, need_io=False, phase='compute'):
     caller = sorted(set(arm['caller_mask']).union(*map(set, arm['pool_masks']))) if phase == 'setup' else arm['caller_mask']
     expected = [caller, *arm['pool_masks']]
     for row, mask in zip(rows, expected):
-        if session is None or phase == 'ready': os.sched_setaffinity(row['tid'], set(mask))
+        if (session is None and phase != 'inspect') or phase == 'ready': os.sched_setaffinity(row['tid'], set(mask))
     rows = C.tasks(worker['pid'])
     if [row['mask'] for row in rows[:len(expected)]] != [sorted(set(mask)) for mask in expected]:
         raise RuntimeError('configured worker masks changed')
     io = [row for row in engine_rows if row['comm'] == 'strata-cpu-io']
-    if need_io and len(io) != 1: raise RuntimeError('missing communication task')
+    limit=C.cfg.get('communication_limit',1)
+    if need_io and not 1 <= len(io) <= limit: raise RuntimeError('missing/excess communication tasks')
     receipt = {'phase': phase, 'worker_tasks': rows, 'engine_tasks': engine_rows,
                'communication_threads': io, 'topology': C.topology()}
     suffix = '-affinity-setup.json' if phase == 'setup' else '-affinity.json'
@@ -112,15 +124,45 @@ def run(root):
     if pathlib.Path(C.worker_control.__file__).resolve() != root / 'worker_control.py': raise RuntimeError('stale control import')
     C.configure(root, {**cfg, 'worker_count': cfg['arms'][0]['workers']})
     results = []
+    definitions={p['name']:p for p in cfg.get('worker_peers',[]) if not p.get('local')}
+    remote={}
     try:
         for arm in cfg['arms']:  # no implicit warmup, recovery, extra serial arm or performance decision
             bundle.verify(root)
             configuration = arm_config(cfg, arm)
             C.configure(root, configuration)
+            wanted=set(arm.get('cpu_peers',[])) & definitions.keys()
+            for name in list(remote):
+                if name not in wanted:remote[name].stop();del remote[name]
+            added=[]
+            for name in sorted(wanted):
+                if name not in remote:
+                    if not arm['restart']:raise RuntimeError('new peer requires a zero-GEN load entry')
+                    remote[name]=remote_peer.Peer(definitions[name],root);remote[name].prepare();added.append(name)
             if arm['restart']: launch_worker(configuration, arm)
             else: masks(arm, session=None)  # explicit masks are also checked on attached/reused workers
+            for name in added:remote[name].start()
+            before={name:peer.status() for name,peer in remote.items()}
+            for name,row in before.items():C.atom(remote[name].root/('before-'+arm['name']+'.json'),row)
+            def affinity(session,io,phase='compute'):
+                report=masks(arm,session,io,phase)
+                for peer in remote.values():
+                    if phase=='ready':peer.masks()
+                    else:peer.inspect()
+                return report
             summary = C.run_arm(arm['name'], configuration, arm['requests'],
-                                 lambda session, io, phase='compute': masks(arm, session, io, phase))
+                                 affinity)
+            for name,peer in remote.items():
+                row=peer.status();status=row['status']
+                expected=arm['peer_bytes'][arm['cpu_peers'].index(name)]
+                C.atom(peer.root/('after-'+arm['name']+'.json'),row)
+                if not status['complete'] or status['session'] or status['resident_bytes']!=expected or \
+                   status['loaded_bytes']!=expected or status['verified_bytes']!=expected or status['arena_allocations']!=1 or \
+                   status['network_weight_bytes'] or status['unloads'] or status['expirations'] or row['legacy']['failures']:
+                    raise RuntimeError('peer residency/accounting mismatch: '+name)
+                if arm['requests']:
+                    for key in ('loaded_bytes','verified_bytes','arena_allocations','unloads','expirations'):
+                        if status[key]!=before[name]['status'][key]:raise RuntimeError('warm peer storage changed: '+name)
             if arm.get('reference'):
                 reference = json.loads(pathlib.Path(cfg['assets'][arm['reference']]).read_text())['requests']
                 expected = {row['index']: row for row in reference}
@@ -136,6 +178,9 @@ def run(root):
         for session in list(C.SESSIONS):
             try: C.finish_session(session, abort=True)
             except Exception as cleanup: C.atom(root / (session + '-cleanup-uncertain.json'), {'error': repr(cleanup)})
+        for name,peer in remote.items():
+            try:peer.abort()
+            except Exception as cleanup:C.atom(peer.root/'cleanup-uncertain.json',{'error':repr(cleanup)})
         if cfg['failure_worker'] == 'stop' and not C.SESSIONS and C.GUARDIAN is not None:
             # Never retry an uncertain STOP; the retained child may still process it later.
             receipt = C.W / 'stop.json'

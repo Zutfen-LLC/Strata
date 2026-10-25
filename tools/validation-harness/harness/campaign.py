@@ -98,7 +98,8 @@ def listener_owned():
         except FileNotFoundError:
             pass
     tcp = [l.split() for l in pathlib.Path('/proc/net/tcp').read_text().splitlines()[1:]]
-    owned = [x for x in tcp if x[1] == '0100007F:' + format(PORT, '04X') and x[3] == '0A' and 'socket:[' + x[9] + ']' in fds]
+    address=socket.inet_aton(cfg['worker_host'])[::-1].hex().upper()+':'+format(PORT,'04X')
+    owned = [x for x in tcp if x[1] == address and x[3] == '0A' and 'socket:[' + x[9] + ']' in fds]
     assert len(owned) == 1, owned
     return owned
 
@@ -326,7 +327,7 @@ def run_arm(arm, session_config, indices, affinity):
     text = (R / arm / 'stderr.log').read_text()
     for marker in session_config['placement_markers']:
         if marker not in text: raise RuntimeError('missing placement marker: ' + marker)
-    rows = []; io_tid = None
+    rows = []; io_tids = set()
     for k, index in enumerate(indices):
         healthy(); affinity(arm, False)
         path = R / arm / 'stdout.log'; offset = path.stat().st_size
@@ -339,10 +340,10 @@ def run_arm(arm, session_config, indices, affinity):
         if len(tokens) != done['output_count']: raise RuntimeError('token count mismatch')
         report = affinity(arm, True)
         tids = report['communication_threads']
-        if len(tids) != 1: raise RuntimeError('missing unique communication thread')
-        tid = tids[0]['tid']
-        if io_tid is not None and tid != io_tid: raise RuntimeError('communication TID changed')
-        io_tid = tid
+        limit=session_config.get('communication_limit',1)
+        current={row['tid'] for row in tids}
+        if not 1 <= len(current) <= limit or not io_tids <= current: raise RuntimeError('communication TIDs changed or exceed peer count')
+        io_tids=current
         rows.append({'index': index + 1, 'tokens': tokens, 'output_count': done['output_count'],
             'worker_entries': done.get('worker_entries'), 'prompt_s': done['prompt_s'],
             'decode_s': done['decode_s'], 'sent_mono': ack['sent']['mono'], 'done_mono': st['done']['mono']})

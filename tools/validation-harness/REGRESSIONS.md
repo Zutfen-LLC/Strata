@@ -36,3 +36,11 @@ The phase correction and new synthetic cases remain **NOT RUN** locally.
 | Caller pinned before SETUP makes loader helpers inherit one CPU | Use configured caller/pool CPU union for setup; after owned idle READY, restore final masks before GEN; real child/thread inheritance and phase-boundary cases |
 
 No malformed-source corpus, unrelated backend suite, model campaign or new supervisor is added.
+
+## Fixed CPU group additions
+
+`tests/test_peers.py` adds synthetic second-host role staging, pre-START config/asset binding,
+non-default loopback readiness, fast STOP reconciliation, live owned abort/reaping, bounded transport
+stderr and explicit uncertainty when the acknowledgement channel is lost. `tests/test_numerics.py`
+covers fixed logit/probability comparison gates and malformed/non-finite inputs. These new cases are
+authored and **NOT RUN** on the coding desktop; see the fixed-group handoff for Hermes execution.

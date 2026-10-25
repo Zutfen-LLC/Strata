@@ -51,6 +51,34 @@ For local weight setup, `--local-load-threads N` selects 1–4 loading lanes, se
 `--workers`. The default is 4; explicit 1 keeps the serial reader. See [parallel local loading](cpu-worker-local/PARALLEL_LOADING.md)
 for memory bounds, timing interpretation and validation status.
 
+## Fixed CPU worker group (experimental)
+
+The engine can opt into one or two CPU endpoints with repeated `--remote-cpu-worker IPv4:PORT`.
+Use it with the existing trusted `--remote-cpu-local-manifest` and local Q8_0 assets on every worker.
+Do not combine it with `--remote-cpu-experts` or network GPU worker options. Local helper GPUs keep
+their existing placement. The old one-endpoint option and default path are unchanged.
+
+The engine freezes the non-GPU expert set, walks it in layer/expert order, and assigns consecutive
+eligible experts round-robin to endpoints in command-line order. Endpoint order defines ownership
+and reduction order. Each endpoint must own something; duplicate endpoints, overlap, gaps, different
+trusted model/layout or invalid geometry are refused before group connection. Active peers receive
+copied inputs before the engine waits. Zero-work peers send no INFER; bounded status probes keep
+their sessions alive. A failure drains outstanding requests and exposes no group partial. No failed
+inference is retried. Matching resident subsets can reconnect; changing from full ownership to a
+subset requires the existing explicit owned replacement/reload procedure.
+
+Replies retain the existing weighted-partial wire format. The engine copies the first active
+partial, then adds remaining partials in endpoint order. This changes floating-point reduction order
+from an unsplit worker and does not promise bitwise equality to that worker. Grouped-reference bits,
+independent unsplit error, finite results, token streams and task correctness are separate gates.
+Per-peer request/service counters and timings are reported; overlapping peer times must not be summed
+as elapsed wall time. Equal expert counts need not mean equal compute or completion time, and transport
+overhead can outweigh parallel work. No speedup has been measured for this change.
+
+See the [fixed two-host validation handoff](validation/CPU-FIXED-GROUP-20261025.md) for the bounded
+first comparison, frozen numeric gates and private config contract. This feature and its new fixtures
+are authored; executable validation is **NOT RUN** on the coding desktop.
+
 ## The service API
 
 One persistent connection, one outstanding request at a time, every frame

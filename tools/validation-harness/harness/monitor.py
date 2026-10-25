@@ -30,12 +30,13 @@ while True:
   rss=int(st.get('VmRSS','0 kB').split()[0]);sw=int(st.get('VmSwap','0 kB').split()[0]);hwm=int(st.get('VmHWM','0 kB').split()[0]);avail=mem['MemAvailable']
   peaks['rss_kib']=max(peaks['rss_kib'],rss);peaks['hwm_kib']=max(peaks['hwm_kib'],hwm);peaks['swap_kib']=max(peaks['swap_kib'],sw)
   peaks['min_available_kib']=avail if peaks['min_available_kib'] is None else min(peaks['min_available_kib'],avail)
-  q=subprocess.run(['nvidia-smi','--query-gpu=uuid,memory.used,memory.free,temperature.gpu,utilization.gpu','--format=csv,noheader,nounits'],text=True,capture_output=True,timeout=10)
-  if q.returncode:raise RuntimeError('nvidia-smi failure: '+q.stderr)
   gpus=[]
-  for l in q.stdout.splitlines():
-   u,used,free,temp,util=[s.strip() for s in l.split(',')];gpus.append({'uuid':u,'used_mib':int(used),'free_mib':int(free),'temp':int(temp),'util_pct':int(util)})
-   peaks['gpu_used_mib'][u]=max(peaks['gpu_used_mib'].get(u,0),int(used));peaks['gpu_min_free_mib'][u]=min(peaks['gpu_min_free_mib'].get(u,2**60),int(free))
+  if cfg.get('monitor_gpu',True):
+   q=subprocess.run(['nvidia-smi','--query-gpu=uuid,memory.used,memory.free,temperature.gpu,utilization.gpu','--format=csv,noheader,nounits'],text=True,capture_output=True,timeout=10)
+   if q.returncode:raise RuntimeError('nvidia-smi failure: '+q.stderr)
+   for l in q.stdout.splitlines():
+    u,used,free,temp,util=[s.strip() for s in l.split(',')];gpus.append({'uuid':u,'used_mib':int(used),'free_mib':int(free),'temp':int(temp),'util_pct':int(util)})
+    peaks['gpu_used_mib'][u]=max(peaks['gpu_used_mib'].get(u,0),int(used));peaks['gpu_min_free_mib'][u]=min(peaks['gpu_min_free_mib'].get(u,2**60),int(free))
   worker=None
   wp=pathlib.Path(cfg['worker_root'])/'identities.json'
   if D != pathlib.Path(cfg['worker_root']) and wp.exists():

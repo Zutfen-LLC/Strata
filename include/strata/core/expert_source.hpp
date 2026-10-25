@@ -48,6 +48,7 @@ struct ExpertLayout;
 }
 
 namespace strata::worker {
+class ExpertWorkerGroup;
 class ExpertWorkerTier;   // inferswarm #349: the opt-in remote CPU-expert tier (worker/expert_tier.hpp)
 class GpuWorkerGroup;     // fixed network CUDA group; separate capability and numerical contract
 }
@@ -490,6 +491,7 @@ struct ExpertDispatch {
     /// holds executes there, the request goes out after the GPU's own work is published, and the
     /// already-weighted partial joins the result through `remote_opt` (helpers first, worker on top).
     strata::worker::ExpertWorkerTier* worker = nullptr;
+    strata::worker::ExpertWorkerGroup* cpu_group = nullptr; // opt-in fixed CPU partitions
     // The network GPU plan is a frozen subset of the CPU partition. CPU weights stay resident, but
     // entries assigned here execute only here for this session. Null preserves the CPU-only path.
     strata::worker::GpuWorkerGroup* gpu_worker = nullptr;

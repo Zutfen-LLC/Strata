@@ -30,6 +30,13 @@ int main() {
          std::strstr(dispatch.fail, "requires STRATA_NATIVE_EXPERTS=ON") &&
          dispatch.fail_layer == 7 && dispatch.layers == 7 &&
          output[0] == 123.0f && output[1] == -456.0f;
+    dispatch.gpu_worker = nullptr;
+    dispatch.cpu_group = reinterpret_cast<strata::worker::ExpertWorkerGroup*>(opaque_worker);
+    dispatch.failed = false;dispatch.fail = nullptr;
+    strata::core::expert_pool_dispatch_multi(dispatch, nullptr, nullptr, 1, 1, output);
+    ok = ok && dispatch.failed && dispatch.fail != nullptr &&
+         std::strstr(dispatch.fail, "requires STRATA_NATIVE_EXPERTS=ON") &&
+         dispatch.fail_layer == 7 && output[0] == 123.0f && output[1] == -456.0f;
     std::puts(ok ? "PASS native-OFF worker dispatch refuses before resource access" :
                    "FAIL native-OFF worker dispatch refusal");
     return ok ? 0 : 1;
