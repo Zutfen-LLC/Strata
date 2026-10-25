@@ -67,5 +67,7 @@ struct CpuReplayReport {
 // exchange gets a validated captured request with a selected mask. Implementations rewrite only
 // fresh session/sequence identity; no setup/upload/unload or retries belong in this function.
 using CpuReplayExchange = std::function<bool(const InferRequest&, std::vector<float>&, std::string&)>;
-bool replay_cpu_capture(const CpuCaptureFile&, const CpuReplayExchange&, CpuReplayReport&, std::string&);
+using CpuReplayObserver = std::function<void(size_t record, int peer, const std::vector<float>&)>;
+bool replay_cpu_capture(const CpuCaptureFile&, const CpuReplayExchange&, CpuReplayReport&, std::string&,
+                        const CpuReplayObserver& masked = {});
 }

@@ -1,6 +1,7 @@
 // Manual bounded numerical discriminator. Real Q8 services/pools/group; no model, GPU or external port.
 #include "local_fixture.hpp"
 #include "strata/worker/cpu_group.hpp"
+#include "diagnostic_child.hpp"
 #include <algorithm>
 #include <cmath>
 #include <fcntl.h>
@@ -16,91 +17,11 @@ uint64_t ms() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// Only these forked fixture children may be signalled. They remain in the outer guard's process group.
-struct Child {
-    pid_t pid = -1;
-    int pipe = -1;
-    uint16_t port = 0;
-    std::string log;
-    void pump() {
-        char data[4096];
-        for (;;) {
-            const auto n = ::read(pipe, data, sizeof data);
-            if (n > 0) {
-                require(log.size() + n <= (1u << 20), "fixture child output exceeds 1 MiB");
-                log.append(data, n);
-            } else if (n < 0 && errno == EINTR) continue;
-            else break;
-        }
-    }
-    bool wait(int seconds, int& status) {
-        const auto end = ms() + seconds * 1000;
-        do {
-            pump();
-            const auto got = ::waitpid(pid, &status, WNOHANG);
-            if (got == pid) { pid = -1; return true; }
-            if (got < 0 && errno != EINTR) throw std::runtime_error("fixture waitpid failed");
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        } while (ms() < end);
-        return false;
-    }
-    void abort() noexcept {
-        if (pid > 0) {
-            ::kill(pid, SIGTERM);
-            int status = 0;
-            try { if (wait(5, status)) return; } catch (...) {}
-            ::kill(pid, SIGKILL);
-            while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-            pid = -1;
-        }
-    }
-    Child(const char* executable, const Fixture& fixture) {
-        require(fs::path(executable).is_absolute() && ::access(executable, X_OK) == 0,
-                "worker executable must be an existing absolute path");
-        const std::string root = fixture.root.string(), manifest = (fixture.root / "local.manifest").string();
-        const char* argv[] = {executable, "--port", "0", "--workers", "12", "--local-load-threads", "4",
-            "--memory-budget-mib", "256", "--local-root", root.c_str(), "--local-manifest", manifest.c_str(),
-            "--deadline-ms", "10000", "--residency-forever", nullptr};
-        int fds[2];
-        require(::pipe(fds) == 0, "fixture pipe");
-        if (::fcntl(fds[0], F_SETFD, FD_CLOEXEC) || ::fcntl(fds[1], F_SETFD, FD_CLOEXEC)) {
-            ::close(fds[0]); ::close(fds[1]); throw std::runtime_error("fixture close-on-exec");
-        }
-        pid = ::fork();
-        if (pid < 0) { ::close(fds[0]); ::close(fds[1]); throw std::runtime_error("fixture fork"); }
-        if (pid == 0) {
-            ::close(fds[0]);
-            ::dup2(fds[1], STDOUT_FILENO); ::dup2(fds[1], STDERR_FILENO); ::close(fds[1]);
-            ::execv(executable, const_cast<char**>(argv)); _exit(127);
-        }
-        ::close(fds[1]); pipe = fds[0];
-        try {
-            require(::fcntl(pipe, F_SETFL, O_NONBLOCK) == 0, "nonblocking fixture pipe");
-            const auto end = ms() + 10000;
-            while (!port && ms() < end) {
-                pump();
-                const auto at = log.find("listening on 127.0.0.1:");
-                if (at != std::string::npos && log.find('\n', at) != std::string::npos) {
-                    const int value = std::stoi(log.substr(at + 23));
-                    require(value > 0 && value <= 65535, "fixture port"); port = (uint16_t)value;
-                }
-                if (!port) { pollfd p{pipe, POLLIN, 0}; ::poll(&p, 1, 20); }
-            }
-            require(port != 0 && log.find("12 pool workers") != std::string::npos, "fixture startup/worker count");
-        } catch (...) { abort(); ::close(pipe); pipe = -1; throw; }
-    }
-    ~Child() { abort(); if (pipe >= 0) ::close(pipe); }
-    void unload() {
-        ExpertWorkerClient c; std::string err;
-        require(c.connect_host("127.0.0.1", port, 5000, err), err); require(c.unload(err), err);
-    }
-    void stop() {
-        ExpertWorkerClient c; std::string err;
-        require(c.connect_host("127.0.0.1", port, 5000, err), err); require(c.shutdown(err), err); c.close();
-        int status = 0; require(wait(10, status), "fixture shutdown deadline");
-        require(WIFEXITED(status) && WEXITSTATUS(status) == 0, "fixture child clean exit");
-    }
-};
+using Child = strata::worker::diagnostic::Child;
+strata::worker::diagnostic::ChildSpec launch(const char* binary,const Fixture& fixture) {
+    strata::worker::diagnostic::ChildSpec spec;spec.binary=binary;spec.root=fixture.root.string();
+    spec.manifest=(fixture.root/"local.manifest").string();return spec;
+}
 
 struct Input {
     std::string name;
@@ -256,7 +177,7 @@ void exercise(const char* a_path, const char* b_path) {
     Fixture f(Experts, 10); const auto cases = inputs(); const auto refs = references(f, cases);
     std::printf("FIXTURE experts=%d cpu_experts=%d layers=2 K=10 T=1 workers=12 loaders=4 full_arena_bytes=%llu paired_from=10\n",
         Experts, CpuExperts, (unsigned long long)(2 * CpuExperts * f.fmt.bytes));
-    Child a(a_path, f), b(b_path, f);
+    Child a(launch(a_path,f)), b(launch(b_path,f));
     const auto full_a = full(f, a, "binaryA", cases, refs), full_b = full(f, b, "binaryB", cases, refs);
     for (size_t c = 0; c < cases.size(); ++c)
         compare(cases[c].name + "/binaryA-vs-binaryB-full", full_a[c], full_b[c], Gate::Bits);

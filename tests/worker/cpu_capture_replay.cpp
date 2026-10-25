@@ -1,6 +1,7 @@
 // Manual diagnostic. Run only after the engine owner reaps and its resident session disconnects.
 #include "strata/worker/cpu_capture.hpp"
 #include "strata/worker/expert_client.hpp"
+#include "cpu_subset_replay.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -27,7 +28,8 @@ bool unchanged(const WorkerCacheInfo& a,const WorkerCacheInfo& b){
 }
 }
 int main(int argc,char** argv){
-    if(argc!=7){std::fprintf(stderr,"usage: cpu_capture_replay CAPTURE MANIFEST REQUESTS REFERENCE_RAW_F32 NUMERIC_HOST PORT\n");return 2;}
+    if(argc!=7 && !(argc==9 && std::string(argv[7])=="--local-subsets")){
+        std::fprintf(stderr,"usage: cpu_capture_replay CAPTURE MANIFEST REQUESTS REFERENCE_RAW_F32 NUMERIC_HOST PORT [--local-subsets CONFIG]\n");return 2;}
     try {
         CpuCaptureFile capture;LocalManifest local;std::string err;
         char* end=nullptr;const long port=std::strtol(argv[6],&end,10);
@@ -62,6 +64,11 @@ int main(int argc,char** argv){
         }
         if(!err.empty() || !input.eof() || max_new!=capture.max_new || tokens.size()!=capture.prompt_tokens*4u ||
            blob_digest(tokens)!=capture.tokens){std::fprintf(stderr,"request token binding mismatch; no worker contacted\n");return 1;}
+        std::unique_ptr<diagnostic::SubsetConfig> subset_config;
+        std::unique_ptr<diagnostic::MaskedReferences> references;
+        if(argc==9){diagnostic::need(std::string(argv[5])=="127.0.0.1","local subset mode requires a loopback full reference");
+            subset_config=std::make_unique<diagnostic::SubsetConfig>(diagnostic::read_subset_config(argv[8],capture,local));
+            references=std::make_unique<diagnostic::MaskedReferences>(capture);}
         strata::kernels::cpu::NativeFmt fmt;
         if(!strata::kernels::cpu::native_fmt(8,8,capture.setup.n_embd,capture.setup.n_ff,fmt,err))return 1;
         const auto expected=capture.setup.owned_count()*(uint64_t)fmt.bytes;
@@ -80,7 +87,7 @@ int main(int argc,char** argv){
             if(std::chrono::steady_clock::now()-start>std::chrono::seconds(180)) {why="replay total deadline";return false;}
             auto request=saved;request.session=client.session();request.sequence=++sequence;
             InferReply reply;if(!client.infer(request,reply,why))return false;out=std::move(reply.partials);return true;
-        },result,err);
+        },result,err,references?CpuReplayObserver([&](size_t i,int p,const std::vector<float>& v){references->save(i,p,v);}):CpuReplayObserver{});
         const std::string primary_error=err;
         client.close(); // single-session disconnect; no unload, stop, upload or weight read
         ExpertWorkerClient check;
@@ -104,6 +111,20 @@ int main(int argc,char** argv){
         }
         if(!ok)std::fprintf(stderr,"replay refused/failed: %s\n",primary_error.c_str());
         if(!retained)std::fprintf(stderr,"resident verification failed: %s\n",err.c_str());
-        return ok && retained && result.entry_order_bits && result.peer_bits && result.detail_envelope ? 0:1;
+        ok=ok && retained && result.entry_order_bits && result.peer_bits && result.detail_envelope;
+        if(ok && subset_config){
+            diagnostic::SubsetReport subsets;
+            const bool matched=diagnostic::run_local_subsets(capture,local,argv[2],*references,*subset_config,subsets,err);
+            const auto subset_error=err;WorkerCacheInfo final_cache;ExpertWorkerClient final_check;
+            const bool preserved=final_check.connect_local(argv[5],(uint16_t)port,5000,{},err) &&
+                final_check.cache_status(final_cache,err) && unchanged(before,final_cache);final_check.close();
+            std::printf("CPU_LOCAL_SUBSETS ok=%d full_resident_unchanged=%d peers_checked=%u groups_checked=%u owned_reaped=%d peak_owned_rss=%llu min_available=%llu\n",
+                matched,preserved,subsets.peers_checked,subsets.groups_checked,subsets.reaped,
+                (unsigned long long)subsets.peak_rss,(unsigned long long)subsets.min_available);
+            if(!matched)std::fprintf(stderr,"local subset failure: %s\n",subset_error.c_str());
+            if(!preserved)std::fprintf(stderr,"full resident final verification failure: %s\n",err.c_str());
+            ok=matched && preserved && subsets.reaped;
+        }
+        return ok?0:1;
     } catch(const std::exception& e){std::fprintf(stderr,"replay exception: %s\n",e.what());return 1;}
 }

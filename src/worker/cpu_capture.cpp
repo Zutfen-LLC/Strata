@@ -221,7 +221,8 @@ std::vector<int8_t> cpu_capture_owners(const SetupManifest& m){
         owners[(size_t)l*m.n_expert+e]=(int8_t)(ordinal++%2);
     return owners;
 }
-bool replay_cpu_capture(const CpuCaptureFile& f,const CpuReplayExchange& exchange,CpuReplayReport& report,std::string& err){
+bool replay_cpu_capture(const CpuCaptureFile& f,const CpuReplayExchange& exchange,CpuReplayReport& report,std::string& err,
+                        const CpuReplayObserver& masked){
     report={};const auto owners=cpu_capture_owners(f.setup);
     // Full validation pass first. No peer-masked request is issued before EVERY full reply matches.
     for(size_t i=0;i<f.records.size();++i){
@@ -239,6 +240,7 @@ bool replay_cpu_capture(const CpuCaptureFile& f,const CpuReplayExchange& exchang
             active[p]=std::find(q.mask.begin(),q.mask.end(),1)!=q.mask.end();peer[p].assign(r.partials.size(),0.f);
             if(active[p] && !exchange(q,peer[p],err))return false;
             if(peer[p].size()!=r.partials.size() || !finite(peer[p])){err="masked replay shape/nonfinite";return false;}
+            if(masked)masked(i,p,peer[p]);
         }
         auto grouped=active[0]?peer[0]:peer[1];
         if(active[0] && active[1])for(size_t j=0;j<grouped.size();++j)grouped[j]=grouped[j]+peer[1][j];

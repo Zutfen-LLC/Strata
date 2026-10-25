@@ -18,7 +18,110 @@ or raw-receipt inspection by this coding thread. **Do not rerun that campaign.**
 is only the bounded diagnostic below. The original commands later in this file remain historical
 procedure, not authorization for another model load.
 
-### Current next step: one real-input capture and resident replay
+### Current next step: local subsets from the saved capture (zero GEN)
+
+The parent supplied a completed PASS at `7c0dfce4f88856856c6d33a281824b1aae7dff1b`, whose direct
+parent is `80119730422bfe7071c97420af8f5866344162c9`. CPU checks2/2 and CUDA/native-OFF links passed.
+One original prompt produced one token/DONE, warm reuse of116135731200B and first logits bit-identical
+to retained A0. The saved capture is37544692B, SHA256
+`218bd2e9210ea7cbe641e3e09d7be5f060c5691d630ee6357935eb240f983208`.
+Replay returned0 in3s: windows20, records/full/grouped960, maxabs9.53674316e-7, maxrel0.333,
+relativeL2 6.112e-8, entry_bits1, peer_bits1, detail_envelope1. First regrouping bit difference was
+record0, prefill position0/T2/slice0/layer0/K10; the largest was record47/layer47. The complete full
+arena remained unchanged: one allocation, zero failures/unloads/expirations. These are supplied
+Hermes results; neither execution nor private receipt inspection occurred in this coding thread.
+
+Those results hold baseline activations/IDs/weights fixed. They do not establish closed-loop error
+propagation, subset slot-map correctness, real concurrent group behavior or remote peer state.
+The failed original model screen remains failed. **Do not recapture, launch an engine or rerun GEN.**
+
+The new optional `--local-subsets CONFIG` mode extends the existing replay program. It collects
+the two masked references during the existing full-resident replay, closes that session, then
+starts exactly two owned loopback workers using the extracted existing diagnostic child helper.
+Each receives the alternating frozen subset through existing trusted local loading. Manual peer
+posts both occur before either wait; every peer reply must bitmatch its full-arena masked reference.
+The same resident subsets then reconnect through the actual `ExpertWorkerGroup`; its output must
+bitmatch the established manual configuration-order sum. No thresholds change, and this is no
+performance or closed-loop acceptance test. There is no remote-subset mode or new protocol/format.
+
+On the CPU fixture host, use the existing cache/options at the exact new source pin:
+
+```sh
+cmake -S "$SRC" -B "$CPU_BUILD"
+cmake --build "$CPU_BUILD" --target cpu_capture_test cpu_capture_subset_test cpu_capture_replay cpu_group_numeric_diagnostic --parallel 4
+ctest --test-dir "$CPU_BUILD" --output-on-failure -R '^(cpu_capture_test|cpu_capture_subset_test)$'
+```
+
+The subset CTest owns three small synthetic Q8 workers, with no external endpoint/model/engine.
+It checks multi-token requests, signed weights, alternating ownership across layers, zero work,
+an inactive peer across eight delayed one-peer records and later reactivation, actual subset/group
+bits, resource refusal, early child death and failure cleanup while preserving its full fixture.
+The old manual numeric target is built because its child helper was extracted; do not repeat its
+historical seven-case invocation. The fixture dependency may build the CPU test worker; it never
+replaces the retained runtime worker. **All new checks are authored and NOT RUN locally.** No
+additional CUDA build or engine launch is needed for this diagnostic-only extension.
+
+After focused checks, mechanically stage/hash the replay executable on the runtime host. Copy
+[`cpu_capture_subsets.example.conf`](../../tests/worker/cpu_capture_subsets.example.conf) into a
+private config and replace every placeholder. It is a bounded, 13-key text file: whitespace separates
+key/value pairs; quote paths or CPU lists; duplicate/unknown/missing fields are refused. Bind:
+
+- `worker_binary` to the exact retained full-worker ELF, verified against its recorded executable hash;
+  both temporary workers use it and inherit the retained worker environment, including OMP settings.
+- `local_root` to existing validated local assets; the manifest remains the existing positional CLI
+  binding. No model weights are staged/copied and no subset pack is generated.
+- `output_root` to a new directory beneath the existing disk-backed private run root. Use neither
+  tmpfs nor `/tmp` for this run. Logs are exclusive mode0600, bounded to1MiB per child.
+- `caller_cpu` / `pool_cpus` to the approved caller and twelve singleton pool CPUs. Both children use
+  that same policy; this numeric test can oversubscribe those CPUs and makes no timing claim. The
+  launcher must allow their union. Children start with that union so loading helpers inherit it;
+  final caller/pool masks are applied and verified only after READY, after loading helpers join.
+- Keep the supplied arena/reserve/RSS/deadline values:116135731200B temporary arenas,
+  8589934592B reserve,128849018880B additional owned RSS, workers12/loaders4,
+  frame10000ms, setup600000ms per peer and total1500000ms for the local-subset phase.
+
+Preserving the full arena plus both temporary arenas needs232271462400B (216.32GiB) **before**
+scratch/system headroom. Supplied read-only runtime evidence found150533742592B MemAvailable and
+zero swap at that moment; this is not a reservation or current approval. Parent must re-establish
+exclusive idle use, live headroom and cgroup limits before runtime selection. The program checks
+finite memory.max/high headroom against memory.current along its cgroup ancestry before loading
+(temporary bytes plus reserve) and during work (reserve). Its fresh global preflight also requires
+temporary bytes plus the8GiB reserve available, and subsequent sampled guards require MemAvailable>=8GiB, owned VmSwap0,
+aggregate replay+two-child RSS<=120GiB and unchanged host/cgroup OOM counters. The existing external
+owned-process/resource guard remains required; samples are not a continuous memory guarantee.
+
+Do not inherit the old synthetic2GiB address-space limit: each temporary worker needs about54.08GiB
+for its arena. The config preflight refuses an address-space cap below half the arena total plus1GiB.
+Per-child arena budgets are derived from exact owner counts and rounded up only to MiB; the full
+resident is excluded from the additional-RSS sum. The two flat reference arrays together are capped
+at96MiB. File/config, asset metadata, CPU and address-space validation precede worker contact.
+
+After prior engine owner reaping and parent runtime approval, invoke exactly once under the retained
+guard with the six original trusted bindings, the same saved capture/A0 reference, and no engine.
+The external guard must also retain observation of the original full worker, including VmSwap0:
+
+```sh
+timeout --signal=TERM --kill-after=10s 1800s "$REPLAY" \
+  "$CAPTURE" "$MANIFEST" "$REQUESTS" "$RETAINED_A0_FIRST_RAW_F32" 127.0.0.1 "$FULL_WORKER_PORT" \
+  --local-subsets "$SUBSET_CONFIG"
+```
+
+Full replay/logit identity gates still precede temporary loads. The local phase checks owned listener
+inodes before controls, keeps inactive peers alive, requires one verified allocation per subset and
+zero uploads/failures/unloads/expiry, and checks only active requests were sent. Setup wall time is
+reported separately. Success closes sessions, stops/reaps only the two retained child handles and
+reconnects to verify unchanged full residency. Failures drain/close tiers and signal/reap only those
+owned children; parent death also signals only its children. Uncertain STOP is never resent.
+
+Return `CPU_CAPTURE_REPLAY`, `LOCAL_SUBSET_LOAD`, both `LOCAL_SUBSET_CACHE` lines and
+`CPU_LOCAL_SUBSETS`, source/binary/config/capture pins, resource/OOM/cleanup receipts and final full
+resident accounting. A peer mismatch stops before group comparison; a later group/manual mismatch
+isolates that path. Keep private logs on failure and reconcile owned PIDs before any retry. No full
+worker stop/unload/replacement, new generation, remote subset phase or model acceptance is requested.
+Even an all-pass result leaves the live engine adapter/helper-GPU merge, remote peer behavior and
+closed-loop routing/error feedback untested.
+
+### Completed real-input capture and resident replay (historical commands; do not repeat)
 
 The parent supplies the following completed evidence, not execution by this coding thread. At
 8011973 the seven-case K10/T1 diagnostic passed all 140 metric lines, including both retained
