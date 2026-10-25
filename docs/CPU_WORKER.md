@@ -320,5 +320,6 @@ Issue #14 adds an opt-in request encoding for the sampled Linux x86-64 native Q8
 Both peers need an explicit qualification ID for the verified native build pair. Unsupported
 peers or inputs use raw F32 with reported fallback. Replies keep their existing format.
 See the [wire contract and offline handoff](validation/CPU-PACKED-ACTIVATION-WIRE-20261025.md).
-Builds, offline wire tests and placement measurements for this stage remain pending; the earlier
-sampled proof does not validate this integration or establish a speedup.
+Role05 offline build/tests and exact production-codec artifact comparisons passed in the supplied
+Hermes receipt linked there. Role02 wire and live performance remain untested. Default stays raw;
+these offline results establish no speedup.

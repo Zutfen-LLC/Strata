@@ -1,12 +1,50 @@
 # Issue #14: opt-in packed activation request contract
 
-**Current role05 continuation:** use [the short direct commands](CPU-PACKED-WIRE-ROLE05-DIRECT.sh)
-under Hermes's established external RSS/swap guard. The bespoke resume wrappers below are
-superseded execution history. The latest wrapper stopped before building on Windows archive
-line endings; no test/pack/rows result followed. The direct commands check compiled sources,
-headers and CMake inputs with Git filters, then use timeout/ulimit/time and the existing proof
-admission script. Existing r1 source/build and all prior receipts stay in place.
+## Terminal role05 offline result: PASS; implementation session stopped
 
+The parent reports PASS in the [canonical Hermes receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1792971990345319),
+which was read for this update. These are supplied execution results, not desktop execution or an
+independent audit of private artifacts. Product source remained
+`fa39c2f60d0e3b6c3154469b40b569dcd43f8479` (implementation
+`976d0538c320bbcfbd486335572f980cf3a2044c`).
+
+All eight named CPU tests passed: `cpu_packed_wire_test`, `cpu_worker_group_test`,
+`cpu_worker_group_packed_test`, `cpu_packed_activation_check`, `expert_worker_test`,
+`expert_tier_test`, `worker_residency_test`, and `worker_service_residency_test`.
+Incremental build took 87.54 s; tests about 52 s combined. Capture pack took 0.16 s;
+rows took 9.03 s. Both exact `cmp` gates against retained SPA1/SRA1 passed, including
+48 native-row/ordered-partial/capture metric lines. Artifact SHA256 values remain
+`531d113d5d110fa4a53fa464ca8e504f913945d8af233113040f2d0dd6af2e0a` and
+`0aaeb0762418bc150d7c4ca2e6c168e38b5069fb2df825cb94dd75312a6d727d`.
+
+The synthetic wire fixture sent 20560 raw versus 2808 packed request bytes; replies stayed
+20512 bytes. The fixture omits an inactive token row. Its ratio is not a production traffic
+ratio. Group packing totals were 76613–129219 ns over 7–8 rows, roughly 11–16 microseconds
+per row. These are offline samples, not LAN latency, live TPS or a speedup claim. Deliberately
+unsupported T4/T8 requests passed raw fallback. Default remains raw F32.
+
+The earlier process-monitor and Windows archive line-ending failures were handoff failures;
+they produced no product or numerical verdict. The direct continuation completed with fresh
+`direct-*` evidence and preserved earlier receipts. No model service contact, GEN, reload,
+install or firewall change was reported. Role02 wire, backend compilation and live A/B remain
+**NOT RUN**. This focused implementation session is complete. Commands below are archived
+history, not instructions to start another validation campaign.
+
+For one pragmatic Linux CUDA raw-versus-packed comparison, actual blockers are a sender build
+and packed-capable receiver on the intended path, a minimal exact packet/native-row check for
+that actual build pair before assigning its explicit qualification ID, and a parent-owned receiver
+arrangement that preserves the retained resident state and fits memory. Worker 809314 at the
+old runtime cannot exercise packed requests: it would negotiate raw fallback. Do not replace or
+reload it automatically. Once those bindings exist, reuse the existing runner/model and unchanged
+numerical gates for one fixed raw/packed workload; verify packed requests really occurred, report
+fallbacks, bytes, packing cost and end-to-end time, and retain complete output comparisons.
+
+An all-backend matrix, universal/compiler proof, long-decode sweep, new runner, additional
+wrapper, or broad production rollout qualification is not a prerequisite for that bounded Linux
+CUDA research comparison. Given the under-13.71% optimistic combined-byte ceiling, proceed only
+if the capable receiver can be made available cheaply without disturbing residency. Otherwise the
+practical stopping point is this offline PASS. The user approved one bounded raw-versus-packed comparison using the existing runner. A fresh
+focused parent session owns that execution; this closeout starts no experiment or automatic follow-up.
 
 This stage follows the [sampled proof](CPU-PACKED-ACTIVATION-PROOF-20261025.md).
 Raw F32 stays the default. Replies and original entry order stay unchanged. No streaming,
@@ -38,8 +76,8 @@ window, shares immutable owned fields through all peer completions, and reports 
 quantized rows, elapsed packing time, packed requests and raw fallback reasons. Single tiers
 use the same packer. A scale failure falls back for that window without changing quantization.
 
-Desktop validation is static only. Builds, executable checks and placement measurements are
-NOT RUN here. No speedup is claimed. Requests are about 18.7% of remote bytes; even optimistic
+Desktop validation is static only. Role05 execution is reported above; no builds, executable
+checks or placement measurements were run on this desktop. No speedup is claimed. Requests are about 18.7% of remote bytes; even optimistic
 combined savings are under 13.71% and replies do not shrink. Offline handoff follows below.
 
 ## Operator interface and accounting
