@@ -1,5 +1,6 @@
 #include "strata/worker/cpu_group.hpp"
 #include "strata/worker/setup_keepalive.hpp"
+#include "strata/worker/expert_worker.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -33,7 +34,8 @@ bool ExpertWorkerGroup::validate(const std::vector<Open>& options, const std::ve
         if (!parse_cpu_endpoint(o.host + ":" + std::to_string(o.port), endpoint) ||
             !endpoints.emplace(o.host,o.port).second || o.deadline_ms < 1 || o.setup_ms < 1)
             return refuse("invalid/duplicate CPU endpoint or deadline");
-        if (!o.local || o.local->identity != first.local->identity || o.gu_type != first.gu_type ||
+        if (!o.local || o.local->identity != first.local->identity || o.entry_rows!=first.entry_rows ||
+            o.gu_type != first.gu_type ||
             o.d_type != first.d_type || o.n_layers != first.n_layers || o.n_expert != first.n_expert ||
             o.n_embd != first.n_embd || o.n_ff != first.n_ff || o.partition.size() != expected.size())
             return refuse("CPU group trusted model/layout/geometry mismatch");
@@ -60,6 +62,7 @@ bool ExpertWorkerGroup::open(const std::vector<Open>& options, const std::vector
     if (dead()) { err=error(); return false; }
     if (ready_ || !validate(options,expected,err)) { if(err.empty())err="CPU group already open";return false; }
     layers_=options[0].n_layers;experts_=options[0].n_expert;H_=options[0].n_embd;
+    entry_rows_=options[0].entry_rows;row_reduce_ms_=0;
     owners_.assign((size_t)layers_*experts_,-1);stats_={};stopping_=window_=false;
     const size_t stride=(experts_+7u)/8u;
     try {
@@ -120,6 +123,7 @@ void ExpertWorkerGroup::close() {
     if(keeper_.joinable())keeper_.join();
     for(auto& peer:peers_)peer->close(); // each joins its existing request thread before socket close
     peers_.clear();endpoints_.clear();masks_.clear();active_.clear();combined_.clear();owners_.clear();
+    rows_.clear();weights_.clear();owned_.clear();
     ready_=posted_=served_=false;
 }
 bool ExpertWorkerGroup::holds(int64_t l,int32_t e) const {
@@ -134,6 +138,10 @@ bool ExpertWorkerGroup::post(int64_t l,const float* x,const int32_t* ids,const f
     for(int i=0;i<T*K;++i) if(ids[i]<0 || ids[i]>=experts_ || !std::isfinite(weights[i]) ||
         owned[i]!=(holds(l,ids[i])?1:0)) {err="CPU group ownership/ids/weights mismatch";fail(err);return false;}
     for(int i=0;i<T*H_;++i)if(!std::isfinite(x[i])) {err="CPU group activation nonfinite";fail(err);return false;}
+    if(entry_rows_) {
+        rows_.assign((size_t)T*K*H_,0.f);weights_.assign(weights,weights+(size_t)T*K);
+        owned_.assign(owned,owned+(size_t)T*K);K_=K;
+    }
     // The keeper reads active_ only while window_ is true. Finish/transition synchronization ensures
     // its previous window has ended before these masks are changed.
     for(size_t p=0;p<peers_.size();++p) {
@@ -169,6 +177,27 @@ bool ExpertWorkerGroup::finish(std::string& err) {
     // Every exchange has drained before exposing any partial, including a failure on another peer.
     try { if(ok) {
         bool first=true;
+        if(entry_rows_) {
+            const auto reduce_start=now_ns();std::vector<uint8_t> seen(owned_.size(),0);
+            for(size_t p=0;p<peers_.size() && ok;++p)if(active_[p]) {
+                const auto& reply=peers_[p]->entry_rows();
+                if(!peers_[p]->served() || reply.rows.size()!=reply.indices.size()*H_) {err="CPU entry rows incomplete";ok=false;break;}
+                for(size_t j=0;j<reply.indices.size();++j) {
+                    const size_t i=reply.indices[j];
+                    if(i>=owned_.size() || !masks_[p][i] || seen[i]) {err="CPU entry row ownership mismatch";ok=false;break;}
+                    seen[i]=1;std::copy_n(reply.rows.data()+j*H_,H_,rows_.data()+i*H_);
+                }
+            }
+            if(ok && seen!=owned_) {err="CPU entry rows missing";ok=false;}
+            if(ok) {
+                combined_.resize((size_t)T_*H_);
+                ExpertWorkerService::accumulate_partial(T_,K_,owned_.data(),weights_.data(),rows_.data(),H_,combined_.data());
+                if(!std::all_of(combined_.begin(),combined_.end(),[](float v){return std::isfinite(v);})) {
+                    err="CPU ordered entry sum nonfinite";ok=false;
+                }
+            }
+            row_reduce_ms_+=(double)(now_ns()-reduce_start)/1e6;
+        } else {
         for(size_t p=0;p<peers_.size();++p) if(active_[p]) {
             if(!peers_[p]->served()) {err="CPU peer did not serve its share";ok=false;break;}
             const float* row=peers_[p]->partials();
@@ -179,6 +208,7 @@ bool ExpertWorkerGroup::finish(std::string& err) {
             if(!ok)break;
         }
         if(first)combined_.assign((size_t)T_*H_,0.f);
+        }
     } } catch(const std::exception& failure) {err=failure.what();ok=false;}
     stats_.request_ms+=(double)(now_ns()-posted_ns_)/1e6;
     stats_.wait_ms+=(double)(now_ns()-wait_start)/1e6;
@@ -197,6 +227,7 @@ void ExpertWorkerGroup::report(std::string& out) const {
     std::ostringstream text;
     text<<"CPU group peers="<<size()<<" "<<(dead()?"DEAD":ready()?"READY":"CLOSED")<<" group_request_wall_ms="<<stats_.request_ms
         <<" caller_wait_ms="<<stats_.wait_ms<<" (peer timings overlap; do not sum as wall time)";
+    if(entry_rows_)text<<" reply_mode=entry_rows row_reduce_ms="<<row_reduce_ms_;
     for(size_t i=0;i<peers_.size();++i) {std::string row;peers_[i]->report(row);
         text<<"\nCPU peer["<<i<<"] "<<endpoints_[i].host<<":"<<endpoints_[i].port<<" "<<row;}
     out=text.str();

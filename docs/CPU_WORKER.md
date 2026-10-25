@@ -67,13 +67,39 @@ their sessions alive. A failure drains outstanding requests and exposes no group
 inference is retried. Matching resident subsets can reconnect; changing from full ownership to a
 subset requires the existing explicit owned replacement/reload procedure.
 
-Replies retain the existing weighted-partial wire format. The engine copies the first active
+Without `--remote-cpu-entry-rows`, replies retain the existing weighted-partial wire format. The engine copies the first active
 partial, then adds remaining partials in endpoint order. This changes floating-point reduction order
 from an unsplit worker and does not promise bitwise equality to that worker. Grouped-reference bits,
 independent unsplit error, finite results, token streams and task correctness are separate gates.
 Per-peer request/service counters and timings are reported; overlapping peer times must not be summed
 as elapsed wall time. Equal expert counts need not mean equal compute or completion time, and transport
 overhead can outweigh parallel work. No speedup has been measured for this change.
+
+### Opt-in entry rows
+
+`--remote-cpu-entry-rows` requires a fixed CPU group and capable workers. It sends one batched
+request/reply per active peer/window, with the original inputs. Workers return unweighted native
+entry rows; they do not pre-sum or multiply by routing weights. After all peers succeed, the engine
+places rows at their original token/rank positions and calls the shared `accumulate_partial` once,
+with original masks, weights and entry order. The resulting CPU partial enters the existing merge
+after helper contributions. No shadow requests, per-row RPCs or extra threads run in this mode.
+
+LOCAL_SETUP negotiates flag4 and appends row schema1/max80 to its ACK only when requested.
+Old workers refuse the capability; the client never falls back to weighted replies. Existing setup
+and weighted inference bytes remain unchanged when the flag is absent. Mode is session-scoped,
+not part of the verified weight-cache key. Upgrading the worker requires controlled replacement
+and reload; the resident arena cannot be hot-upgraded into another process.
+
+Message20 reuses the existing INFER payload; message21 returns session/sequence (u64), schema/count
+(u16), then ascending `(original entry index u16, n_embd F32 values)` records. The exact requested
+set and finite values are checked; missing, duplicate, foreign or reordered indices fail the request.
+Legacy and row requests share sequence ordering. Zero-work peers send nothing. Any peer failure
+drains all outstanding requests and publishes no partial. Defaults and the legacy endpoint stay unchanged.
+
+At T8/K10/H2560, a reply is at most819396B including its frame header; packed row data and central
+row storage each cap at819200B. Receive/encode/send buffers have separate message caps. For T1 with
+ten CPU entries across two active peers, total reply traffic is102492B versus20544B for weighted
+partials. This restores the intended reduction order at a data cost; performance needs measurement.
 
 See the [fixed two-host validation handoff](validation/CPU-FIXED-GROUP-20261025.md) for the bounded
 first comparison, frozen numeric gates and private config contract. This feature and its new fixtures

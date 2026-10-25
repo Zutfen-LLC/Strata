@@ -17,7 +17,9 @@ struct Gate {
 // work still uses the real service. Each proxy thread alone owns its descriptors.
 struct Proxy {
     Gate& gate; int index; uint16_t backend,port=0; sock_fd listener=kBadFd;
-    std::atomic<bool> stopping{false}; std::thread thread; bool drop=false,nonfinite=false,overflow=false;
+    std::atomic<bool> stopping{false}; std::thread thread;
+    std::atomic<bool> drop{false},nonfinite{false},overflow{false},refuse_rows{false},wrong_sequence{false};
+    std::atomic<int> setups{0};
     Proxy(Gate& g,int i,uint16_t back):gate(g),index(i),backend(back) {
         std::string err;require(sock::listen_loopback(port,listener,err),err);
         thread=std::thread([this]{run();});
@@ -39,19 +41,25 @@ struct Proxy {
             std::vector<uint8_t> request,response;
             while(!stopping.load() && frame(front,request)) {
                 const uint16_t msg=request[4]|(request[5]<<8);
-                if(msg==MSG_INFER) {
+                if(msg==MSG_LOCAL_SETUP && refuse_rows && request.size()>=kHeaderBytes+8 && (request[kHeaderBytes+4]&kLocalEntryRows)) {
+                    ++setups;std::vector<uint8_t> refused;encode_frame(refused,MSG_LOCAL_SETUP_ACK,ST_LOCAL_UNAVAILABLE,nullptr,0);
+                    sock::send_all(front,refused.data(),refused.size(),3000);break; // retained old-worker flag refusal
+                }
+                if(msg==MSG_INFER || msg==MSG_INFER_ROWS) {
                     std::unique_lock<std::mutex> lock(gate.mutex);++gate.entered;gate.wake.notify_all();
                     if(!gate.wake.wait_for(lock,std::chrono::seconds(3),[&]{return gate.released[index];}))break;
                     if(drop)break;
                 }
                 if(!sock::send_all(back,request.data(),request.size(),3000) || !frame(back,response))break;
-                if(msg==MSG_INFER && (nonfinite || overflow) && response.size()>=kHeaderBytes+16+4) {
+                if((msg==MSG_INFER || msg==MSG_INFER_ROWS) && (nonfinite || overflow) && response.size()>=kHeaderBytes+26) {
                     // INFER_ACK starts session/sequence then F32 partials. Preserve framing/identity.
                     const uint32_t nan=overflow?0x7f7fffffu:0x7fc00000u;
-                    for(int i=0;i<4;++i)response[kHeaderBytes+16+i]=(uint8_t)(nan>>(8*i));
+                    const size_t offset=msg==MSG_INFER_ROWS?22:16;
+                    for(int i=0;i<4;++i)response[kHeaderBytes+offset+i]=(uint8_t)(nan>>(8*i));
                 }
+                if(msg==MSG_INFER_ROWS && wrong_sequence)response[kHeaderBytes+8]^=1;
                 if(!sock::send_all(front,response.data(),response.size(),3000))break;
-                if(msg==MSG_INFER) {std::lock_guard<std::mutex> lock(gate.mutex);gate.completed.push_back(index);gate.wake.notify_all();}
+                if(msg==MSG_INFER || msg==MSG_INFER_ROWS) {std::lock_guard<std::mutex> lock(gate.mutex);gate.completed.push_back(index);gate.wake.notify_all();}
             }
             sock::close_fd(front);sock::close_fd(back);
         }
@@ -75,6 +83,7 @@ void configuration(Fixture& f,Service& a,Service& b) {
     auto other=f.m;++other.identity.a;bad=opts;bad[1].local=&other;
     check(!ExpertWorkerGroup::validate(bad,{3,3},err),"different trusted model refused");
     bad=opts;bad[1].n_ff=641;check(!ExpertWorkerGroup::validate(bad,{3,3},err),"different geometry refused");
+    bad=opts;bad[1].entry_rows=true;check(!ExpertWorkerGroup::validate(bad,{3,3},err),"mixed reply modes refused");
     check(!ExpertWorkerGroup::validate({}, {3,3},err),"empty endpoint list refused");
     bad.push_back(opts[0]);check(!ExpertWorkerGroup::validate(bad,{3,3},err),"endpoint bound enforced");
     CpuEndpoint endpoint;check(parse_cpu_endpoint("127.0.0.1:1234",endpoint) &&
@@ -89,7 +98,7 @@ struct Input {
     }
     bool post(ExpertWorkerGroup& g,std::string& err) {return g.post(0,x.data(),ids.data(),w.data(),mask.data(),T,K,err);}
 };
-void reference(Fixture& f,ExpertWorkerGroup& group,const Input& in,int count) {
+void reference(Fixture& f,ExpertWorkerGroup& group,const Input& in,int count,bool rows=false) {
     std::string err;std::vector<float> grouped,unsplit;
     std::vector<const uint8_t*> pointers(in.ids.size());
     for(size_t i=0;i<pointers.size();++i)pointers[i]=f.blobs[in.ids[i]].data();
@@ -101,7 +110,8 @@ void reference(Fixture& f,ExpertWorkerGroup& group,const Input& in,int count) {
         if(p==0)grouped=partial;else for(size_t i=0;i<grouped.size();++i)grouped[i]=grouped[i]+partial[i];
     }
     require(ExpertWorkerService::direct_native_partial(f.fmt,in.T,in.K,in.mask.data(),in.w.data(),in.x.data(),pointers.data(),unsplit,err),err);
-    check(!std::memcmp(grouped.data(),group.partials(),grouped.size()*sizeof(float)),"bitwise configuration-ordered grouped native reference");
+    check(!std::memcmp((rows?unsplit:grouped).data(),group.partials(),grouped.size()*sizeof(float)),
+          rows?"entry rows bitmatch independent unsplit original order":"bitwise configuration-ordered grouped native reference");
     std::vector<double> magnitude(grouped.size(),0.0);
     for(size_t entry=0;entry<in.ids.size();++entry) {
         std::vector<uint8_t> one(in.mask.size(),0);one[entry]=in.mask[entry];std::vector<float> contribution;
@@ -121,18 +131,19 @@ void reference(Fixture& f,ExpertWorkerGroup& group,const Input& in,int count) {
     std::printf("CPU_GROUP_NUMERIC T=%d peers=%d max_abs=%.9g max_rel=%.9g max_scaled_rel=%.9g rmse=%.9g atol=1e-4 scaled_rtol=4e-6\n",
         in.T,count,maximum,relative,scaled,std::sqrt(squared/grouped.size()));
 }
-void native() {
+void native(bool rows=false) {
     Fixture f;auto settings=f.options();settings.residency_forever=true;
     Service a(settings),b(settings);configuration(f,a,b);std::string err;
     for(int count:{1,2}) for(int round=0;round<2;++round) {
         auto opts=std::vector<ExpertWorkerTier::Open>{option(f,a.port,count==1?std::vector<uint8_t>{3,3}:std::vector<uint8_t>{1,1})};
         if(count==2)opts.push_back(option(f,b.port,{2,2}));
+        for(auto& o:opts)o.entry_rows=rows;
         // A changed partition must not silently reuse the previous resident arena.
         if(round==0) {ExpertWorkerClient c;connect(c,a);require(c.unload(err),err);c.close();connect(c,b);require(c.unload(err),err);}
         ExpertWorkerGroup group;require(group.open(opts,{3,3},err),err);
         if(round)check(group.peer_stats(0).cache_hit,"reconnect reuses matching frozen resident subset");
-        for(int T:{8,1,2,1}) {Input in(T);require(in.post(group,err),err);require(group.finish(err),err);reference(f,group,in,count);}
-        for(int T:{1,2,4}) {Input in(T,4);require(in.post(group,err)&&group.finish(err),err);reference(f,group,in,count);}
+        for(int T:{8,1,2,1}) {Input in(T);require(in.post(group,err),err);require(group.finish(err),err);reference(f,group,in,count,rows);}
+        for(int T:{1,2,4}) {Input in(T,4);require(in.post(group,err)&&group.finish(err),err);reference(f,group,in,count,rows);}
         if(count==2) {
             Input one(1);one.ids={0,0};one.mask={1,1};one.w={.5f,.5f};
             auto before=group.peer_stats(1).requests;
@@ -142,15 +153,18 @@ void native() {
         group.close();
     }
 }
-void controlled(int mode) {
+void controlled(int mode,bool rows=false) {
     Fixture f;auto settings=f.options();settings.residency_forever=true;settings.deadline_ms=3000;
     Service a(settings);settings.deadline_ms=300;Service b(settings);Gate gate;
     Proxy pa(gate,0,a.port),pb(gate,1,b.port);pb.drop=mode==1;pb.nonfinite=mode==2;
     pa.overflow=pb.overflow=mode==4;
     auto opts=std::vector<ExpertWorkerTier::Open>{option(f,pa.port,{1,1}),option(f,pb.port,{2,2})};
+    for(auto& o:opts)o.entry_rows=rows;
+    pb.wrong_sequence=mode==5;
     opts[1].deadline_ms=1000;ExpertWorkerGroup group;std::string err;require(group.open(opts,{3,3},err),err);
     struct Release {Gate& gate;~Release(){gate.all();}} release{gate};
     Input in(1);if(mode==3) {in.ids={0,0};in.w={.5f,.5f};}
+    if(rows && mode==4)in.w={2.f,2.f}; // raw finite rows overflow only at the central weighted reduction
     require(in.post(group,err),err);require(gate.wait(mode==3?1:2),"all active peers reach INFER barrier before any reply");
     in.x[0]=99;in.ids[0]=1;in.w[0]=99; // copied input lifetime
     if(mode==3) {
@@ -170,22 +184,24 @@ void controlled(int mode) {
             {std::unique_lock<std::mutex> lock(gate.mutex);
              require(gate.wake.wait_for(lock,std::chrono::seconds(2),[&]{return gate.completed.size()==2;}),"proxy completion receipts");
              check(gate.completed==std::vector<int>({1,0}),"reversed completion order retained independently of merge order");}
-            Input expected(1);reference(f,group,expected,2);}
+            Input expected(1);reference(f,group,expected,2,rows);}
     }
     group.close();
 }
-void setup_failure_and_zero_work() {
+void setup_failure_and_zero_work(bool rows=false) {
     Fixture f;auto settings=f.options();settings.residency_forever=true;
     Service a(settings);auto small=settings;small.memory_budget=f.fmt.bytes-1;Service b(small);
     std::string err;ExpertWorkerGroup broken;
-    check(!broken.open({option(f,a.port,{1,1}),option(f,b.port,{2,2})},{3,3},err)&&broken.dead(),
+    auto first=option(f,a.port,{1,1}),second=option(f,b.port,{2,2});first.entry_rows=second.entry_rows=rows;
+    check(!broken.open({first,second},{3,3},err)&&broken.dead(),
           "second-peer setup refusal drains/closes the acquired first peer");
     ExpertWorkerClient control;connect(control,a);WorkerCacheInfo cache;
     require(control.cache_status(cache,err),err);
     check(cache.complete && cache.resident_bytes==2*f.fmt.bytes,"failed group does not gratuitously unload verified first-peer weights");
     control.close();
     Service c(settings),d(settings);ExpertWorkerGroup empty;
-    require(empty.open({option(f,c.port,{1,0}),option(f,d.port,{0,2})},{1,2},err),err);
+    first=option(f,c.port,{1,0});second=option(f,d.port,{0,2});first.entry_rows=second.entry_rows=rows;
+    require(empty.open({first,second},{1,2},err),err);
     Input in(1);in.ids={1,1};in.mask={0,0};
     require(in.post(empty,err)&&empty.finish(err),err);
     check(!empty.served()&&empty.partials()==nullptr&&empty.peer_stats(0).requests==0&&empty.peer_stats(1).requests==0,
@@ -200,9 +216,67 @@ void slow_second_setup() {
     Input in(1);require(in.post(group,err)&&group.finish(err),err);
     check(delayed&&!group.dead(),"first READY peer kept alive while the second setup is delayed beyond idle deadline");
 }
+void row_codec() {
+    InferRequest q;q.session=0x0807060504030201ull;q.sequence=9;q.T=2;q.K=2;q.mask={7,0,0,1};
+    const float source[]={-0.f,1.f,99.f,99.f,99.f,99.f,-2.f,.5f};std::vector<uint8_t> bytes,expected;
+    require(encode_infer_rows_ack(q,2,source,bytes),"encode bounded rows");
+    put<uint64_t>(expected,q.session);put<uint64_t>(expected,q.sequence);put<uint16_t>(expected,1);put<uint16_t>(expected,2);
+    put<uint16_t>(expected,0);put<uint32_t>(expected,0x80000000);put<uint32_t>(expected,0x3f800000);
+    put<uint16_t>(expected,3);put<uint32_t>(expected,0xc0000000);put<uint32_t>(expected,0x3f000000);
+    check(bytes==expected,"indexed row codec exact little-endian bytes including signed zero/nonzero mask normalization");
+    EntryRowsReply reply;require(decode_infer_rows_ack(bytes.data(),bytes.size(),2,q,reply),"decode rows");
+    check(reply.indices==std::vector<uint16_t>({0,3}) && std::signbit(reply.rows[0]) && reply.rows[3]==.5f,"exact requested row set/bits");
+    for(int mode=0;mode<7;++mode) {
+        auto bad=bytes;
+        if(mode==0)bad[16]=2; // schema
+        if(mode==1)bad[18]=1; // row count
+        if(mode==2)bad[20]=1; // foreign index
+        if(mode==3)bad[30]=0; // duplicate index
+        if(mode==4)bad.push_back(0);
+        if(mode==5)bad.pop_back();
+        if(mode==6){bad[22]=0;bad[23]=0;bad[24]=0xc0;bad[25]=0x7f;}
+        check(!decode_infer_rows_ack(bad.data(),bad.size(),2,q,reply) && reply.rows.empty() && reply.indices.empty(),
+              "malformed/nonfinite row reply rejected without output");
+    }
+    InferReply legacy;legacy.session=q.session;legacy.sequence=q.sequence;legacy.partials={-0.f,1.f};
+    auto old=encode_infer_ack(legacy);expected.resize(16);put<uint32_t>(expected,0x80000000);put<uint32_t>(expected,0x3f800000);
+    check(old==expected,"legacy weighted reply bytes unchanged");
+    q.mask.assign(4,0);require(encode_infer_rows_ack(q,2,nullptr,bytes),"empty row reply");
+    require(decode_infer_rows_ack(bytes.data(),bytes.size(),2,q,reply),"decode empty rows");
+    check(bytes.size()==20 && reply.rows.empty() && reply.indices.empty(),"empty reply cannot expose prior rows");
+    q.T=kMaxT;q.K=kMaxK;q.mask.assign(kMaxT*kMaxK,1);std::vector<float> maximum(kMaxT*kMaxK*kMaxNEmbd,0.f);
+    require(encode_infer_rows_ack(q,kMaxNEmbd,maximum.data(),bytes),"encode maximum rows");
+    check(bytes.size()==kEntryRowsPayloadMax && bytes.size()+kHeaderBytes==819396,"strict maximum row payload/frame bytes");
+    require(decode_infer_rows_ack(bytes.data(),bytes.size(),kMaxNEmbd,q,reply),"decode maximum rows");
+    check(reply.rows.capacity()<=kEntryRowsMax*kMaxNEmbd && reply.indices.capacity()<=kEntryRowsMax,"decoded row retention bounded after warmup");
+}
+void row_capability() {
+    Fixture f;auto settings=f.options();settings.residency_forever=true;Service service(settings);Gate gate;
+    {
+        Proxy old(gate,0,service.port);old.refuse_rows=true;
+        auto o=option(f,old.port,{3,3});o.entry_rows=true;ExpertWorkerTier refused;std::string err;
+        check(!refused.open(o,err) && err.find("entry-row capability unavailable")!=std::string::npos && old.setups.load()==1,
+              "old-worker LOCAL_SETUP flag refusal is clear and never retries/falls back");
+    }
+    ExpertWorkerClient c;connect(c,service);auto m=f.setup();std::string err;
+    require(c.setup_local(m,f.m.identity,false,err,true,true),err);
+    std::vector<uint8_t> hits;require(c.load_local({{0,0},{0,1},{1,0},{1,1}},hits,err) && c.mark_ready(err),err);
+    Input in(1);InferRequest q;q.session=c.session();q.model_id=m.model_id;q.partition_id=m.partition_id;
+    q.T=1;q.K=2;q.ids={0,1};q.mask={1,1};q.weights=in.w;q.activations=in.x;q.sequence=1;
+    InferReply legacy;EntryRowsReply rows;require(c.infer(q,legacy,err),err);
+    check(!c.infer_rows(q,rows,err) && c.last_status()==ST_BAD_REQUEST,"sequence ordering shared across weighted and row messages");
+    q.sequence=2;require(c.infer_rows(q,rows,err),err);
+    std::vector<float> ordered(2560);ExpertWorkerService::accumulate_partial(1,2,q.mask.data(),q.weights.data(),rows.rows.data(),2560,ordered.data());
+    check(!std::memcmp(ordered.data(),legacy.partials.data(),ordered.size()*sizeof(float)),"actual unweighted rows reproduce weighted reply bits");
+    c.close();connect(c,service);require(c.setup_local(m,f.m.identity,false,err,true) && c.cache_hit() && c.mark_ready(err),err);
+    WorkerStatusInfo before,after;require(c.status(before,err),err);
+    check(!c.infer_rows(q,rows,err) && err=="entry-row capability was not negotiated","capability cleared on reconnect; old ACK accepted");
+    require(c.status(after,err),err);check(before.requests==after.requests,"unnegotiated call sends no inference frame");
+}
 }
 int main() {
-    try {native();setup_failure_and_zero_work();slow_second_setup();for(int mode=0;mode<5;++mode)controlled(mode);}
+    try {row_codec();row_capability();native();native(true);setup_failure_and_zero_work();setup_failure_and_zero_work(true);slow_second_setup();
+        for(int mode=0;mode<5;++mode)controlled(mode);for(int mode=0;mode<6;++mode)controlled(mode,true);}
     catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}
     std::printf("CPU_WORKER_GROUP failures=%d models=0\n",failures);return failures?1:0;
 }

@@ -37,11 +37,14 @@ private:
     std::vector<std::unique_ptr<ExpertWorkerTier>> peers_;
     std::vector<CpuEndpoint> endpoints_;
     std::vector<std::vector<uint8_t>> masks_;
-    std::vector<float> combined_;
+    std::vector<float> combined_, rows_, weights_;
+    std::vector<uint8_t> owned_;
     std::vector<int> owners_;
     std::vector<uint8_t> active_;
     uint16_t layers_ = 0, experts_ = 0, H_ = 0;
-    int T_ = 0, interval_ms_ = 50;
+    int T_ = 0, K_ = 0, interval_ms_ = 50;
+    bool entry_rows_=false;
+    double row_reduce_ms_=0;
     uint64_t posted_ns_ = 0;
     bool ready_ = false, posted_ = false, served_ = false;
     Stats stats_;

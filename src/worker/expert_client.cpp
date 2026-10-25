@@ -54,7 +54,8 @@ bool ExpertWorkerClient::send_frame(uint16_t msg, uint16_t st, const std::vector
         return false;
     }
     std::vector<uint8_t> temporary;
-    auto& buf = msg == MSG_INFER ? infer_frame_ : temporary;
+    auto& buf = msg == MSG_INFER || msg == MSG_INFER_ROWS ? infer_frame_ : temporary;
+    if(msg==MSG_INFER_ROWS)buf.reserve(kHeaderBytes+payload.size());
     encode_frame(buf, msg, st, payload.data(), payload.size());
     if (!sock::send_all_controlled((sock_fd)fd_, buf.data(), buf.size(), deadline_ms_, setup_cancelled_)) {
         err = "send failed or timed out";
@@ -82,7 +83,7 @@ bool ExpertWorkerClient::recv_frame(uint16_t want_msg, WireFrame& f, std::string
     size_t cap = 0;
     switch (f.msg) {
     case MSG_LOCAL_SETUP_ACK:
-        cap = 40;
+        cap = 48;
         break;
     case MSG_LOCAL_LOAD_ACK:
         cap = 256;
@@ -98,6 +99,9 @@ bool ExpertWorkerClient::recv_frame(uint16_t want_msg, WireFrame& f, std::string
         break;
     case MSG_INFER_ACK:
         cap = kReplyPayloadMax;
+        break;
+    case MSG_INFER_ROWS_ACK:
+        cap = kEntryRowsPayloadMax;
         break;
     case MSG_UNLOAD_ACK:
     case MSG_CACHE_STATUS_ACK:
@@ -116,6 +120,7 @@ bool ExpertWorkerClient::recv_frame(uint16_t want_msg, WireFrame& f, std::string
         err = "setup cancelled or timed out";
         return false;
     }
+    if(f.msg==MSG_INFER_ROWS_ACK)f.payload.reserve((size_t)len);
     f.payload.resize((size_t) len);
     if (len > 0 && !sock::recv_all_controlled((sock_fd)fd_, f.payload.data(), f.payload.size(), deadline_ms_,
                                               setup_cancelled_)) {
@@ -164,11 +169,12 @@ void push_u16(std::vector<uint8_t>& o, uint16_t v) {
 bool ExpertWorkerClient::setup(const SetupManifest& m, std::string& err) {
     return setup_impl(m, nullptr, false, err);
 }
-bool ExpertWorkerClient::setup_local(const SetupManifest &m, Digest128 id, bool fallback, std::string &err, bool resident) {
-    return setup_impl(m, &id, fallback, err, resident);
+bool ExpertWorkerClient::setup_local(const SetupManifest &m, Digest128 id, bool fallback, std::string &err, bool resident,bool rows) {
+    return setup_impl(m, &id, fallback, err, resident,rows);
 }
 bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id, bool fallback,
-                                    std::string &err, bool resident) {
+                                    std::string &err, bool resident,bool rows) {
+    entry_rows_=false;
     local_ = false;
     local_stats_ = {};
     cache_hit_ = false;
@@ -185,7 +191,7 @@ bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id,
     if (id) {
         std::vector<uint8_t> head;
         push_u32(head, kLocalVersion);
-        push_u32(head, (fallback ? 1 : 0) | (resident ? kLocalResident : 0));
+        push_u32(head, (fallback ? 1 : 0) | (resident ? kLocalResident : 0) | (rows ? kLocalEntryRows : 0));
         push_u64(head, id->a);
         push_u64(head, id->b);
         head.insert(head.end(), payload.begin(), payload.end());
@@ -204,6 +210,7 @@ bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id,
     last_status_ = f.status;
     if (f.status != ST_OK) {
         err = std::string("setup refused: ") + status_name(f.status);
+        if(rows)err="entry-row capability unavailable (no fallback): "+err;
         return false;
     }
     size_t i = 0;
@@ -214,7 +221,10 @@ bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id,
     const uint32_t batch = id ? cur_u32(f.payload.data(), f.payload.size(), i) : 0;
     const uint32_t hit = resident ? cur_u32(f.payload.data(), f.payload.size(), i) : 0;
     const uint64_t reused = resident ? cur_u64(f.payload.data(), f.payload.size(), i) : 0;
-    if (f.payload.size() != (resident ? 40u : id ? 28u : 20u) ||
+    const uint32_t row_version=rows?cur_u32(f.payload.data(),f.payload.size(),i):0;
+    const uint32_t row_cap=rows?cur_u32(f.payload.data(),f.payload.size(),i):0;
+    if (f.payload.size() != (resident ? 40u : id ? 28u : 20u)+(rows?8u:0u) ||
+        (rows && (row_version!=kEntryRowsVersion || row_cap!=kEntryRowsMax)) ||
         hit > 1 || (resident && reused != (hit ? m.owned_count() * bytes : 0)) ||
         (id && (version != kLocalVersion || batch != kLocalBatchMax)) || session == 0 || bytes == 0 ||
         bytes > std::numeric_limits<uint32_t>::max() || cap == 0 || cap > kUploadChunkMax) {
@@ -230,6 +240,7 @@ bool ExpertWorkerClient::setup_impl(const SetupManifest &m, const Digest128 *id,
     chunk_cap_ = cap;
     n_embd_ = m.n_embd;
     local_ = id != nullptr;
+    entry_rows_=rows;
     return true;
 }
 
@@ -415,6 +426,29 @@ bool ExpertWorkerClient::infer(const InferRequest& r, InferReply& reply, std::st
     return true;
 }
 
+bool ExpertWorkerClient::infer_rows(const InferRequest& r,EntryRowsReply& reply,std::string& err,RpcExchangeTiming* timing) {
+    reply.indices.clear();reply.rows.clear();
+    if(timing)*timing={};
+    if(!entry_rows_){err="entry-row capability was not negotiated";return false;}
+    const uint64_t start=timing?mono_ns():0;
+    auto& p=infer_payload_;
+    if(!encode_infer(r,n_embd_,p)){err="row request outside protocol bounds";return false;}
+    if(timing)timing->request_bytes=kHeaderBytes+p.size();
+    if(!send_frame(MSG_INFER_ROWS,ST_OK,p,err))return false;
+    if(timing)timing->encode_send_ns=mono_ns()-start;
+    const uint64_t receive=timing?mono_ns():0;auto& f=infer_reply_;
+    if(!recv_frame(MSG_INFER_ROWS_ACK,f,err))return false;
+    if(timing)timing->reply_bytes=kHeaderBytes+f.payload.size();
+    last_status_=f.status;
+    if(f.status!=ST_OK){err="entry rows refused: "+std::string(status_name(f.status));return false;}
+    if(!decode_infer_rows_ack(f.payload.data(),f.payload.size(),n_embd_,r,reply) ||
+       reply.session!=session_ || reply.sequence!=r.sequence) {
+        reply.indices.clear();reply.rows.clear();err="entry-row reply set/shape/identity mismatch";return false;
+    }
+    if(timing)timing->receive_decode_ns=mono_ns()-receive;
+    return true;
+}
+
 bool ExpertWorkerClient::status(WorkerStatusInfo& out, std::string& err) {
     if (!send_frame(MSG_STATUS, ST_OK, {}, err)) return false;
     WireFrame f;
@@ -503,6 +537,7 @@ void ExpertWorkerClient::close() {
     cache_hit_ = false;
     reused_bytes_ = 0;
     local_ = false;
+    entry_rows_ = false;
     setup_cancelled_ = {};
     session_ = 0;
     blob_bytes_ = 0;

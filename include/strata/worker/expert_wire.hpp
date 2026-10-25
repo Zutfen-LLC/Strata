@@ -55,6 +55,8 @@ enum MsgType : uint16_t {
     MSG_CACHE_STATUS_ACK = 17,
     MSG_UNLOAD = 18,       ///< empty; invalidates session and frees arena before ACK
     MSG_UNLOAD_ACK = 19,
+    MSG_INFER_ROWS = 20,  ///< opt-in: existing INFER request, indexed unweighted entry-row reply
+    MSG_INFER_ROWS_ACK = 21,
     MSG_SHUTDOWN = 11,     ///< c->s: polite stop (a test/tool knob; the engine just closes)
 };
 
@@ -81,6 +83,8 @@ enum Status : uint16_t {
 };
 
 inline constexpr uint32_t kLocalResident = 2; // LOCAL_SETUP flag, opt-in on both peers
+inline constexpr uint32_t kLocalEntryRows = 4; // explicit session capability; old workers refuse
+inline constexpr uint16_t kEntryRowsVersion = 1;
 inline constexpr int kMaxResidencyMs = 86400000; // maximum finite TTL; forever is a separate opt-in
 // CACHE_STATUS idle_remaining_ms sentinel, only for explicit --residency-forever.
 inline constexpr uint64_t kResidencyNoExpiry = UINT64_MAX;
@@ -112,12 +116,15 @@ inline constexpr size_t kInferFrameMax = kHeaderBytes + kInferPayloadMax;
 static_assert(kInferFrameMax < 96u * 1024u, "an inference frame must stay below 96 KiB (#348)");
 
 inline constexpr size_t kReplyPayloadMax = 16 + (size_t) kMaxT * kMaxNEmbd * 4;
+inline constexpr size_t kEntryRowsMax = (size_t)kMaxT*kMaxK;
+inline constexpr size_t kEntryRowsPayloadMax = 20 + kEntryRowsMax*(2 + (size_t)kMaxNEmbd*4);
 inline constexpr size_t kUploadFrameMax = kHeaderBytes + kUploadHeadBytes + kUploadChunkMax;
 inline constexpr size_t kMaxFrameBytes = kSetupFrameMax > kInferFrameMax
                                              ? (kSetupFrameMax > kUploadFrameMax ? kSetupFrameMax
                                                                                  : kUploadFrameMax)
                                              : (kInferFrameMax > kUploadFrameMax ? kInferFrameMax
                                                                                  : kUploadFrameMax);
+static_assert(kHeaderBytes+kEntryRowsPayloadMax<=kMaxFrameBytes,"entry rows stay within existing global frame cap");
 
 /// One frame as it travels: the decoded header plus the payload bytes.
 struct WireFrame {
@@ -175,6 +182,11 @@ struct InferReply {
     uint64_t session = 0, sequence = 0;
     std::vector<float> partials;    ///< T * n_embd; zeros where a token had no owned entry
 };
+struct EntryRowsReply {
+    uint64_t session=0, sequence=0;
+    std::vector<uint16_t> indices; // exact requested set, ascending original frame-entry indices
+    std::vector<float> rows; // indices.size()*n_embd, unweighted, preserving F32 bits
+};
 
 struct WorkerStatusInfo {
     uint64_t session = 0;
@@ -202,6 +214,8 @@ bool decode_infer(const uint8_t* p, size_t n, uint16_t n_layers, uint16_t n_expe
 std::vector<uint8_t> encode_infer_ack(const InferReply& r);
 void encode_infer_ack(const InferReply& r, std::vector<uint8_t>& out);
 bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, InferReply& r);
+bool encode_infer_rows_ack(const InferRequest&, uint16_t H, const float* entry_rows, std::vector<uint8_t>&);
+bool decode_infer_rows_ack(const uint8_t*, size_t, uint16_t H, const InferRequest&, EntryRowsReply&);
 
 /// Builds a whole frame - the 16-byte header plus the payload.  The ONE place the header is written,
 /// shared by the worker, the client and the tests, so the three cannot drift apart.

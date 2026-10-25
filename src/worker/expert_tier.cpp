@@ -90,6 +90,9 @@ ExpertWorkerTier::~ExpertWorkerTier() {
 bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     if (dead_) { err = "the remote CPU-expert worker tier is dead: " + dead_why_; return false; }
     if (ready_) { err = "the remote CPU-expert worker tier is already open"; return false; }
+    if(in.entry_rows && (!in.local || in.diagnostic_regroup || in.diagnostic_ordered)) {
+        err="batched entry rows require trusted local setup and exclude diagnostic exchanges";return false;
+    }
     if((in.diagnostic_regroup || in.diagnostic_ordered) &&
        (!in.resident_reuse_only || !in.resident || !in.local || in.local_fallback ||
         (in.diagnostic_regroup && in.diagnostic_ordered))) {
@@ -180,7 +183,7 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
         return false;
     }
     const bool setup_ok =
-        in.local ? client_.setup_local(m, in.local->identity, in.local_fallback, err, in.resident) : client_.setup(m, err);
+        in.local ? client_.setup_local(m, in.local->identity, in.local_fallback, err, in.resident,in.entry_rows) : client_.setup(m, err);
     if (!setup_ok) {
         err = std::string("the remote CPU-expert worker refused setup (") + status_name(client_.last_status()) +
               "): " + err;
@@ -280,6 +283,7 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     st_.local_verify_ns = ls.verify_ns;
     diagnostic_regroup_=in.diagnostic_regroup;
     diagnostic_ordered_=in.diagnostic_ordered;
+    entry_rows_=in.entry_rows;
     if(diagnostic_regroup_)regroup_owners_=cpu_capture_owners(m);
     partition_ = std::move(m.partition);
     n_layers_ = in.n_layers;
@@ -373,6 +377,7 @@ bool ExpertWorkerTier::post(int64_t layer, const float* x, const int32_t* ids, c
     }
     if (!marked) return true; // diagnostic zero-work event, still no network request
     reply_.partials.clear();
+    if(entry_rows_){rows_reply_.indices.clear();rows_reply_.rows.clear();}
     posted_ = true;
     served_ = false;
     st_.requests += 1;
@@ -411,6 +416,8 @@ void ExpertWorkerTier::run_requests() {
         // Transfer that capacity to the socket owner before unlocking; finish() waits for !busy_.
         InferReply r;
         r.partials.swap(reply_.partials);
+        EntryRowsReply rows;
+        if(entry_rows_){rows.indices.swap(rows_reply_.indices);rows.rows.swap(rows_reply_.rows);}
         const uint64_t exchange_start = mono_ns();
         const double queue_ms = (double) (exchange_start - posted_ns_) / 1e6;
         lock.unlock();
@@ -421,7 +428,8 @@ void ExpertWorkerTier::run_requests() {
         uint64_t regroup_calls[2]{};
         uint64_t ordered_calls=0, ordered_rows=0;
         try {
-            if(diagnostic_regroup_ || diagnostic_ordered_) {
+            if(entry_rows_)ok=client_.infer_rows(req_,rows,e,rpc_timing_.enabled()?&measured:nullptr);
+            else if(diagnostic_regroup_ || diagnostic_ordered_) {
                 auto exchange=[&](const InferRequest& q,InferReply& part,std::string& why) {
                     RpcExchangeTiming wire{};
                     const bool accepted=client_.infer(q,part,why,rpc_timing_.enabled()?&wire:nullptr);
@@ -461,7 +469,7 @@ void ExpertWorkerTier::run_requests() {
             rpc_timing_.finish_call(req_.T, shape.entries, shape.distinct_experts,
                                     measured.request_bytes, measured.reply_bytes, ok);
         }
-        if (ok) reply_ = std::move(r);
+        if (ok) {if(entry_rows_)rows_reply_=std::move(rows);else reply_ = std::move(r);}
         busy_ = false;
         request_done_.notify_all();
         if (!ok) break;
@@ -485,13 +493,13 @@ bool ExpertWorkerTier::finish(std::string& err) {
         rpc_timing_.add_phase(RpcTimingPhase::ClientFinishWait, now - w0);
     posted_ = false;
     if (dead_) { err = dead_why_; return false; }
-    if (reply_.partials.size() != (size_t) req_.T * n_embd_) {
+    if (!entry_rows_ && reply_.partials.size() != (size_t) req_.T * n_embd_) {
         err = "the remote CPU-expert worker returned a short partial";
         lock.unlock();
         die(err);
         return false;
     }
-    if (capture_ && capture_->active() && !capture_->finish(reply_.partials.data())) {
+    if (!entry_rows_ && capture_ && capture_->active() && !capture_->finish(reply_.partials.data())) {
         err=capture_->error();lock.unlock();die(err);return false;
     }
     served_ = true;
@@ -552,6 +560,7 @@ void ExpertWorkerTier::report(std::string& out) const {
             (unsigned long long)st_.ordered_max_exchanges,(unsigned long long)st_.ordered_peak_row_bytes);
         out+=buf;
     }
+    if(entry_rows_)out+="; reply_mode=entry_rows schema=1";
     const std::string timing = rpc_timing_.report("client");
     if (!timing.empty()) out += "; " + timing;
 }

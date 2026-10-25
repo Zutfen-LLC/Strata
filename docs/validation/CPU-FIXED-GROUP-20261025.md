@@ -6,8 +6,9 @@ commands are authored. **Builds, executable tests and inference: NOT RUN on Geek
 No speedup or numerical acceptance is established. No fleet work was dispatched by this coding task.
 
 The change adds only the opt-in fixed CPU endpoint group, necessary per-host use of the existing
-guardian/config driver, focused fixtures and bounded host capture/replay diagnostics. Wire messages, worker implementation and default
-one-endpoint route stay unchanged. It does not add discovery, rebalancing or a network GPU mode.
+guardian/config driver, focused fixtures and bounded host capture/replay diagnostics. The latest opt-in
+entry-row extension preserves legacy wire bytes and the default one-endpoint route. It does not add
+discovery, rebalancing or a network GPU mode.
 
 ## Prerequisites and focused checks
 
@@ -15,10 +16,180 @@ The original full-model comparison at 9ed478e5543885e019205512f2450ab4336d393e h
 The parent reports that the split arm failed every frozen first-logit screen and was slower; the
 local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
 or raw-receipt inspection by this coding thread. **Do not rerun that campaign or either duplicate-arena
-diagnostic.** Only the ordered-row procedure below is current. All other executable commands
+diagnostic.** Only the batched-row procedure below is current. All other executable commands
 in this file are historical, not authorization to repeat prior work.
 
-### Current next step: ordered-row exact arithmetic on one full resident
+### Current next step: batched entry rows, one candidate full resident
+
+Supplied Hermes evidence at `abdf92e3270c38e327f8c2ce265a0a36ba21bfaf`: EO0 matched A0 first
+logits/213 tokens/102724 entries,28s overall. EO1 ordered matched A0 FIRST logits (993280B, all
+metrics0),213 tokens and102724 entries;11136 shadow windows passed,108577 wire frames,
+max11 exchanges/window, peak row storage204800B. EO1 overall49s, prompt4.73s/decode33.06s.
+No load/allocation change, swap/OOM0, resident intact. These are parent-supplied results, not local
+execution or private-receipt inspection. This proved arithmetic recovery for prompt0, not optimized
+throughput, final-token logits, physical two-host correctness or full-model acceptance. Do not repeat it.
+
+The new optional `--remote-cpu-entry-rows` uses one batched request/reply per active group peer/window,
+no shadow or per-row RPC, and no new threads. LOCAL_SETUP flag4 requests row schema1/max80;
+only that opt-in ACK appends8B. Old workers refuse clearly without fallback. Message20 has the
+existing INFER payload; message21 contains session/sequence/schema/count and ascending indexed
+unweighted native rows. Exact requested-set/identity/finite checks precede publication. The engine
+reconstructs CPU entry order and calls the shared reducer once, preserving the existing helper/GPU
+merge boundary. Legacy weighted requests/replies/defaults stay unchanged. Mode is session-scoped,
+not a weight-cache key; existing capable residency can switch reply mode without another load.
+
+Caps:80 indexed rows,819200B float row data,819380B payload/819396B frame. Worker native row scratch,
+packed decoder rows and central rows each bound at819200B; row encode/receive payloads bound at819380B
+and send frames at819396B, per peer. Mask/index/weight tables cap at80. These are separate retained
+buffers, not a claim that aggregate scratch is819200B. Zero-work peers send nothing. Any failure drains
+all pending peer exchanges and exposes no group partial. Existing per-peer I/O overlaps GPU work;
+central reduction stays in finish(), with a separate row_reduce_ms scope that overlaps neither request
+service nor network timing by definition. It is already included in group wall/wait time. Do not sum
+overlapping scopes as elapsed time.
+
+#### Build/fixture gates before touching the current resident
+
+Use exact candidate SHA, retained caches/native/compiler/ccache settings, and fresh disk-backed
+artifact roots/logs. The cached target outputs MUST differ from the live resident executable path/inode.
+Preserve existing ELF outputs BEFORE builds replace them; never overwrite retained binaries/logs.
+No package, access, CPU-policy or monitor changes. The old full resident remains untouched until
+ALL these gates pass. CPU fixture role only (new root must not exist):
+
+```sh
+set -e
+umask 077
+mkdir -m 700 "$CPU_ARTIFACT_ROOT"
+cp -- "$CPU_WORKER_OUTPUT" "$CPU_ARTIFACT_ROOT/prior-worker"
+cmake --build "$CPU_BUILD" --target expert_worker_test cpu_worker_group_test worker_local_test cpu_capture_group_test strata-expert-worker --parallel 4 > "$CPU_ARTIFACT_ROOT/build.log" 2>&1
+ctest --test-dir "$CPU_BUILD" --output-on-failure -R '^(expert_worker_test|cpu_worker_group_test|worker_local_test|worker_local_binary_test|cpu_capture_group_test)$' > "$CPU_ARTIFACT_ROOT/tests.log" 2>&1
+```
+
+The new cases are in the existing cpu_worker_group_test: exact legacy/row codec bytes, mask
+normalization/signed zero, malformed/missing/duplicate/foreign/nonfinite/oversize rows, max retained
+capacities, old-worker refusal/no fallback, shared sequence ordering, reconnect capability reset,
+one/two real peers bitwise unsplit, alternating T8/T1/T2/T1 and masks/K, zero work, copied input
+lifetime, reversed completion, failure draining and central overflow. Other listed tests retain the
+normal worker/real executable/local-cache/ordered-proof compatibility gates. Keep fixture source
+creation clear of tiny inherited RLIMIT_FSIZE. These checks are authored, NOT RUN locally.
+
+After CPU gates, bulk CUDA role, outside inference (worker target remains CPU-only):
+
+```sh
+set -e
+umask 077
+mkdir -m 700 "$CUDA_ARTIFACT_ROOT"
+cp -- "$CUDA_ENGINE_OUTPUT" "$CUDA_ARTIFACT_ROOT/prior-engine"
+cp -- "$CUDA_WORKER_OUTPUT" "$CUDA_ARTIFACT_ROOT/prior-worker"
+cmake --build "$CUDA_BUILD" --target strata strata-expert-worker --parallel 8 > "$CUDA_ARTIFACT_ROOT/build.log" 2>&1
+cp -- "$CUDA_ENGINE_OUTPUT" "$CUDA_ARTIFACT_ROOT/engine-rows"
+cp -- "$CUDA_WORKER_OUTPUT" "$CUDA_ARTIFACT_ROOT/worker-rows"
+sha256sum "$CUDA_ARTIFACT_ROOT/engine-rows" "$CUDA_ARTIFACT_ROOT/worker-rows"
+python3 -B "$SRC/tests/worker/worker_family_cli_test.py" --engine "$CUDA_ARTIFACT_ROOT/engine-rows" --native-experts on
+```
+
+Small incremental native-OFF role, with its existing local output binding:
+
+```sh
+set -e
+umask 077
+mkdir -m 700 "$OFF_ARTIFACT_ROOT"
+cp -- "$OFF_ENGINE" "$OFF_ARTIFACT_ROOT/prior-engine"
+cmake --build "$OFF_BUILD" --target strata --parallel 2 > "$OFF_ARTIFACT_ROOT/build.log" 2>&1
+python3 -B "$SRC/tests/worker/worker_disabled_cli_test.py" --engine "$OFF_ENGINE"
+python3 -B "$SRC/tests/worker/worker_family_cli_test.py" --engine "$OFF_ENGINE" --native-experts off
+```
+
+Stop/report any failure, keeping bounded log tails and pins. Other backend links/runtime remain
+NOT RUN. Coding task performs no builds, fleet operations or replacement; parent dispatches Hermes.
+
+#### One managed replacement, then weighted/rows on the SAME candidate resident
+
+Use three private configs with unchanged static bundle/run helpers: LOAD, LEGACY, ROWS. No new
+sequencing script. Stage/verify LOAD before old service release so every path/import/asset is concrete.
+Keep exact model/manifest/native/profile/request assets, GPU960/1378 and full22238 CPU experts /
+116135731200B, workers12/loaders4, original turbo/affinities/budgets/deadlines and original monitor
+policy. No split, remote peer config or duplicate arena. Candidate engine and worker bindings are the
+preserved new ELFs above. The configured4-thread setup affinity must remain broad until READY.
+
+After all gates, parent-authorized release uses the OLD service's retained owner controller and
+identity receipts, with no engine active. Its existing `C.stop_owned_worker()` records STOP intent,
+waits/reaps the actual guardian and verifies hierarchy absence before checking the port. Do not call
+it from a fresh import or forge a Popen handle for an attached resident: the helper deliberately
+refuses that. If the retained owning controller/handle is unavailable, report that precise runtime
+blocker before stopping anything. An uncertain STOP must be reconciled through its original receipt/
+owner, never resent. Only a completed owned stop/reap permits LOAD; no simultaneous old/new arena.
+
+| Config | Existing-driver fields |
+| --- | --- |
+| LOAD | New root, no attach_root; one arm LOAD, restart:true, requests:[]; final_worker:retain, failure_worker:stop. Newly owned partial-load failure uses existing stop cleanup; no automatic restore/retry. |
+| LEGACY | Separate new root; attach_root=completed LOAD root; attached_worker_idle:true; one arm LEGACY, restart:false, requests:[0], reference:reference; final/failure worker both retain. |
+| ROWS | Same as LEGACY with name ROWS/new root and only added engine option --remote-cpu-entry-rows. Both use SAME candidate engine/worker bytes/full resident. |
+
+All three use cpu_route:group and exactly one existing numeric loopback --remote-cpu-worker. Remove
+--remote-cpu-regroup-diagnostic entirely, including its value, from BOTH warm configs. Production
+row mode has no shadow/reuse-only diagnostic behavior. Use --remote-cpu-resident, trusted manifest,
+no upload fallback. Before either warm attach verify idle complete forever residency, original owned
+guardian/worker/monitor/listener, VmSwap0, healthy original guard and unchanged OOM counters. Require
+observed exact cache-hit reuse/zero local/network load READY markers before GEN. The row config also
+requires `CPU entry rows ready schema=1 ordered_reduce=1`. Missing markers refuse before requests.
+
+G1 pre-stage normalization is mandatory: argv[0]=@engine, worker_argv[0]=@worker, engine
+--remote-cpu-local-manifest AND worker --local-manifest values=@manifest. Assets bind existing absolute
+SOURCE files, not old argv literals/future bundle paths. New run roots must NOT be precreated. Both
+warm arms use original prompt0 GEN256, capture_first_logits:true, no global dump prefix/capture env,
+and the retained A0 reference enforcing exact213 tokens/102724 entries. Enable engine RPC timing
+identically in both (`--remote-cpu-rpc-timing`); worker timing, if enabled, stays fixed across them.
+Use request_seconds600 for both as a bounded diagnostic ceiling, with per-frame/startup/cleanup and
+monitor limits unchanged. Cold LOAD startup/read/verification is separate from warm request timing.
+
+```sh
+python3 -B "$SRC/tools/validation-harness/harness/bundle.py" --config "$LOAD_PRIVATE_CONFIG"
+# ALL gates and completed owned old-worker stop/reap must precede the next command.
+python3 -B "$LOAD_ROOT/run.py" --run-root "$LOAD_ROOT"
+python3 -B "$SRC/tools/validation-harness/harness/bundle.py" --config "$LEGACY_PRIVATE_CONFIG"
+python3 -B "$LEGACY_ROOT/run.py" --run-root "$LEGACY_ROOT"
+```
+
+STOP until LEGACY token/entry gate passes and its993280B finite FIRST logits bitmatch retained A0,
+using the exact unchanged raw comparison below with LEGACY/ROWS paths. A failed baseline leaves the
+new complete resident retained and stops the comparison. Only after success and fresh idle/cache checks:
+
+```sh
+python3 -B "$SRC/tools/validation-harness/harness/bundle.py" --config "$ROWS_PRIVATE_CONFIG"
+python3 -B "$ROWS_ROOT/run.py" --run-root "$ROWS_ROOT"
+```
+
+Run this unchanged comparator once after LEGACY (RESULT_FIRST_RAW_F32=LEGACY-first-logits.0), then
+after ROWS (ROWS-first-logits.0), each in its corresponding root. It must succeed before continuing:
+
+```sh
+PYTHONPATH="$SRC/tools/validation-harness" python3 -B -c '
+import json,pathlib,sys
+import compare_logits as c
+a,b=map(pathlib.Path,sys.argv[1:]);m=c.compare(c.read(a),c.read(b))
+m["bitwise_equal"]=a.read_bytes()==b.read_bytes()
+print(json.dumps(m,indent=2,allow_nan=False))
+raise SystemExit(0 if m["bitwise_equal"] and m["numeric_pass"] else 1)
+' "$A0_PROMPT0_FIRST_RAW_F32" "$RESULT_FIRST_RAW_F32"
+```
+
+Require ROWS exact A0 first logits/tokens/entries plus reply_mode=entry_rows/schema1. One active peer
+sends one request/window; no ordered shadow counters or per-rank frames. Compare decode/prompt
+seconds, same213-token decode TPS, worker-before/after LEGACY fields infer_in_bytes/infer_out_bytes,
+requests and cpu_service_ns deltas, client exchange/finish wait, and group row_reduce_ms. All fields
+already exist in the driver receipts/reports. Scopes overlap; do not sum them or use overall startup
+as decode time. Report the single sample per mode and actual bytes, without a speedup generalization.
+Ten CPU rows at T1 cost102456B in one reply versus10272B weighted; actual mask occupancy determines
+the measured bytes. Do not compare against the deliberately chatty ordered proof as production gain.
+
+Never issue STATUS/STOP/UNLOAD while an engine owns the session. After owner reaping, verify unchanged
+new resident bytes/allocation/load/upload/unloads/expirations and swap/OOM0; retain that new resident,
+including on a numerical failure. Preserve exact binaries/configs/outputs/errors; no automatic retry
+or original-worker restoration. Return one flat receipt with gates, hashes, cold setup separately,
+both warm numerical/performance results and final ownership/cache cleanup. A fixed two-host campaign
+is later and is NOT included or authorized by this first full-resident validation.
+
+### Completed ordered-row proof (historical commands)
 
 The parent supplies decisive results at `6c4b4cbf8f1592739f003f65b163479b23e3a715`: focused CPU,
 CUDA/native-OFF links and CLI gates passed. RG0 off bitmatched A0 first logits,213 tokens and102724

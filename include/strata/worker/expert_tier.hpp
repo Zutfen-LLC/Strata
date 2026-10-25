@@ -44,6 +44,7 @@ public:
         bool resident_reuse_only = false; // diagnostic: refuse empty cache, never load/upload
         bool diagnostic_regroup = false; // diagnostic: sequential virtual peers on the full cache
         bool diagnostic_ordered = false; // diagnostic: shadow full reply, reconstruct rows, exact bit gate
+        bool entry_rows = false; // opt-in batched rows; group performs the one ordered reduction
         int setup_ms = 600000;
         std::function<bool()> cancelled;
         int deadline_ms = 10000;          ///< per-frame deadline (setup, upload, infer)
@@ -97,6 +98,7 @@ public:
     /// The last reply's already-weighted partials (n_tok * n_embd).  Valid only when the last post()
     /// returned true with `posted()` true and finish() then returned true.
     const float* partials() const { return reply_.partials.data(); }
+    const EntryRowsReply& entry_rows() const { return rows_reply_; } // only after successful finish
     // Diagnostic only. Bound before inference, lifetime exceeds this tier; never touched by socket thread.
     void set_capture(CpuCapture* p) { capture_=p; }
     CpuCapture* capture() const { return capture_; }
@@ -164,6 +166,8 @@ private:
     bool busy_ = false;
     InferRequest req_;
     InferReply reply_;
+    EntryRowsReply rows_reply_;
+    bool entry_rows_=false;
     bool posted_ = false;
     bool served_ = false;
     Stats st_;

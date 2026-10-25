@@ -1,5 +1,8 @@
 // src/worker/expert_wire.cpp - inferswarm #348: the frame codecs and the blob digest.
 #include "strata/worker/expert_wire.hpp"
+#include <algorithm>
+#include <cmath>
+#include <utility>
 
 namespace strata::worker {
 namespace {
@@ -188,6 +191,41 @@ bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, In
     r.partials.resize((size_t) T * n_embd);
     for (size_t i = 0; i < r.partials.size(); ++i) r.partials[i] = c.f32();
     return true;
+}
+
+bool encode_infer_rows_ack(const InferRequest& q,uint16_t H,const float* rows,std::vector<uint8_t>& out) {
+    out.clear();
+    const size_t entries=(size_t)q.T*q.K;
+    if(!H || H>kMaxNEmbd || !q.T || q.T>kMaxT || !q.K || q.K>kMaxK || q.mask.size()!=entries)return false;
+    const size_t count=std::count_if(q.mask.begin(),q.mask.end(),[](uint8_t v){return v!=0;});
+    if(count && !rows)return false;
+    out.reserve(20+count*(2+(size_t)H*4));
+    put_u64(out,q.session);put_u64(out,q.sequence);put_u16(out,kEntryRowsVersion);put_u16(out,(uint16_t)count);
+    for(size_t i=0;i<entries;++i) {
+        if(!q.mask[i])continue;
+        put_u16(out,(uint16_t)i);
+        for(size_t h=0;h<H;++h) {
+            const float v=rows[i*H+h];if(!std::isfinite(v)){out.clear();return false;}put_f32(out,v);
+        }
+    }
+    return true;
+}
+bool decode_infer_rows_ack(const uint8_t* p,size_t n,uint16_t H,const InferRequest& q,EntryRowsReply& out) {
+    EntryRowsReply r;r.indices.swap(out.indices);r.rows.swap(out.rows);r.indices.clear();r.rows.clear();
+    const size_t entries=(size_t)q.T*q.K;
+    if(!H || H>kMaxNEmbd || !q.T || q.T>kMaxT || !q.K || q.K>kMaxK || q.mask.size()!=entries || n<20)return false;
+    Cursor c{p,n};r.session=c.u64();r.sequence=c.u64();
+    if(c.u16()!=kEntryRowsVersion)return false;
+    const size_t count=c.u16();
+    if(count!=size_t(std::count_if(q.mask.begin(),q.mask.end(),[](uint8_t v){return v!=0;})) || n!=20+count*(2+(size_t)H*4))return false;
+    r.indices.reserve(count);r.rows.reserve(count*H);
+    for(size_t i=0;i<entries;++i) {
+        if(!q.mask[i])continue;
+        if(c.u16()!=i)return false; // exact ascending set, not merely unique in-range indices
+        r.indices.push_back((uint16_t)i);
+        for(size_t h=0;h<H;++h){const float v=c.f32();if(!std::isfinite(v))return false;r.rows.push_back(v);}
+    }
+    out=std::move(r);return true;
 }
 
 const char* status_name(uint16_t s) {

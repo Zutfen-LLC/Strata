@@ -41,7 +41,8 @@ public:
     bool setup(const SetupManifest& m, std::string& err);
 
     /// resident negotiates complete verified reuse; unsupported peers fail without upload fallback.
-    bool setup_local(const SetupManifest &m, Digest128 manifest, bool fallback, std::string &err, bool resident = false);
+    bool setup_local(const SetupManifest &m, Digest128 manifest, bool fallback, std::string &err, bool resident = false,
+                     bool entry_rows = false);
     // Hits are in request order. A zero means ENOENT and permits upload only if negotiated.
     bool load_local(const std::vector<std::pair<uint16_t, uint16_t>> &slots, std::vector<uint8_t> &hits,
                     std::string &err);
@@ -62,6 +63,7 @@ public:
     /// One bounded inference request; on refusal returns false with `last_status` set.
     bool infer(const InferRequest& r, InferReply& reply, std::string& err,
                RpcExchangeTiming* timing = nullptr);
+    bool infer_rows(const InferRequest&, EntryRowsReply&, std::string&, RpcExchangeTiming* = nullptr);
 
     bool status(WorkerStatusInfo& out, std::string& err);
     bool cache_status(WorkerCacheInfo& out, std::string& err);
@@ -82,7 +84,8 @@ public:
 
 private:
   friend struct RpcWorkspaceTestAccess;
-  bool setup_impl(const SetupManifest &m, const Digest128 *identity, bool fallback, std::string &err, bool resident = false);
+  bool setup_impl(const SetupManifest &m, const Digest128 *identity, bool fallback, std::string &err, bool resident = false,
+                  bool entry_rows = false);
   bool send_frame(uint16_t msg, uint16_t st, const std::vector<uint8_t> &payload, std::string &err);
   bool recv_frame(uint16_t want_msg, WireFrame &f, std::string &err);
 
@@ -96,6 +99,7 @@ private:
   bool cache_hit_ = false;
   uint64_t reused_bytes_ = 0;
   bool local_ = false;
+  bool entry_rows_ = false;
   LocalStats local_stats_;
   uint16_t last_status_ = ST_OK;
   // Synchronous, one-in-flight inference storage. Setup/upload frames remain temporary.

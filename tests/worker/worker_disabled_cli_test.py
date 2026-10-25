@@ -22,6 +22,7 @@ def main():
                  ("--remote-cpu-local-manifest", absent),
                  ("--remote-cpu-local-fallback",), ("--remote-cpu-resident",),
                  ("--remote-cpu-rpc-timing",),
+                 ("--remote-cpu-entry-rows",),
                  ("--remote-cpu-regroup-diagnostic", "off"), ("--remote-cpu-regroup-diagnostic", "on"),
                  ("--remote-cpu-regroup-diagnostic", "ordered"),
                  ("--remote-cpu-setup-ms", "600000"), ("--remote-cpu-deadline-ms", "10000"),
