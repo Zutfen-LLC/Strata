@@ -21,6 +21,13 @@ in this file are historical, not authorization to repeat prior work.
 
 ### Current next step: reply codec optimization checks
 
+Supplied Hermes update at `e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb`: all3 focused CTests
+passed in20.83s and benchmark-source comparison passed. The verbose healthy test log was23710870B;
+the handoff's erroneous post-hoc1MiB limit aborted before the benchmark, which had NOT RUN then.
+The parent authorized only the unchanged benchmark suffix at that SAME e145df6e source/binary pin.
+Do not rebuild or repeat the passed tests. This documentation correction changes future test logging
+only; the pending benchmark remains pinned to e145df6e. Preserve the original verbose log.
+
 Supplied Hermes model-free benchmark at `b9ab00c64dc283b57c62da047ccb355100d6762a`: focused
 check and all20 metrics/guards passed; no resident contact. Row means in nanoseconds:
 
@@ -129,11 +136,11 @@ timeout --signal=TERM --kill-after=5s 180s cmake --build "$CPU_BUILD" --target e
 test -x "$BENCH_OUTPUT"
 cp -- "$BENCH_OUTPUT" "$RUN_ROOT/cpu_row_codec_bench"
 sha256sum "$RUN_ROOT/prior-cpu_row_codec_bench" "$BENCH_OUTPUT" "$RUN_ROOT/cpu_row_codec_bench" > "$RUN_ROOT/binary-sha256.txt"
-timeout --signal=TERM --kill-after=5s 240s ctest --test-dir "$CPU_BUILD" --no-tests=error -V -R '^(expert_worker_test|cpu_worker_group_test|cpu_row_codec_bench_check)$' > "$RUN_ROOT/check.log" 2>&1
-grep -Eq 'expert_worker_test: all checks passed' "$RUN_ROOT/check.log"
-grep -Eq 'CPU_WORKER_GROUP failures=0 models=0' "$RUN_ROOT/check.log"
-grep -Eq 'CPU_ROW_CODEC_DONE ok=1 check_only=1 ' "$RUN_ROOT/check.log"
-test "$(wc -c < "$RUN_ROOT/check.log")" -le 1048576
+timeout --signal=TERM --kill-after=5s 240s ctest --test-dir "$CPU_BUILD" --no-tests=error -R '^(expert_worker_test|cpu_worker_group_test|cpu_row_codec_bench_check)$' > "$RUN_ROOT/check.log" 2>&1
+grep -Eq '100% tests passed, 0 tests failed out of 3' "$RUN_ROOT/check.log"
+for name in expert_worker_test cpu_worker_group_test cpu_row_codec_bench_check; do
+  grep -Eq "Test[[:space:]]+#[[:space:]]*[0-9]+: $name[[:space:]].*Passed" "$RUN_ROOT/check.log"
+done
 timeout --signal=TERM --kill-after=5s 32s "$RUN_ROOT/cpu_row_codec_bench" > "$RUN_ROOT/benchmark.log" 2>&1
 test "$(grep -Ec '^CPU_ROW_CODEC T=' "$RUN_ROOT/benchmark.log")" = 20
 for t in 1 2; do
@@ -163,8 +170,9 @@ grep -Eq '^CPU_ROW_CODEC_DONE ok=1 check_only=0 ' "$RUN_ROOT/benchmark.log"
 
 Any nonzero command, alarm/timeout, CPU_ROW_CODEC_FAIL, missing/duplicate metric or changed capacity is
 a failed measurement: preserve the fresh output, report it, and stop without automatic retry. Do not
-lengthen counts/deadlines, alter affinities or investigate the resident. Expected checks: exactly three
-passing CTests, including both worker fixtures and DONE check_only=1. Expected benchmark: exactly20 metric lines and DONE
+lengthen counts/deadlines, alter affinities or investigate the resident. Future full checks use quiet
+CTest output: require its3/3 success summary and all three named Passed lines, not hidden per-test stdout.
+Detailed CTest logs may be large; their size is not a test failure. Expected benchmark: exactly20 metric lines and DONE
 check_only=0, no failures. Return those small logs/pins and per-phase weighted/rows means. Compare codec
 and frame-copy costs with the block-copy reference, without claiming that their sum equals the live
 decode delta. No latency pass threshold is introduced. Authored checks: NOT RUN locally.
