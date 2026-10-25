@@ -15,7 +15,8 @@ The original full-model comparison at 9ed478e5543885e019205512f2450ab4336d393e h
 The parent reports that the split arm failed every frozen first-logit screen and was slower; the
 local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
 or raw-receipt inspection by this coding thread. **Do not rerun that campaign or either duplicate-arena
-diagnostic.** All executable commands later in this file are historical, not a current runtime handoff.
+diagnostic.** Only the single-member group procedure below is current. All other executable commands
+in this file are historical, not authorization to repeat prior work.
 
 ### Current status: resident-monitor incident; duplicate-arena diagnostics withdrawn
 
@@ -53,24 +54,82 @@ changes or another diagnostic load. Parent owns restoring only the normal full r
 loaders/twelve inference workers and the unchanged original guard policy. This coding task launches
 nothing and makes no zero-swap or timing-qualification claim.
 
-### Smallest next diagnostic recommendation — not implemented or authorized to run
+### Current next step: saved-capture single-member group replay (zero GEN)
 
-After the parent restores the normal resident, a narrow future adapter in the existing saved-capture
-replay could send the same records through a **one-member `ExpertWorkerGroup`** using that full
-partition, trusted bindings and `resident_reuse_only=true`. Close the existing client session before
-opening the group; require an exact cache hit and unchanged arena accounting; compare every reply
-bitwise with the saved full reply; close the group without STOP/UNLOAD. No engine, GEN, second
-worker, weight copy or additional arena is needed. Scratch must stay within the existing bounded
-replay storage. This is a recommendation only: the current replay CLI has no group-backend option,
-and no adapter, test or new runtime command is introduced by this correction.
+The parent reports normal full residency restored with the retained worker binary, four loaders and
+twelve inference workers. That is a supplied snapshot, not a live check by this coding thread.
+Hermes must reverify the owned receipt, listener identity, complete forever-resident116135731200B
+arena, exclusive idle session, current swap and original monitor health immediately before replay.
+No worker replacement, second worker, additional arena, engine, GEN or settings change is requested.
+Duplicate-arena procedures remain withdrawn.
 
-`ExpertWorkerGroup::validate` already accepts one endpoint, `open` forwards the tier options, and
-the tier's reuse-only guard refuses absent/mismatched residency before loading. This could isolate
-the real-input group post/finish wrapper from the direct-client replay that already passed. It would
-not exercise two-peer fan-out, actual subset slot maps, remote state, the live engine/helper-GPU
-merge or closed-loop error amplification. A pass would not clear the original failed model screens
-or rule out accumulated rounding across layers. Repeating the existing full/masked replay alone
-adds no new discriminator. No two-endpoint alias to the single-session resident is proposed.
+The new `--single-group` option first runs the existing capture/request/logit validation and direct
+full/masked replay unchanged. All full replies must bitmatch before anything masked; the existing
+detail gates must pass. It then closes that session and verifies cache accounting before opening an
+actual **one-member `ExpertWorkerGroup`** with the identical full partition and trusted manifest.
+`resident_reuse_only=true` refuses empty/mismatched residency; fallback/upload is disabled. Every
+record, including zero-work records, goes through actual group post/finish with the original
+activations, IDs, weights, masks, T/K and layer. Fresh session/sequence identity is supplied by the
+existing tier. Every result must be finite and bitwise identical to the saved full reply. No numerical
+tolerance or production arithmetic changes are included.
+
+The group drains/joins its existing tier, disconnects without STOP/UNLOAD and verifies complete idle
+forever residency again. Resident/loaded/verified/peak bytes, allocation, unload and expiry counters
+must equal the original snapshot. Exactly one additional cache hit and one arena's reused bytes are
+expected for this group session; local reads/uploads must stay zero. Scratch is one bounded request,
+reply, ID conversion and group row at a time, reusing the existing capture in memory. No masked
+reference arrays or child processes are added by this mode. The direct phase and group phase each
+have a180s deadline, with5s cache-control and10s group-frame limits.
+
+On the CPU fixture host, use the existing build cache/options at the exact new source pin. Reconfigure
+only to discover the new test target; do not change compiler or native options:
+
+```sh
+cmake -S "$SRC" -B "$CPU_BUILD"
+cmake --build "$CPU_BUILD" --target cpu_capture_test cpu_capture_group_test cpu_capture_replay --parallel 4
+ctest --test-dir "$CPU_BUILD" --output-on-failure -R '^(cpu_capture_test|cpu_capture_group_test)$'
+```
+
+`cpu_capture_group_test` owns one small real Q8 fixture worker, with one arena allocation. It checks
+T2/T1 and K10, mixed ownership/weights, zero work followed by active work, full-validation failure
+preventing group setup, empty/stale-cache refusal, group bit-mismatch cleanup preserving the primary
+error, valid reconnect after failure and final owned-child reaping. It reuses existing fixture/lifecycle
+helpers and needs no model or external endpoint. The unchanged `cpu_capture_test` covers corrupt,
+truncated, oversize and malformed capture refusals. Avoid a tiny inherited file-size cap that would
+kill fixture creation; bound stdout/stderr using the retained validation policy. **These checks are
+authored, NOT RUN on Geekom/Valinor.** No CUDA/engine rebuild is needed for this diagnostic-only change.
+
+After those focused gates pass, mechanically stage/hash only the replay executable using the retained
+transfer procedure. Preserve all worker/engine binaries and private assets. The six positional input
+bindings stay exactly those of the completed replay: absolute saved capture, trusted manifest, request
+asset, retained A0 raw-F32 first-logit file, numeric loopback address and current owned full-worker port.
+Verify the37544692B capture SHA256
+`218bd2e9210ea7cbe641e3e09d7be5f060c5691d630ee6357935eb240f983208`.
+No config template, weight staging or subset flag is needed. Parent dispatches one invocation after
+live checks under the existing external guard and unchanged resident monitor:
+
+```sh
+timeout --signal=TERM --kill-after=10s 420s "$REPLAY" \
+  "$CAPTURE" "$MANIFEST" "$REQUESTS" "$RETAINED_A0_FIRST_RAW_F32" 127.0.0.1 "$FULL_WORKER_PORT" \
+  --single-group
+```
+
+The external guard targets replay only. Measure original/replay VmSwap before launch; both must be
+zero for this restored-resident run and remain zero. Keep the original prelaunch ceiling fixed, never
+ratchet after decreases. Require MemAvailable>=8GiB, unchanged host/cgroup OOM counters and bounded
+replay RSS/output using the retained guard. On failure preserve receipts, reconcile the replay PID,
+verify the original worker/guardian/monitor and cache, and do not retry or send STOP/UNLOAD.
+
+Return exit status, source/replay/worker/config/capture hashes, the two summary lines and final owned
+residency/resource receipt. Require `CPU_CAPTURE_REPLAY ok=1 resident_unchanged=1 full=960` with its
+existing gates true, then `CPU_SINGLE_GROUP_REPLAY ok=1 resident_unchanged=1 records=960 cache_hit=1`;
+active+zero must equal960. The first line's `grouped` counter is the older masked arithmetic, while
+the second line is actual one-member group execution. If the first phase fails, no group is opened.
+
+A pass isolates the real-input group post/finish wrapper from direct replay. It does not test two-peer
+fan-out, actual subset slot maps, remote state, the live engine/helper-GPU merge or closed-loop error
+amplification. It cannot clear the original failed screens or rule out accumulated rounding across
+layers. No second-endpoint alias to the single-session resident is proposed.
 
 ### Prior duplicate-arena attempt — historical evidence, do not repeat
 

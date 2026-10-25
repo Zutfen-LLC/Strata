@@ -2,6 +2,7 @@
 #include "strata/worker/cpu_capture.hpp"
 #include "strata/worker/expert_client.hpp"
 #include "cpu_subset_replay.hpp"
+#include "cpu_single_group_replay.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -21,15 +22,13 @@ bool file(const char* path,size_t cap,std::vector<uint8_t>& b){
     b.resize((size_t)n);in.seekg(0);return (bool)in.read((char*)b.data(),b.size());
 }
 bool unchanged(const WorkerCacheInfo& a,const WorkerCacheInfo& b){
-    return b.complete && !b.session && a.resident_bytes==b.resident_bytes &&
-        a.loaded_bytes==b.loaded_bytes && a.verified_bytes==b.verified_bytes &&
-        a.arena_allocations==b.arena_allocations && a.peak_arena_bytes==b.peak_arena_bytes &&
-        a.expirations==b.expirations && a.unloads==b.unloads;
+    return diagnostic::unchanged_resident(a,b);
 }
 }
 int main(int argc,char** argv){
-    if(argc!=7 && !(argc==9 && std::string(argv[7])=="--local-subsets")){
-        std::fprintf(stderr,"usage: cpu_capture_replay CAPTURE MANIFEST REQUESTS REFERENCE_RAW_F32 NUMERIC_HOST PORT [--local-subsets CONFIG]\n");return 2;}
+    const bool single_group=argc==8 && std::string(argv[7])=="--single-group";
+    if(argc!=7 && !single_group && !(argc==9 && std::string(argv[7])=="--local-subsets")){
+        std::fprintf(stderr,"usage: cpu_capture_replay CAPTURE MANIFEST REQUESTS REFERENCE_RAW_F32 NUMERIC_HOST PORT [--single-group | --local-subsets CONFIG]\n");return 2;}
     try {
         CpuCaptureFile capture;LocalManifest local;std::string err;
         char* end=nullptr;const long port=std::strtol(argv[6],&end,10);
@@ -112,6 +111,13 @@ int main(int argc,char** argv){
         if(!ok)std::fprintf(stderr,"replay refused/failed: %s\n",primary_error.c_str());
         if(!retained)std::fprintf(stderr,"resident verification failed: %s\n",err.c_str());
         ok=ok && retained && result.entry_order_bits && result.peer_bits && result.detail_envelope;
+        if(ok && single_group){
+            diagnostic::SingleGroupReport group;
+            ok=diagnostic::replay_single_group(capture,local,argv[5],(uint16_t)port,before,result,group,err);
+            std::printf("CPU_SINGLE_GROUP_REPLAY ok=%d resident_unchanged=%d records=%u active=%u zero=%u cache_hit=%d\n",
+                ok,group.resident_unchanged,group.checked,group.active,group.zero,group.cache_hit);
+            if(!ok)std::fprintf(stderr,"single group failure: %s\n",err.c_str());
+        }
         if(ok && subset_config){
             diagnostic::SubsetReport subsets;
             const bool matched=diagnostic::run_local_subsets(capture,local,argv[2],*references,*subset_config,subsets,err);
