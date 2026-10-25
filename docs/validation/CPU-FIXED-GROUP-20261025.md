@@ -3,7 +3,7 @@
 Base source: `c9cef19a35369d5a3721d11515d524ebd6476da1`. Candidate is the full published PR head
 containing this file; bind `CANDIDATE` to that exact SHA, never a moving branch. Source, fixtures and
 commands are authored. **Builds, executable tests and inference: NOT RUN on Geekom/Valinor.**
-No speedup or numerical acceptance is established. No fleet work was dispatched by this coding task.
+No two-host numerical acceptance or speedup is established. No fleet work was dispatched by this coding task.
 
 The change adds only the opt-in fixed CPU endpoint group, necessary per-host use of the existing
 guardian/config driver, focused fixtures and bounded host capture/replay diagnostics. The latest opt-in
@@ -16,10 +16,109 @@ The original full-model comparison at 9ed478e5543885e019205512f2450ab4336d393e h
 The parent reports that the split arm failed every frozen first-logit screen and was slower; the
 local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
 or raw-receipt inspection by this coding thread. **Do not rerun that campaign or either duplicate-arena
-diagnostic.** Only the batched-row procedure below is current. All other executable commands
+diagnostic.** Only the model-free codec benchmark below is current. All other executable commands
 in this file are historical, not authorization to repeat prior work.
 
-### Current next step: batched entry rows, one candidate full resident
+### Current next step: model-free reply codec benchmark
+
+Supplied Hermes results at `e56a837bc75ff1076e8d4bff6a01c306d4b302b2`: after correcting an old-worker
+binding (which correctly refused row capability), LEGACY2 and ROWS2 both matched A0 FIRST logits
+(993280B bitwise),213 tokens and102724 entries. Each made11136 calls with0 failures. One local loopback
+sample measured prompt1.899/2.486s, decode14.663/18.393s and reported14.5/11.5TPS, weighted/rows.
+Request bytes were124299072 each; replies123236352/1052500104B; native pool service9.148/9.239s;
+row scatter/reduction213.079ms. Complete candidate residency remained allocation1, swap/OOM0.
+These are parent-supplied results, not local execution or private-receipt inspection. They establish
+prompt0 single-resident correctness only; the original split failure remains uncleared.
+
+Retained client phase totals, weighted/rows: prepare.018/.021s, queue wake.218/.241s,
+encode/send.545/.562s, receive/decode10.340/14.205s, finish wait10.961/14.930s. Receive/decode
+includes waiting for worker compute, encoding and transmission. This supports reply-side critical-path
+growth, not an isolated client-decoder bottleneck. These scopes overlap; never sum them as elapsed time.
+Power-of-two percentile buckets are coarse bounds. No worker shutdown is needed to obtain more timing.
+
+The benchmark calls existing reply encode, encode_frame and decode functions independently; central
+work mirrors indexed preparation/scatter and calls the shared production reducer. Weighted central
+work copies/checks the already reduced reply. Central scratch is retained, so the tiny production
+coverage-vector allocation, locks, queueing, expert computation and I/O are excluded. The same-size
+block copy copies the complete frame. bytes_per_iteration describes the input/output dataset, not
+total memory traffic; central rows performs several passes. No phase total predicts end-to-end time.
+
+Two dense fixed shapes: T1/K10/H2560 and T2/K10/H2560. Weighted frames are10272/20512B; row frames
+102456/204876B. Independent exact little-endian payload/frame and signed-zero checks run outside
+timing, before/after each mode. Every phase uses64 warmups and4096 measured iterations, checks retained
+capacities and reports aggregate nanoseconds only. Explicit vector scratch capacities must stay below
+16MiB (not an RSS/AS claim). A29s cooperative check and30s process alarm bound execution. Repeated
+identical buffers are cache-hot synthetic data, not the actual mask distribution or storage/LAN bandwidth.
+
+Execute ONLY on the retained CPU-fixture role. No model files, worker endpoint, resident stop/status,
+CUDA/native-OFF build, new listener, wrapper or driver is needed. Bind exactly these five variables:
+
+| Binding | Required source |
+| --- | --- |
+| CANDIDATE | Exact published commit containing this section, supplied with the handoff; never branch tip. |
+| SRC | Existing CPU-fixture source checkout recorded in the e56a837 CPU build receipt. |
+| CPU_BUILD | Its existing compatible CPU build cache from that SAME receipt; no fresh configure/cache. |
+| BENCH_OUTPUT | That cache's recorded runtime-output directory plus /cpu_row_codec_bench. |
+| RUN_ROOT | New absolute disk-backed artifact directory for this benchmark; MUST NOT exist. |
+
+Missing binding/cache, dirty source, different CMake source binding or incompatible options means STOP
+and report the exact mismatch. Do not search for alternatives, install anything, alter build flags,
+borrow another cache or author a sequencing wrapper. The following is the complete command block;
+run once in bash after filling those bindings. It updates only the existing fixture checkout/cache and
+builds only the benchmark. Existing production ELFs and resident processes are not targets.
+
+```sh
+set -euo pipefail
+umask 077
+: "${CANDIDATE:?exact published SHA}"
+: "${SRC:?source path from retained CPU receipt}"
+: "${CPU_BUILD:?cache path from same receipt}"
+: "${BENCH_OUTPUT:?recorded runtime-output directory plus /cpu_row_codec_bench}"
+: "${RUN_ROOT:?fresh absolute disk-backed output root}"
+for p in "$SRC" "$CPU_BUILD" "$BENCH_OUTPUT" "$RUN_ROOT"; do test "${p#/}" != "$p"; done
+test "${#CANDIDATE}" = 40
+test ! -e "$RUN_ROOT"
+test -f "$CPU_BUILD/CMakeCache.txt"
+test -z "$(git -C "$SRC" status --porcelain)"
+test "$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$CPU_BUILD/CMakeCache.txt")" = "$SRC"
+rg -q '^STRATA_BUILD_TESTS:BOOL=ON$' "$CPU_BUILD/CMakeCache.txt"
+rg -q '^STRATA_ENABLE_CUDA:BOOL=OFF$' "$CPU_BUILD/CMakeCache.txt"
+git -C "$SRC" fetch origin "$CANDIDATE"
+git -C "$SRC" checkout --detach "$CANDIDATE"
+test "$(git -C "$SRC" rev-parse HEAD)" = "$CANDIDATE"
+test -z "$(git -C "$SRC" status --porcelain)"
+mkdir -m 700 "$RUN_ROOT"
+git -C "$SRC" rev-parse HEAD > "$RUN_ROOT/source-sha.txt"
+timeout --signal=TERM --kill-after=5s 60s cmake -S "$SRC" -B "$CPU_BUILD" -DFETCHCONTENT_FULLY_DISCONNECTED=ON > "$RUN_ROOT/configure.log" 2>&1
+timeout --signal=TERM --kill-after=5s 180s cmake --build "$CPU_BUILD" --target cpu_row_codec_bench --parallel 4 > "$RUN_ROOT/build.log" 2>&1
+test -x "$BENCH_OUTPUT"
+cp -- "$BENCH_OUTPUT" "$RUN_ROOT/cpu_row_codec_bench"
+sha256sum "$BENCH_OUTPUT" "$RUN_ROOT/cpu_row_codec_bench" > "$RUN_ROOT/binary-sha256.txt"
+timeout --signal=TERM --kill-after=5s 35s ctest --test-dir "$CPU_BUILD" --no-tests=error -V -R '^cpu_row_codec_bench_check$' > "$RUN_ROOT/check.log" 2>&1
+rg -q 'CPU_ROW_CODEC_DONE ok=1 check_only=1 ' "$RUN_ROOT/check.log"
+timeout --signal=TERM --kill-after=5s 32s "$RUN_ROOT/cpu_row_codec_bench" > "$RUN_ROOT/benchmark.log" 2>&1
+test "$(rg -c '^CPU_ROW_CODEC T=' "$RUN_ROOT/benchmark.log")" = 20
+for t in 1 2; do
+  for mode in weighted rows; do
+    for phase in encode frame_copy decode central_prepare_reduce block_copy; do
+      test "$(rg -c "^CPU_ROW_CODEC T=$t K=10 H=2560 entries=$((t*10)) mode=$mode phase=$phase warmup=64 measured=4096 " "$RUN_ROOT/benchmark.log")" = 1
+    done
+  done
+done
+rg -q '^CPU_ROW_CODEC_DONE ok=1 check_only=0 scratch_limit_bytes=16777216 deadline_seconds=30 model=0 sockets=0 expert_kernels=0 phases_independent=1$' "$RUN_ROOT/benchmark.log"
+test "$(wc -c < "$RUN_ROOT/benchmark.log")" -le 65536
+cat "$RUN_ROOT/binary-sha256.txt" "$RUN_ROOT/benchmark.log"
+```
+
+Any nonzero command, alarm/timeout, CPU_ROW_CODEC_FAIL, missing/duplicate metric or changed capacity is
+a failed measurement: preserve the fresh output, report it, and stop without automatic retry. Do not
+lengthen counts/deadlines, alter affinities or investigate the resident. Expected check: one passing
+cpu_row_codec_bench_check and DONE check_only=1. Expected benchmark: exactly20 metric lines and DONE
+check_only=0, no failures. Return those small logs/pins and per-phase weighted/rows means. Compare codec
+and frame-copy costs with the block-copy reference, without claiming that their sum equals the live
+decode delta. No latency pass threshold or optimization is introduced. Authored checks: NOT RUN locally.
+
+### Completed batched entry rows, one candidate full resident (historical commands)
 
 Supplied Hermes evidence at `abdf92e3270c38e327f8c2ce265a0a36ba21bfaf`: EO0 matched A0 first
 logits/213 tokens/102724 entries,28s overall. EO1 ordered matched A0 FIRST logits (993280B, all
