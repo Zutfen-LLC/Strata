@@ -1,5 +1,94 @@
 # Offline exact-row compression benchmark
 
+## Supplied terminal result
+
+Hermes reports build and focused check PASS at `74ffe391b6ec32f3e61aab6ce5386d779f0cf007`.
+The benchmark took 5.91 seconds with peak RSS 76 MiB, zero worker/socket/GEN contact, all 16
+independent reconstructed-record reference gates passing, and all 160 frame/codec combinations
+round-tripping exact bytes across 32 peer payloads and five codecs. These are results supplied through
+the parent, not execution or independent private raw-receipt auditing by this coding thread.
+
+| Codec | Reported aggregate byte reduction | Frames meeting the fixed selection rule |
+| --- | --- | --- |
+| LZ4 | -0.42% (expansion) | 0 / 32 |
+| Snappy | -0.04% (expansion) | 0 / 32 |
+| Shuffle + LZ4 | 5.05% | 0 / 32 |
+| Zstd level 1 | 7.33% | 0 / 32 |
+
+The proposed policy chooses raw throughout. The diagnostic intentionally still timed every candidate;
+the measured compression costs are not a production fallback implementation. A faster link reduces
+the available wire-time saving, so it does not rescue a negative serialized codec-plus-link result.
+This evidence does not justify another codec sweep or production compression integration.
+
+A persistent pipeline could hide some codec work; it was not measured by this serial benchmark.
+Buffers, libraries and contexts were already retained, so process startup was not the measured cost.
+For independent items, ideal pipeline throughput approaches `max(encode, compressed_link, decode)`
+instead of their sum, plus startup/drain and queue costs. A single reply's latency retains dependencies.
+Chunk-level streaming could overlap stages within a reply, but the current whole-block API/frame path
+would need explicit chunk framing and bounded reassembly. Across requests, the next model layer/token
+depends on current replies; it cannot be compressed early. Existing peer I/O threads already overlap
+independent same-window work. A helper thread adds queue/ownership/cache costs; a separate process adds
+IPC and possibly copies (or shared-memory lifetime synchronization), not free codec throughput.
+
+If the sampled 5.05–7.33% reductions held over ALL supplied 1601093934 reply bytes, even zero-cost
+compression would save only about 80.86–117.36 MB, or 0.647–0.939 ideal serialized 1 Gb/s seconds.
+That is 4.11–5.96% of the combined request/reply bytes, not a demonstrated inference-time bound or gain.
+For an illustrative 100000-byte reply, raw transmission is 800 microseconds; those fractions save
+40.40–58.64 microseconds. The fixed selector's p95 codec budget would be 32.32–46.91 microseconds.
+Actual frames were evaluated with their own measured costs; every codec/frame failed that margin.
+Failure of the 80% selector alone does not prove all serial net savings were negative, nor identify
+which stage would dominate a pipeline. Per-frame encode/decode distributions must be used to test
+whether either stage exceeds raw-link service time before claiming ideal-overlap viability. No pooled
+percentile or measured pipeline gain is available. This is a retained-data question, not a new run.
+
+Aggregation semantics checked in source: `raw_bytes` is the production reply payload, excluding its
+16-byte outer header. `wire_bytes` adds that header and an 8-byte allowance for compressed replies.
+A wire-byte aggregate should be `1 - sum(wire_bytes) / sum(raw_bytes + 16)` over the SAME 32 frames,
+with each frame counted once, not multiplied by 64 or averaged by percentage. The table records the
+supplied byte-reduction summary; its precise header/denominator convention was not independently
+recomputed from private metrics here. The executable has no aggregate percentile: each printed p50/p95
+is nearest-rank over 64 timings for ONE frame/codec. The fixed selector adds that frame's encode p95
+and decode p95; this is a conservative screening statistic, not a measured end-to-end p95 or a pooled
+percentile. Combined timing-percentile interpretation remains pending the operator's clarification.
+
+Coverage remains one original prompt through its first-logit row, including prefill and the final
+prompt token. It is not a long generated-token distribution. No resident state was changed.
+The recipe below is retained evidence, not a request to repeat the run.
+
+## Next exact wire-volume opportunity: assessment only
+
+`src/worker/expert_wire.cpp::encode_infer` sends F32 activations. The worker's `execute` in
+`src/worker/expert_worker.cpp` then calls `native_quant_act` once per active token, before handing the
+packed bytes to unchanged native expert jobs. `native_fmt` derives `act_bytes` from the gate/up
+dot-product activation type; `kNativeActBytes=4096` is a scratch stride, not the transferable length.
+For the current Q8_0 gate/up layout, the [pinned ggml type table](https://github.com/ggml-org/llama.cpp/blob/3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cpu/ggml-cpu.c#L257)
+selects Q8_0 activations: 2560 F32 values occupy 10240 bytes, versus 80 blocks of 34 bytes = 2720 packed
+bytes. That is a 73.4375% reduction in activation bytes, before request metadata. Original IDs, masks,
+weights, entry ordering, exact row replies and the GPU/helper merge need not change.
+
+The supplied split totals are 367586984 request bytes and 1601093934 reply bytes, 1968680918 combined.
+Requests are only 18.67% of those bytes. Even eliminating ALL request traffic saves at most 18.67%
+of that aggregate (2.941 seconds of ideal serialized 1 Gb/s transmission). Treating every request byte
+as an activation gives an optimistic packed-activation ceiling of 13.71% of the combined bytes,
+about 269.95 MB / 2.160 serialized link-seconds. Actual savings are lower because headers, IDs, masks
+and weights remain. These are byte/serialized-link ceilings, not live TPS or full-duplex critical-path
+speedup claims; replies remain dominant.
+
+Recommended next experiment is an offline format-equivalence check using the SAME captured inputs,
+not a new quantizer or protocol implementation. Verify `NativeFmt.gu_act` and `act_bytes`, compare
+engine-side and worker-side packed bytes under their actual compiled quantizers, round-trip the
+explicit block representation, and feed those exact bytes into the existing native row computation.
+Require bitwise rows and original ordered partials, with masks/zero-work and finite/signed-zero/edge
+fixtures. Preserve the source finite-input checks before quantizing. This moves an existing lossy
+quantization boundary; it is not reversible encoding of the original F32 inputs. Nominally identical
+source alone does not prove cross-build/ISA/rounding equality. Endianness, block layout and scale
+validation also need an explicit contract; never send C structs/padding or the full 4096-byte stride.
+If those gates pass, a later opt-in capability/message could let workers consume the packed bytes
+directly while preserving legacy F32 requests. That production change is not implemented or requested
+here. No new tests, codec tuning, worker contact or runtime integration follows from this result note.
+
+## Retained benchmark scope
+
 Evidence selection only. No production codec/schema change, worker connection, new arena, GEN,
 resident replacement or fleet execution by this coding thread. Consumer 1 Gb/s is the baseline.
 The earlier large-row packing benchmark measured serialization, not compression.
