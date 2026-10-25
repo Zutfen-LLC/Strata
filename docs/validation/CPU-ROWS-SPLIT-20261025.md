@@ -1,5 +1,10 @@
 # Fixed row-mode local / split / local comparison
 
+Parent-supplied terminal update: all nine outputs and first-logit rows matched bitwise, the full02
+worker is retained, and05 stopped cleanly. Timing/scaling conclusions require the separate retained
+report. Do not repeat this comparison. The next queued test is [PLE direct/RAM/direct](PLE-RAM-20261025.md),
+only after fresh terminal/full-worker checks.
+
 Planning/handoff only. Runtime code remains e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb.
 No new implementation, build campaign or sequencer is introduced. Reuse the optimized engine/worker
 and passed CPU/CUDA/native-OFF gates from the completed local comparison. The parent dispatches Hermes;
