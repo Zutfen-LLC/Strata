@@ -16,10 +16,11 @@ The original full-model comparison at 9ed478e5543885e019205512f2450ab4336d393e h
 The parent reports that the split arm failed every frozen first-logit screen and was slower; the
 local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
 or raw-receipt inspection by this coding thread. **Do not rerun that campaign or either duplicate-arena
-diagnostic.** Only the CPU codec checks and unchanged benchmark below are current. All other executable commands
-in this file are historical, not authorization to repeat prior work.
+diagnostic.** The codec benchmark has completed. The current authorized next step is the
+[fixed local live handoff](CPU-REPLY-CODEC-LIVE-20261025.md), runtime source e145df6e. All executable
+commands in this historical file are no longer authorization to repeat prior work.
 
-### Current next step: reply codec optimization checks
+### Completed reply codec checks (historical commands)
 
 Supplied Hermes update at `e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb`: all3 focused CTests
 passed in20.83s and benchmark-source comparison passed. The verbose healthy test log was23710870B;
