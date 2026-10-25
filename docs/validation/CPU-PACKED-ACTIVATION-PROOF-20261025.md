@@ -6,18 +6,51 @@ socket default, model run or dependency changes are included. Desktop executable
 Independent focused static review found an incorrect codec call signature; it was corrected and
 rereviewed with no remaining blocking finding. Static review is not compiler or runtime evidence.
 
-The parent reports the role05 same-build screen **PASS** at
-`06bbd80930f6b1a3b19656e924d1e5c76cc348f1`: CTest 1/1 (0.30 s), 16 selected records,
-48 full/peer row comparisons and retained full partials bit-exact. Pack took 0.13 s;
-rows took 9.11 s with about 77 MB peak memory. Edge case6's unsupported native scale is the
-expected refusal case. SPA1 is 92884 bytes, SHA256
-`531d113d5d110fa4a53fa464ca8e504f913945d8af233113040f2d0dd6af2e0a`;
-SRA1 is 8110340 bytes, SHA256
+## Terminal offline result: PASS, focused session complete
+
+The parent reports terminal PASS in the [Hermes receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1792968628095089).
+The receipt was read for this summary. These are supplied Hermes results, not desktop execution or
+an independent audit of the private raw artifacts. The proof C++ is at
+`06bbd80930f6b1a3b19656e924d1e5c76cc348f1`. Role02 used the
+`0dd834bad7fabd6266ff3bd95147c9f0f4ca4937` archive, targeted ggml-base PIC correction from
+`6c3161c33ea1f96b513132e49ee83c8cecb703c5`, and the equality-first resume from
+`c1b1480a9dd311527de3a5079588af1c86bebbce`. Later changes record results only.
+
+| Gate | Reported outcome |
+| --- | --- |
+| Role02 native configuration | All five native targets matched retained effective flags exactly; C/C++ compiler identity equal; `warning_only=0` |
+| Role02 incremental build | Only ggml-base recompiled, nine objects; corrected ELF in the continuation directory; original ELF preserved |
+| Focused checks | Role05 1/1 Passed (0.30 s); role02 1/1 Passed (0.36 s) |
+| Packed bytes | 16 records per role; SPA1 92884 bytes; controller exact `cmp` rc0, and both in-block reference comparisons passed |
+| Native rows and ordered partials | Each cross-reference run passed every local row/ordered-partial/retained-full-capture gate; 48 full/peer comparisons per role |
+| Cross-role row artifact | Both SRA1 files 8110340 bytes; controller exact `cmp` rc0; also identical to role05 same-build SRA1 |
+
+Both SPA1 SHA256 values are
+`531d113d5d110fa4a53fa464ca8e504f913945d8af233113040f2d0dd6af2e0a`.
+Both cross-reference SRA1 SHA256 values, and role05's same-build SRA1 SHA256, are
 `0aaeb0762418bc150d7c4ca2e6c168e38b5069fb2df825cb94dd75312a6d727d`.
-Reported proof ELF SHA256 is
-`352872b6f623383b69ba6d2116a36ddbbc2b891d96745cc60d4f4d2b69ca3e33`.
-These are supplied Hermes results, not desktop execution or private receipt inspection.
-No worker contact or GEN was reported. **Cross-build comparison remains pending.**
+The controller relayed distinct producer artifacts and verified hashes at both hops before exact
+comparison. `cross_build_rows=REQUIRES_CMP` in each executable's output is now satisfied by that
+external comparison, rather than inferred from local success or matching source.
+
+Reported cross-reference row runs took 10.25 s on02 and 8.97 s on05, about 77 MB each. These are
+offline diagnostic durations, not quantization-placement costs, transport latency or TPS. Runtime
+arithmetic/ISA overrides were absent. Edge case6's `native_scale_supported=0` is the expected
+unsupported-scale refusal; the proof does not claim that every finite activation is transferable.
+No worker/socket/GEN contact occurred; the retained resident worker was reported alive and unchanged.
+
+Earlier failed compiler, prefix/PIC and warning-equality gates remain preserved. A temporary wrapper
+hash transcription error stopped before any rows stage; the final cross-reference rows executed
+once per role. Raw role05, role02-continuation and controller evidence roots remain private with the
+parent. No failed attempt was counted as a numerical result or silently discarded.
+
+Coverage is **two retained native builds, one capture, 16 selected records at layers 0/12/24/47,
+T1/T2, ending at first logits**. This establishes sampled offline equivalence only. It is not a
+universal activation/compiler/ISA guarantee, long-decode validation, live transport test or TPS
+claim. Protocol/capability negotiation, raw fallback, placement cost and end-to-end measurements
+remain outside this focused session. The proof session is complete; no protocol implementation or
+further run is authorized by this result. The commands below are retained execution history, not
+an instruction to repeat completed work.
 
 The current request carries 10240 F32 bytes per 2560-value token. Native Q8_0 quantization already
 produces 2720 bytes on workers. This proof serializes that existing result; it neither recovers the
@@ -91,7 +124,7 @@ for every activation, architecture or future compiler, and cover first-logit/pre
 A format/capability contract, raw fallback, placement cost and live latency remain outside this task.
 No protocol adoption or follow-on model run is automatically authorized by a pass.
 
-## Parent bindings and bounded Hermes commands
+## Retained parent bindings and bounded Hermes commands
 
 This desktop authors and publishes only. The parent dispatches. No worker contact, GEN, resident
 reload, firewall change, package installation, compression sweep or shared runtime mutation.

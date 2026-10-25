@@ -1,13 +1,22 @@
 # Packed activation proof: second-role relay and native settings
 
+**Terminal result: PASS; this handoff is archived.** The parent reports exact flags across all
+five native targets with zero warning waivers, nine ggml-base objects rebuilt, original ELF
+preserved, focused check/pack PASS and exact cross-role SPA1/SRA1 comparisons. See the
+[terminal result and coverage limits](CPU-PACKED-ACTIVATION-PROOF-20261025.md#terminal-offline-result-pass-focused-session-complete)
+and [Hermes receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1792968628095089).
+The wrapper hash typo started no rows stage; final cross-reference rows ran once per role. All
+original failed gates and private evidence remain preserved. No command below should be rerun as
+part of this completed proof session. Transport work requires a fresh bounded session.
+
 Use this with the [bounded proof handoff](CPU-PACKED-ACTIVATION-PROOF-20261025.md). It does not
 change that diagnostic, its inputs, numerical gates or sample bounds. This recipe is authored and its host operations are **NOT RUN** by the desktop thread.
 Shell/embedded Python syntax checks and a tiny synthetic Git-only relay check passed locally;
 that check preserved an existing commit/tree/blob identity through a one-commit shallow restore
 and passed `git fsck --strict`. Independent focused static review found no remaining blocker. It is not a dependency transfer or numerical proof result. The parent dispatches exact commands.
 The first-role run proceeds separately; a missing second-role binding does not block it.
-For the already compiled02 attempt, use **Continue the compiled02 attempt** below; do not repeat
-the historical relay/build steps.
+The relay, correction and resume sections below are retained history. Do not repeat completed
+stages; this proof session has ended.
 
 Role02's retained source is clean at `e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb`. Its real cache is
 Release, CUDA ON, Unix Makefiles, GCC through `/usr/bin/cc` and `/usr/bin/c++`, `-O3 -DNDEBUG`.
