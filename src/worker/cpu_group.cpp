@@ -18,6 +18,8 @@ bool ExpertWorkerGroup::validate(const std::vector<Open>& options, const std::ve
                                 std::string& err) {
     auto refuse = [&](const char* why) { err = why; return false; };
     if (options.empty() || options.size() > kMaxCpuWorkers) return refuse("CPU group needs 1..2 endpoints");
+    for(const auto& option:options)if(option.diagnostic_regroup && options.size()!=1)
+        return refuse("regroup diagnostic needs exactly one full resident endpoint");
     const auto& first = options.front();
     if (!first.local || !first.n_layers || first.n_layers > kMaxLayers || !first.n_expert ||
         first.n_expert > kMaxExperts || !first.n_embd || first.n_embd > kMaxNEmbd ||

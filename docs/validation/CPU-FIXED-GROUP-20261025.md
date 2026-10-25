@@ -15,8 +15,125 @@ The original full-model comparison at 9ed478e5543885e019205512f2450ab4336d393e h
 The parent reports that the split arm failed every frozen first-logit screen and was slower; the
 local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
 or raw-receipt inspection by this coding thread. **Do not rerun that campaign or either duplicate-arena
-diagnostic.** Only the record0 real-weight microfixture procedure below is current. All other executable commands
+diagnostic.** Only the live regrouping procedure below is current. All other executable commands
 in this file are historical, not authorization to repeat prior work.
+
+### Current next step: live regrouping on one full resident
+
+The parent supplies a record0 microfixture PASS at `bc8e57541ad9b934774c1b184bf31b757ef3d8cc`:
+independent-full/capture bits matched before children, both actual peer/independent bits and group/manual
+bits matched. Aggregate selected payload104448000B across20 experts, reported owned RSS bound238391296B,
+swap/OOM0, children reaped, original full resident untouched. Regroup/unsplit maxabs1.49e-8, relativeL2
+6.4e-8. Per-peer counts/bytes await a supplied receipt correction and are not transcribed here. This is
+supplied execution, not a local run or raw-receipt inspection. Do not repeat the microfixture.
+
+`--remote-cpu-regroup-diagnostic off|on` is optional; omission leaves normal behavior unchanged. Both
+explicit values require one `--remote-cpu-worker`, trusted manifest, resident reuse, text, no upload
+fallback, no network GPU and no `STRATA_CPU_CAPTURE`. Setup requires an idle complete forever cache
+and an exact cache hit; it cannot load/upload. `off` uses the normal exchange. `on` keeps the actual
+one-member group/socket owner, but sends original global-ordinal peer0 then peer1 masks sequentially
+against the full arena. Inputs and signed weights stay identical within a window; no renormalization.
+Empty peers send nothing. Copy the first active reply then add peer1 in F32, exactly like the group.
+Wire sequences increase; a refused/failed exchange publishes no partial. No worker/protocol/arena or
+CUDA graph-node/callback/synchronization change. This isolates live feedback from physical two-peer state.
+
+#### Focused gates — authored, NOT RUN locally
+
+Reuse retained build directories, native settings, compilers and ccache. On the CPU fixture role:
+
+```sh
+cmake --build "$CPU_BUILD" --target cpu_capture_group_test --parallel 4
+ctest --test-dir "$CPU_BUILD" --output-on-failure -R '^cpu_capture_group_test$'
+```
+
+This extends the existing one-small-arena test: unchanged normal group, ordered masks/input bytes,
+both active and each one-empty peer, signed zero, multiple windows/increasing sequences, full-bitmap
+ownership across layers, cache reuse, and a real peer0 success followed by peer1 refusal with no result.
+Existing positive-owned child cleanup is reused. No full model/external endpoint. After that gate,
+link the candidate engine outside inference using the bulk CUDA role (parallel8) and the retained
+native-OFF directory on the small incremental role. Do not change CMake options or resident worker:
+
+```sh
+cmake --build "$CUDA_BUILD" --target strata --parallel 8
+cmake --build "$OFF_BUILD" --target strata --parallel 2
+python3 -B "$SRC/tests/worker/worker_disabled_cli_test.py" --engine "$OFF_ENGINE"
+python3 -B "$SRC/tests/worker/worker_family_cli_test.py" --engine "$OFF_ENGINE" --native-experts off
+python3 -B "$SRC/tests/worker/worker_family_cli_test.py" --engine "$CANDIDATE_ENGINE" --native-experts on
+```
+
+Native-OFF preflight and Qwen3.6 explicitly refuse the new option. Other backend links/runtime remain
+NOT RUN unless separately supplied. Keep draft and preserve all baseline/candidate ELF hashes.
+
+#### Two warm requests; on is forbidden until the control passes
+
+Copy the proven G1 private config twice. Each has one arm, `RG0` or `RG1`, `restart:false`,
+`requests:[0]`, its own new disk-backed `run_root`, `cpu_route:"group"`, and the SAME candidate engine.
+Keep original prompt0 GEN256, GPU placement960/1378, full22238 CPU partition116135731200B, workers12,
+loaders4, affinities, CPU policy, model/profile/native assets, deadlines and environment unchanged.
+No warmups/extra requests. Current attached ownership receipts and `attached_worker_idle:true` are
+required. Both `final_worker`/`failure_worker` stay `"retain"`; omit peer configs. No worker startup.
+
+| Pre-stage field | Value |
+| --- | --- |
+| `assets.engine` | Existing absolute candidate ELF, identical for both runs |
+| `assets.worker`, `assets.manifest`, `assets.reference` | Existing absolute retained worker/manifest/A0 summary source files |
+| engine `argv[0]`, worker `worker_argv[0]` | `@engine`, `@worker` |
+| engine `--remote-cpu-local-manifest`, worker `--local-manifest` | Both values `@manifest` |
+| endpoint | One existing numeric loopback `--remote-cpu-worker`; no legacy endpoint flag |
+| added option | RG0: `--remote-cpu-regroup-diagnostic off`; RG1: same option with `on` |
+| `capture_first_logits` | `true`; remove global first-logit prefix and `STRATA_CPU_CAPTURE` |
+| arm `reference` | RG0: `"reference"`; RG1: omit, retaining diagnostic differences as results |
+| READY markers | Existing peers1/exact cache-hit reuse/zero setup load markers plus `CPU regroup diagnostic=off reuse_only=1` or `on reuse_only=1` |
+
+The four `@asset` tokens above are mandatory source-config normalization: do not leave old argv
+absolute literals or put future staged paths in assets. One existing mechanical staging operation
+rewrites these tokens. Before each run verify original owned guardian/worker/monitor/listener,
+complete idle forever arena, VmSwap0, original healthy guard and unchanged OOM. No worker
+STATUS/STOP/UNLOAD during engine ownership. After complete engine-owner reaping, verify unchanged
+arena bytes/allocation/unloads/expirations, zero new load/upload, idle forever and resource accounting.
+
+Run RG0 using the existing driver, then gate the raw993280B first-logit row:
+
+```sh
+python3 -B "$SRC/tools/validation-harness/harness/bundle.py" --config "$RG0_PRIVATE_CONFIG"
+python3 -B "$RG0_ROOT/run.py" --run-root "$RG0_ROOT"
+PYTHONPATH="$SRC/tools/validation-harness" python3 -B -c '
+import json,pathlib,sys
+import compare_logits as c
+a,b=map(pathlib.Path,sys.argv[1:]);m=c.compare(c.read(a),c.read(b))
+m["bitwise_equal"]=a.read_bytes()==b.read_bytes()
+print(json.dumps(m,indent=2,allow_nan=False))
+raise SystemExit(0 if m["bitwise_equal"] and m["numeric_pass"] else 1)
+' "$A0_PROMPT0_FIRST_RAW_F32" "$RG0_ROOT/RG0-first-logits.0"
+```
+
+Require all commands succeed, exact A0 213-token array/102724 entries from the reference gate,
+and bit-identical first logits. **Failure stops here; do not stage/run RG1.** After a passing control
+and fresh idle/cache verification, stage/run RG1 with the same two entry points and its config/root.
+Compare using unchanged functions/screens, not the three-request CLI:
+
+```sh
+python3 -B "$SRC/tools/validation-harness/harness/bundle.py" --config "$RG1_PRIVATE_CONFIG"
+python3 -B "$RG1_ROOT/run.py" --run-root "$RG1_ROOT"
+PYTHONPATH="$SRC/tools/validation-harness" python3 -B -c '
+import json,sys
+import compare_logits as c
+a,b,on=map(c.read,sys.argv[1:])
+print(json.dumps(dict(limits=c.LIMITS,a0_vs_on=c.compare(a,on),b_vs_on=c.compare(b,on)),indent=2,allow_nan=False))
+' "$A0_PROMPT0_FIRST_RAW_F32" "$B_PROMPT0_FIRST_RAW_F32" "$RG1_ROOT/RG1-first-logits.0"
+```
+
+The last command reports failed screens as data; its exit0 is not numerical acceptance. Compare
+complete RG1 tokens in `arm-RG1-summary.json` against retained A0/B request0: equality, length and
+first differing token separately. Return one flat receipt with source/ELF/config hashes, exact sent
+line, off gates, on metrics/tokens, READY/cache and final resource/cleanup accounting. The final
+peer report's `virtual_peer_frames=P0/P1` counts actual frames; tier requests/timings count logical
+windows with sequential exchanges. No performance claim, automatic retry or complete campaign.
+
+If off matches A0 and on reproduces B-scale first-logit divergence, regrouping can amplify in the live
+loop; physical peer correctness remains unproved. If on stays within the frozen screen, investigate
+actual two-peer/full-size slot/remote integration for this prompt. Intermediate outcomes are
+inconclusive. No threshold tuning, original split-failure clearance or extra capture/microfixtures.
 
 ### Current status: resident-monitor incident; duplicate-arena diagnostics withdrawn
 
@@ -54,7 +171,7 @@ changes or another diagnostic load. Parent owns restoring only the normal full r
 loaders/twelve inference workers and the unchanged original guard policy. This coding task launches
 nothing and makes no zero-swap or timing-qualification claim.
 
-### Current next step: record0 real-weight microfixture, no full resident connection
+### Completed record0 real-weight microfixture, no full resident connection (historical commands)
 
 The parent supplies a completed G1 PASS using the retained engine/worker and `ddb0d652` helpers:
 one original prompt0 GEN256 completed213 tokens and102724 entries, exactly A0. Its993280B raw-F32

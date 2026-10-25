@@ -15,7 +15,7 @@ def main():
     args = parser.parse_args()
     engine = str(Path(args.engine).resolve(strict=True))
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="", HIP_VISIBLE_DEVICES="", ROCR_VISIBLE_DEVICES="")
-    flags = ("--remote-cpu-rpc-timing", "--remote-cpu-worker")
+    flags = ("--remote-cpu-rpc-timing", "--remote-cpu-worker", "--remote-cpu-regroup-diagnostic")
     with tempfile.TemporaryDirectory(prefix="worker-family-cli-") as directory:
         def string(value):
             encoded = value.encode("utf-8")

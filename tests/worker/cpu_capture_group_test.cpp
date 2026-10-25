@@ -2,8 +2,40 @@
 #include "local_fixture.hpp"
 #include "diagnostic_child.hpp"
 #include "cpu_single_group_replay.hpp"
+#include "cpu_regroup.hpp"
 using namespace strata::worker::diagnostic;
 namespace {
+void regroup_order() {
+    SetupManifest m;m.n_layers=2;m.n_expert=5;m.partition={21,18};
+    const auto owners=cpu_capture_owners(m); // layer1 IDs1/4 belong to peers1/0, not local parity
+    InferRequest q;q.layer=1;q.T=1;q.K=2;q.ids={4,1};q.mask={1,1};q.weights={-.25f,.75f};
+    q.activations={.5f};q.sequence=7;
+    uint64_t sequence=7,calls[2]{};InferReply result;std::string err;int entered=0;
+    auto exchange=[&](const InferRequest& r,InferReply& part,std::string&) {
+        check(r.ids==q.ids && r.weights==q.weights && r.activations==q.activations,"regroup preserves input bytes");
+        const std::vector<uint8_t> expected_mask=entered?std::vector<uint8_t>{0,1}:std::vector<uint8_t>{1,0};
+        check(r.mask==expected_mask && r.sequence==uint64_t(7+entered),"original ownership, peer0 before peer1, monotonic wire sequence");
+        part.partials=entered++?std::vector<float>{-1e20f,-0.f,2.f}:std::vector<float>{1e20f,-0.f,1.f};return true;
+    };
+    require(regroup_cpu_request(q,owners,5,3,sequence,exchange,result,calls,err),err);
+    check(result.partials==std::vector<float>({0.f,-0.f,3.f}) && std::signbit(result.partials[1]) &&
+        calls[0]==1 && calls[1]==1 && sequence==8,"ordered group float addition and signed zero");
+    for(int active=0;active<2;++active) {
+        q.mask=active?std::vector<uint8_t>{0,1}:std::vector<uint8_t>{1,0};q.sequence=++sequence;
+        uint64_t one[2]{};int frames=0;
+        require(regroup_cpu_request(q,owners,5,3,sequence,[&](const InferRequest& r,InferReply& part,std::string&) {
+            ++frames;check(r.mask==q.mask && r.sequence==q.sequence,"empty peer skipped without sequence use");
+            part.partials={-0.f,1.f,2.f};return true;
+        },result,one,err),err);
+        check(frames==1 && one[active]==1 && !one[1-active] && std::signbit(result.partials[0]),
+            "one active peer copied without zero addition");
+    }
+    q.mask={1,1};q.sequence=++sequence;entered=0;
+    check(!regroup_cpu_request(q,owners,5,3,sequence,[&](const InferRequest&,InferReply& part,std::string& why) {
+        part.partials={1.f,2.f,3.f};if(++entered==2){why="second exchange failed";return false;}return true;
+    },result,calls,err) && entered==2 && result.partials.empty() && err=="second exchange failed",
+        "failed second exchange publishes no first-peer partial");
+}
 WorkerCacheInfo cache(const Child& child){
     ExpertWorkerClient c;WorkerCacheInfo result;std::string err;
     require(c.connect_local("127.0.0.1",child.port,5000,{},err) && c.cache_status(result,err),err);return result;
@@ -38,6 +70,46 @@ bool direct(const CpuCaptureFile& f,const Fixture& fixture,const Child& child,Cp
         auto q=saved;q.session=client.session();q.sequence=++sequence;InferReply reply;
         if(!client.infer(q,reply,why))return false;y=std::move(reply.partials);return true;
     },report,err);
+}
+void live_regroup(const Fixture& fixture,const CpuCaptureFile& f,const Child& child) {
+    ExpertWorkerGroup::Open option;option.local=&fixture.m;option.port=child.port;
+    option.resident=option.resident_reuse_only=option.diagnostic_regroup=true;
+    option.n_layers=2;option.n_expert=4;option.n_embd=2560;option.n_ff=640;option.partition=f.setup.partition;
+    std::string err;ExpertWorkerTier refused;auto bad=option;bad.resident_reuse_only=false;
+    check(!refused.open(bad,err),"regroup cannot cold-load or fall back");
+    check(!ExpertWorkerGroup::validate({option,option},f.setup.partition,err),"regroup refuses multiple endpoints");
+    ExpertWorkerGroup group;require(group.open({option},f.setup.partition,err),err);
+    check(group.peer_stats(0).cache_hit && !group.peer_stats(0).local_bytes &&
+        !group.peer_stats(0).setup_network_bytes,"regroup reuses the only arena without reads/uploads");
+    const auto owners=cpu_capture_owners(f.setup);
+    uint64_t expected[2]{};
+    for(int mode=0;mode<5;++mode) {
+        auto q=f.records[mode<3?mode:0].request;
+        if(mode>=3) {q.T=1;q.K=1;q.ids={uint16_t(mode-3)};q.mask={1};q.weights={-.25f};q.activations.resize(2560);}
+        std::vector<float> combined;bool first=true;
+        for(int p=0;p<2;++p) {
+            auto mask=q.mask;bool active=false;
+            std::vector<const uint8_t*> blobs(q.ids.size());
+            for(size_t i=0;i<mask.size();++i) {mask[i]=mask[i] && owners[q.layer*4+q.ids[i]]==p;
+                active=active||mask[i];blobs[i]=fixture.blobs[q.layer*4+q.ids[i]].data();}
+            if(!active)continue;++expected[p];std::vector<float> part;
+            require(ExpertWorkerService::direct_native_partial(fixture.fmt,q.T,q.K,mask.data(),q.weights.data(),
+                q.activations.data(),blobs.data(),part,err),err);
+            if(first){combined=part;first=false;}else for(size_t i=0;i<combined.size();++i)combined[i]=combined[i]+part[i];
+        }
+        std::vector<int32_t> ids(q.ids.begin(),q.ids.end());
+        require(group.post(q.layer,q.activations.data(),ids.data(),q.weights.data(),q.mask.data(),q.T,q.K,err) && group.finish(err),err);
+        check(group.served() && !std::memcmp(combined.data(),group.partials(),combined.size()*sizeof(float)),
+            "live tier/group bitmatches independent ordered masked reference across windows");
+    }
+    check(group.peer_stats(0).regroup_peer_requests[0]==expected[0] &&
+        group.peer_stats(0).regroup_peer_requests[1]==expected[1],"actual wire counts include only active virtual peers");
+    // Peer0 succeeds; peer1's nine repeats exceed the existing worker limit of eight.
+    std::vector<int32_t> ids(10,1);ids[0]=0;std::vector<uint8_t> mask(10,1);std::vector<float> weights(10,.1f),x(2560,.2f);
+    require(group.post(0,x.data(),ids.data(),weights.data(),mask.data(),1,10,err),err);
+    check(!group.finish(err) && group.dead() && !group.served() && !group.partials(),
+        "real second-peer refusal drains and publishes no partial result");
+    group.close();
 }
 void test(const char* binary){
     Fixture fixture(4);const auto f=capture(fixture);
@@ -76,12 +148,14 @@ void test(const char* binary){
     auto stale=before;++stale.arena_allocations;
     check(!replay_single_group(f,fixture.m,"127.0.0.1",child.port,stale,validated,group,err) &&
         unchanged_resident(before,cache(child)),"changed cache accounting refuses before group setup");
+    live_regroup(fixture,f,child);
+    check(unchanged_resident(before,cache(child)),"regroup failure disconnect retains the same complete arena");
     check(child.owns_listener(),"fixture still owns its live listener");child.stop();
     int status=0;errno=0;check(::waitpid(-1,&status,WNOHANG)<0 && errno==ECHILD,"fixture child cleanly reaped");
 }
 }
 int main(int argc,char** argv){
     if(argc!=2)return 2;
-    try{test(argv[1]);}catch(const std::exception& e){std::fprintf(stderr,"CPU_CAPTURE_GROUP exception: %s\n",e.what());return 2;}
+    try{regroup_order();test(argv[1]);}catch(const std::exception& e){std::fprintf(stderr,"CPU_CAPTURE_GROUP exception: %s\n",e.what());return 2;}
     std::printf("CPU_CAPTURE_GROUP_TEST failures=%d\n",failures);return failures?1:0;
 }

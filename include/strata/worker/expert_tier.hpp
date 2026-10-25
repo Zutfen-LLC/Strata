@@ -42,6 +42,7 @@ public:
         bool local_fallback = false;
         bool resident = false; // negotiate persistent cache; requires local manifest and worker TTL
         bool resident_reuse_only = false; // diagnostic: refuse empty cache, never load/upload
+        bool diagnostic_regroup = false; // diagnostic: sequential virtual peers on the full cache
         int setup_ms = 600000;
         std::function<bool()> cancelled;
         int deadline_ms = 10000;          ///< per-frame deadline (setup, upload, infer)
@@ -112,9 +113,10 @@ public:
         uint64_t setup_network_bytes = 0, local_bytes = 0, local_hits = 0, local_misses = 0;
         double connect_setup_ms = 0, local_ms = 0, fetch_upload_ms = 0, ready_ms = 0;
         uint64_t local_read_ns = 0, local_verify_ns = 0;
-        uint64_t requests = 0;             ///< INFER frames sent (zero-work windows send none)
+        uint64_t requests = 0;             ///< nonempty INFER windows (normally one frame; diagnostic wire counts below)
         uint64_t entries = 0;              ///< routed (token, expert) entries this tier executed
         uint64_t failures = 0;
+        uint64_t regroup_peer_requests[2]{}; // diagnostic wire calls; requests above counts logical windows
         uint64_t communication_thread_id = 0; ///< OS thread id for affinity inspection (0 before first work)
         uint64_t communication_thread_starts = 0; ///< one for the tier's lifetime after first nonempty post
         double setup_ms = 0;               ///< open()'s wall time (connect + upload + ready), kept apart
@@ -164,6 +166,8 @@ private:
     Stats st_;
     RpcTimingCounters rpc_timing_;
     CpuCapture* capture_=nullptr;
+    bool diagnostic_regroup_=false;
+    std::vector<int8_t> regroup_owners_;
 };
 
 }  // namespace strata::worker

@@ -7,6 +7,7 @@
 // runs its local CPU jobs; finish() waits before any downstream consumer may commit, and every failure latches dead.
 #include "strata/worker/expert_tier.hpp"
 #include "strata/worker/cpu_capture.hpp"
+#include "cpu_regroup.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -89,6 +90,9 @@ ExpertWorkerTier::~ExpertWorkerTier() {
 bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     if (dead_) { err = "the remote CPU-expert worker tier is dead: " + dead_why_; return false; }
     if (ready_) { err = "the remote CPU-expert worker tier is already open"; return false; }
+    if(in.diagnostic_regroup && (!in.resident_reuse_only || !in.resident || !in.local || in.local_fallback)) {
+        err="regroup diagnostic requires trusted resident reuse only without fallback";return false;
+    }
     {
         std::lock_guard<std::mutex> lock(request_mutex_);
         stopping_ = pending_ = busy_ = posted_ = served_ = false;
@@ -272,6 +276,8 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     st_.local_misses = ls.misses;
     st_.local_read_ns = ls.read_ns;
     st_.local_verify_ns = ls.verify_ns;
+    diagnostic_regroup_=in.diagnostic_regroup;
+    if(diagnostic_regroup_)regroup_owners_=cpu_capture_owners(m);
     partition_ = std::move(m.partition);
     n_layers_ = in.n_layers;
     n_expert_ = in.n_expert;
@@ -408,9 +414,19 @@ void ExpertWorkerTier::run_requests() {
 
         bool ok = false;
         std::string e;
-        RpcExchangeTiming measured;
+        RpcExchangeTiming measured{};
+        uint64_t regroup_calls[2]{};
         try {
-            ok = client_.infer(req_, r, e, rpc_timing_.enabled() ? &measured : nullptr);
+            if(diagnostic_regroup_) {
+                ok=regroup_cpu_request(req_,regroup_owners_,n_expert_,n_embd_,sequence_,
+                    [&](const InferRequest& q,InferReply& part,std::string& why) {
+                        RpcExchangeTiming wire{};
+                        const bool accepted=client_.infer(q,part,why,rpc_timing_.enabled()?&wire:nullptr);
+                        measured.encode_send_ns+=wire.encode_send_ns;measured.receive_decode_ns+=wire.receive_decode_ns;
+                        measured.request_bytes+=wire.request_bytes;measured.reply_bytes+=wire.reply_bytes;
+                        return accepted;
+                    },r,regroup_calls,e);
+            } else ok = client_.infer(req_, r, e, rpc_timing_.enabled() ? &measured : nullptr);
         } catch (const std::exception& ex) {
             e = std::string("exception in communication thread: ") + ex.what();
         } catch (...) {
@@ -423,6 +439,7 @@ void ExpertWorkerTier::run_requests() {
                 std::string(status_name(status)) + "): " + e);
 
         lock.lock();
+        for(int p=0;p<2;++p)st_.regroup_peer_requests[p]+=regroup_calls[p];
         st_.queue_ms += queue_ms;
         st_.exchange_ms += (double) (exchange_end - exchange_start) / 1e6;
         if (rpc_timing_.enabled()) {
@@ -513,6 +530,11 @@ void ExpertWorkerTier::report(std::string& out) const {
     std::snprintf(buf, sizeof buf, "; cache_hit=%d reused=%llu B session=%llx", st_.cache_hit,
                   (unsigned long long)st_.reused_bytes, (unsigned long long)st_.session);
     out += buf;
+    if(diagnostic_regroup_) {
+        std::snprintf(buf,sizeof buf,"; diagnostic_regroup=on virtual_peer_frames=%llu/%llu (sequential; timings are logical windows)",
+            (unsigned long long)st_.regroup_peer_requests[0],(unsigned long long)st_.regroup_peer_requests[1]);
+        out+=buf;
+    }
     const std::string timing = rpc_timing_.report("client");
     if (!timing.empty()) out += "; " + timing;
 }
