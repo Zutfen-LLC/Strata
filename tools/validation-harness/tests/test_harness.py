@@ -126,6 +126,59 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual([arm['name'] for arm in cfg['arms']], ['load', 'next'])
         self.assertEqual(original, (root / 'config.json').read_bytes())
 
+    def test_per_arm_packing_preserves_raw_argv_and_worker(self):
+        self.cfg['cpu_route'] = 'group'
+        self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')] = '--remote-cpu-worker'
+        packed = dict(self.arm, name='packed', restart=False, requests=[0],
+                      packed_qualification='abcdef0123456789')
+        self.cfg['arms'].append(packed)
+        root = self.stage()
+        cfg = json.loads((root / 'config.json').read_text())
+        raw, candidate = [driver.arm_config(cfg, arm) for arm in cfg['arms']]
+        self.assertEqual(raw['argv'], cfg['argv'])
+        self.assertEqual(candidate['argv'], raw['argv'] +
+                         ['--remote-cpu-packed-qualification', 'abcdef0123456789'])
+        self.assertEqual(raw['worker_argv'], candidate['worker_argv'])
+        self.assertNotIn('--remote-cpu-packed-qualification', cfg['argv'])
+
+    def test_per_arm_packing_rejects_bad_or_global_qualification(self):
+        self.arm['packed_qualification'] = '0000000000000000'
+        with self.assertRaisesRegex(ValueError, '16 nonzero'): self.stage()
+        self.arm['packed_qualification'] = 'abcdef0123456789'
+        with self.assertRaisesRegex(ValueError, 'group route'): self.stage()
+        self.cfg['cpu_route'] = 'group'
+        self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')] = '--remote-cpu-worker'
+        self.cfg['argv'] += ['--remote-cpu-packed-qualification', 'abcdef0123456789']
+        with self.assertRaisesRegex(ValueError, 'no global'): self.stage()
+
+    def test_first_logit_reference_requires_one_captured_request(self):
+        self.arm['first_logits_reference'] = 'logits'
+        with self.assertRaisesRegex(ValueError, 'capture'): self.stage()
+        self.cfg['capture_first_logits'] = True
+        self.arm['requests'] = [0]
+        self.arm['restart'] = False
+        self.cfg.update(attach_root=str(self.root), attached_worker_idle=True)
+        with self.assertRaisesRegex(ValueError, 'missing first-logit'): self.stage()
+        logits = self.root / 'logits'; logits.write_bytes(b'first logits')
+        self.cfg['assets']['logits'] = str(logits)
+        self.stage()
+
+    def test_first_logit_mismatch_prevents_next_arm(self):
+        reference = self.root / 'logits'; reference.write_bytes(b'expected')
+        self.cfg['assets']['logits'] = str(reference)
+        self.arm.update(name='raw', restart=False, requests=[0], first_logits_reference='logits')
+        self.cfg['arms'].append(dict(self.arm, name='packed'))
+        (self.root / 'raw-first-logits.0').write_bytes(b'different')
+        with patch.object(bundle, 'verify', return_value=self.cfg), \
+             patch.object(C, '__file__', str(self.root / 'campaign.py')), \
+             patch.object(C.worker_control, '__file__', str(self.root / 'worker_control.py')), \
+             patch.object(C, 'configure'), patch.object(driver, 'masks'), \
+             patch.object(C, 'run_arm', return_value={}) as execute:
+            with self.assertRaisesRegex(RuntimeError, 'first logits diverged'):
+                driver.run(self.root)
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(execute.call_args.args[0], 'raw')
+
     def test_endpoint_mismatch_rejected(self):
         self.cfg['port'] += 1
         with self.assertRaisesRegex(ValueError, 'port mismatch'): self.stage()

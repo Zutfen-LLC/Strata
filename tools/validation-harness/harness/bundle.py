@@ -127,6 +127,12 @@ def validate(cfg, source):
             if not mask or len(mask) > 4096 or any(type(cpu) is not int or cpu < 0 for cpu in mask):
                 raise ValueError('invalid affinity mask')
             if not set(mask) <= allowed: raise ValueError('configured CPU outside current allowed set')
+        if 'packed_qualification' in arm:
+            qualification = arm['packed_qualification']
+            if not isinstance(qualification, str) or not re.fullmatch(r'[0-9a-f]{16}', qualification) or int(qualification, 16) == 0:
+                raise ValueError('packed_qualification must be 16 nonzero lowercase hex digits')
+            if cfg.get('cpu_route') != 'group' or '--remote-cpu-packed-qualification' in cfg['argv']:
+                raise ValueError('per-arm packing requires group route and no global qualification')
         if len(arm['requests']) > 64 or any(type(i) is not int or not 0 <= i < len(lines) for i in arm['requests']):
             raise ValueError('invalid request selection')
         for field, default in [('engine', 'engine'), ('worker', 'worker')]:
@@ -142,6 +148,11 @@ def validate(cfg, source):
             raise ValueError('reuse cannot change worker binary/count/loader settings')
         if not isinstance(arm['placement_markers'], list) or any(not isinstance(v, str) for v in arm['placement_markers']):
             raise ValueError('placement markers must be configured strings')
+        if arm.get('first_logits_reference'):
+            if not cfg.get('capture_first_logits') or arm['requests'] != [0]:
+                raise ValueError('first-logit reference requires capture and only request zero')
+            if arm['first_logits_reference'] not in cfg['assets']:
+                raise ValueError('missing first-logit reference asset')
         if arm.get('reference'):
             if arm['reference'] not in cfg['assets']: raise ValueError('missing reference asset')
             reference = json.loads(pathlib.Path(cfg['assets'][arm['reference']]).read_text())['requests']

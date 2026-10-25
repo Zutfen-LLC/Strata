@@ -28,6 +28,8 @@ def arm_config(cfg, arm):
                                    '--local-load-threads', arm['loader_threads'])
     result['worker_argv'][0] = cfg['assets'][arm.get('worker', 'worker')]
     result['argv'] = list(cfg['argv']); result['argv'][0] = cfg['assets'][arm.get('engine', 'engine')]
+    if arm.get('packed_qualification'):
+        result['argv'] += ['--remote-cpu-packed-qualification', arm['packed_qualification']]
     result['binary_sha256'] = bundle.sha(result['argv'][0])
     result['worker_sha256'] = bundle.sha(result['worker_argv'][0])
     result['manifest_path'] = cfg['assets']['manifest']
@@ -170,6 +172,11 @@ def run(root):
                     prior = expected[row['index']]
                     if row['tokens'] != prior['tokens'] or row['worker_entries'] != prior['worker_entries']:
                         raise RuntimeError('reference tokens/worker entries diverged')
+            if arm.get('first_logits_reference'):
+                actual = root / (arm['name'] + '-first-logits.0')
+                expected = pathlib.Path(cfg['assets'][arm['first_logits_reference']])
+                if actual.read_bytes() != expected.read_bytes():
+                    raise RuntimeError('reference first logits diverged')
             results.append(summary)
         if cfg['final_worker'] == 'stop': C.stop_owned_worker()
         C.atom(root / 'summary.json', {'arms': results, 'final_worker': cfg['final_worker']})
