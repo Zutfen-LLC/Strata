@@ -59,7 +59,12 @@ starts the configured worker, and runs zero GEN requests through READY/QUIT. War
 must match. Put any desired final restore load explicitly in the list. There are no hidden arms.
 Expected placement log markers and optional reference tokens/worker entries are checked unchanged.
 
-Worker caller/pool masks are applied to owned tasks before load. Engine-main masks are applied when
+For a cold launch, the worker caller uses the union of configured caller/pool CPUs during SETUP, so
+loader helpers inherit that eligible set. Pool masks stay configured. After READY and loader joining,
+the owned idle session applies/verifies final caller/pool masks before any GEN, including zero-GEN
+load entries. Warm resident entries keep their intended compute policy. The setup mask is saved in
+`*-affinity-setup.json`; final masks retain the existing affinity receipt path. This needs no worker
+control exchange during the engine session. Engine-main masks are applied when
 READY is received, before GEN; they do not establish engine startup placement. Use existing engine
 argv placement options where startup placement matters. Receipts record actual masks and topology.
 Request bytes and order come from the pinned request file; there is no retokenization.

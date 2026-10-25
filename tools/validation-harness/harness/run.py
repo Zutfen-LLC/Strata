@@ -37,8 +37,24 @@ def arm_config(cfg, arm):
     return result
 
 
-def masks(arm, session=None, need_io=False):
+def masks(arm, session=None, need_io=False, phase='compute'):
+    if phase not in ('setup', 'ready', 'compute'): raise ValueError('unknown affinity phase')
+    if phase == 'setup' and session is not None: raise RuntimeError('setup masks require an idle worker')
+    if phase == 'ready' and session is None: raise RuntimeError('ready masks require an owned session')
     if session is None: C.assert_worker_idle()
+    engine_rows = []
+    if session is not None:
+        state = json.loads((C.R / session / 'state.json').read_text())
+        if phase == 'ready':
+            owner = C.SESSIONS.get(session)
+            if owner is None or owner.poll() is not None or owner.pid != state['broker']['pid']:
+                raise RuntimeError('ready masks require the retained engine owner')
+            C.ident(state['broker'])
+            if not state.get('ready') or state.get('active') or state.get('failure') or state['phase'] != 'idle':
+                raise RuntimeError('compute affinity requires an idle READY session')
+        engine = C.ident(state['engine'])
+        engine_rows = C.tasks(engine['pid'])
+        if engine_rows[0]['mask'] != sorted(set(arm['engine_main_mask'])): raise RuntimeError('engine main mask changed')
     ids = json.loads((C.W / 'identities.json').read_text())
     worker = C.ident(ids['worker']); rows = C.tasks(worker['pid'])
     if session is None and bundle.sha(pathlib.Path('/proc', str(worker['pid']), 'exe')) != C.cfg['worker_sha256']:
@@ -47,21 +63,21 @@ def masks(arm, session=None, need_io=False):
         if worker['argv'].count(flag) != 1 or worker['argv'][worker['argv'].index(flag) + 1] != str(expected):
             raise RuntimeError('resident worker argv differs from configured arm: ' + flag)
     if len(rows) != arm['workers'] + 2: raise RuntimeError('unexpected worker task count')
-    expected = [arm['caller_mask'], *arm['pool_masks']]
+    # Helpers inherit their serving caller's mask during SETUP. Keep that caller on the explicitly
+    # configured CPU union until READY, after the loader has joined; pool placement stays unchanged.
+    caller = sorted(set(arm['caller_mask']).union(*map(set, arm['pool_masks']))) if phase == 'setup' else arm['caller_mask']
+    expected = [caller, *arm['pool_masks']]
     for row, mask in zip(rows, expected):
-        if session is None: os.sched_setaffinity(row['tid'], set(mask))
+        if session is None or phase == 'ready': os.sched_setaffinity(row['tid'], set(mask))
     rows = C.tasks(worker['pid'])
     if [row['mask'] for row in rows[:len(expected)]] != [sorted(set(mask)) for mask in expected]:
         raise RuntimeError('configured worker masks changed')
-    engine_rows = []
-    if session is not None:
-        engine = json.loads((C.R / session / 'state.json').read_text())['engine']; C.ident(engine)
-        engine_rows = C.tasks(engine['pid'])
-        if engine_rows[0]['mask'] != sorted(set(arm['engine_main_mask'])): raise RuntimeError('engine main mask changed')
     io = [row for row in engine_rows if row['comm'] == 'strata-cpu-io']
     if need_io and len(io) != 1: raise RuntimeError('missing communication task')
-    receipt = {'worker_tasks': rows, 'engine_tasks': engine_rows, 'communication_threads': io, 'topology': C.topology()}
-    C.atom(C.R / (arm['name'] + '-affinity.json'), receipt)
+    receipt = {'phase': phase, 'worker_tasks': rows, 'engine_tasks': engine_rows,
+               'communication_threads': io, 'topology': C.topology()}
+    suffix = '-affinity-setup.json' if phase == 'setup' else '-affinity.json'
+    C.atom(C.R / (arm['name'] + suffix), receipt)
     return receipt
 
 
@@ -86,7 +102,7 @@ def launch_worker(configuration, arm):
             except Exception as cleanup:
                 C.atom(C.R / 'worker-cleanup-uncertain.json', {'error': repr(cleanup)})
         raise
-    masks(arm)
+    masks(arm, phase='setup')
 
 
 def run(root):
@@ -104,7 +120,7 @@ def run(root):
             if arm['restart']: launch_worker(configuration, arm)
             else: masks(arm, session=None)  # explicit masks are also checked on attached/reused workers
             summary = C.run_arm(arm['name'], configuration, arm['requests'],
-                                 lambda session, io: masks(arm, session, io))
+                                 lambda session, io, phase='compute': masks(arm, session, io, phase))
             if arm.get('reference'):
                 reference = json.loads(pathlib.Path(cfg['assets'][arm['reference']]).read_text())['requests']
                 expected = {row['index']: row for row in reference}
