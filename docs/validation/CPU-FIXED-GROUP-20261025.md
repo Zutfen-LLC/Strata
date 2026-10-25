@@ -6,7 +6,7 @@ commands are authored. **Builds, executable tests and inference: NOT RUN on Geek
 No speedup or numerical acceptance is established. No fleet work was dispatched by this coding task.
 
 The change adds only the opt-in fixed CPU endpoint group, necessary per-host use of the existing
-guardian/config driver, and focused fixtures. Wire messages, worker implementation and default
+guardian/config driver, focused fixtures and bounded host capture/replay diagnostics. Wire messages, worker implementation and default
 one-endpoint route stay unchanged. It does not add discovery, rebalancing or a network GPU mode.
 
 ## Prerequisites and focused checks
@@ -18,7 +18,121 @@ or raw-receipt inspection by this coding thread. **Do not rerun that campaign.**
 is only the bounded diagnostic below. The original commands later in this file remain historical
 procedure, not authorization for another model load.
 
-### Current next step: K10/T1 synthetic numerical discriminator
+### Current next step: one real-input capture and resident replay
+
+The parent supplies the following completed evidence, not execution by this coding thread. At
+8011973 the seven-case K10/T1 diagnostic passed all 140 metric lines, including both retained
+worker binaries, full/subset masks, native row/batch references and actual group/manual merging.
+Only regrouping versus unsplit differed: maximum absolute errors were 1.53e-5 (dense/shifted),
+3.81e-6 (sparse), and 4.58e-5 (cancellation), within the unchanged published envelope. This does
+**not** clear the failed model comparison. Its synthetic activations/weights and T1 shape miss real
+values and multi-token prompt batches.
+
+Retained alignment also found matching three GEN lines, prompt tokens/hashes, GEN256 lengths,
+engine binary, model/manifest/profile assets, no resume/reuse, and correct first-logit ordinals.
+The first-logit files are **raw F32 with no count header**. No unintended configuration difference
+was found. No intermediate CPU inputs or partials were retained. The next discriminator captures
+those actual host inputs, without CUDA graph nodes, callbacks, events, copies or synchronization
+changes. Production inference arithmetic and SEW1 remain unchanged.
+
+Bind `CANDIDATE` to the exact commit containing this section. Use retained build caches, unchanged
+CMake options, and no model operation until the focused gates pass. Build-target versus CTest names:
+
+```sh
+# CPU fixture host: reconfigure only to discover the new targets, preserving all cached options.
+cmake -S "$SRC" -B "$CPU_BUILD"
+cmake --build "$CPU_BUILD" --target cpu_capture_test cpu_capture_replay expert_tier_test --parallel 4
+ctest --test-dir "$CPU_BUILD" --output-on-failure -R '^(cpu_capture_test|expert_tier_test)$'
+
+# Engine host: outside inference, retained CUDA/native-ON cache, existing ccache and parallelism.
+cmake -S "$SRC" -B "$CUDA_BUILD"
+cmake --build "$CUDA_BUILD" --target strata --parallel 8
+
+# Incremental native-OFF link check on its existing validation host/cache.
+cmake --build "$NATIVE_OFF_BUILD" --target strata --parallel 2
+```
+
+`cpu_capture_test` has no socket or model. It checks multi-token format round trips, fixed capacity,
+all-full-before-masked ordering, early mismatch refusal, zero-work, complete layer/token coverage,
+exclusive publication, missing slices/layers, corrupt/truncated/oversize input, non-finite inputs,
+wrong ownership and lifecycle/bounds refusals. These new checks are **authored, NOT RUN locally**.
+Do not rebuild or replace the retained worker binary for this diagnostic. Mechanically hash/stage
+the replay executable to the engine host through the existing approved transfer operation; preserve
+the old binaries. The tool links only CPU libraries and does not need model files copied.
+
+Use the existing merged config driver and its retained local warm configuration. Change only:
+
+| Private config binding | Required value |
+| --- | --- |
+| engine asset | newly built candidate engine, mechanically staged/hash verified |
+| worker asset/argv, manifest and model assets | exact existing full resident worker and validated assets |
+| `attach_root`, `attached_worker_idle` | existing owned receipt root; true only after exclusive idle use established |
+| arms | one local warm entry, `restart:false`, `requests:[0]`, no `reference` token-array gate |
+| workers / loader_threads / masks / engine policy | retained 12 / 4 and unchanged measured policies |
+| CPU route | original single `--remote-cpu-experts` endpoint; no group/remote GPU endpoint |
+| peer configuration | remove top-level `worker_peers` and arm `cpu_peers` / `peer_bytes`; no remote control bindings |
+| `capture_first_logits` | true (driver supplies its unique first-logit prefix) |
+| `env.STRATA_CPU_CAPTURE` | new absolute private filename, absent along with its `.partial` sibling |
+| final_worker / failure_worker | retain / retain |
+
+Keep the original retained request asset: its first **plain GEN256** line is sent unchanged, with
+no keyed GEN options, resume, session restore or warmup. Capture includes every prompt window and
+the first decode window. After that first logit row, diagnostic mode emits only its first sampled
+token and normal DONE; it then accepts QUIT. This is deliberately not a complete token-array or
+performance run. The original requested length is retained in the capture metadata. A second GEN
+is refused. No harness code or per-experiment sequencing script is needed.
+
+```sh
+python3 -B "$SRC/tools/validation-harness/harness/bundle.py" --config "$CAPTURE_CONFIG"
+python3 -B "$CAPTURE_RUN_ROOT/run.py" --run-root "$CAPTURE_RUN_ROOT"
+```
+
+Before starting, establish the existing resident is exclusively idle and complete with **forever**
+residency. Both capture and replay refuse a finite TTL (avoids expiry between status and setup),
+an empty cache or a cache miss. The server's existing retained-key mismatch refusal preserves the
+old arena. No LOAD/UPLOAD fallback is available in these diagnostic paths. Capture allocates one
+96MiB buffer plus bounded codec scratch before callbacks, writes no files in callbacks, and
+publishes a private mode0600 file exclusively after the existing first-logit host copy. Its integrity
+digest detects accidental corruption, not malicious edits. Never publish raw activation files.
+
+Wait for the engine broker to finish QUIT, reap the engine/monitor, and check the existing owned
+idle receipt **before** any worker control/replay connection. Never probe STATUS during an engine
+session. Keep worker/pool affinity, binary and arena unchanged. Under the retained bounded output
+guard, invoke exactly once (outer timeout200s, tool budget180s plus bounded frame deadlines):
+
+```sh
+timeout --signal=TERM --kill-after=10s 200s "$REPLAY" \
+  "$CAPTURE" "$MANIFEST" "$REQUESTS" "$RETAINED_A0_FIRST_RAW_F32" "$WORKER_NUMERIC_HOST" "$WORKER_PORT"
+```
+
+All file bindings must be absolute. The tool validates the entire bounded format, exact original
+GEN line/token binding, trusted manifest/index identity, and captured first-logit digest against
+the retained A0 raw file **before contacting the worker**. A logit mismatch stops interpretation.
+It then attaches using a fresh resident cache-hit session, rewrites only session/sequence IDs,
+and first replays **every full-mask reply bitwise**. Any mismatch stops before masked work; report
+its record index, do not treat subsequent grouping as valid. Only after that full pass does it replay
+the two deterministic alternating masks on this same full arena and add active peers in configuration
+order. Zero-work peers send nothing. This isolates batching/masking/reduction on actual values,
+including T>1, without different slot maps, network peers or a second copy of the model.
+
+Output is bounded summary metrics: maximum absolute/relative error (relative denominator floor1e-12),
+relative L2 (norm floor1e-30), first bit-differing record and its phase/position/T/slice/layer/K.
+If a numerical discrepancy exists, one record with the largest absolute error is decomposed into
+at most T*K<=80 individual contributions, with two masked reconfirmations. Report entry-order and
+per-peer bit identity and the unchanged `1e-4 + 4e-6*sum_abs_contributions` envelope for that record;
+this is not an envelope gate over un-decomposed records. No threshold is tuned after results.
+Non-finite/shape errors, full replay mismatch, decomposition mismatch or failed resident checks
+fail the tool. Ordinary regrouping bit differences remain visible; a passing tool never clears
+the original failed model screen or proves network/subset slot identity.
+
+The tool disconnects normally and reconnects only after that session closes, checking the arena
+remains complete/idle with unchanged bytes, loaded/verified counts, allocations, expiry and unloads.
+It never sends STOP, UNLOAD, UPLOAD or LOCAL_LOAD. Preserve any failure and receipts; do not retry
+uncertain operations or reload the model. Return the source/binary pins, focused test result,
+capture size/hash, one first-logit comparison, replay summary/first differing record, and final
+resident receipt. No complete A/B/A rerun, worker replacement or model reload is requested.
+
+### Completed synthetic discriminator (historical commands; do not repeat)
 
 The parent reports identical ggml source bytes at the pinned revision, matching effective compiler
 flags, and a fixed retained K2/T8 fixture passing both retained worker ELFs bitwise (20,480 floats).

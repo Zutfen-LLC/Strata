@@ -27,6 +27,7 @@
 #include <vector>
 
 namespace strata::worker {
+class CpuCapture;
 
 /// The opt-in remote CPU-expert tier (inferswarm #349).  Default-off: the engine constructs it only for
 /// `--remote-cpu-experts`; with no tier attached the dispatch's worker hooks are dead branches and every
@@ -40,6 +41,7 @@ public:
         const LocalManifest *local = nullptr; // trusted reusable manifest, opt-in
         bool local_fallback = false;
         bool resident = false; // negotiate persistent cache; requires local manifest and worker TTL
+        bool resident_reuse_only = false; // diagnostic: refuse empty cache, never load/upload
         int setup_ms = 600000;
         std::function<bool()> cancelled;
         int deadline_ms = 10000;          ///< per-frame deadline (setup, upload, infer)
@@ -93,6 +95,9 @@ public:
     /// The last reply's already-weighted partials (n_tok * n_embd).  Valid only when the last post()
     /// returned true with `posted()` true and finish() then returned true.
     const float* partials() const { return reply_.partials.data(); }
+    // Diagnostic only. Bound before inference, lifetime exceeds this tier; never touched by socket thread.
+    void set_capture(CpuCapture* p) { capture_=p; }
+    CpuCapture* capture() const { return capture_; }
 
     /// The last worker STATUS (false when unreachable; the tier then stays usable if it was not dead).
     bool status(WorkerStatusInfo& out, std::string& err);
@@ -158,6 +163,7 @@ private:
     bool served_ = false;
     Stats st_;
     RpcTimingCounters rpc_timing_;
+    CpuCapture* capture_=nullptr;
 };
 
 }  // namespace strata::worker

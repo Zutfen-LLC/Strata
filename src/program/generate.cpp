@@ -27,6 +27,7 @@
 #include "strata/worker/cpu_endpoint.hpp"
 #ifdef STRATA_NATIVE_EXPERTS
 #include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_capture.hpp"
 #include "strata/worker/cpu_group.hpp"
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
@@ -1144,6 +1145,9 @@ struct Drive {
     strata::core::ExpertDispatch d;
     double cpu_ms = 0;
     int64_t calls = 0;
+#ifdef STRATA_NATIVE_EXPERTS
+    strata::worker::CpuCapture* capture = nullptr;
+#endif
     /// THE ROUTING TRACE, which is P0.S8 and a stated prerequisite of Phase 3.  `drive_pool` is called once
     /// per layer from the main loop - the workers live inside `expert_pool_dispatch` - so a single FILE* here
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
@@ -2265,6 +2269,10 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
 }
 
 int main(int argc, char** argv) {
+    const char* cpu_capture_path=std::getenv("STRATA_CPU_CAPTURE");
+#ifndef STRATA_NATIVE_EXPERTS
+    if(cpu_capture_path){std::fprintf(stderr,"CPU capture requires native experts\n");return 2;}
+#endif
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
@@ -2411,7 +2419,10 @@ int main(int argc, char** argv) {
         } catch (const std::exception&) {
             // not readable here: the normal path below reports it
         }
-        if (qwen35) return strata::qwen35::run(argc, argv);
+        if (qwen35) {
+            if(cpu_capture_path){std::fprintf(stderr,"CPU capture does not support this model family\n");return 2;}
+            return strata::qwen35::run(argc, argv);
+        }
         break;
     }
 #endif
@@ -3377,6 +3388,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: network CUDA experts need --remote-cpu-experts, its trusted local manifest, "
                              "one legacy endpoint/plan or 1..8 --remote-gpu-worker pairs, and positive setup/deadline budgets\n");
         return 2;
+    }
+    if(cpu_capture_path && (!o.remote_cpu_legacy || !o.remote_cpu_workers.empty() ||
+        !o.remote_cpu_resident || o.remote_cpu_local_manifest.empty() || o.remote_gpu_experts ||
+        o.vision || !std::getenv("STRATA_DUMP_FIRST_LOGITS"))) {
+        std::fprintf(stderr,"CPU capture requires serial legacy CPU resident reuse, text, trusted manifest and first-logit dump\n");return 2;
     }
     if (o.remote_cpu_experts) {
         const char* why = !o.serve ? "it needs --serve"
@@ -6696,6 +6712,7 @@ int main(int argc, char** argv) {
     // blob-sized staging buffer (no local RAM mirror), and inference may not start before the worker has
     // verified the whole set (READY), which this open() waits for.
 #ifdef STRATA_NATIVE_EXPERTS
+    strata::worker::CpuCapture cpu_capture; // outlives tier; owns fixed diagnostic storage
     strata::worker::ExpertWorkerTier worker_tier;
     strata::worker::ExpertWorkerGroup cpu_group;
     const bool grouped_cpu=!o.remote_cpu_workers.empty();
@@ -6753,6 +6770,7 @@ int main(int argc, char** argv) {
         wopen.port = (uint16_t) o.remote_cpu_port;
         wopen.deadline_ms = o.remote_cpu_deadline_ms;
         wopen.rpc_timing = o.remote_cpu_rpc_timing;
+        wopen.resident_reuse_only = cpu_capture_path != nullptr;
         wopen.model_name = o.pack.c_str();
         wopen.gu_type = 8;
         wopen.d_type = 8;
@@ -6833,6 +6851,17 @@ int main(int argc, char** argv) {
             cpu_opened=cpu_group.open(peers,wopen.partition,err);
         } else cpu_opened=worker_tier.open(wopen,err);
         if(!cpu_opened) {std::fprintf(stderr,"strata generate: CPU setup: %s\n",err.c_str());return 1;}
+        if(cpu_capture_path) {
+            strata::worker::SetupManifest m;
+            m.model_id=local_manifest.identity.a;m.gu_type=wopen.gu_type;m.d_type=wopen.d_type;
+            m.n_layers=wopen.n_layers;m.n_expert=wopen.n_expert;m.n_embd=wopen.n_embd;m.n_ff=wopen.n_ff;
+            m.partition=wopen.partition;m.partition_id=strata::worker::blob_digest(m.partition).a;
+            std::strcpy(m.quant_name,"Q8_0");std::strcpy(m.model_name,"cpu-capture");
+            if(!cpu_capture.prepare(m,local_manifest.identity,local_manifest.index_digest,cpu_capture_path,err)) {
+                std::fprintf(stderr,"CPU capture: %s\n",err.c_str());return 1;
+            }
+            worker_tier.set_capture(&cpu_capture);
+        }
         if(grouped_cpu)std::fprintf(stderr,"strata generate: fixed CPU group ready peers=%zu in %.1f s (%llu blobs, %.2f GiB verified)\n",
             cpu_group.size(),std::chrono::duration<double>(Clock::now()-wt0).count(),
             (unsigned long long)cpu_stats().setup_blobs,(double)cpu_stats().setup_weight_bytes/1073741824.0);
@@ -6911,6 +6940,7 @@ int main(int argc, char** argv) {
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
 #ifdef STRATA_NATIVE_EXPERTS
     drive.d.worker = o.remote_cpu_experts && !grouped_cpu ? &worker_tier : nullptr;
+    drive.capture = cpu_capture_path ? &cpu_capture : nullptr;
     drive.d.cpu_group = grouped_cpu ? &cpu_group : nullptr;
 #ifdef STRATA_NETWORK_CUDA_WORKER
     drive.d.gpu_worker = o.remote_gpu_experts ? &gpu_worker_tier : nullptr;
@@ -12372,7 +12402,7 @@ int main(int argc, char** argv) {
                 continue;
             }
             char* endp = nullptr;
-            const long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);
+            long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);
             // optional sampling keys between max_new and the ids: temperature=F, top_p=F, top_k=N, min_p=F,
             // penalty_last_n=N, penalty_repeat=F, penalty_freq=F, penalty_present=F, seed=N (text requests
             // only).  Absent keys keep today's behavior: greedy, no penalties.
@@ -12469,6 +12499,11 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
+#ifdef STRATA_NATIVE_EXPERTS
+            if(drive.capture && !drive.capture->request(line,ids,(uint64_t)max_new)) {
+                std::printf("ERR %s\n",drive.capture->error());return 1;
+            }
+#endif
             req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             if (geni || !mrope_identity) {
@@ -13297,6 +13332,11 @@ int main(int argc, char** argv) {
                     drive.d.layers = 0;
                     drive.d.experts = 0;
                     drive.d.failed = false;
+#ifdef STRATA_NATIVE_EXPERTS
+                    if(drive.capture && !drive.capture->window((uint64_t)q,(uint32_t)T,1)) {
+                        e=drive.capture->error();return false;
+                    }
+#endif
                     if (!ver.run(T, win.data(), q, win_pool_fn, win_pool_user, outw.data(), e) || drive.d.failed) {
                         if (drive.d.failed && drive.d.fail) e = drive.d.fail;
                         return false;
@@ -15176,6 +15216,11 @@ int main(int argc, char** argv) {
                 // a suffix window and the lookup chain's tail are point masses and keep the exact-match rule
                 // (never on a first window: a merged one holds prompt tokens, not drafts)
                 if (use_mtp && mtp.prob() && !from_sfx && !first_window && T_mtp > 1) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
+#ifdef STRATA_NATIVE_EXPERTS
+                if(first_window && drive.capture && !drive.capture->window((uint64_t)p,(uint32_t)T,2)) {
+                    std::printf("ERR %s\n",drive.capture->error());return 1;
+                }
+#endif
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
@@ -15190,9 +15235,18 @@ int main(int argc, char** argv) {
                         std::vector<float> row((size_t) ver.vocab());
                         const std::string path = std::string(fl) + "." + std::to_string(fl_n++);
                         std::FILE* f = ver.copy_logits(merged ? T - 1 : 0, row.data()) ? std::fopen(path.c_str(), "wb") : nullptr;
-                        if (f == nullptr || std::fwrite(row.data(), sizeof(float), row.size(), f) != row.size())
+                        bool written=f && std::fwrite(row.data(), sizeof(float), row.size(), f)==row.size();
+                        if (!written)
                             std::fprintf(stderr, "strata serve: STRATA_DUMP_FIRST_LOGITS: cannot write %s\n", path.c_str());
-                        if (f) std::fclose(f);
+                        if (f && std::fclose(f)) written=false;
+#ifdef STRATA_NATIVE_EXPERTS
+                        if(drive.capture && drive.capture->active() &&
+                           (!written || !drive.capture->seal(row.data(),row.size()))) {
+                            std::printf("ERR CPU capture seal: %s\n",written?drive.capture->error():"first-logit write failed");return 1;
+                        }
+                        // Diagnostic request keeps the original GEN binding but ends after this first token.
+                        if(drive.capture) max_new=1;
+#endif
                     }
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do

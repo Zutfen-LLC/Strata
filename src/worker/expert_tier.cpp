@@ -6,6 +6,7 @@
 // expert set in RAM.  One persistent communication thread carries INFER frames while the engine's dispatch
 // runs its local CPU jobs; finish() waits before any downstream consumer may commit, and every failure latches dead.
 #include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_capture.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -146,6 +147,13 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     if (in.local || in.cancelled)
         client_.set_setup_cancelled(control);
     SetupManifest m;
+    if (in.resident_reuse_only) {
+        WorkerCacheInfo cache;
+        if (!in.local || !in.resident || !client_.cache_status(cache,err) || !cache.complete || cache.session ||
+            cache.idle_remaining_ms!=kResidencyNoExpiry) {
+            err="diagnostic requires an idle complete forever-resident cache";client_.close();return false;
+        }
+    }
     m.nonce = (uint64_t) t0 ^ ((uint64_t) (uintptr_t) this << 32);
     m.model_id = model_digest(in.model_name, in.gu_type, in.d_type, in.n_layers, in.n_expert, in.n_embd, in.n_ff);
     std::strncpy(m.model_name, in.model_name, sizeof m.model_name - 1);
@@ -202,6 +210,9 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
         return true;
     };
     st_.cache_hit = client_.cache_hit();
+    if (in.resident_reuse_only && !st_.cache_hit) {
+        err="diagnostic requires a resident cache hit";return failed();
+    }
     st_.reused_bytes = client_.reused_bytes();
     st_.session = client_.session();
     for (int l = 0; !st_.cache_hit && l < in.n_layers; ++l) {
@@ -344,8 +355,14 @@ bool ExpertWorkerTier::post(int64_t layer, const float* x, const int32_t* ids, c
         req_.mask[(size_t) i] = 1;
         ++marked;
     }
-    if (marked == 0) return true;   // no CPU-owned work this window: no frame, no round trip
+    if (marked == 0 && !(capture_ && capture_->active())) return true;
     req_.activations.assign(x, x + (size_t) n_tok * n_embd_);
+    if (capture_ && capture_->active()) {
+        if (!capture_->begin(req_) || (!marked && !capture_->finish(nullptr))) {
+            err=capture_->error();lock.unlock();die(err);return false;
+        }
+    }
+    if (!marked) return true; // diagnostic zero-work event, still no network request
     reply_.partials.clear();
     posted_ = true;
     served_ = false;
@@ -445,6 +462,9 @@ bool ExpertWorkerTier::finish(std::string& err) {
         lock.unlock();
         die(err);
         return false;
+    }
+    if (capture_ && capture_->active() && !capture_->finish(reply_.partials.data())) {
+        err=capture_->error();lock.unlock();die(err);return false;
     }
     served_ = true;
     return true;

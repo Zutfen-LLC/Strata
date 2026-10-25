@@ -9,6 +9,7 @@
 #include "strata/kernels/cpu/expert_layout.hpp"
 #ifdef STRATA_NATIVE_EXPERTS
 #include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_capture.hpp"
 #include "strata/worker/cpu_group.hpp"
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
@@ -4654,7 +4655,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         if (d.worker != nullptr || d.cpu_group != nullptr) {
             bool any = false;
             for (int64_t i = 0; i < n; ++i) any = any || kind[i] == 3;
-            if (any) {
+            if (any || (d.worker && d.worker->capture() && d.worker->capture()->active())) {
                 if (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr) {
                     d.failed = true;
                     d.fail = "the remote CPU-expert worker needs the verifier's routing weights (remote_opt)";
@@ -4663,6 +4664,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 }
                 worker_mask.assign((size_t) n, 0);
                 for (int64_t i = 0; i < n; ++i) worker_mask[(size_t) i] = kind[i] == 3 ? 1 : 0;
+                if (d.worker && d.worker->capture())
+                    d.worker->capture()->slice((uint32_t)d.remote_opt->cur_token_begin());
                 const bool posted = d.cpu_group
                     ? d.cpu_group->post(d.layers,x_f,ids,d.remote_opt->cur_weights(),worker_mask.data(),(int)n_tok,(int)k,worker_error)
                     : d.worker->post(d.layers,x_f,ids,d.remote_opt->cur_weights(),worker_mask.data(),(int)n_tok,(int)k,worker_error);
