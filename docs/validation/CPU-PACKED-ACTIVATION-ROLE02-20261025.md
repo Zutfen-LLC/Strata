@@ -319,9 +319,10 @@ for target in ('strata_kernels_cpu','strata_expert_worker','strata_worker_tier',
             positions=[[i for i,line in enumerate(v) if line.startswith(key+' =')] for v in adjusted]
             assert all(len(v)==1 for v in positions)
             tokens=[shlex.split(adjusted[j][positions[j][0]].split('=',1)[1]) for j in (0,1)]
-            assert tokens[0].count(flag)==1 and tokens[1].count(flag)==0, 'unexpected warning delta'
             assert '-fPIC' in tokens[0] and '-fPIC' in tokens[1], 'PIC not restored exactly'
-            for j in (0,1): adjusted[j][positions[j][0]]=key+' = '+' '.join(t for t in tokens[j] if t!=flag)
+            if tokens[0]==tokens[1]: continue  # Exact equality is preferred; no exception is needed.
+            assert tokens[0].count(flag)==1 and tokens[1].count(flag)==0, 'unexpected warning delta'
+            for j in (0,1): adjusted[j][positions[j][0]]=key+' = '+shlex.join([t for t in tokens[j] if t!=flag])
             warnings.append(dict(target=target,assignment=key,retained_only=flag,classification='warning-only'))
     report[target]=dict(retained=original[0],proof=original[1],equal_except_listed_warnings=adjusted[0]==adjusted[1])
 with (c/'native-flags-comparison.json').open('x') as f: json.dump(dict(targets=report,warning_only=warnings),f,indent=2)
@@ -334,7 +335,7 @@ for language in ('C','CXX'):
         identities.append({k:re.search(r'^set\('+k+r'\s+(.*?)\)$',text,re.M).group(1) for k in (f'CMAKE_{language}_COMPILER',f'CMAKE_{language}_COMPILER_ID',f'CMAKE_{language}_COMPILER_VERSION')})
     assert identities[0]==identities[1], 'compiler identity changed'
 with (c/'compiler-identity.json').open('x') as f: json.dump(dict(C='equal',CXX='equal'),f)
-print('ROLE02_CORRECTED_FLAGS ok=1 pic=ggml-base warning_only=2 meaningful_native_assignments=equal')
+print(f'ROLE02_CORRECTED_FLAGS ok=1 pic=ggml-base warning_only={len(warnings)} meaningful_native_assignments=equal')
 PY
 timeout --signal=TERM --kill-after=5s 600s cmake --build "$NEW_BUILD" --target cpu_packed_activation_proof \
   --parallel 4 --verbose > "$CONTINUE_ROOT/incremental-build.log" 2>&1
@@ -363,3 +364,50 @@ published `PACKED_ROWS` block with `RUN_ROOT="$CONTINUE_ROOT"`, preserving its n
 `MANIFEST` and `LOCAL_ROOT` read-only. The corrected proof links to the new CONTINUE_ROOT/bin path, leaving the original ELF unchanged.
 Use separate `same-build` and `cross-build` labels. Cross-role SPA1/SRA1 `cmp` gates remain unchanged.
 Stop on any other flag difference, unexpected target compilation, resource refusal or bit mismatch.
+
+
+## Resume after the warning-equality guard
+
+The parent reports that the PIC reconfigure succeeded and the native flags now match exactly,
+including both warning flags. The earlier guard wrongly required a warning difference. No build,
+CTest or pack followed that reconfigure. The corrected gate above accepts exact equality first;
+otherwise only the two documented retained-only warnings may be removed for comparison. All
+PIC/numerical/compiler checks remain. This resume reuses the configured build and existing
+`bindings.sh`/`check-pack.sh`; it does not reconfigure, stage sources or relay dependencies.
+
+Export the same `RUN_ROOT`, `CPU_BUILD`, `VERIFIED_RETAINED_GGML02`, existing `CONTINUE_ROOT`, and
+`RESUME_DOC` pointing at a freshly retrieved copy of THIS published document. Run only this block.
+It extracts the corrected flag gate and the existing incremental-build/check-pack suffix. The old
+failure and reconfigure evidence stay intact. Actual resume execution is **NOT RUN** here.
+
+```sh
+# BEGIN PACKED_RESUME02
+set -euo pipefail
+umask 077
+: "${RUN_ROOT:?}" "${CPU_BUILD:?}" "${VERIFIED_RETAINED_GGML02:?}" "${CONTINUE_ROOT:?}" "${RESUME_DOC:?}"
+export RUN_ROOT CPU_BUILD VERIFIED_RETAINED_GGML02 CONTINUE_ROOT RESUME_DOC GIT_OPTIONAL_LOCKS=0
+test -f "$CONTINUE_ROOT/reconfigure.log"
+test -f "$CONTINUE_ROOT/restore-ggml-base-pic.cmake"
+test -f "$CONTINUE_ROOT/check-pack.sh"
+test ! -e "$CONTINUE_ROOT/incremental-build.log"
+test ! -e "$CONTINUE_ROOT/resume-warning-guard.sh"
+source "$CONTINUE_ROOT/bindings.sh"
+python3 -B - <<'PY'
+import os,pathlib
+c=pathlib.Path(os.environ['CONTINUE_ROOT'])
+s=pathlib.Path(os.environ['RESUME_DOC']).read_text()
+block=s.split('# BEGIN PACKED_CONTINUE02\n',1)[1].split('# END PACKED_CONTINUE02',1)[0]
+start="python3 -B - <<'PY'\nimport os,pathlib,re,json,shlex\nr="
+assert block.count(start)==1
+suffix=block[block.index(start):]
+assert "if tokens[0]==tokens[1]: continue" in suffix
+assert 'cmake -S ' not in suffix and 'cmake --build ' in suffix
+with (c/'resume-warning-guard.sh').open('x') as f: f.write('set -euo pipefail\numask 077\n'+suffix)
+PY
+bash "$CONTINUE_ROOT/resume-warning-guard.sh" > "$CONTINUE_ROOT/resume-warning-guard.log" 2>&1
+# END PACKED_RESUME02
+```
+
+Require the corrected flags gate, incremental build, CTest and pack to pass before the unchanged
+rows/artifact-comparison steps. An exact comparison reports `warning_only=0`. Stop on any failure;
+do not retry completed stages or relax any other flags.
