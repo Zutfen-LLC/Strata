@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import runpy
+import select
 import shutil
 import signal
 import socket
@@ -228,9 +229,87 @@ class HarnessTests(unittest.TestCase):
         fake = self.child('import sys; sys.stdin.read()')
         with patch.object(C, 'stop_owned_worker', side_effect=lambda: events.append('stopped-and-reaped')), \
              patch.object(C, 'port_free', side_effect=lambda *args: self.fail('pre-stop bind probe')), \
-             patch.object(C.subprocess, 'Popen', return_value=fake), patch.object(C, 'wait_session'), patch.object(driver, 'masks'):
+             patch.object(C.subprocess, 'Popen', return_value=fake), patch.object(C, 'wait_session'), patch.object(driver, 'masks') as apply:
             driver.launch_worker(dict(self.cfg, worker_root=str(C.W)), arm)
         self.assertEqual(events, ['stopped-and-reaped'])
+        apply.assert_called_once_with(arm, phase='setup')
+
+    def test_loader_inherits_setup_union_and_ready_restores_compute_masks(self):
+        cpus = sorted(os.sched_getaffinity(0))
+        if len(cpus) < 2: self.skipTest('affinity inheritance regression needs two allowed CPUs')
+        self.arm.update(caller_mask=[cpus[0]], pool_masks=[[cpus[1]]], engine_main_mask=[cpus[0]])
+        self.configure_control()
+        script = '''import json,os,sys,threading
+done=threading.Event()
+pool=[]
+for _ in range(2):
+    thread=threading.Thread(target=done.wait,daemon=True)
+    thread.start();pool.append(thread)
+print(json.dumps({'started':True}),flush=True)
+for line in sys.stdin:
+    if line.strip()=='SETUP':
+        masks=[]
+        def load(): masks.append(sorted(os.sched_getaffinity(0)))
+        loaders=[threading.Thread(target=load) for _ in range(4)]
+        for thread in loaders: thread.start()
+        for thread in loaders: thread.join()
+        print(json.dumps({'loaders':masks}),flush=True)
+    elif line.strip()=='COMPUTE':
+        print(json.dumps({'caller':sorted(os.sched_getaffinity(0)),
+                          'pool':sorted(os.sched_getaffinity(pool[0].native_id))}),flush=True)
+    elif line.strip()=='QUIT': break
+done.set()
+for thread in pool: thread.join()
+'''
+        argv = [sys.executable, '-B', '-u', '-c', script, '--workers', '1', '--local-load-threads', '4']
+        worker = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.children.append(worker); self.addCleanup(worker.stdout.close)
+        def read():
+            if not select.select([worker.stdout], [], [], 5)[0]: raise TimeoutError('synthetic worker response')
+            return json.loads(worker.stdout.readline())
+        def command(line):
+            worker.stdin.write(line + '\n'); worker.stdin.flush(); return read()
+        self.assertTrue(read()['started'])
+        C.cfg['worker_sha256'] = bundle.sha(sys.executable)
+        (C.W / 'identities.json').write_text(json.dumps({'worker': {'pid': worker.pid, 'argv': argv}}))
+        broker = self.child('import sys; sys.stdin.read()')
+        os.sched_setaffinity(broker.pid, set(self.arm['engine_main_mask']))
+        session = self.root / 'load'; session.mkdir()
+        state = dict(broker={'pid': broker.pid}, engine={'pid': broker.pid}, ready={'mono': 1},
+                     active=False, failure=None, phase='idle')
+        with patch.object(C, 'ident', side_effect=lambda row: row), patch.object(C, 'topology', return_value={}), \
+             patch.object(C.worker_control, 'exchange') as exchange:
+            driver.masks(self.arm, phase='setup')
+            loaded = command('SETUP')
+            self.assertEqual(loaded['loaders'], [cpus[:2]] * 4)
+            C.SESSIONS['load'] = broker
+            state['active'] = True; (session / 'state.json').write_text(json.dumps(state))
+            with patch.object(os, 'sched_setaffinity') as apply:
+                with self.assertRaisesRegex(RuntimeError, 'idle READY'): driver.masks(self.arm, 'load', phase='ready')
+            apply.assert_not_called()
+            state['active'] = False; (session / 'state.json').write_text(json.dumps(state))
+            driver.masks(self.arm, 'load', phase='ready')
+            self.assertEqual(command('COMPUTE'), {'caller': [cpus[0]], 'pool': [cpus[1]]})
+            self.assertEqual(sorted(os.sched_getaffinity(broker.pid)), self.arm['engine_main_mask'])
+        exchange.assert_not_called()
+        self.assertEqual(json.loads((self.root / 'load-affinity-setup.json').read_text())['phase'], 'setup')
+        self.assertEqual(json.loads((self.root / 'load-affinity.json').read_text())['phase'], 'ready')
+        worker.stdin.write('QUIT\n'); worker.stdin.flush(); self.assertEqual(worker.wait(timeout=5), 0)
+
+    def test_ready_affinity_precedes_gen_and_also_runs_for_zero_gen_load(self):
+        self.configure_control()
+        for indices in ([], [0]):
+            with self.subTest(indices=indices):
+                events = []
+                def ready(*args): events.append('READY'); return {'ready': {'mono': 2}, 'started_mono': 1}
+                def affinity(session, io, phase='compute'):
+                    self.assertEqual((session, io, phase), ('load', False, 'ready'))
+                    events.append('compute-mask'); raise RuntimeError('affinity refused before GEN')
+                with patch.object(C, 'healthy'), patch.object(C, 'wstatus', return_value={}), patch.object(C, 'gpu_idle'), \
+                     patch.object(C, 'launch_session', side_effect=ready), patch.object(C, 'rpc') as rpc:
+                    with self.assertRaisesRegex(RuntimeError, 'affinity refused'):
+                        C.run_arm('load', self.cfg, indices, affinity)
+                rpc.assert_not_called(); self.assertEqual(events, ['READY', 'compute-mask'])
 
     def test_unbound_worker_startup_failure_stops_and_reaps_owned_hierarchy(self):
         root, config, cfg, name = self.fake_runtime(worker=True)

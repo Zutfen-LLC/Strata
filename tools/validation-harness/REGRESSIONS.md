@@ -12,6 +12,12 @@ focused selection in [HERMES.md](HERMES.md).
 These are supplied Hermes results, not locally executed checks. All executable desktop checks remain
 **NOT RUN**; no historical model run validates these edits.
 
+Later live evidence supplied by the parent identified a harness affinity error: the worker had four
+loading lanes, but its caller and three transient loader helpers were all restricted to CPU0 while
+the inference pool was idle. The launcher had applied the singleton compute caller mask before SETUP.
+This is an affinity inheritance defect in the harness, not a failure to create product loader lanes.
+The phase correction and new synthetic cases remain **NOT RUN** locally.
+
 | Observed wrapper problem / static defect | Correction and synthetic case |
 | --- | --- |
 | Own guardian becomes zombie; bare `/proc/PID` remains | Retain Popen, wait/reap, save status before absence/probe; lost-ACK test asserts `waitpid` reports no child |
@@ -27,5 +33,6 @@ These are supplied Hermes results, not locally executed checks. All executable d
 | Engine/worker nonzero exit hidden by owner status 0 | Save child status and return failure from owner; fake engine/worker cases preserve exit code 7 |
 | Config variations require editing executable driver | Ordered config entries change counts/masks/requests/assets; derived configs leave pinned base bytes unchanged |
 | Reference/dependency mismatch discovered after requests | Validate reference indices, manifest/control endpoint and actual monitor environment before launch |
+| Caller pinned before SETUP makes loader helpers inherit one CPU | Use configured caller/pool CPU union for setup; after owned idle READY, restore final masks before GEN; real child/thread inheritance and phase-boundary cases |
 
 No malformed-source corpus, unrelated backend suite, model campaign or new supervisor is added.

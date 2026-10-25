@@ -321,6 +321,7 @@ def run_arm(arm, session_config, indices, affinity):
     healthy(); before = wstatus(); gpu_idle()
     atom(R / ('worker-before-' + arm + '.json'), before)
     st = launch_session(arm, session_config)
+    affinity(arm, False, phase='ready')  # loader helpers have joined; final compute masks precede every GEN
     startup = st['ready']['mono'] - st['started_mono']
     text = (R / arm / 'stderr.log').read_text()
     for marker in session_config['placement_markers']:
