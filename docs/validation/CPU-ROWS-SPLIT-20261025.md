@@ -27,13 +27,13 @@ Parent-provided private bindings, not public paths:
 
 | Role | Bindings |
 | --- | --- |
-| 02 | SRC; ENGINE_INPUT/WORKER_INPUT (validated optimized immutable ELFs); CURRENT_LOAD/CURRENT_LEGACY/CURRENT_ROWS (completed optimized local bundles); SPLIT_TEMPLATE (original passed peer/control config); A0_SUMMARY/A0_RAW0/A0_RAW1/A0_RAW2; LIVE_ROOT (new short disk-backed root); PEER_ROOT (new05 bundle root); WORKER05 (copied optimized ELF's05 path) |
+| 02 | SRC; ENGINE_INPUT/WORKER_INPUT (validated optimized immutable ELFs); CURRENT_LOAD/CURRENT_LEGACY/CURRENT_ROWS (completed optimized local bundles); SPLIT_TEMPLATE (original passed peer/control config); A0_SUMMARY/A0_RAW0/A0_RAW1/A0_RAW2; LIVE_ROOT (new short disk-backed root); PEER_ROOT (existing forced-command05 bundle path, recreated after verified stopped-root archival); WORKER05 (copied optimized ELF's05 path) |
 | 05 | SRC; PRIVATE_CONFIG (exact generated split source config transferred through existing channel); WORKER05; WORKER_SHA (mechanically copied full optimized hash); FIXTURE05 (retained compatible worker_local_test); FIXTURE_ROOT (new) |
 
 Both source checkouts stay at e145df6e. Fetch the documentation SHA, then source each marked block in
 the SAME bash session as in the [live recipe](CPU-REPLY-CODEC-LIVE-20261025.md). Do not transcribe blocks
 or pipe them into a child bash. Only named block selection and the private bindings vary.
-WORKER05 is the already copied ELF; FIXTURE_ROOT and PEER_ROOT are separate fresh directories, not
+WORKER05 is the already copied ELF; FIXTURE_ROOT and the recreated PEER_ROOT are separate directories, not
 the directory already created to receive that ELF. Require the retained FIXTURE05 executable; do not
 search for another build or silently compile a replacement.
 
@@ -52,10 +52,23 @@ cp -- "$ENGINE_INPUT" "$LIVE_ROOT/engine-optimized"
 cp -- "$WORKER_INPUT" "$LIVE_ROOT/worker-optimized"
 sha256sum "$LIVE_ROOT/engine-optimized" "$LIVE_ROOT/worker-optimized" > "$LIVE_ROOT/optimized.sha256"
 export STAGE_ROOT="$LIVE_ROOT/s1"
+# END SPLIT_PREP02
+```
+
+Run SPLIT_GENERATE02 after preparation. For the already completed ELF-copy phase, skip SPLIT_PREP02:
+verify optimized.sha256, export STAGE_ROOT=LIVE_ROOT/s1, and run only this block. An existing s1 must
+be empty; existing configs are never overwritten. Bind CURRENT_LOAD to the fresh recovered full worker.
+
+```sh
+# BEGIN SPLIT_GENERATE02
+set -euo pipefail
+sha256sum -c "$LIVE_ROOT/optimized.sha256"
 PYTHONPATH="$SRC/tools/validation-harness/harness" python3 -B - <<'PY'
 import copy,json,os,pathlib
 import bundle,run
-E=os.environ;r=pathlib.Path(E['LIVE_ROOT']);s=pathlib.Path(E['STAGE_ROOT']);s.mkdir(mode=0o700)
+E=os.environ;r=pathlib.Path(E['LIVE_ROOT']);s=pathlib.Path(E['STAGE_ROOT'])
+if s.exists():assert s.is_dir() and not any(s.iterdir()),'preserve existing config generation'
+else:s.mkdir(mode=0o700)
 oldload=bundle.verify(pathlib.Path(E['CURRENT_LOAD']));base=bundle.verify(pathlib.Path(E['CURRENT_ROWS']))
 assert bundle.sha(oldload['assets']['worker'])==bundle.sha(r/'worker-optimized')
 assert bundle.sha(base['assets']['engine'])==bundle.sha(r/'engine-optimized')
@@ -65,9 +78,8 @@ policy=base['arms'][0];assert policy['workers']==12 and policy['loader_threads']
 template=json.loads(pathlib.Path(E['SPLIT_TEMPLATE']).read_text())
 peers=copy.deepcopy(template['worker_peers']);assert len(peers)==2 and peers[0]['local'] and not peers[1].get('local')
 p=peers[1];remote=p['config'];previous=remote['run_root']
-old_owner=previous+'/worker_owner.py';old_cfg=previous+'/config.json'
-assert any(old_owner in x for x in p['control_argv']) and any(old_cfg in x for x in p['control_argv'])
-p['control_argv']=[x.replace(old_owner,E['PEER_ROOT']+'/worker_owner.py').replace(old_cfg,E['PEER_ROOT']+'/config.json') for x in p['control_argv']]
+assert E['PEER_ROOT']==previous,'forced-command guardian path must remain unchanged'
+# Preserve the exact SSH argv: authorized_keys supplies the fixed remote command, not an argv tail.
 p['asset_bindings']={'worker':'worker','manifest':'manifest'}
 remote['run_root']=E['PEER_ROOT'];remote['assets']['worker']=E['WORKER05'];remote['worker_argv'][0]='@worker'
 argv=remote['worker_argv'];assert argv.count('--local-manifest')==1;argv[argv.index('--local-manifest')+1]='@manifest'
@@ -104,15 +116,25 @@ for label,leaf,c in configs:
     path=s/(label+'.source.json')
     with path.open('x') as f:json.dump(c,f,indent=2)
 # Write sources first; stage L before its attached R, and F before RF, below.
-print('SPLIT_PREP02_PASS private_config',s/'COHORT.source.json','peer_name',p['name'])
+print('SPLIT_GENERATE02_PASS private_config',s/'COHORT.source.json','peer_name',p['name'])
 PY
-# END SPLIT_PREP02
+# END SPLIT_GENERATE02
 ```
 
-The only transport edits above substitute the two exact staged helper/config paths. Endpoint, SSH
-options, credentials/access policy and source allowlist remain unchanged. Unexpected control argv
-shape is a binding error: stop before any resident release, send its exact shape to the parent, and
-do not invent another route. The parent verifies the original peer budget against fresh live headroom.
+The approved SSH argv has no remote tail: authorized_keys forces the existing worker_owner.py/config
+path. Leave that argv, forced command, source restriction and credentials unchanged; never append a
+command or route around the restriction. Static comparison confirms worker_owner.py is byte-identical
+between9ed478e ande145df6e. This refreshes the same worker role/config, not its access or executable scope.
+
+Before staging on05, verify the original guardian/worker/monitor identities are no longer live, old
+stop/exit receipts show completed cleanup, the approved listener is free, and no process uses that
+root. Archive the ENTIRE stopped root by rename to a distinct absent backup path, preserving original
+bytes/permissions and absolute historical bindings. Do not edit/rebase the backup or change old/live
+permissions. Then bundle.stage can exclusively recreate the SAME forced path; it refuses an existing
+root. Verify source/staged guardian hashes and new worker/manifest pins before START. Only this role's
+binary/config/assets change; model files and all approved bindings/policy remain in place. If absence,
+ownership or writable parent cannot be established, stop/report rather than changing access settings.
+The parent verifies the original peer budget against fresh live headroom.
 
 ```sh
 # BEGIN SPLIT_STAGE05
