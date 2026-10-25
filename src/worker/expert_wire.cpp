@@ -1,7 +1,9 @@
 // src/worker/expert_wire.cpp - inferswarm #348: the frame codecs and the blob digest.
 #include "strata/worker/expert_wire.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace strata::worker {
@@ -19,6 +21,17 @@ void put_f32(std::vector<uint8_t>& o, float v) {
     uint32_t u;
     std::memcpy(&u, &v, 4);
     put_u32(o, u);
+}
+// Only float payload bytes use this path; headers/indices remain explicit little-endian fields.
+// memcpy tolerates the row schema's unaligned byte offsets and preserves every float bit.
+constexpr bool bulk_f32 = sizeof(float)==4 && std::numeric_limits<float>::is_iec559 &&
+                          std::endian::native==std::endian::little;
+void put_f32s(std::vector<uint8_t>& o,const float* values,size_t count) {
+    if constexpr(bulk_f32) {
+        if(!count)return;
+        const size_t at=o.size();o.resize(at+count*4);
+        std::memcpy(o.data()+at,values,count*4);
+    } else for(size_t i=0;i<count;++i)put_f32(o,values[i]);
 }
 
 struct Cursor {
@@ -42,6 +55,10 @@ struct Cursor {
     }
     float f32() { uint32_t u = u32(); float v; std::memcpy(&v, &u, 4); return v; }
     void bytes(void* dst, size_t k) { if (!take(k)) return; std::memcpy(dst, p + i, k); i += k; }
+    void f32s(float* dst,size_t count) {
+        if constexpr(bulk_f32) {if(count)bytes(dst,count*4);}
+        else for(size_t j=0;j<count;++j)dst[j]=f32();
+    }
 };
 
 }  // namespace
@@ -180,7 +197,7 @@ void encode_infer_ack(const InferReply& r, std::vector<uint8_t>& o) {
     o.reserve(16 + r.partials.size() * 4);
     put_u64(o, r.session);
     put_u64(o, r.sequence);
-    for (size_t i = 0; i < r.partials.size(); ++i) put_f32(o, r.partials[i]);
+    put_f32s(o,r.partials.data(),r.partials.size());
 }
 
 bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, InferReply& r) {
@@ -189,7 +206,7 @@ bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, In
     r.sequence = c.u64();
     if (n != 16 + (size_t) T * n_embd * 4) return false;
     r.partials.resize((size_t) T * n_embd);
-    for (size_t i = 0; i < r.partials.size(); ++i) r.partials[i] = c.f32();
+    c.f32s(r.partials.data(),r.partials.size());
     return true;
 }
 
@@ -204,9 +221,9 @@ bool encode_infer_rows_ack(const InferRequest& q,uint16_t H,const float* rows,st
     for(size_t i=0;i<entries;++i) {
         if(!q.mask[i])continue;
         put_u16(out,(uint16_t)i);
-        for(size_t h=0;h<H;++h) {
-            const float v=rows[i*H+h];if(!std::isfinite(v)){out.clear();return false;}put_f32(out,v);
-        }
+        const float* row=rows+i*H;
+        if(!std::all_of(row,row+H,[](float v){return std::isfinite(v);})) {out.clear();return false;}
+        put_f32s(out,row,H);
     }
     return true;
 }
@@ -223,7 +240,8 @@ bool decode_infer_rows_ack(const uint8_t* p,size_t n,uint16_t H,const InferReque
         if(!q.mask[i])continue;
         if(c.u16()!=i)return false; // exact ascending set, not merely unique in-range indices
         r.indices.push_back((uint16_t)i);
-        for(size_t h=0;h<H;++h){const float v=c.f32();if(!std::isfinite(v))return false;r.rows.push_back(v);}
+        const size_t at=r.rows.size();r.rows.resize(at+H);c.f32s(r.rows.data()+at,H);
+        if(!std::all_of(r.rows.begin()+at,r.rows.end(),[](float v){return std::isfinite(v);}))return false;
     }
     out=std::move(r);return true;
 }

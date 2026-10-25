@@ -16,10 +16,32 @@ The original full-model comparison at 9ed478e5543885e019205512f2450ab4336d393e h
 The parent reports that the split arm failed every frozen first-logit screen and was slower; the
 local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
 or raw-receipt inspection by this coding thread. **Do not rerun that campaign or either duplicate-arena
-diagnostic.** Only the model-free codec benchmark below is current. All other executable commands
+diagnostic.** Only the CPU codec checks and unchanged benchmark below are current. All other executable commands
 in this file are historical, not authorization to repeat prior work.
 
-### Current next step: model-free reply codec benchmark
+### Current next step: reply codec optimization checks
+
+Supplied Hermes model-free benchmark at `b9ab00c64dc283b57c62da047ccb355100d6762a`: focused
+check and all20 metrics/guards passed; no resident contact. Row means in nanoseconds:
+
+| Shape | Encode | Frame copy | Decode | Central prepare/reduce | Block copy |
+| --- | --- | --- | --- | --- | --- |
+| T1/K10/H2560 | 209560.433 | 4405.718 | 74335.216 | 17199.223 | 4333.788 |
+| T2/K10/H2560 | 419738.368 | 13175.709 | 146577.792 | 34366.481 | 11265.723 |
+
+Weighted encode/decode means were27713.943/3454.104ns at T1 and41409.729/6986.844ns at T2.
+These parent-supplied measurements target scalar codecs; they do not isolate the live critical path.
+The following narrow change copies contiguous float payload bytes only on4-byte IEEE754 little-endian
+hosts. Other hosts retain the previous scalar codec. Headers/indices, schema/API, finite/exact-set/size
+checks, buffer caps, native arithmetic and framing remain unchanged. No raw structs or unaligned float
+casts are used. New fixtures cover scalar-reference bytes, signed zero, subnormals/finite boundaries,
+unaligned input, legacy permitted nonfinite payloads and row nonfinite refusal. Portable fallback is
+statically inspected; execution here and cross-endian execution remain NOT RUN.
+
+The benchmark source MUST byte-match b9ab00c6 before measurement; counts/workload/timing are unchanged.
+Preserve its retained baseline binary/logs. Only focused CPU fixtures and the same benchmark are
+authorized here: no new production worker build, reload, engine build or model test. The complete
+current candidate resident stays untouched; never request shutdown timing.
 
 Supplied Hermes results at `e56a837bc75ff1076e8d4bff6a01c306d4b302b2`: after correcting an old-worker
 binding (which correctly refused row capability), LEGACY2 and ROWS2 both matched A0 FIRST logits
@@ -50,8 +72,10 @@ capacities and reports aggregate nanoseconds only. Explicit vector scratch capac
 16MiB (not an RSS/AS claim). A29s cooperative check and30s process alarm bound execution. Repeated
 identical buffers are cache-hot synthetic data, not the actual mask distribution or storage/LAN bandwidth.
 
-Execute ONLY on the retained CPU-fixture role. No model files, worker endpoint, resident stop/status,
-CUDA/native-OFF build, new listener, wrapper or driver is needed. Bind exactly these five variables:
+Execute ONLY on the retained CPU-fixture role. The existing focused fixtures use small synthetic native
+services on owned loopback sockets. The benchmark uses no sockets or expert kernels. No real model,
+resident endpoint/control, production worker/CUDA/native-OFF build, wrapper or driver is needed.
+Bind exactly these six variables using the verified bindings supplied privately with this handoff:
 
 | Binding | Required source |
 | --- | --- |
@@ -59,64 +83,91 @@ CUDA/native-OFF build, new listener, wrapper or driver is needed. Bind exactly t
 | SRC | Existing CPU-fixture source checkout recorded in the e56a837 CPU build receipt. |
 | CPU_BUILD | Its existing compatible CPU build cache from that SAME receipt; no fresh configure/cache. |
 | BENCH_OUTPUT | That cache's recorded runtime-output directory plus /cpu_row_codec_bench. |
+| PRIOR_ROOT | The retained b9ab00c6 benchmark artifact root, with its binary and benchmark.log; read-only. |
 | RUN_ROOT | New absolute disk-backed artifact directory for this benchmark; MUST NOT exist. |
 
 Missing binding/cache, dirty source, different CMake source binding or incompatible options means STOP
 and report the exact mismatch. Do not search for alternatives, install anything, alter build flags,
 borrow another cache or author a sequencing wrapper. The following is the complete command block;
 run once in bash after filling those bindings. It updates only the existing fixture checkout/cache and
-builds only the benchmark. Existing production ELFs and resident processes are not targets.
+builds only three fixture/benchmark targets. Existing production ELFs and resident processes are not
+targets. Fetch CANDIDATE once, then mechanically extract the marked block from that exact Git object
+using the accompanying command; do not transcribe/edit it or create another driver.
 
 ```sh
+# BEGIN CPU_REPLY_CODEC_CHECK
 set -euo pipefail
 umask 077
 : "${CANDIDATE:?exact published SHA}"
 : "${SRC:?source path from retained CPU receipt}"
 : "${CPU_BUILD:?cache path from same receipt}"
 : "${BENCH_OUTPUT:?recorded runtime-output directory plus /cpu_row_codec_bench}"
+: "${PRIOR_ROOT:?retained b9ab00c6 benchmark artifact root}"
 : "${RUN_ROOT:?fresh absolute disk-backed output root}"
-for p in "$SRC" "$CPU_BUILD" "$BENCH_OUTPUT" "$RUN_ROOT"; do test "${p#/}" != "$p"; done
+for p in "$SRC" "$CPU_BUILD" "$BENCH_OUTPUT" "$PRIOR_ROOT" "$RUN_ROOT"; do test "${p#/}" != "$p"; done
 test "${#CANDIDATE}" = 40
 test ! -e "$RUN_ROOT"
 test -f "$CPU_BUILD/CMakeCache.txt"
 test -z "$(git -C "$SRC" status --porcelain)"
 test "$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$CPU_BUILD/CMakeCache.txt")" = "$SRC"
-rg -q '^STRATA_BUILD_TESTS:BOOL=ON$' "$CPU_BUILD/CMakeCache.txt"
-rg -q '^STRATA_ENABLE_CUDA:BOOL=OFF$' "$CPU_BUILD/CMakeCache.txt"
-git -C "$SRC" fetch origin "$CANDIDATE"
+grep -Eq '^STRATA_BUILD_TESTS:BOOL=ON$' "$CPU_BUILD/CMakeCache.txt"
+grep -Eq '^STRATA_ENABLE_CUDA:BOOL=OFF$' "$CPU_BUILD/CMakeCache.txt"
+test -x "$PRIOR_ROOT/cpu_row_codec_bench"
+grep -Eq '^CPU_ROW_CODEC_DONE ok=1 check_only=0 ' "$PRIOR_ROOT/benchmark.log"
+git -C "$SRC" cat-file -e "$CANDIDATE^{commit}"
 git -C "$SRC" checkout --detach "$CANDIDATE"
 test "$(git -C "$SRC" rev-parse HEAD)" = "$CANDIDATE"
 test -z "$(git -C "$SRC" status --porcelain)"
 mkdir -m 700 "$RUN_ROOT"
 git -C "$SRC" rev-parse HEAD > "$RUN_ROOT/source-sha.txt"
+cp -- "$PRIOR_ROOT/cpu_row_codec_bench" "$RUN_ROOT/prior-cpu_row_codec_bench"
+cp -- "$PRIOR_ROOT/benchmark.log" "$RUN_ROOT/prior-benchmark.log"
+git -C "$SRC" show b9ab00c64dc283b57c62da047ccb355100d6762a:tests/worker/cpu_row_codec_bench.cpp > "$RUN_ROOT/benchmark-source-baseline.cpp"
+cmp -- "$RUN_ROOT/benchmark-source-baseline.cpp" "$SRC/tests/worker/cpu_row_codec_bench.cpp"
 timeout --signal=TERM --kill-after=5s 60s cmake -S "$SRC" -B "$CPU_BUILD" -DFETCHCONTENT_FULLY_DISCONNECTED=ON > "$RUN_ROOT/configure.log" 2>&1
-timeout --signal=TERM --kill-after=5s 180s cmake --build "$CPU_BUILD" --target cpu_row_codec_bench --parallel 4 > "$RUN_ROOT/build.log" 2>&1
+timeout --signal=TERM --kill-after=5s 180s cmake --build "$CPU_BUILD" --target expert_worker_test cpu_worker_group_test cpu_row_codec_bench --parallel 4 > "$RUN_ROOT/build.log" 2>&1
 test -x "$BENCH_OUTPUT"
 cp -- "$BENCH_OUTPUT" "$RUN_ROOT/cpu_row_codec_bench"
-sha256sum "$BENCH_OUTPUT" "$RUN_ROOT/cpu_row_codec_bench" > "$RUN_ROOT/binary-sha256.txt"
-timeout --signal=TERM --kill-after=5s 35s ctest --test-dir "$CPU_BUILD" --no-tests=error -V -R '^cpu_row_codec_bench_check$' > "$RUN_ROOT/check.log" 2>&1
-rg -q 'CPU_ROW_CODEC_DONE ok=1 check_only=1 ' "$RUN_ROOT/check.log"
+sha256sum "$RUN_ROOT/prior-cpu_row_codec_bench" "$BENCH_OUTPUT" "$RUN_ROOT/cpu_row_codec_bench" > "$RUN_ROOT/binary-sha256.txt"
+timeout --signal=TERM --kill-after=5s 240s ctest --test-dir "$CPU_BUILD" --no-tests=error -V -R '^(expert_worker_test|cpu_worker_group_test|cpu_row_codec_bench_check)$' > "$RUN_ROOT/check.log" 2>&1
+grep -Eq 'expert_worker_test: all checks passed' "$RUN_ROOT/check.log"
+grep -Eq 'CPU_WORKER_GROUP failures=0 models=0' "$RUN_ROOT/check.log"
+grep -Eq 'CPU_ROW_CODEC_DONE ok=1 check_only=1 ' "$RUN_ROOT/check.log"
+test "$(wc -c < "$RUN_ROOT/check.log")" -le 1048576
 timeout --signal=TERM --kill-after=5s 32s "$RUN_ROOT/cpu_row_codec_bench" > "$RUN_ROOT/benchmark.log" 2>&1
-test "$(rg -c '^CPU_ROW_CODEC T=' "$RUN_ROOT/benchmark.log")" = 20
+test "$(grep -Ec '^CPU_ROW_CODEC T=' "$RUN_ROOT/benchmark.log")" = 20
 for t in 1 2; do
   for mode in weighted rows; do
     for phase in encode frame_copy decode central_prepare_reduce block_copy; do
-      test "$(rg -c "^CPU_ROW_CODEC T=$t K=10 H=2560 entries=$((t*10)) mode=$mode phase=$phase warmup=64 measured=4096 " "$RUN_ROOT/benchmark.log")" = 1
+      test "$(grep -Ec "^CPU_ROW_CODEC T=$t K=10 H=2560 entries=$((t*10)) mode=$mode phase=$phase warmup=64 measured=4096 " "$RUN_ROOT/benchmark.log")" = 1
     done
   done
 done
-rg -q '^CPU_ROW_CODEC_DONE ok=1 check_only=0 scratch_limit_bytes=16777216 deadline_seconds=30 model=0 sockets=0 expert_kernels=0 phases_independent=1$' "$RUN_ROOT/benchmark.log"
+grep -Eq '^CPU_ROW_CODEC_DONE ok=1 check_only=0 scratch_limit_bytes=16777216 deadline_seconds=30 model=0 sockets=0 expert_kernels=0 phases_independent=1$' "$RUN_ROOT/benchmark.log"
 test "$(wc -c < "$RUN_ROOT/benchmark.log")" -le 65536
 cat "$RUN_ROOT/binary-sha256.txt" "$RUN_ROOT/benchmark.log"
+# END CPU_REPLY_CODEC_CHECK
+```
+
+With the six bindings exported, execute that exact block mechanically (bash, no manual transcription):
+
+```sh
+set -euo pipefail
+test ! -e "$RUN_ROOT"
+git -C "$SRC" fetch origin "$CANDIDATE"
+git -C "$SRC" show "$CANDIDATE:docs/validation/CPU-FIXED-GROUP-20261025.md" |
+  sed -n '/^# BEGIN CPU_REPLY_CODEC_CHECK$/,/^# END CPU_REPLY_CODEC_CHECK$/p' | bash
+test -f "$RUN_ROOT/benchmark.log"
+grep -Eq '^CPU_ROW_CODEC_DONE ok=1 check_only=0 ' "$RUN_ROOT/benchmark.log"
 ```
 
 Any nonzero command, alarm/timeout, CPU_ROW_CODEC_FAIL, missing/duplicate metric or changed capacity is
 a failed measurement: preserve the fresh output, report it, and stop without automatic retry. Do not
-lengthen counts/deadlines, alter affinities or investigate the resident. Expected check: one passing
-cpu_row_codec_bench_check and DONE check_only=1. Expected benchmark: exactly20 metric lines and DONE
+lengthen counts/deadlines, alter affinities or investigate the resident. Expected checks: exactly three
+passing CTests, including both worker fixtures and DONE check_only=1. Expected benchmark: exactly20 metric lines and DONE
 check_only=0, no failures. Return those small logs/pins and per-phase weighted/rows means. Compare codec
 and frame-copy costs with the block-copy reference, without claiming that their sum equals the live
-decode delta. No latency pass threshold or optimization is introduced. Authored checks: NOT RUN locally.
+decode delta. No latency pass threshold is introduced. Authored checks: NOT RUN locally.
 
 ### Completed batched entry rows, one candidate full resident (historical commands)
 

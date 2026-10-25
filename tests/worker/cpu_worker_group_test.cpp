@@ -273,9 +273,44 @@ void row_capability() {
     check(!c.infer_rows(q,rows,err) && err=="entry-row capability was not negotiated","capability cleared on reconnect; old ACK accepted");
     require(c.status(after,err),err);check(before.requests==after.requests,"unnegotiated call sends no inference frame");
 }
+void float_codec_edges() {
+    // Independent scalar LE words cover signed zero, subnormals, normal boundaries and max finite.
+    const std::vector<uint32_t> words={0,0x80000000u,1,0x80000001u,0x007fffffu,0x00800000u,
+                                     0x3f800000u,0xbf800000u,0x7f7fffffu,0xff7fffffu};
+    const uint16_t H=(uint16_t)words.size();
+    InferRequest q;q.session=17;q.sequence=19;q.T=1;q.K=2;q.mask={0,7};
+    std::vector<float> rows(2*H);const uint32_t nan=0x7fc12345u;
+    for(size_t i=0;i<H;++i){std::memcpy(&rows[i],&nan,4);std::memcpy(&rows[H+i],&words[i],4);}
+    std::vector<uint8_t> bytes,expected;
+    require(encode_infer_rows_ack(q,H,rows.data(),bytes),"finite selected rows ignore unselected NaNs");
+    put<uint64_t>(expected,q.session);put<uint64_t>(expected,q.sequence);put<uint16_t>(expected,1);
+    put<uint16_t>(expected,1);put<uint16_t>(expected,1);for(auto w:words)put<uint32_t>(expected,w);
+    check(bytes==expected,"bulk row bytes equal independent scalar edge reference");
+    std::vector<uint8_t> unaligned(1,0);unaligned.insert(unaligned.end(),bytes.begin(),bytes.end());
+    EntryRowsReply reply;require(decode_infer_rows_ack(unaligned.data()+1,bytes.size(),H,q,reply),"unaligned row decode");
+    check(reply.indices==std::vector<uint16_t>{1} && !std::memcmp(reply.rows.data(),rows.data()+H,H*4),
+          "unaligned row decoding preserves all finite edge bits");
+    for(uint32_t bad:{0x7f800000u,0xff800000u,0x7fc12345u}) {
+        auto corrupt=bytes;for(int b=0;b<4;++b)corrupt[22+4*(H-1)+b]=(uint8_t)(bad>>(8*b));
+        check(!decode_infer_rows_ack(corrupt.data(),corrupt.size(),H,q,reply) && reply.rows.empty() && reply.indices.empty(),
+              "bulk row decoding still refuses infinity/NaN without output");
+        std::memcpy(&rows.back(),&bad,4);
+        check(!encode_infer_rows_ack(q,H,rows.data(),corrupt) && corrupt.empty(),"bulk row encoding still refuses infinity/NaN");
+    }
+    InferReply legacy;legacy.session=q.session;legacy.sequence=q.sequence;
+    auto legacy_words=words;legacy_words.insert(legacy_words.end(),{0x7f800000u,0xff800000u,nan});
+    legacy.partials.resize(legacy_words.size());std::memcpy(legacy.partials.data(),legacy_words.data(),legacy_words.size()*4);
+    expected.clear();put<uint64_t>(expected,q.session);put<uint64_t>(expected,q.sequence);
+    for(auto w:legacy_words)put<uint32_t>(expected,w);
+    encode_infer_ack(legacy,bytes);check(bytes==expected,"legacy reply edge bytes including permitted nonfinite payloads unchanged");
+    unaligned.assign(1,0);unaligned.insert(unaligned.end(),bytes.begin(),bytes.end());InferReply decoded;
+    require(decode_infer_ack(unaligned.data()+1,bytes.size(),(uint16_t)legacy_words.size(),1,decoded),"unaligned legacy decode");
+    check(!std::memcmp(decoded.partials.data(),legacy.partials.data(),legacy_words.size()*4),"legacy float edge payload bits unchanged");
+    check(!decode_infer_ack(bytes.data(),bytes.size()-1,(uint16_t)legacy_words.size(),1,decoded),"legacy truncated reply refused");
+}
 }
 int main() {
-    try {row_codec();row_capability();native();native(true);setup_failure_and_zero_work();setup_failure_and_zero_work(true);slow_second_setup();
+    try {row_codec();float_codec_edges();row_capability();native();native(true);setup_failure_and_zero_work();setup_failure_and_zero_work(true);slow_second_setup();
         for(int mode=0;mode<5;++mode)controlled(mode);for(int mode=0;mode<6;++mode)controlled(mode,true);}
     catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}
     std::printf("CPU_WORKER_GROUP failures=%d models=0\n",failures);return failures?1:0;
