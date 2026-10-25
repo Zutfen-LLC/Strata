@@ -15,7 +15,7 @@ The original full-model comparison at 9ed478e5543885e019205512f2450ab4336d393e h
 The parent reports that the split arm failed every frozen first-logit screen and was slower; the
 local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
 or raw-receipt inspection by this coding thread. **Do not rerun that campaign or either duplicate-arena
-diagnostic.** Only the live-engine one-member group procedure below is current. All other executable commands
+diagnostic.** Only the record0 real-weight microfixture procedure below is current. All other executable commands
 in this file are historical, not authorization to repeat prior work.
 
 ### Current status: resident-monitor incident; duplicate-arena diagnostics withdrawn
@@ -54,7 +54,108 @@ changes or another diagnostic load. Parent owns restoring only the normal full r
 loaders/twelve inference workers and the unchanged original guard policy. This coding task launches
 nothing and makes no zero-swap or timing-qualification claim.
 
-### Current next step: one warm live-engine group request
+### Current next step: record0 real-weight microfixture, no full resident connection
+
+The parent supplies a completed G1 PASS using the retained engine/worker and `ddb0d652` helpers:
+one original prompt0 GEN256 completed213 tokens and102724 entries, exactly A0. Its993280B raw-F32
+first-logit file was bit-identical to A0; all reported error metrics were0. READY reported one group
+member, cache hit/reused116135731200B and zero setup local/network bytes. The original full arena
+remained allocation1 with zero unload/expiry/swap, and engine owners were reaped. Staging was fixed
+through four existing `@asset` tokens, without source change. A post-summary wrapper KeyError was
+corrected read-only, without rerun. These are supplied Hermes results, not execution or private
+receipt inspection by this coding thread. They do not clear the original failed split comparison.
+
+The remaining unconfirmed seam is actual subset loading/lookup or two-peer integration. Source
+uses global `(layer, expert)` keys for loading, digest verification and inference lookup; no static
+mapping defect was found. The new mode of the existing `cpu_group_numeric_diagnostic` fixes the next
+input to captured record0, layer0/T2/K10. It derives peer ownership from the COMPLETE original CPU
+bitmap before filtering to that record's referenced experts. IDs are never renumbered.
+
+The independent reference reads one real Q8 blob at a time, verifies its trusted global-ID digest,
+evaluates native gate/up/down rows without the worker pool, and reduces signed weighted rows in
+frame-entry order. Its full result must bitmatch the captured reply before any child is created.
+Only then do two owned loopback workers load their disjoint selected IDs through the original
+manifest/local source path. Each actual peer must bitmatch its independent reference; the real
+`ExpertWorkerGroup` must bitmatch the manual peer sum. The first READY peer uses the existing setup
+keepalive while the second loads; both exchanges drain before comparisons. Group setup reuses the
+small subsets, with no reload. No worker protocol, production arithmetic, capture format, engine,
+GEN, remote endpoint, full resident connection or new sequencing framework is added.
+
+Bounds are enforced in code: at most20 distinct selected experts, each5222400B, and104448000B
+(99.61MiB) TOTAL arena payload across BOTH children. Each child budget is its exact assigned payload
+rounded up only to MiB. Reference payload staging is one5222400B blob, released before children;
+row scratch is204800B plus bounded native packing/hidden buffers and capture/manifest storage.
+The existing guards each cap parent+one-child RSS at1GiB, so combined owned RSS is conservatively
+bounded by2GiB. They require MemAvailable>=8GiB, owned VmSwap0, finite-cgroup headroom and unchanged
+host/cgroup OOM counters, with a180s work deadline. Each child log is exclusive0600 and capped1MiB;
+the output directory is new/private. Cleanup signals/reaps only positive retained child PIDs, including
+failure during second-child startup. No full or half-complement arena is loaded or replaced.
+
+On the CPU fixture host, retain the existing cache/compiler/native options. Build only the new
+focused test and existing diagnostic target; no CUDA/native-OFF/product rebuild is requested:
+
+```sh
+cmake -S "$SRC" -B "$CPU_BUILD"
+cmake --build "$CPU_BUILD" --target cpu_capture_micro_test cpu_group_numeric_diagnostic --parallel 4
+ctest --test-dir "$CPU_BUILD" --output-on-failure -R '^cpu_capture_micro_test$'
+```
+
+The small Q8 regression checks original ownership despite skipped GPU/unselected IDs, shape/ownership
+and single-active-peer refusals, digest/full-reference failure before children, positive-owned cleanup
+when the second executable exits before listening, and successful peer/group bits. Its success case
+delays second setup11s, beyond the first peer's10s idle deadline. Fixture payload files are larger
+than tiny stdout limits: bound test output through the retained drain/timeout guard rather than a
+small inherited file-size limit. All executable checks are **NOT RUN on Geekom/Valinor**.
+
+After that test passes, parent selects runtime on the CPU fixture host, preserving the separate
+full resident host. Bind these existing inputs; do not copy a full model:
+
+| Binding | Required input |
+| --- | --- |
+| `DIAGNOSTIC` | New CPU `cpu_group_numeric_diagnostic`, exact candidate SHA and mechanically verified executable hash |
+| `WORKER_A`, `WORKER_B` | Retained compatible original peer0/peer1 worker ELFs, already used by the earlier same-host diagnostic; verify their complete hashes (reported prefixes `e9f25fa5` / `3b41fa8b`), not newly built fixture workers |
+| `CAPTURE` | Existing37544692B capture, SHA256 `218bd2e9210ea7cbe641e3e09d7be5f060c5691d630ee6357935eb240f983208`; transfer only this file if absent |
+| `MANIFEST` | Original trusted local manifest, original full hash, at most8MiB; identity/index must match the capture |
+| `LOCAL_ROOT` | Existing valid local Q8 assets on the fixture host; source files are read-only and not staged/copied |
+| `NEW_MICRO_OUTPUT` | New absolute directory beneath the existing disk-backed private run root, not tmpfs; parent directory already exists |
+
+The two ELF sizes and actual manifest size come from their retained file receipts, not guesses.
+Before weight reads, bounded `MICRO_RANGE` lines list every selected global ID, role, source basename,
+exact offset/length and expected logical source-file size (at most60 ranges, total<=104448000B).
+If an existing source file is absent/invalid, the mode refuses before workers. Return those precise
+missing bindings and ranges; do NOT transfer entire shards or synthesize altered manifests. The
+current `LocalSource` requires the original manifest's filenames/sizes; sparse-range staging is not
+implemented by this change. Reuse the valid assets from the earlier subset run where available.
+
+Run once under the retained external owned-process/output guard, after live fixture-host headroom,
+cgroup, swap and OOM checks. Do not infer safety from MemAvailable alone. No port/PID of the original
+full resident is accepted by this CLI:
+
+```sh
+timeout --signal=TERM --kill-after=10s 240s "$DIAGNOSTIC" \
+  --worker-a "$WORKER_A" --worker-b "$WORKER_B" \
+  --capture-record0 "$CAPTURE" "$MANIFEST" "$LOCAL_ROOT" "$NEW_MICRO_OUTPUT"
+```
+
+Require the independent-full/capture bit gate with `workers_started=0`, then both actual-peer bit
+gates and actual-group/manual bit gate. Final `CPU_CAPTURE_MICRO` must report ok/reference/peer0/
+peer1/group/owned_reaped all1, payload<=104448000, GEN0 and full_endpoint_connections0. Each child
+must have one arena allocation, exactly its selected loaded/verified bytes, no upload/failure/unload/
+expiry and two INFER requests (manual then group). Return source/binary/manifest/capture pins,
+selected IDs/ranges and original/micro slot receipts, all gates, descriptive regrouping error,
+resource/OOM and owned-child cleanup receipts. `peak_owned_rss_bound` sums two independently sampled
+parent+child maxima; it is a conservative bound, not a simultaneous RSS measurement. Preserve every
+failure and do not repeat automatically. No inference performance claim is made.
+
+Interpret failures in order: reference mismatch stops before workers and questions input/weight/kernel
+alignment; a peer mismatch witnesses selected-subset loading/execution; matching peers with a group
+mismatch witnesses the group path. An all-pass result covers only these selected real inputs/weights
+and local two-peer integration. `MICRO_SLOT` exposes the original split rank and the smaller fixture
+rank: full-size compacted slot ranks, the remaining layers, remote state/network behavior, live
+two-peer engine integration and closed-loop amplification remain untested. Frozen screens and the
+original failed split verdict stay unchanged. The withdrawn full/half duplicate-arena tests stay withdrawn.
+
+### Completed G1 live-engine request — supplied PASS; historical commands
 
 The parent supplies a preliminary PASS for the `b224ef87f73d5da9724cb1f8f2a87859fc4adfbd`
 single-member saved replay in5s; its full receipt is pending. Do not repeat it. The next discriminator

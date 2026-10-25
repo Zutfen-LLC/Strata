@@ -2,6 +2,7 @@
 #include "local_fixture.hpp"
 #include "strata/worker/cpu_group.hpp"
 #include "diagnostic_child.hpp"
+#include "cpu_capture_micro.hpp"
 #include <algorithm>
 #include <cmath>
 #include <fcntl.h>
@@ -237,8 +238,20 @@ void exercise(const char* a_path, const char* b_path) {
 }
 }
 int main(int argc, char** argv) {
+    if(argc==10 && std::string(argv[1])=="--worker-a" && std::string(argv[3])=="--worker-b" &&
+       std::string(argv[5])=="--capture-record0"){
+        CpuCaptureFile f;LocalManifest local;std::string err;strata::worker::diagnostic::MicroReport result;
+        const bool decoded=std::filesystem::path(argv[6]).is_absolute() && std::filesystem::path(argv[7]).is_absolute() &&
+            read_cpu_capture(argv[6],f,err) && read_local_manifest(argv[7],local,err);
+        const bool ok=decoded && strata::worker::diagnostic::run_capture_micro(f,local,argv[7],argv[8],argv[9],argv[2],argv[4],result,err);
+        if(!ok)std::fprintf(stderr,"MICRO failure: %s\n",err.c_str());
+        std::printf("CPU_CAPTURE_MICRO ok=%d reference=%d peer0=%d peer1=%d group=%d payload=%llu owned_reaped=%d peak_owned_rss_bound=%llu min_available=%llu GEN=0 full_endpoint_connections=0\n",
+            ok,result.reference,result.peer[0],result.peer[1],result.group,(unsigned long long)result.payload,result.reaped,
+            (unsigned long long)result.peak_rss,(unsigned long long)result.min_available);return ok?0:1;
+    }
     if (argc != 5 || std::string(argv[1]) != "--worker-a" || std::string(argv[3]) != "--worker-b") {
         std::fprintf(stderr, "usage: cpu_group_numeric_diagnostic --worker-a /absolute/worker --worker-b /absolute/worker\n");
+        std::fprintf(stderr, "  optional: --capture-record0 /absolute/capture /absolute/manifest /absolute/local-root /absolute/new-output-root\n");
         return 2;
     }
     try { exercise(argv[2], argv[4]); }
