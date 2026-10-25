@@ -11,6 +11,87 @@ one-endpoint route stay unchanged. It does not add discovery, rebalancing or a n
 
 ## Prerequisites and focused checks
 
+The original full-model comparison at 9ed478e5543885e019205512f2450ab4336d393e has completed.
+The parent reports that the split arm failed every frozen first-logit screen and was slower; the
+local baseline/restore first logits were bit-identical. This is supplied evidence, not execution
+or raw-receipt inspection by this coding thread. **Do not rerun that campaign.** The next action
+is only the bounded diagnostic below. The original commands later in this file remain historical
+procedure, not authorization for another model load.
+
+### Current next step: K10/T1 synthetic numerical discriminator
+
+The parent reports identical ggml source bytes at the pinned revision, matching effective compiler
+flags, and a fixed retained K2/T8 fixture passing both retained worker ELFs bitwise (20,480 floats).
+Those results narrow the search but do not establish equality at every shape or explain the model
+failure. This follow-up changes only tests, the fixture generator and the manual build target.
+Production routing, arithmetic, protocol and all numerical thresholds are unchanged.
+
+Use the existing CPU/native-ON build on the designated fixture host. Bind the full new diagnostic
+source SHA as CANDIDATE, and verify clean source as below. WORKER_A and WORKER_B are existing,
+compatible, preserved worker ELFs from the failed comparison. Keep their exact hashes and the same
+fixed reference build/runtime environment in the private receipt. Do not rebuild or replace those
+workers. No GPU or model assets are needed.
+
+~~~sh
+test "$(git -C "$SRC" rev-parse HEAD)" = "$CANDIDATE"
+test -z "$(git -C "$SRC" status --porcelain)"
+cmake --build "$CPU_BUILD" --parallel 2 --target cpu_group_numeric_diagnostic worker_local_test
+~~~
+
+There is deliberately **no CTest entry** for the manual diagnostic: its two ELF inputs must be
+explicit. Under the existing owned process-tree/RAM/output guard, run these once, in order, with a
+180-second wall cap and 2 GiB RAM cap per invocation (no automatic repeat):
+
+~~~sh
+OMP_NUM_THREADS=2 "$CPU_BUILD/worker_local_test" --binary "$WORKER_A" --load-threads 4
+OMP_NUM_THREADS=2 "$CPU_BUILD/cpu_group_numeric_diagnostic" --worker-a "$WORKER_A" --worker-b "$WORKER_B"
+~~~
+
+The first invocation checks the shared generator's unchanged default two-expert fixture after its
+bounded extension; it does not repeat both earlier cross-binary checks. The new diagnostic constructs
+32 Q8_0 experts per layer at H2560/FF640 across two layers, with only20 CPU experts per layer. Every
+T1 request has10 **distinct** IDs. Full synthetic CPU arenas are208,896,000 B per worker; each split
+subset is104,448,000 B. The generated fixture payload is334,233,600 B, not a model-sized asset.
+Each child has a256MiB arena budget,12 inference workers and4 loader threads; only fresh loopback
+port0 children can be controlled. Output is a fixed number of metric lines; child logs cap at1MiB
+each. Successful completion prints child reaping and zero real-model loads. Failure cleanup signals
+only the children it forked, with bounded TERM then KILL/reap. Leave the real resident worker alone.
+Do not set STRATA_WORKER_FIXTURE_KEEP; normal exit removes the synthetic files.
+
+Seven fixed cases cover dense/shifted routing, sparse CPU/GPU ownership, work on each peer alone,
+zero CPU work, and arithmetic cancellation. IDs0–9 have distinct seeded weights; IDs10–31 contain
+adjacent identical expert pairs so the signed cancellation case has a known small residual.
+Signed weights are a deliberate numerical stress case, not a router-policy change or normalization.
+The diagnostic also checks copied queued inputs, inactive-peer INFER counts, cancellation before
+connection, and valid reuse afterward. It does not claim to test in-flight native-kernel cancellation.
+
+The comparisons run in this order:
+
+| Stage label | What a failure distinguishes |
+| --- | --- |
+| common-pool-vs-independent-rows | Native twelve-worker row execution differs from independent single-entry native calls |
+| peerN-batch-vs-common-rows | Changing the native batch membership changes a routed row, before weighting/reduction |
+| binaryA/B-full, binaryA/B-maskedN, binaryA-vs-binaryB-full | Real retained worker arithmetic/masking differs at K10/T1 or from the common reference |
+| subsetA/B-vs-common-batch-mask | Actual subset ownership/setup/slot mapping differs from a full-arena masked batch |
+| group-vs-manual-peers | The production group differs from independent concurrent tier posts and configuration-order addition |
+| group-vs-grouped-common-reference | The combined real group differs from the same grouping over independent native rows |
+| reference-grouping-vs-unsplit, group-vs-unsplit, group-vs-actual-fullA | Quantifies reference/actual regrouping against both independent and actual full-worker baselines |
+
+All row, masked-reply and same-grouped-reference gates are **bitwise**. Only grouping versus unsplit
+uses the already-published 1e-4 + 4e-6*sum_abs_contributions envelope. Metrics report maximum
+absolute/relative error, relative L2 (norm floor1e-30), RMSE, first differing index and hexadecimal
+float values. Relative errors can be large for the deliberately near-zero cancellation result;
+the fixed absolute/scale gate remains decisive. Non-finite results fail. A bits=0 result at an
+unsplit comparison is reported even when its fixed envelope passes; do not hide it as bit identity.
+
+Return the first differing stage and all fixed-case metrics, exit status, duration/peak memory,
+exact diagnostic/worker hashes, and child/file cleanup. An all-pass result narrows the failure to
+inputs or behavior absent from this fixture; it does **not** clear the model's failed logit screen.
+Do not tune thresholds, rerun models, add seeds or start another campaign. Broader tracing needs a
+separate decision after these results. **This diagnostic is authored and NOT RUN on the desktop.**
+
+### Historical original validation procedure — do not repeat
+
 Parent/Hermes owns execution and source/binary pins. Keep the healthy existing full worker on02
 resident until all build/fixture gates pass. Do not probe, unload, stop or replace it for preflight.
 Use retained caches/assets and existing build directories. Do not reconfigure policies or install
