@@ -320,12 +320,12 @@ int main(int argc, char** argv) {
     }
     std::signal(SIGALRM, SIG_DFL); ::alarm(180);
     try {
-        deadline();
         const char* lz4 = check_env ? std::getenv("STRATA_BENCH_LZ4_SO") : argv[check_only ? 2 : 5];
         const char* extra = check_env ? std::getenv("STRATA_BENCH_EXTRA_SO") : argv[check_only ? 3 : 6];
         if (check_env && (!lz4 || !extra)) {
             std::puts("CPU_REPLY_COMPRESSION_CHECK skipped: explicit STRATA_BENCH_LZ4_SO/STRATA_BENCH_EXTRA_SO required"); return 77;
         }
+        deadline(); // Unconfigured general CTest runs skip before Linux resource admission.
         auto setup = Clock::now(); Codecs codecs(lz4, extra);
         std::printf("COMPRESSION_CANDIDATE codec=snappy status=%s performance_verdict=NONE\n", codecs.snappy ? "AVAILABLE" : "SKIPPED_NO_BINDING");
         std::printf("COMPRESSION_SETUP libraries_ns=%.0f lz4=11000 extra=%s warmups=16 iterations=64 header_allowance=8 link_bps=1000000000\n", ns(setup), codecs.name());
