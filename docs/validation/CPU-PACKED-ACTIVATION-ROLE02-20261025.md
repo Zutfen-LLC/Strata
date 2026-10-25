@@ -6,6 +6,8 @@ Shell/embedded Python syntax checks and a tiny synthetic Git-only relay check pa
 that check preserved an existing commit/tree/blob identity through a one-commit shallow restore
 and passed `git fsck --strict`. Independent focused static review found no remaining blocker. It is not a dependency transfer or numerical proof result. The parent dispatches exact commands.
 The first-role run proceeds separately; a missing second-role binding does not block it.
+For the already compiled02 attempt, use **Continue the compiled02 attempt** below; do not repeat
+the historical relay/build steps.
 
 Role02's retained source is clean at `e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb`. Its real cache is
 Release, CUDA ON, Unix Makefiles, GCC through `/usr/bin/cc` and `/usr/bin/c++`, `-O3 -DNDEBUG`.
@@ -14,7 +16,9 @@ These are supplied inventory facts, not execution by this thread. Retained outpu
 reported to match deployed engine/worker artifacts; this recipe does not rebuild those executables.
 The parent keeps their full receipts privately.
 
-There is no intact CPU-only cache or existing pinned dependency directory on02. Use the real CUDA
+The initial inventory incorrectly reported no pinned dependency source on02. A later verified
+retained prefix is available; use the continuation below for the already compiled attempt. There
+is no intact CPU-only cache on02. Use the real CUDA
 cache as `CPU_BUILD`, not the role05 cache. Disabling CUDA/HIP/SYCL for this offline proof is an
 intentional recorded configuration difference. Compiler, native ISA, C/C++ flags, IPO and linker
 settings remain inherited from02. The shared build block now accepts ROLE02's CUDA-ON input and an
@@ -212,3 +216,150 @@ cross-build native rows/ordered partials are separate outcomes. No one outcome s
 Stop on any failure, missing binding/receipt, unsupported case, timeout, new OOM or source/flag/bit
 mismatch. Preserve partial outputs and the failed05 build evidence. No automatic rerun, extra sample,
 model GEN, service query, reload, firewall change, new package or deployment follows from this recipe.
+
+## Continue the compiled02 attempt after the prefix/PIC gate
+
+The parent reports that02 compiled/linked at `0dd834ba`, then stopped at the native-flags gate.
+CTest, pack and rows did **not** run. Retain that failure and all existing outputs. The corrected
+inventory found the original pinned dependency under another verified prefix on02; no relay or
+source copy needs repeating. The parent also reports GNU time1.9-0.2 was installed by Hermes after
+Eric explicitly authorized it. This continuation requests no installation.
+
+The PIC difference has a specific cause: `CMakeLists.txt:2108` sets
+`POSITION_INDEPENDENT_CODE ON` on `ggml-base` inside the CUDA shared-library branch. Turning CUDA
+off removes that target property. Restore that property on **ggml-base only**, using a deferred
+CMake include in the existing isolated build. Do not set global PIC or change native flags. The
+incremental build may recompile ggml-base and relink the proof; it must not recompile other targets.
+Preserve the original ELF path and hash; link the corrected proof into CONTINUE_ROOT/bin. The only waived flags are the exact reported
+`ggml-base` warning differences: C `-Wdouble-promotion`, C++ `-Wextra-semi`. They are recorded as
+warning-only deltas, not numerical flags. Every other assignment, including PIC/ISA/optimization,
+definitions and source-specific options, must compare exactly after verified path normalization.
+
+Parent exports the existing `RUN_ROOT`, retained `CPU_BUILD`, and
+`VERIFIED_RETAINED_GGML02` (the newly verified original dependency prefix). Choose fresh
+`CONTINUE_ROOT` under the existing private evidence directory. Source/build/dependency paths are
+read from the existing proof cache/provenance; no new source/archive/relay campaign or candidate
+checkout. The original SPA1/SRA1 outputs are absent because execution never started. This block
+creates its new check/pack outputs under CONTINUE_ROOT. `PIN` in the original build evidence stays
+`0dd834bad7fabd6266ff3bd95147c9f0f4ca4937`; the include hook and new ELF hash identify the explicit
+PIC correction separately. The continuation itself is **NOT RUN** by this desktop thread.
+
+```sh
+# BEGIN PACKED_CONTINUE02
+set -euo pipefail
+umask 077
+: "${RUN_ROOT:?}" "${CPU_BUILD:?}" "${VERIFIED_RETAINED_GGML02:?}" "${CONTINUE_ROOT:?}" "${CAPTURE:?}"
+export RUN_ROOT CPU_BUILD VERIFIED_RETAINED_GGML02 CONTINUE_ROOT CAPTURE GIT_OPTIONAL_LOCKS=0
+test ! -e "$CONTINUE_ROOT"
+test -f "$RUN_ROOT/native-flags-comparison.json"
+test ! -e "$RUN_ROOT/check.log"
+test ! -e "$RUN_ROOT/activations.spa"
+mkdir -m 700 "$CONTINUE_ROOT"
+python3 -B - <<'PY'
+import os,pathlib,re,json,subprocess,hashlib,shlex
+r=pathlib.Path(os.environ['RUN_ROOT']); c=pathlib.Path(os.environ['CONTINUE_ROOT']); old=pathlib.Path(os.environ['CPU_BUILD'])
+p=json.loads((r/'build-provenance.json').read_text()); assert p['role']=='02' and p['pin']=='0dd834bad7fabd6266ff3bd95147c9f0f4ca4937'
+cache={}
+for line in (r/'proof-CMakeCache.txt').read_text().splitlines():
+    m=re.match(r'([^:#]+):([^=]+)=(.*)',line)
+    if m: cache[m[1]]=m[3]
+source=pathlib.Path(cache['CMAKE_HOME_DIRECTORY']); build=pathlib.Path(cache['CMAKE_CACHEFILE_DIR'])
+assert all(v.is_absolute() for v in (r,c,old,source,build)) and c.parent==r
+assert not cache.get('CMAKE_PROJECT_INCLUDE'), 'existing project include needs explicit review'
+verified=pathlib.Path(os.environ['VERIFIED_RETAINED_GGML02']); used=pathlib.Path(p['ggml'])
+for dep in (verified,used):
+    assert dep.is_absolute()
+    assert subprocess.check_output(['git','-C',str(dep),'rev-parse','HEAD'],text=True).strip()=='3cf03257f219afbe7334045ff7c6a06ac68c627d'
+    assert not subprocess.check_output(['git','-C',str(dep),'status','--porcelain'],text=True).strip()
+assert (verified/'ggml/include/ggml.h').read_bytes()==(used/'ggml/include/ggml.h').read_bytes()
+doc=(source/'docs/validation/CPU-PACKED-ACTIVATION-PROOF-20261025.md').read_bytes()
+assert hashlib.sha256(doc).hexdigest()=='6b344f36203578632a39bfe71ed54aad20a621fd3d07f05438d41c78ccdf1ac4'
+block=doc.decode().split('# BEGIN PACKED_BUILD_PACK\n',1)[1].split('# END PACKED_BUILD_PACK',1)[0]
+start='sha256sum "$RUN_ROOT/bin/cpu_packed_activation_proof" > "$RUN_ROOT/elf.sha256"'
+assert block.count(start)==1
+# Reuse the published admission/check/pack tail, changing only its ELF location and output root.
+tail=block[block.index(start):].replace('"$RUN_ROOT/bin/cpu_packed_activation_proof"','"$PROOF_ELF"')
+(c/'check-pack.sh').write_text('set -euo pipefail\numask 077\n'+tail)
+(c/'restore-ggml-base-pic.cmake').write_text('if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)\n  cmake_language(DEFER CALL set_property TARGET ggml-base PROPERTY POSITION_INDEPENDENT_CODE ON)\nendif()\n')
+values=dict(NEW_SRC=str(source),NEW_BUILD=str(build),ORIGINAL_PROOF_ELF=str(r/'bin/cpu_packed_activation_proof'),PROOF_ELF=str(c/'bin/cpu_packed_activation_proof'))
+# BASE_SRC comes from the retained cache; do not infer it from directory naming.
+for line in (old/'CMakeCache.txt').read_text().splitlines():
+    if line.startswith('CMAKE_HOME_DIRECTORY:INTERNAL='): values['BASE_SRC']=line.split('=',1)[1]
+assert 'BASE_SRC' in values
+values.update(BASE_PIN=p['base'],CAPTURE=os.environ['CAPTURE'])
+with (c/'bindings.sh').open('x') as f:
+    for key,value in values.items(): f.write('export '+key+'='+shlex.quote(value)+'\n')
+with (c/'correction.json').open('x') as f: json.dump(dict(original_pin=p['pin'],verified_retained_ggml=str(verified),used_ggml=str(used),pic_target='ggml-base',pic=True,warning_only=dict(C_FLAGS='-Wdouble-promotion',CXX_FLAGS='-Wextra-semi')),f,indent=2)
+PY
+source "$CONTINUE_ROOT/bindings.sh"
+printf '%s  %s\n' 218bd2e9210ea7cbe641e3e09d7be5f060c5691d630ee6357935eb240f983208 "$CAPTURE" | sha256sum -c - > "$CONTINUE_ROOT/capture-input-hashes.log"
+sha256sum "$ORIGINAL_PROOF_ELF" > "$CONTINUE_ROOT/proof-before-pic.sha256"
+cp "$NEW_BUILD/CMakeCache.txt" "$CONTINUE_ROOT/cache-before-pic.txt"
+timeout --signal=TERM --kill-after=5s 90s cmake -S "$NEW_SRC" -B "$NEW_BUILD" \
+  -DCMAKE_PROJECT_INCLUDE:FILEPATH="$CONTINUE_ROOT/restore-ggml-base-pic.cmake" \
+  -DCMAKE_RUNTIME_OUTPUT_DIRECTORY:PATH="$CONTINUE_ROOT/bin" \
+  -DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE:PATH="$CONTINUE_ROOT/bin" > "$CONTINUE_ROOT/reconfigure.log" 2>&1
+python3 -B - <<'PY'
+import os,pathlib,re,json,shlex
+r=pathlib.Path(os.environ['RUN_ROOT']); c=pathlib.Path(os.environ['CONTINUE_ROOT'])
+p=json.loads((r/'build-provenance.json').read_text()); old=pathlib.Path(os.environ['CPU_BUILD']); new=pathlib.Path(os.environ['NEW_BUILD'])
+replacements={os.environ['BASE_SRC']:'@SRC',os.environ['NEW_SRC']:'@SRC',str(old):'@BUILD',str(new):'@BUILD',os.environ['VERIFIED_RETAINED_GGML02']:'@GGML',p['ggml']:'@GGML'}
+def normalize(s):
+    for key in sorted(replacements,key=len,reverse=True): s=s.replace(key,replacements[key])
+    return s
+report={}; warnings=[]
+for target in ('strata_kernels_cpu','strata_expert_worker','strata_worker_tier','ggml-cpu','ggml-base'):
+    original=[]
+    for root in (old,new):
+        found=list(root.rglob(f'CMakeFiles/{target}.dir/flags.make')); assert len(found)==1
+        original.append([normalize(line.strip()) for line in found[0].read_text().splitlines() if '=' in line])
+    adjusted=[list(v) for v in original]
+    if target=='ggml-base':
+        for key,flag in [('C_FLAGS','-Wdouble-promotion'),('CXX_FLAGS','-Wextra-semi')]:
+            positions=[[i for i,line in enumerate(v) if line.startswith(key+' =')] for v in adjusted]
+            assert all(len(v)==1 for v in positions)
+            tokens=[shlex.split(adjusted[j][positions[j][0]].split('=',1)[1]) for j in (0,1)]
+            assert tokens[0].count(flag)==1 and tokens[1].count(flag)==0, 'unexpected warning delta'
+            assert '-fPIC' in tokens[0] and '-fPIC' in tokens[1], 'PIC not restored exactly'
+            for j in (0,1): adjusted[j][positions[j][0]]=key+' = '+' '.join(t for t in tokens[j] if t!=flag)
+            warnings.append(dict(target=target,assignment=key,retained_only=flag,classification='warning-only'))
+    report[target]=dict(retained=original[0],proof=original[1],equal_except_listed_warnings=adjusted[0]==adjusted[1])
+with (c/'native-flags-comparison.json').open('x') as f: json.dump(dict(targets=report,warning_only=warnings),f,indent=2)
+assert all(v['equal_except_listed_warnings'] for v in report.values()), 'meaningful native assignment differs'
+for language in ('C','CXX'):
+    identities=[]
+    for root in (old,new):
+        files=list((root/'CMakeFiles').glob(f'*/CMake{language}Compiler.cmake')); assert len(files)==1
+        text=files[0].read_text()
+        identities.append({k:re.search(r'^set\('+k+r'\s+(.*?)\)$',text,re.M).group(1) for k in (f'CMAKE_{language}_COMPILER',f'CMAKE_{language}_COMPILER_ID',f'CMAKE_{language}_COMPILER_VERSION')})
+    assert identities[0]==identities[1], 'compiler identity changed'
+with (c/'compiler-identity.json').open('x') as f: json.dump(dict(C='equal',CXX='equal'),f)
+print('ROLE02_CORRECTED_FLAGS ok=1 pic=ggml-base warning_only=2 meaningful_native_assignments=equal')
+PY
+timeout --signal=TERM --kill-after=5s 600s cmake --build "$NEW_BUILD" --target cpu_packed_activation_proof \
+  --parallel 4 --verbose > "$CONTINUE_ROOT/incremental-build.log" 2>&1
+python3 -B - <<'PY'
+import os,pathlib,re
+c=pathlib.Path(os.environ['CONTINUE_ROOT']); b=pathlib.Path(os.environ['NEW_BUILD'])
+for line in (c/'incremental-build.log').read_text().splitlines():
+    if re.search(r'Building (?:C|CXX) object ',line): assert 'ggml-base.dir/' in line, 'unexpected target recompiled'
+links=list(b.rglob('CMakeFiles/cpu_packed_activation_proof.dir/link.txt')); assert len(links)==1
+link=links[0].read_text(); (c/'proof-link-command.txt').write_text(link)
+assert not re.search(r'(?:lib)?(?:cuda\w*|cublas\w*|amdhip\w*|sycl\w*|nvrtc\w*|strata_engine)(?:[.\s/-]|$)|libstrata_kernels\.a',link,re.I)
+PY
+cp "$NEW_BUILD/CMakeCache.txt" "$CONTINUE_ROOT/cache-after-pic.txt"
+cp "$NEW_BUILD/compile_commands.json" "$CONTINUE_ROOT/compile_commands-after-pic.json"
+sha256sum "$PROOF_ELF" > "$CONTINUE_ROOT/proof-after-pic.sha256"
+sha256sum -c "$CONTINUE_ROOT/proof-before-pic.sha256"
+# The original failure, cache/build logs and original ELF path/bytes remain preserved.
+RUN_ROOT="$CONTINUE_ROOT" bash "$CONTINUE_ROOT/check-pack.sh" > "$CONTINUE_ROOT/check-pack-driver.log" 2>&1
+# END PACKED_CONTINUE02
+```
+
+The required `CAPTURE` binding is the existing verified relayed file. This uses the
+already relayed capture and dependency. Require corrected flags PASS, focused CTest Passed and
+PACKED_DONE before continuing. Do not infer numerical success from compilation. Then use the
+published `PACKED_ROWS` block with `RUN_ROOT="$CONTINUE_ROOT"`, preserving its new check/pack files,
+`MANIFEST` and `LOCAL_ROOT` read-only. The corrected proof links to the new CONTINUE_ROOT/bin path, leaving the original ELF unchanged.
+Use separate `same-build` and `cross-build` labels. Cross-role SPA1/SRA1 `cmp` gates remain unchanged.
+Stop on any other flag difference, unexpected target compilation, resource refusal or bit mismatch.
