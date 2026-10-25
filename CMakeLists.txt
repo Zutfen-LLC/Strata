@@ -1823,6 +1823,12 @@ if(STRATA_NATIVE_EXPERTS)
       add_executable(cpu_capture_replay EXCLUDE_FROM_ALL tests/worker/cpu_capture_replay.cpp)
       target_link_libraries(cpu_capture_replay PRIVATE strata_worker_tier)
       if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Offline native activation fields and arithmetic proof; no worker process.
+        add_executable(cpu_packed_activation_proof tests/worker/cpu_packed_activation_proof.cpp)
+        target_include_directories(cpu_packed_activation_proof PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
+        target_link_libraries(cpu_packed_activation_proof PRIVATE strata_worker_tier)
+        add_test(NAME cpu_packed_activation_check COMMAND cpu_packed_activation_proof --check)
+        set_tests_properties(cpu_packed_activation_check PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
         # Offline, explicit runtime-library paths; no installed compression headers or worker process.
         add_executable(cpu_reply_compression_bench tests/worker/cpu_reply_compression_bench.cpp)
         target_include_directories(cpu_reply_compression_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)

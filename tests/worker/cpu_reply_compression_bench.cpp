@@ -1,6 +1,7 @@
 // Offline real-row compressibility diagnostic. No socket, child, worker setup, or protocol extension.
 #include "local_fixture.hpp"
 #include "strata/worker/cpu_capture.hpp"
+#include "cpu_capture_rows.hpp"
 #include <dlfcn.h>
 #include <algorithm>
 #include <cmath>
@@ -174,62 +175,27 @@ void rows_for(const CpuCaptureFile& f, const LocalManifest& local, LocalSource& 
     using namespace strata::kernels::cpu;
     const auto& q = r.request; const size_t H = f.setup.n_embd, N = size_t(q.T) * q.K;
     need(H == 2560 && q.T && q.T <= 2 && q.K && q.K <= 10 && q.layer < local.layers.size() &&
-        q.ids.size() == N && q.mask.size() == N && q.weights.size() == N &&
-        q.activations.size() == q.T * H && r.partials.size() == q.T * H, "sample shape bound");
+         q.activations.size() == q.T * H && r.partials.size() == q.T * H &&
+         q.ids.size() == N && q.mask.size() == N && q.weights.size() == N, "sample input shape");
     NativeFmt fmt; std::string err;
-    need(native_fmt(8, 8, H, f.setup.n_ff, fmt, err) && fmt.bytes <= 5222400, "sample native blob bound");
-    rows.assign(N * H, 0.f);
-    std::vector<float> hidden(fmt.n_ff), partial(q.T * H, 0.f);
-    Bytes blob(fmt.bytes), act(q.T * kNativeActBytes), hq(fmt.h_bytes);
+    need(native_fmt(8, 8, H, f.setup.n_ff, fmt, err), err);
+    Bytes act(q.T * kNativeActBytes);
     for (size_t t = 0; t < q.T; ++t) native_quant_act(fmt, q.activations.data() + t * H, act.data() + t * kNativeActBytes);
-    std::set<uint16_t> experts;
-    for (size_t i = 0; i < N; ++i) {
-        need(q.ids[i] < f.setup.n_expert && q.mask[i] == (f.setup.owns(q.layer, q.ids[i]) ? 1 : 0), "sample ownership");
-        if (q.mask[i]) experts.insert(q.ids[i]);
-    }
-    need(!experts.empty(), "sample has no CPU entries");
-    for (auto e : experts) {
-        deadline(); size_t dst = 0;
-        for (const auto& range : local.layers[q.layer]) {
-            need(range.bytes <= blob.size() - dst, "native role bounds");
-            for (size_t at = 0; at < range.bytes;) {
-                deadline(); const size_t n = std::min<size_t>(256u << 10, range.bytes - at);
-                need(source.read(range.file, range.offset + uint64_t(e) * range.bytes + at, blob.data() + dst + at, n, err), err);
-                at += n;
-            }
-            dst += range.bytes;
-        }
-        need(dst == blob.size() && blob_digest(blob) == local.digests.at(size_t(q.layer) * f.setup.n_expert + e), "selected source digest mismatch");
-        for (size_t i = 0; i < N; ++i) if (q.mask[i] && q.ids[i] == e) {
-            const void* a = act.data() + (i / q.K) * kNativeActBytes; float* h = hidden.data();
-            native_gu_rows(fmt, blob.data(), &a, 1, &h, 0, (int)fmt.n_ff);
-            native_quant_h(fmt, hidden.data(), hq.data()); const void* packed = hq.data(); float* out = rows.data() + i * H;
-            native_down_rows(fmt, blob.data(), &packed, 1, &out, 0, (int)H);
-        }
-    }
-    // Match the capture before interpreting compressibility, including multiplication/addition order.
+    for (size_t i = 0; i < N; ++i)
+        need(q.mask[i] == (f.setup.owns(q.layer, q.ids[i]) ? 1 : 0), "sample ownership");
+    need(std::any_of(q.mask.begin(), q.mask.end(), [](uint8_t m) { return m != 0; }), "sample has no CPU entries");
+    diagnostic::compute_capture_rows(f, local, source, q, act, rows, deadline);
+    std::vector<float> partial(q.T * H, 0.f);
     for (size_t i = 0; i < N; ++i) if (q.mask[i]) for (size_t h = 0; h < H; ++h) {
         const size_t at = (i / q.K) * H + h;
         partial[at] = partial[at] + q.weights[i] * rows[i * H + h];
     }
-    need(std::all_of(rows.begin(), rows.end(), [](float v) { return std::isfinite(v); }) &&
-        std::memcmp(partial.data(), r.partials.data(), partial.size() * 4) == 0, "independent full/capture bits failed");
+    need(std::memcmp(partial.data(), r.partials.data(), partial.size() * 4) == 0, "independent full/capture bits failed");
+}
+std::vector<size_t> samples(const CpuCaptureFile& f) {
+    return diagnostic::capture_row_samples(f, "COMPRESSION_STRATUM");
 }
 
-std::vector<size_t> samples(const CpuCaptureFile& f) {
-    std::set<size_t> selected;
-    for (unsigned layer : {0u, 12u, 24u, 47u}) for (unsigned T : {1u, 2u}) {
-        std::vector<size_t> found;
-        for (size_t i = 0; i < f.records.size(); ++i) {
-            const auto& r = f.records[i];
-            if (r.sent && r.request.layer == layer && r.request.T == T && r.request.K == 10) found.push_back(i);
-        }
-        if (found.empty()) std::printf("COMPRESSION_STRATUM layer=%u T=%u present=0\n", layer, T);
-        else { selected.insert(found.front()); selected.insert(found.back()); }
-    }
-    need(!selected.empty() && selected.size() <= 16, "real sample bound");
-    return {selected.begin(), selected.end()};
-}
 double percentile(std::vector<double> values, double fraction) {
     std::sort(values.begin(), values.end()); return values.at((size_t)std::ceil(fraction * values.size()) - 1);
 }
