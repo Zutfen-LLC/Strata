@@ -39,6 +39,7 @@ bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
     if(options_.vulkan && (options_.plan.n_embd != 2560 || options_.plan.n_ff != 640)) {
         err="Vulkan worker requires Q8_0 H2560/FF640"; return false;
     }
+    if (!options_.tls.validate(err)) return false;
     if (!cache_.open(options_.cache_root, options_.cache_budget, err)) return false;
     sock_fd fd = kBadFd;
     const bool listening = options_.bind_ip == "127.0.0.1" && allowed_peers_.empty()
@@ -79,9 +80,15 @@ void GpuWorkerService::run() {
 void GpuWorkerService::serve(uintptr_t fd) {
     const auto cancel = [&] { return stop_.load() || (setup_ && !ready_ &&
         now_ms() - setup_started_ >= (uint64_t)options_.setup_ms); };
+    TlsSession session;
+    TlsSession* tls = options_.tls.enabled() ? &session : nullptr;
+    std::string handshake_error;
+    if (tls && !tls->handshake(fd,options_.tls,true,options_.deadline_ms,cancel,handshake_error)) {
+        ++counters_.failures; return;
+    }
     while (!cancel()) {
         WireFrame in, out; std::string err;
-        if (!gpu_codec::receive(fd,in,kGpuFrameMax,options_.deadline_ms,cancel,err)) {
+        if (!gpu_codec::receive(fd,in,kGpuFrameMax,options_.deadline_ms,cancel,err,0,tls)) {
             ++counters_.failures; return;
         }
         if (in.status != ST_OK) { ++counters_.failures; return; }
@@ -92,7 +99,7 @@ void GpuWorkerService::serve(uintptr_t fd) {
                 options_.vulkan?"vulkan":"cuda",in.msg,status_name(out.status),(unsigned long long)options_.plan.model_id,
                 (unsigned long long)options_.plan.placement_id.a,(unsigned long long)options_.plan.placement_id.b,err.c_str());
         }
-        if (!gpu_codec::send(fd,out.msg,out.status,out.payload,options_.deadline_ms,cancel,err)) {
+        if (!gpu_codec::send(fd,out.msg,out.status,out.payload,options_.deadline_ms,cancel,err,tls)) {
             ++counters_.failures; return;
         }
         // A refused operation ends this connection/session. No partial result or retry is possible.

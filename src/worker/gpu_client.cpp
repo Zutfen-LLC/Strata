@@ -11,7 +11,7 @@ namespace {
 uint64_t now_ms(){return(uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 }
 GpuWorkerTier::~GpuWorkerTier(){close();}
-void GpuWorkerTier::close(){sock_fd fd=(sock_fd)fd_;sock::close_fd(fd);fd_=~(uintptr_t)0;ready_=false;posted_=served_=false;reply_.partials.clear();rows_reply_={};cancelled_={};setup_end_=0;}
+void GpuWorkerTier::close(){tls_.reset();sock_fd fd=(sock_fd)fd_;sock::close_fd(fd);fd_=~(uintptr_t)0;ready_=false;posted_=served_=false;reply_.partials.clear();rows_reply_={};cancelled_={};setup_end_=0;}
 bool GpuWorkerTier::fail(const std::string& why,std::string& err){
     err=why;why_=why;dead_=true;++stats_.failures;close();return false;
 }
@@ -20,7 +20,7 @@ bool GpuWorkerTier::exchange(uint16_t msg,const std::vector<uint8_t>& p,uint16_t
     int budget=deadline_ms_;
     if(setup_end_){const auto now=now_ms();if(now>=setup_end_)return fail("CUDA setup exceeded total deadline",err);
         budget=(int)std::min<uint64_t>((uint64_t)budget,setup_end_-now);}
-    if(fd_==~(uintptr_t)0 || !gpu_codec::send(fd_,msg,ST_OK,p,budget,cancel,err))
+    if(fd_==~(uintptr_t)0 || !gpu_codec::send(fd_,msg,ST_OK,p,budget,cancel,err,use_tls_?&tls_:nullptr))
         return fail("CUDA exchange failed: "+err,err);
     int response_wait=0;
     if(setup_end_){
@@ -29,7 +29,7 @@ bool GpuWorkerTier::exchange(uint16_t msg,const std::vector<uint8_t>& p,uint16_t
         budget=(int)std::min<uint64_t>((uint64_t)deadline_ms_,remaining);
         if(msg==GPU_SETUP || msg==GPU_READY)response_wait=(int)std::min<uint64_t>(INT32_MAX,remaining);
     }
-    if(!gpu_codec::receive(fd_,reply,kGpuFrameMax,budget,cancel,err,response_wait))
+    if(!gpu_codec::receive(fd_,reply,kGpuFrameMax,budget,cancel,err,response_wait,use_tls_?&tls_:nullptr))
         return fail("CUDA exchange failed: "+err,err);
     if(reply.msg!=want || reply.status!=ST_OK)return fail("CUDA worker rejected operation or negotiation: "+std::string(status_name(reply.status)),err);
     return true;
@@ -49,6 +49,11 @@ bool GpuWorkerTier::open(const Open& in,std::string& err){
     if(!sock::connect_numeric_controlled(in.host,in.port,std::min(in.deadline_ms,in.setup_ms),cancel,fd,err))
         return fail("CUDA worker connection failed: "+err,err);
     fd_=(uintptr_t)fd;
+    use_tls_=in.tls.enabled();
+    const auto connected_at=now_ms();
+    if(use_tls_ && !tls_.handshake(fd_,in.tls,false,
+        (int)std::min<uint64_t>(in.deadline_ms,setup_end_>connected_at?setup_end_-connected_at:0),cancel,err))
+        return fail("CUDA worker TLS failed: "+err,err);
     std::vector<uint8_t> payload;
     const auto expected_capability=(vulkan_?kGpuCapabilityVulkan:kGpuCapabilityCuda)|(rows_?kGpuCapabilityEntryRows:0);
     const auto expected_numerics=vulkan_?kGpuNumericsVulkanHybridQ8:kGpuNumericsQ8_1;
@@ -157,10 +162,10 @@ bool GpuWorkerTier::status(GpuCounters& c,std::string& err){
 }
 void GpuWorkerTier::report(std::string& out)const{
     char line[1400];std::snprintf(line,sizeof line,
-      "%s %s model=%llx layout=%llx:%llx placement=%llx:%llx session=%llx "
+      "%s %s transport=%s model=%llx layout=%llx:%llx placement=%llx:%llx session=%llx "
       "assigned=%llu cached=%llu transferred=%llu reused=%llu persisted=%llu retained_disk=%llu verified=%llu host_staging_peak=%llu gpu_allocated=%llu gpu_peak=%llu gpu_scratch=%llu "
       "gpu_free_before=%llu gpu_free_after=%llu reserve=%llu requests=%llu entries=%llu failures=%llu setup_ms=%.1f request_ms=%.1f",
-      vulkan_?"Vulkan/native-Q8-host-boundaries approximate":"CUDA/q8_1 approximate",dead_?"DEAD":"READY",(unsigned long long)plan_.model_id,(unsigned long long)plan_.layout_id.a,
+      vulkan_?"Vulkan/native-Q8-host-boundaries approximate":"CUDA/q8_1 approximate",dead_?"DEAD":"READY",use_tls_?"mTLS":"plaintext-test",(unsigned long long)plan_.model_id,(unsigned long long)plan_.layout_id.a,
       (unsigned long long)plan_.layout_id.b,(unsigned long long)plan_.placement_id.a,(unsigned long long)plan_.placement_id.b,
       (unsigned long long)session_,(unsigned long long)stats_.assigned_bytes,(unsigned long long)remote_.cached_bytes,
       (unsigned long long)stats_.setup_network_bytes,(unsigned long long)stats_.cache_reused_bytes,

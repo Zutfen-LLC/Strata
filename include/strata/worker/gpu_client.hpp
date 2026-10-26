@@ -13,6 +13,7 @@ public:
         int deadline_ms=10000,setup_ms=600000;
         GpuPlan plan;
         bool vulkan=false; // opt-in hybrid contract, requires 127.0.0.1 and indexed rows
+        TlsConfig tls;
         bool entry_rows=false; // negotiated; unsupported peers fail without weighted fallback
         std::function<bool(int64_t,int64_t,uint8_t*,uint32_t)> fetch;
         std::function<bool()> cancelled;
@@ -45,6 +46,8 @@ public:
 private:
     bool exchange(uint16_t,const std::vector<uint8_t>&,uint16_t,WireFrame&,std::string&);
     bool fail(const std::string&,std::string&);
+    TlsSession tls_;
+    bool use_tls_ = false;
     uintptr_t fd_=~(uintptr_t)0;
     int deadline_ms_=10000;
     uint64_t session_=0,sequence_=0,setup_end_=0;
