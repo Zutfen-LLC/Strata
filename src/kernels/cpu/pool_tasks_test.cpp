@@ -70,6 +70,24 @@ int main(int argc, char** argv) {
         }
         const auto ref = out;
         for (float v : ref) if (!std::isfinite(v)) return 1;
+        { // The optional trace observes the same partition and never changes output bits.
+            cpu::ExpertPool observed(3, false);
+            auto trace = std::make_unique<cpu::ExpertPool::NativeReadiness>();
+            if (n > cpu::ExpertPool::kMaxSplitMulti) {
+                bool refused = false;
+                try { observed.run_split_multi_native(f, jobs.data(), n, trace.get()); }
+                catch (const std::invalid_argument&) { refused = true; }
+                if (!refused) return 1;
+            } else {
+                observed.run_split_multi_native(f, jobs.data(), n, trace.get());
+                if (std::memcmp(ref.data(), out.data(), out.size() * sizeof(float)) ||
+                    trace->count != 12 || trace->down_start_ns > trace->down_done_ns ||
+                    trace->down_done_ns > trace->pool_done_ns) return 1;
+                for (int i = 0; i < trace->count; ++i)
+                    if (trace->tasks[i].done_ns < trace->down_start_ns ||
+                        trace->tasks[i].done_ns > trace->down_done_ns) return 1;
+            }
+        }
         for (bool host : {false, true}) for (int workers : {1, 3})
             for (int tasks : {0, 1, 41, 128, 192, 256, cpu::ExpertPool::kMaxTasks}) {
                 cpu::ExpertPool pool(workers, false, host, cpu::PoolAffinity::All, tasks);

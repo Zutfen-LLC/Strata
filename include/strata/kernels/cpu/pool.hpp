@@ -209,7 +209,16 @@ public:
     /// read once for all of its tokens.
     void run_split_multi(ExpertJobMulti* jobs, int n);
     /// Plan v0.3 P6: the same for a native pack's layer (ggml-cpu arithmetic, `nact` activations).
-    void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n);
+    // Diagnostic only: one cache-line-separated timestamp per existing down task. Read after return.
+    // A trace covers one batch (n <= kMaxSplitMulti); no worker logs, allocations or callbacks.
+    struct NativeReadiness {
+        struct alignas(64) Task { uint64_t done_ns = 0; };
+        Task tasks[kMaxTasks]{};
+        uint64_t down_start_ns = 0, down_done_ns = 0, pool_done_ns = 0;
+        int count = 0;
+    };
+    void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n,
+                                NativeReadiness* diagnostic = nullptr);
     static constexpr int kMaxSplitMulti = 96;
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
@@ -325,6 +334,7 @@ private:
         alignas(64) uint8_t hq[MAXT][kNativeHBytes];   // plan v0.3 P6: native down activations
     };
     const NativeFmt* nfmt_ = nullptr;
+    NativeReadiness* readiness_ = nullptr; // published with the down phase, cleared after all workers park
     std::vector<SplitBufMulti> split_multi_;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;

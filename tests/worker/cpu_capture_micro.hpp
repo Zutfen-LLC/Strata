@@ -3,6 +3,7 @@
 #include "cpu_subset_replay.hpp" // retained owned-child/resource helpers; no subset runner is called
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/worker/setup_keepalive.hpp"
+#include "cpu_reply_readiness.hpp"
 
 namespace strata::worker::diagnostic {
 inline constexpr uint64_t kMicroPayloadMax=104448000;
@@ -18,6 +19,75 @@ struct MicroReport {
     bool reference=false,peer[2]{},group=false,reaped=true;
     pid_t children[2]{-1,-1};uint64_t payload=0,peak_rss=0,min_available=UINT64_MAX;
 };
+inline uint64_t readiness_ns() {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+inline void measure_reply_readiness(const MicroPlan& p,const InferRequest& q,
+    const std::vector<std::vector<uint8_t>>& blobs,const std::vector<uint8_t>& act,
+    const std::vector<float>& reference,const std::function<void()>& guard) {
+    using namespace strata::kernels::cpu;
+    // Runs before any child starts. The selected verified weights total at most 104,448,000 bytes.
+    ExpertPool pool(12);
+    auto trace=std::make_unique<ExpertPool::NativeReadiness>();
+    uint64_t clock_min=UINT64_MAX;
+    for(int i=0;i<128;++i){const auto a=readiness_ns(),b=readiness_ns();clock_min=std::min(clock_min,b-a);}
+    std::printf("READINESS_CONFIG workers=12 host_works=1 T=2 K=10 H=2560 rate_bytes_s=125000000 "
+        "trace_bytes=%zu clock_pair_min_ns=%llu warmups=2 pairs=3 order=baseline-then-trace "
+        "model=zero-cost-ascending-frame no_chunk_headers=1 LAN=0\n",sizeof(*trace),(unsigned long long)clock_min);
+    for(int peer=0;peer<2;++peer) {
+        guard();
+        std::vector<ExpertJobMulti> jobs;
+        std::vector<int> job_of(p.owners.size(),-1),entry_job(q.mask.size(),-1);
+        std::vector<float> rows(reference.size(),0.f);
+        for(size_t i=0;i<q.mask.size();++i)if(p.mask[peer][i]) {
+            const auto expert=q.ids[i];
+            if(job_of[expert]<0) {
+                job_of[expert]=(int)jobs.size();ExpertJobMulti j;
+                const auto at=std::lower_bound(p.experts.begin(),p.experts.end(),expert)-p.experts.begin();
+                j.blob=blobs.at(at).data();jobs.push_back(j);
+            }
+            auto& j=jobs[job_of[expert]];entry_job[i]=job_of[expert];
+            need(j.nt<MAXT,"readiness job token bound");
+            j.nact[j.nt]=act.data()+(i/q.K)*kNativeActBytes;
+            j.out[j.nt++]=rows.data()+i*2560;
+        }
+        auto exact=[&] {
+            for(size_t i=0;i<q.mask.size();++i)if(p.mask[peer][i])
+                need(!std::memcmp(rows.data()+i*2560,reference.data()+i*2560,2560*sizeof(float)),
+                    "readiness native pool row bits");
+        };
+        for(int warm=0;warm<2;++warm){guard();pool.run_split_multi_native(p.fmt,jobs.data(),(int)jobs.size());exact();}
+        for(int repeat=0;repeat<3;++repeat) {
+            guard();auto start=readiness_ns();
+            pool.run_split_multi_native(p.fmt,jobs.data(),(int)jobs.size());
+            const auto baseline=readiness_ns()-start;exact();
+            start=readiness_ns();
+            pool.run_split_multi_native(p.fmt,jobs.data(),(int)jobs.size(),trace.get());
+            const auto traced=readiness_ns()-start;exact();
+            const auto model=reply_readiness(*trace,(int)jobs.size(),2560,entry_job,start);
+            std::printf("READINESS peer=%d repeat=%d jobs=%zu tasks=%d bytes=%llu baseline_pool_ns=%llu "
+                "traced_pool_ns=%llu paired_delta_ns=%lld down_start_ns=%llu down_done_ns=%llu pool_done_ns=%llu "
+                "first_range_ns=%llu first_prefix_ns=%llu first_row_ns=%llu first_wire_row_ns=%llu batch_finish_ns=%llu "
+                "prefix_finish_ns=%llu row_finish_ns=%llu prefix_saved_ns=%llu row_saved_ns=%llu row_bits=1\n",
+                peer,repeat,jobs.size(),trace->count,(unsigned long long)model.bytes,
+                (unsigned long long)baseline,(unsigned long long)traced,(long long)traced-(long long)baseline,
+                (unsigned long long)(trace->down_start_ns-start),(unsigned long long)(trace->down_done_ns-start),
+                (unsigned long long)(trace->pool_done_ns-start),(unsigned long long)(model.first_range-start),
+                (unsigned long long)(model.first_prefix-start),(unsigned long long)(model.first_row-start),
+                (unsigned long long)(model.first_wire_row-start),
+                (unsigned long long)(model.batch_finish-start),(unsigned long long)(model.prefix_finish-start),
+                (unsigned long long)(model.row_finish-start),(unsigned long long)(model.batch_finish-model.prefix_finish),
+                (unsigned long long)(model.batch_finish-model.row_finish));
+            for(int task=0;task<trace->count;++task)
+                std::printf("READINESS_TASK peer=%d repeat=%d task=%d begin_dim=%lld end_dim=%lld done_ns=%llu\n",
+                    peer,repeat,task,(long long)(jobs.size()*2560ull*task/trace->count),
+                    (long long)(jobs.size()*2560ull*(task+1)/trace->count),
+                    (unsigned long long)(trace->tasks[task].done_ns-start));
+        }
+    }
+    std::puts("READINESS_DONE row_bits=1 ordered_reference_checked=1 timings=perturbed paired_delta_is_not_calibrated_overhead");
+}
 inline bool micro_bits(const std::vector<float>& a,const std::vector<float>& b){
     return a.size()==b.size() && std::all_of(a.begin(),a.end(),[](float v){return std::isfinite(v);}) &&
         std::all_of(b.begin(),b.end(),[](float v){return std::isfinite(v);}) &&
@@ -55,7 +125,7 @@ inline MicroPlan capture_micro_plan(const CpuCaptureFile& f,const LocalManifest&
     return p;
 }
 inline MicroReference capture_micro_reference(const CpuCaptureFile& f,const LocalManifest& local,
-    const std::string& root,const MicroPlan& p,const std::function<void()>& guard){
+    const std::string& root,const MicroPlan& p,const std::function<void()>& guard,bool readiness=false){
     const auto& q=f.records.front().request;const size_t H=f.setup.n_embd;
     // At most 60 source ranges. This private receipt gives exact missing-asset bindings without
     // asking the operator to copy whole model shards. LocalSource still requires original files.
@@ -67,6 +137,7 @@ inline MicroReference capture_micro_reference(const CpuCaptureFile& f,const Loca
     for(const auto& r:local.layers[0])need(source.file(r.file,err)>=0,err);
     std::vector<float> rows(20*H,0.f),hidden(p.fmt.n_ff);
     std::vector<uint8_t> blob(p.fmt.bytes),act(2*strata::kernels::cpu::kNativeActBytes,0),hq(p.fmt.h_bytes);
+    std::vector<std::vector<uint8_t>> selected; // diagnostic only; released before owned workers start
     using namespace strata::kernels::cpu;
     for(int t=0;t<2;++t)native_quant_act(p.fmt,q.activations.data()+t*H,act.data()+t*kNativeActBytes);
     for(uint16_t e:p.experts){
@@ -79,6 +150,7 @@ inline MicroReference capture_micro_reference(const CpuCaptureFile& f,const Loca
         }
         need(dst==blob.size() && blob_digest(blob)==local.digests.at(e),
              "micro selected source digest mismatch");
+        if(readiness)selected.push_back(blob);
         // Independent native row evaluation, not the worker pool/group scheduling path.
         for(size_t i=0;i<20;++i)if(q.mask[i] && q.ids[i]==e){guard();
             const void* a=act.data()+(i/10)*kNativeActBytes;float* h=hidden.data();
@@ -94,13 +166,14 @@ inline MicroReference capture_micro_reference(const CpuCaptureFile& f,const Loca
         ref.full[at]=ref.full[at]+q.weights[i]*rows[i*H+h];
         auto& peer=ref.peer[p.owners[q.ids[i]]];peer[at]=peer[at]+q.weights[i]*rows[i*H+h];}
     need(micro_bits(ref.full,f.records.front().partials),"micro full reference/capture bit mismatch; no workers started");
+    if(readiness)measure_reply_readiness(p,q,selected,act,rows,guard);
     std::puts("MICRO_BITS stage=independent-full-vs-capture bits=1 workers_started=0");return ref;
 }
 inline bool micro_reaped(pid_t pid){if(pid<=0)return true;int status=0;errno=0;
     return ::waitpid(pid,&status,WNOHANG)<0 && errno==ECHILD;}
 inline bool run_capture_micro(const CpuCaptureFile& f,const LocalManifest& local,const std::string& manifest,
     const std::string& root,const std::string& output,const std::string& binary_a,const std::string& binary_b,
-    MicroReport& report,std::string& err,const std::function<void()>& before_second_setup={}){
+    MicroReport& report,std::string& err,const std::function<void()>& before_second_setup={},bool readiness=false){
     report={};
     try{
         const auto p=capture_micro_plan(f,local);report.payload=p.bytes[0]+p.bytes[1];
@@ -114,7 +187,7 @@ inline bool run_capture_micro(const CpuCaptureFile& f,const LocalManifest& local
         SubsetGuard ga(limits),gb(limits);auto guard=[&]{ga.check();gb.check();};guard();
         struct ResourceReceipt {SubsetGuard& a;SubsetGuard& b;MicroReport& r;
             ~ResourceReceipt(){r.peak_rss=a.peak+b.peak;r.min_available=std::min(a.min_available,b.min_available);}} receipt{ga,gb,report};
-        const auto ref=capture_micro_reference(f,local,root,p,guard);report.reference=true;ga.check(true);gb.check(true);
+        const auto ref=capture_micro_reference(f,local,root,p,guard,readiness);report.reference=true;ga.check(true);gb.check(true);
         need(std::filesystem::create_directory(output),"micro output creation");
         std::filesystem::permissions(output,std::filesystem::perms::owner_all,std::filesystem::perm_options::replace);
         std::printf("MICRO_PLAN record=0 layer=0 T=2 K=10 selected=%zu arena_payload=%llu workers=12 loaders=4 full_size_slot_ranks=NOT_TESTED\n",

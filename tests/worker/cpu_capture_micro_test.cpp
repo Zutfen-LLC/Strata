@@ -3,6 +3,20 @@
 #include "cpu_capture_micro.hpp"
 using namespace strata::worker::diagnostic;
 namespace {
+void readiness_model(){
+    auto trace=std::make_unique<strata::kernels::cpu::ExpertPool::NativeReadiness>();
+    trace->count=3;trace->down_start_ns=1000;trace->down_done_ns=5000;trace->pool_done_ns=5100;
+    trace->tasks[0].done_ns=4000;trace->tasks[1].done_ns=2000;trace->tasks[2].done_ns=3000;
+    // Two 4-float rows; task1 straddles both experts. T2 revisits job0 after job1.
+    const auto m=reply_readiness(*trace,2,4,{0,-1,1,0},0);
+    check(m.bytes==90 && m.first_range==2000 && m.first_prefix==4000 && m.first_row==3000 && m.first_wire_row==4000,
+        "readiness distinguishes any completed range from the wire prefix");
+    check(m.prefix_finish==4416 && m.row_finish==4432 && m.batch_finish==5820,
+        "readiness ascending byte and whole-row serializers include indices and repeated jobs");
+    trace->tasks[0].done_ns=6000;bool refused=false;
+    try{reply_readiness(*trace,2,4,{0},0);}catch(const std::exception&){refused=true;}
+    check(refused,"readiness refuses completion after parking");
+}
 CpuCaptureFile capture(const Fixture& fixture){
     CpuCaptureFile f;f.setup=fixture.setup();f.setup.partition={165,165}; // CPU IDs0,2,5,7: filter must not renumber owners
     f.setup.partition_id=blob_digest(f.setup.partition).a;f.identity=fixture.m.identity;f.index=fixture.m.index_digest;
@@ -48,7 +62,7 @@ void test(const char* binary){
     bool delayed=false;
     require(run_capture_micro(f,fixture.m,(fixture.root/"local.manifest").string(),fixture.root.string(),
         (fixture.root/"success").string(),binary,binary,report,err,[&]{
-            delayed=true;std::this_thread::sleep_for(std::chrono::seconds(11));}),err);
+            delayed=true;std::this_thread::sleep_for(std::chrono::seconds(11));},true),err);
     check(report.reference && report.peer[0] && report.peer[1] && report.group && report.reaped &&
         report.payload==2*fixture.fmt.bytes && report.children[0]>0 && report.children[1]>0,
         "independent full bits then real selected peers and group/manual bits");
@@ -58,6 +72,6 @@ void test(const char* binary){
 }
 int main(int argc,char** argv){
     if(argc!=2)return 2;
-    try{test(argv[1]);}catch(const std::exception& e){std::fprintf(stderr,"CPU_CAPTURE_MICRO_TEST exception: %s\n",e.what());return 2;}
+    try{readiness_model();test(argv[1]);}catch(const std::exception& e){std::fprintf(stderr,"CPU_CAPTURE_MICRO_TEST exception: %s\n",e.what());return 2;}
     std::printf("CPU_CAPTURE_MICRO_TEST failures=%d\n",failures);return failures?1:0;
 }
