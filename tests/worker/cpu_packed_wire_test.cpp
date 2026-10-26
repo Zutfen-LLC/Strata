@@ -110,7 +110,13 @@ void transport(Fixture& f) {
     c.set_setup_cancelled({});
 }
 }
-int main() {
+int main(int argc, char** argv) {
+#ifdef STRATA_TEST_TLS
+    std::unique_ptr<TlsFixture> tls_fixture;
+    if(argc==2 && std::string(argv[1])=="--tls") {
+        tls_fixture=std::make_unique<TlsFixture>(); transport_certificates=tls_fixture.get();
+    }
+#endif
     std::signal(SIGALRM,SIG_DFL);::alarm(180);
     try {Fixture fixture;codec(fixture);transport(fixture);}
     catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}

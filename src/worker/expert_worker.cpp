@@ -264,6 +264,8 @@ struct ExpertWorkerService::Impl {
         unload_weights("expiry");
     }
 
+    TlsSession tls; // one connection, shared TLS seam; never falls back after failure
+    bool transport_failed = false;
     // ---- frame io ----
     bool recv_frame(sock_fd fd, WireFrame& f, bool& malformed);
     bool send_frame(sock_fd fd, uint16_t msg, uint16_t status, const std::vector<uint8_t>& payload);
@@ -290,7 +292,7 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
     uint8_t head[kHeaderBytes];
     const auto cancelled = [&] { return stopping.load(std::memory_order_acquire) || resident_expired() ||
                (persistent_session && state == State::Setup && local_expired()); };
-    if (!sock::recv_all_controlled(fd, head, sizeof head, opt.deadline_ms, cancelled)) return false;
+    if (!(opt.tls.enabled() ? tls.recv_all(head, sizeof head, opt.deadline_ms, cancelled) : sock::recv_all_controlled(fd, head, sizeof head, opt.deadline_ms, cancelled))) return false;
     const uint32_t magic = (uint32_t) head[0] | (uint32_t) head[1] << 8 | (uint32_t) head[2] << 16 |
                            (uint32_t) head[3] << 24;
     f.msg = (uint16_t) (head[4] | head[5] << 8);
@@ -354,7 +356,7 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
     // Avoid geometric growth from a smaller upload buffer spilling over the retained inference cap.
     if (f.msg == MSG_INFER || f.msg==MSG_INFER_ROWS) f.payload.reserve((size_t) len);
     f.payload.resize((size_t) len);
-    if (len > 0 && !sock::recv_all_controlled(fd, f.payload.data(), f.payload.size(), opt.deadline_ms, cancelled)) return false;
+    if (len > 0 && !(opt.tls.enabled() ? tls.recv_all(f.payload.data(), f.payload.size(), opt.deadline_ms, cancelled) : sock::recv_all_controlled(fd, f.payload.data(), f.payload.size(), opt.deadline_ms, cancelled))) return false;
     return true;
 }
 
@@ -373,9 +375,13 @@ bool ExpertWorkerService::Impl::send_encoded_frame(sock_fd fd, uint16_t msg, uin
     // An admitted inference reply is active work: its existing I/O deadline still applies.
     // Telemetry/setup/refusal replies must not pin idle weights behind a slow reader.
     const bool active_reply = (msg == MSG_INFER_ACK || msg==MSG_INFER_ROWS_ACK) && status == ST_OK;
-    return sock::send_all_controlled(fd, buf.data(), buf.size(), opt.deadline_ms, [&] {
+    const auto cancel = [&] {
         return stopping.load(std::memory_order_acquire) || (!active_reply && resident_expired());
-    });
+    };
+    const bool ok = opt.tls.enabled() ? tls.send_all(buf.data(),buf.size(),opt.deadline_ms,cancel) :
+        sock::send_all_controlled(fd,buf.data(),buf.size(),opt.deadline_ms,cancel);
+    transport_failed = !ok;
+    return ok;
 }
 
 void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, size_t n, bool use_local) {
@@ -1120,8 +1126,17 @@ void ExpertWorkerService::Impl::on_cache_status(sock_fd fd) {
 }
 
 void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
+    transport_failed = false;
+    if (opt.tls.enabled()) {
+        std::string err;
+        if (!tls.handshake((uintptr_t)fd,opt.tls,true,opt.deadline_ms,
+                           [&]{return stopping.load(std::memory_order_acquire);},err)) {
+            logf("mTLS handshake rejected: %s",err.c_str());
+            fail(ST_PROTOCOL); tls.reset(); sock::close_fd(fd); return;
+        }
+    }
     WireFrame f;
-    while (!stopping.load(std::memory_order_acquire)) {
+    while (!transport_failed && !stopping.load(std::memory_order_acquire)) {
         bool malformed = false;
         if (!recv_frame(fd, f, malformed)) {
             if (malformed) {
@@ -1191,6 +1206,7 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
             break;
         case MSG_SHUTDOWN:
             send_frame(fd, MSG_STATUS_ACK, ST_OK, {});
+            tls.reset();
             sock::close_fd(fd);
             stopping.store(true, std::memory_order_release);
             void_session();
@@ -1204,6 +1220,7 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
         if (f.payload.capacity() > kInferPayloadMax)
             std::vector<uint8_t>().swap(f.payload);
     }
+    tls.reset();
     sock::close_fd(fd);
     expire_resident();
     void_session();   // a disconnect voids the session: the next connection restarts with SETUP_BEGIN
@@ -1225,6 +1242,13 @@ bool ExpertWorkerService::listen(uint16_t& port, std::string& err) {
         err = "explicit bind/peer policy requires a positive --deadline-ms";
         return false;
     }
+    if (!impl_->opt.tls.enabled() && !impl_->opt.plaintext_test && impl_->opt.bind_ip != "127.0.0.1") {
+        err = "remote CPU listener requires mTLS; use --plaintext-test only for development"; return false;
+    }
+    if (impl_->opt.tls.enabled() && (impl_->opt.plaintext_test || impl_->opt.deadline_ms <= 0)) {
+        err = "mTLS requires a positive deadline and excludes --plaintext-test"; return false;
+    }
+    if (!impl_->opt.tls.validate(err)) return false;
     if (impl_->opt.residency_ms < 0 || impl_->opt.residency_ms > kMaxResidencyMs ||
         (impl_->opt.residency_forever && impl_->opt.residency_ms != 0) ||
         ((impl_->opt.residency_ms || impl_->opt.residency_forever) && impl_->opt.deadline_ms <= 0)) {

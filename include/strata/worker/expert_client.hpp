@@ -8,6 +8,7 @@
 
 #include "strata/worker/expert_wire.hpp"
 #include "strata/worker/local_source.hpp"
+#include "strata/worker/tls.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -31,9 +32,12 @@ public:
     ExpertWorkerClient(const ExpertWorkerClient&) = delete;
     ExpertWorkerClient& operator=(const ExpertWorkerClient&) = delete;
 
-    /// Connects to host:port (normally 127.0.0.1 and the worker's port, or an SSH forward's local end).
+    /// Compatibility local-only connection; remote nodes use connect_transport with mTLS.
     bool connect_host(const std::string& host, uint16_t port, int deadline_ms, std::string& err);
 
+    // Explicit transport configuration. Plain loopback is local-only; remote plaintext requires opt-in.
+    bool connect_transport(const std::string&, uint16_t, int, const std::function<bool()>&,
+                           const TlsConfig&, bool plaintext_test, std::string&);
     bool connect_local(const std::string &numeric_host, uint16_t port, int deadline_ms,
                        const std::function<bool()> &cancelled, std::string &err);
     /// SETUP_BEGIN: starts a session (voiding any previous one the worker held).  On success the session
@@ -91,6 +95,10 @@ private:
   bool send_frame(uint16_t msg, uint16_t st, const std::vector<uint8_t> &payload, std::string &err);
   bool recv_frame(uint16_t want_msg, WireFrame &f, std::string &err);
 
+  bool send_bytes(const void*, size_t);
+  bool recv_bytes(void*, size_t);
+  TlsSession tls_;
+  bool use_tls_ = false;
   uintptr_t fd_ = ~(uintptr_t)0;
   int deadline_ms_ = 10000;
   uint64_t session_ = 0;

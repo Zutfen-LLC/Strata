@@ -74,11 +74,11 @@ struct Network {
     explicit Network(bool slow=false) {
         const auto m=metadata(fixture);std::string err;
         for(int i=0;i<3;++i) {
-            GpuWorkerOptions o;require(make_gpu_plan(m,{{0,(uint16_t)i}},o.plan,err),err);
+            GpuWorkerOptions o;o.plaintext_test=true;require(make_gpu_plan(m,{{0,(uint16_t)i}},o.plan,err),err);
             o.cache_root=(fixture.root/("group-"+std::to_string(i))).string();fs::create_directory(o.cache_root);
             o.cache_budget=16ull<<20;o.deadline_ms=300;o.setup_ms=5000;
             auto server=std::make_unique<Running>(o,std::make_unique<Executor>(gate,i,slow&&i==2?800:0));
-            GpuWorkerTier::Open in;in.port=server->port;in.plan=o.plan;in.deadline_ms=1000;in.setup_ms=5000;
+            GpuWorkerTier::Open in;in.plaintext_test=true;in.port=server->port;in.plan=o.plan;in.deadline_ms=1000;in.setup_ms=5000;
             in.fetch=[this](int64_t,int64_t e,uint8_t* out,uint32_t n) {
                 ++fetches;const auto& b=fixture.blobs.at((size_t)e);
                 if(n!=b.size())return false;std::memcpy(out,b.data(),n);return true;

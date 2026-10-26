@@ -12,7 +12,7 @@ std::atomic<bool> interrupted{false};
 void signal_stop(int){interrupted.store(true);}
 void usage(){std::fprintf(stderr,"usage: strata-cuda-expert-worker --plan FILE --cache-root DIR "
   "[--port 7432] [--device 0] [--cache-budget-mib 24576] [--reserve-mib 1024] "
-  "[--deadline-ms 10000] [--setup-ms 600000] [--tcp-nodelay]\n"
+  "[--deadline-ms 10000] [--setup-ms 600000] [--tcp-nodelay] [--plaintext-test]\n"
   "  [--bind-ip IPv4 --allow-peer-ip IPv4 [--allow-peer-ip IPv4 ...]]\n"
   "  [--tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer COORDINATOR_SAN_DNS]\n"
   "  default loopback only; private LAN requires exact coordinator IPs; fixed operator plan; no automatic cleanup\n");}
@@ -21,6 +21,7 @@ int main(int argc,char** argv){
     strata::worker::GpuWorkerOptions options;std::string plan_path;uint16_t port=7432;int device=0;
     for(int i=1;i<argc;++i){
         const std::string a=argv[i];
+        if(a=="--plaintext-test"){options.plaintext_test=true;continue;}
         if(a=="--tcp-nodelay"){options.accepted_tcp_nodelay=true;continue;}
         if(i+1>=argc){usage();return 2;}
         const char* value=argv[++i];

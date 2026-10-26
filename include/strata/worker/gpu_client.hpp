@@ -13,6 +13,7 @@ public:
         int deadline_ms=10000,setup_ms=600000;
         GpuPlan plan;
         TlsConfig tls;
+        bool plaintext_test = false;
         bool entry_rows=false; // negotiated; unsupported peers fail without weighted fallback
         std::function<bool(int64_t,int64_t,uint8_t*,uint32_t)> fetch;
         std::function<bool()> cancelled;

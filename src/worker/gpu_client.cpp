@@ -39,6 +39,9 @@ bool GpuWorkerTier::open(const Open& in,std::string& err){
     if(dead_) {err="CUDA tier is dead; create a new engine session: "+why_;return false;}
     if(ready_){err="CUDA tier placement is already frozen";return false;}
     if(in.deadline_ms<1 || in.setup_ms<1 || !validate_gpu_plan(in.plan,err))return false;
+    if ((!in.tls.enabled() && !in.plaintext_test) || (in.tls.enabled() && in.plaintext_test))
+        return fail("GPU transport requires mTLS or explicit plaintext-test (mutually exclusive)",err);
+    if(!in.tls.validate(err))return fail(err,err);
     close();stats_={};remote_={};plan_=in.plan;rows_=in.entry_rows;cancelled_=in.cancelled;deadline_ms_=in.deadline_ms;
     const auto began=now_ms();setup_end_=began+(uint64_t)in.setup_ms;
     sock_fd fd=kBadFd;

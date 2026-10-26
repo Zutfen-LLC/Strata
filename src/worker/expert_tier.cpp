@@ -145,10 +145,8 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
         return false;
     }
     const auto control = [&] { return !check_setup(); };
-    const bool connected =
-        in.local
-            ? client_.connect_local(in.host, in.port, std::min(in.deadline_ms, in.setup_ms), control, err)
-            : client_.connect_host(in.host, in.port, in.deadline_ms, err);
+    const bool connected = client_.connect_transport(in.host, in.port,
+        std::min(in.deadline_ms, in.setup_ms), control, in.tls, in.plaintext_test, err);
     if (!connected) {
         err = "connecting the remote CPU-expert worker (" + in.host + ":" + std::to_string(in.port) + "): " + err;
         return false;

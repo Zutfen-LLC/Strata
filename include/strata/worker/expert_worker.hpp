@@ -19,6 +19,7 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/worker/expert_wire.hpp"
+#include "strata/worker/tls.hpp"
 #include "strata/worker/rpc_timing.hpp"
 #include "strata/worker/packed_activation.hpp"
 
@@ -30,6 +31,8 @@
 namespace strata::worker {
 
 struct WorkerOptions {
+    TlsConfig tls;
+    bool plaintext_test = false; // deliberate remote development opt-in
     uint64_t memory_budget = 128ull << 30;   ///< the arena's byte budget; an assigned set over it is refused
     int workers = 0;      ///< ExpertPool worker threads (0: the pool's default plan for this machine)
     int deadline_ms = 10000;   ///< per-frame send/recv deadline
@@ -41,7 +44,7 @@ struct WorkerOptions {
     int residency_ms = 0; ///< opt-in idle TTL, 1..86400000 ms; 0 preserves session-scoped weights
     bool residency_forever = false; ///< explicit service-owned residency; no idle expiry, never implicit at 0
     uint32_t upload_chunk_max = kUploadChunkMax;   ///< advertised data cap, 1..kUploadChunkMax
-    bool accepted_tcp_nodelay = false; ///< opt-in checked TCP_NODELAY on CPU-worker accepted sockets only
+    bool accepted_tcp_nodelay = true; ///< checked low-latency policy on accepted sockets
     std::string packed_qualification = default_packed_qualification(); // build-pair eligibility
     bool packed_requests = true; // automatic for eligible peers; false forces raw
     bool rpc_timing = false; ///< opt-in fixed-memory aggregate timing; never logs individual RPCs
