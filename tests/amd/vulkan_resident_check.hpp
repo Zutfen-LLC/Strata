@@ -3,7 +3,7 @@
 void resident_check(const std::string& backend, int device, const std::filesystem::path& output,
                     ggml_backend_t selected, const cpu::NativeFmt& fmt,
                     const std::vector<uint8_t>& first, const std::vector<float>& x,
-                    const Rows& first_direct, std::ofstream& metrics) {
+                    const Rows& first_direct, std::ofstream& metrics, bool loopback=false) {
     using namespace strata::worker;
     // A distinct legal fixture: negate only the second expert's Q8 up-projection codes.
     auto second=first;
@@ -29,6 +29,11 @@ void resident_check(const std::string& backend, int device, const std::filesyste
     GpuPlan plan;
     std::string err;
     require(make_gpu_plan(m,{{0,1},{0,3}},plan,err),err);
+    if(loopback) {
+        std::vector<float> expected=second_direct.out;
+        expected.insert(expected.end(),first_direct.out.begin(),first_direct.out.end());
+        loopback_check(backend,device,output,plan,first,second,x,expected); return;
+    }
     const auto root=output/"resident-cache";
     require(std::filesystem::create_directory(root),"new resident cache required");
     GpuCache cache;
