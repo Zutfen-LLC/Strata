@@ -1739,8 +1739,10 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(strata-gpu-manifest src/worker/gpu_manifest_main.cpp)
     target_link_libraries(strata-gpu-manifest PRIVATE strata_gpu_assets)
 
-    add_library(strata_gpu_protocol STATIC src/worker/gpu_wire.cpp src/worker/gpu_client.cpp src/worker/gpu_group.cpp
+    add_library(strata_gpu_protocol STATIC src/worker/gpu_cpu_reference.cpp src/worker/gpu_wire.cpp src/worker/gpu_client.cpp src/worker/gpu_group.cpp
                 src/worker/gpu_worker.cpp)
+    set_source_files_properties(src/worker/gpu_cpu_reference.cpp PROPERTIES
+      COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     target_include_directories(strata_gpu_protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_include_directories(strata_gpu_protocol PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
     target_link_libraries(strata_gpu_protocol PUBLIC strata_gpu_assets)
@@ -1758,6 +1760,11 @@ if(STRATA_NATIVE_EXPERTS)
       target_link_libraries(gpu_worker_group_test PRIVATE strata_gpu_protocol)
       add_test(NAME gpu_worker_group_test COMMAND gpu_worker_group_test)
       # Offline capture selection and fixed-row reducer checks, without CUDA or fleet access.
+      add_executable(q8_cpu_reference_host_test tests/worker/q8_cpu_reference_test.cpp)
+      target_include_directories(q8_cpu_reference_host_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+      target_link_libraries(q8_cpu_reference_host_test PRIVATE strata_gpu_protocol)
+      add_test(NAME q8_cpu_reference_host_test COMMAND q8_cpu_reference_host_test)
+      set_tests_properties(q8_cpu_reference_host_test PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
       add_executable(gpu_capture_replay_check tests/worker/gpu_capture_replay.cpp)
       target_include_directories(gpu_capture_replay_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
       target_link_libraries(gpu_capture_replay_check PRIVATE strata_gpu_protocol strata_worker_tier)
@@ -1771,7 +1778,10 @@ if(STRATA_NATIVE_EXPERTS)
 
     # No HIP (including gfx906), SYCL or Windows network-GPU support is implied by the shared engine.
     if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
-      add_library(strata_gpu_compute STATIC src/worker/gpu_compute.cu)
+      add_library(strata_gpu_compute STATIC src/worker/gpu_compute.cu src/worker/gpu_cpu_reference.cu)
+      # The CPU reference uses explicit RN intrinsics, no fast-math reassociation/FTZ.
+      set_source_files_properties(src/worker/gpu_cpu_reference.cu PROPERTIES
+        COMPILE_OPTIONS "--ftz=false;--fmad=false;--prec-div=true;--prec-sqrt=true")
       set_target_properties(strata_gpu_compute PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED YES)
       target_include_directories(strata_gpu_compute PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
       target_link_libraries(strata_gpu_compute PUBLIC strata_gpu_protocol strata_kernels CUDA::cudart)
@@ -1786,6 +1796,13 @@ if(STRATA_NATIVE_EXPERTS)
         target_link_libraries(gpu_worker_cuda_test PRIVATE strata_gpu_compute)
         add_test(NAME gpu_worker_cuda_test COMMAND gpu_worker_cuda_test --cuda)
         # Manual bounded replay only; never register a hardware/model-dependent CTest.
+        add_executable(q8_cpu_reference_cuda_test tests/worker/q8_cpu_reference_test.cpp)
+        target_include_directories(q8_cpu_reference_cuda_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker)
+        target_compile_definitions(q8_cpu_reference_cuda_test PRIVATE STRATA_CPU_REFERENCE_CUDA=1)
+        target_link_libraries(q8_cpu_reference_cuda_test PRIVATE strata_gpu_compute)
+        add_test(NAME q8_cpu_reference_cuda_test COMMAND q8_cpu_reference_cuda_test)
+        set_tests_properties(q8_cpu_reference_cuda_test PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77
+          ENVIRONMENT "STRATA_CUDA_Q8_CPU_REFERENCE=1")
         add_executable(gpu_capture_replay tests/worker/gpu_capture_replay.cpp)
         target_compile_definitions(gpu_capture_replay PRIVATE STRATA_CAPTURE_CUDA=1)
         target_include_directories(gpu_capture_replay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})

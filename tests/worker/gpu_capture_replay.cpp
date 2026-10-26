@@ -548,6 +548,9 @@ int grouped_control(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,co
 int first_boundary(const CpuCaptureFile& f,const FirstBoundary& b,const std::vector<GpuPlan>& plans,
                    const fs::path& blobs,const fs::path& root) {
     // Every historical/SRA1 gate precedes CUDA initialization or weight reads.
+    const char* reference_env=std::getenv("STRATA_CUDA_Q8_CPU_REFERENCE");
+    const bool cpu_reference=reference_env && reference_env[0]=='1';
+    std::printf("BOUNDARY_MODE %s\n",cpu_reference?"CPU_REFERENCE_CONTROL":"RETAINED_B_RECONSTRUCTION");
     const auto a0=boundary_cpu_gate(f,b);
     const auto inv=inventory(f,plans,blobs,true,{0});
     require(plans.size()==4 && inv.selected==13 && inv.assets.size()==13 && inv.bytes==67891200,
@@ -574,7 +577,8 @@ int first_boundary(const CpuCaptureFile& f,const FirstBoundary& b,const std::vec
         require(expected.size()==1 && reply.indices==expected && reply.rows.size()==2560,"BOUNDARY CUDA original-entry association mismatch");
         const size_t i=expected[0];std::vector<float> cpu_row(b.rows.begin()+i*2560,b.rows.begin()+(i+1)*2560);
         std::printf("BOUNDARY_ROW entry=%zu token=%zu expert=%u peer=%zu ",i,i/10,q.ids[i],selected.plan);
-        metrics("CPU_vs_CUDA_unweighted",cpu_row,reply.rows);
+        const bool row_bits=metrics("CPU_vs_CUDA_unweighted",cpu_row,reply.rows);
+        if(cpu_reference)require(row_bits,"CPU reference CUDA row mismatch; model trace not qualified");
         std::copy(reply.rows.begin(),reply.rows.end(),rows.begin()+i*2560);
         executor->release(counters);cache.close();++calls;
     }
@@ -583,11 +587,12 @@ int first_boundary(const CpuCaptureFile& f,const FirstBoundary& b,const std::vec
         require(bool(out.write((const char*)data.data(),data.size()*4)),"BOUNDARY result write failed");};
     save("CPU-original-entry-rows.f32",b.rows);save("mixed-original-entry-rows.f32",rows);
     save("reconstructed-A0-union.f32",a0);save("reconstructed-B-union.f32",mixed);
-    const bool exact=metrics("actual_rows_reconstruct_recorded_B_union",b.b,mixed);
+    const bool recorded_b_bits=metrics("actual_rows_reconstruct_recorded_B_union",b.b,mixed);
+    const bool exact=cpu_reference?metrics("CPU_reference_union_vs_recorded_A0",b.a0,mixed):recorded_b_bits;
     metrics("recorded_A0_vs_recorded_B_union",b.a0,b.b);
-    std::printf("BOUNDARY_DONE A0_bits=1 B_bits=%d identical_row_controls=1 CUDA_rows=%zu CUDA_blobs=%zu "
+    std::printf("BOUNDARY_DONE A0_bits=1 B_bits=%d recorded_B_bits=%d target_bits=%d cpu_reference=%d identical_row_controls=1 CUDA_rows=%zu CUDA_blobs=%zu "
         "blob_bytes=67891200 seconds=%.6f no_CPU_recompute=1 no_listeners=1 model_parity=unestablished\n",
-        exact,calls,inv.assets.size(),std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count());
+        recorded_b_bits,recorded_b_bits,exact,cpu_reference,calls,inv.assets.size(),std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count());
     return exact?0:1;
 }
 #endif

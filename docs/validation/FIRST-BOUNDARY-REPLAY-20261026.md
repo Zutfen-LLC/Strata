@@ -123,3 +123,8 @@ headers. No outstanding local test failures. Actual CUDA compilation/execution,
 the real historical-input match, SRA1 reuse against live A0 and reconstruction of
 live B are **not run here**. No CUDA compiler/device or private real artifacts are
 available locally. Keep draft status; parent dispatches the bounded commands.
+
+
+The subsequent opt-in [CPU-equivalent Q8 control](Q8-CPU-REFERENCE-CONTROL-20261026.md)
+uses the same packet and replay, but explicitly targets CPU rows/A0 union. The
+retained-B reconstruction target above is unchanged when that option is absent.
