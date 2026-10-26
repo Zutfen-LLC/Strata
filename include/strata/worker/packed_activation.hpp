@@ -1,7 +1,8 @@
 #pragma once
 #include "strata/worker/expert_wire.hpp"
 namespace strata::worker {
-// Qualification is a manually supplied, build-pair-specific 16 lowercase hex ID. No automatic eligibility.
+// A qualified build carries its verified build-pair ID. Empty means no recorded eligibility.
+std::string default_packed_qualification();
 bool packed_qualification_valid(const std::string&);
 bool packed_format_supported(const strata::kernels::cpu::NativeFmt&);
 std::shared_ptr<const PackedActivation> pack_activation(const strata::kernels::cpu::NativeFmt&,

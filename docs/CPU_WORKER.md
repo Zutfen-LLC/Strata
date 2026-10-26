@@ -314,12 +314,32 @@ The [16d065e Hermes receipt](cpu-worker-residency/evidence/hermes-16d065e-receip
 its runtime results do not validate the later correction head. HIP is unvalidated and SYCL uses separate
 migrated sources; this worker feature is not claimed for SYCL.
 
-## Packed activation requests (experimental, default off)
+## Packed activation requests (automatic for qualified builds)
 
-Issue #14 adds an opt-in request encoding for the sampled Linux x86-64 native Q8_0 format.
-Both peers need an explicit qualification ID for the verified native build pair. Unsupported
-peers or inputs use raw F32 with reported fallback. Replies keep their existing format.
-See the [wire contract and offline handoff](validation/CPU-PACKED-ACTIVATION-WIRE-20261025.md).
-Role05 offline build/tests and exact production-codec artifact comparisons passed in the supplied
-Hermes receipt linked there. Role02 wire and live performance remain untested. Default stays raw;
-these offline results establish no speedup.
+The fixed CPU group selects packed requests automatically when both native builds carry the same
+verified build-pair record and support the version-1 Linux x86-64 Q8_0 format. Replies and original
+entry order stay unchanged. Older peers, mismatched or absent records, unsupported formats, and
+unsupported per-request inputs use raw F32. Malformed packets and failed deadlines still fail;
+they do not trigger a raw retry.
+
+After verifying a native build pair, its builder can embed that record in both artifacts with
+`-DSTRATA_CPU_PACKED_QUALIFICATION=<verified 16 lowercase hex ID>`. This is compatibility evidence,
+not a user preference. Do not invent an ID from matching source, compiler or CPU names. The cache
+value is empty for unqualified builds; no experimental ID is built into the source. Requalify when
+the relevant native build changes. This setting does not qualify other platforms or formats.
+
+A normal deployment of those qualified artifacts uses its existing `--remote-cpu-worker` commands
+and worker commands, with no packed flags. The sender inherits its build record, probes each peer,
+and packs supported requests only after the peer accepts that same record and format version.
+Use `--remote-cpu-raw-requests` on the engine or `--raw-requests` on a worker to force raw. These
+preferences win even when a qualification override is also present. The existing
+`--remote-cpu-packed-qualification` / `--packed-qualification` overrides remain available for a
+separately verified pair; operators do not need to repeat them when the artifacts carry the record.
+Legacy single-tier, capture and regroup diagnostic engine modes stay raw automatically.
+
+The [wire contract](validation/CPU-PACKED-ACTIVATION-WIRE-20261025.md) describes the original opt-in
+implementation. The supplied [live result](validation/CPU-PACKED-LIVE-RESULT-20261026.md) recorded
+exact outputs and a request-wall reduction from 43.434 to 38.198 seconds in one raw-then-packed
+sample on the retained Linux CUDA/native pair over 1 Gb/s. That sample does not qualify arbitrary
+build pairs. New default-selection compiled checks are pending; those earlier results do not test
+this change.

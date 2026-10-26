@@ -91,9 +91,8 @@ ExpertWorkerTier::~ExpertWorkerTier() {
 bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     if (dead_) { err = "the remote CPU-expert worker tier is dead: " + dead_why_; return false; }
     if (ready_) { err = "the remote CPU-expert worker tier is already open"; return false; }
-    if(!in.packed_qualification.empty() && (!packed_qualification_valid(in.packed_qualification) ||
-        in.diagnostic_regroup || in.diagnostic_ordered || capture_)) {
-        err="packed mode requires valid qualification and excludes capture/diagnostics";return false;
+    if(!in.packed_qualification.empty() && !packed_qualification_valid(in.packed_qualification)) {
+        err="invalid packed qualification";return false;
     }
     if(in.entry_rows && (!in.local || in.diagnostic_regroup || in.diagnostic_ordered)) {
         err="batched entry rows require trusted local setup and exclude diagnostic exchanges";return false;
@@ -288,7 +287,8 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     st_.local_verify_ns = ls.verify_ns;
     diagnostic_regroup_=in.diagnostic_regroup;
     diagnostic_ordered_=in.diagnostic_ordered;
-    packed_qualification_=in.packed_qualification;
+    packed_qualification_=in.packed_requests && !in.diagnostic_regroup && !in.diagnostic_ordered && !capture_
+        ? in.packed_qualification : std::string{};
     if(!packed_qualification_.empty()) {
         std::string why;
         if(!strata::kernels::cpu::native_fmt(in.gu_type,in.d_type,in.n_embd,in.n_ff,packed_fmt_,why) ||

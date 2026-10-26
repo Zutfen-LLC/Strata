@@ -16,6 +16,7 @@
 
 #include "strata/worker/expert_client.hpp"
 #include "strata/worker/rpc_timing.hpp"
+#include "strata/worker/packed_activation.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -44,7 +45,8 @@ public:
         bool resident_reuse_only = false; // diagnostic: refuse empty cache, never load/upload
         bool diagnostic_regroup = false; // diagnostic: sequential virtual peers on the full cache
         bool diagnostic_ordered = false; // diagnostic: shadow full reply, reconstruct rows, exact bit gate
-        std::string packed_qualification; // explicit build-pair eligibility, empty by default
+        std::string packed_qualification = default_packed_qualification(); // build-pair eligibility
+        bool packed_requests = true; // automatic for eligible peers; false forces raw
         bool entry_rows = false; // opt-in batched rows; group performs the one ordered reduction
         int setup_ms = 600000;
         std::function<bool()> cancelled;

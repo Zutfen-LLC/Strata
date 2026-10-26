@@ -1170,7 +1170,7 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
                 if(f.payload.size()!=16 || state!=State::Ready || sid!=session) {
                     fail(ST_BAD_REQUEST);send_frame(fd,MSG_STATUS_ACK,ST_BAD_REQUEST,{});break;
                 }
-                if(!packed_qualification_valid(opt.packed_qualification) ||
+                if(!opt.packed_requests || !packed_qualification_valid(opt.packed_qualification) ||
                    qualification!=std::stoull(opt.packed_qualification,nullptr,16) || !packed_format_supported(fmt)) {
                     send_frame(fd,MSG_STATUS_ACK,ST_UNSUPPORTED_LAYOUT,{});break;
                 }

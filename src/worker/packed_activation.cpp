@@ -10,6 +10,13 @@
 
 namespace strata::worker {
 using namespace strata::kernels::cpu;
+std::string default_packed_qualification() {
+#ifdef STRATA_CPU_PACKED_QUALIFICATION
+    return STRATA_CPU_PACKED_QUALIFICATION;
+#else
+    return {};
+#endif
+}
 bool packed_qualification_valid(const std::string& s) {
     return s.size()==16 && s.find_first_not_of("0123456789abcdef")==std::string::npos &&
            s.find_first_not_of('0')!=std::string::npos;

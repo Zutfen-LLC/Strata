@@ -31,8 +31,8 @@ bool ExpertWorkerGroup::validate(const std::vector<Open>& options, const std::ve
     std::set<std::pair<std::string,uint16_t>> endpoints;
     std::vector<uint8_t> covered(expected.size(), 0);
     for (const auto& o : options) {
-        if(!o.packed_qualification.empty() && (!packed_qualification_valid(o.packed_qualification) ||
-            o.diagnostic_regroup || o.diagnostic_ordered))return refuse("invalid packed qualification/diagnostic mode");
+        if(!o.packed_qualification.empty() && !packed_qualification_valid(o.packed_qualification))
+            return refuse("invalid packed qualification");
         CpuEndpoint endpoint;
         if (!parse_cpu_endpoint(o.host + ":" + std::to_string(o.port), endpoint) ||
             !endpoints.emplace(o.host,o.port).second || o.deadline_ms < 1 || o.setup_ms < 1)
@@ -67,7 +67,8 @@ bool ExpertWorkerGroup::open(const std::vector<Open>& options, const std::vector
     layers_=options[0].n_layers;experts_=options[0].n_expert;H_=options[0].n_embd;
     entry_rows_=options[0].entry_rows;row_reduce_ms_=0;
     packed_requested_=false;pack_calls_=quantized_rows_=pack_ns_=0;pack_reason_.clear();
-    for(const auto& o:options)packed_requested_|=!o.packed_qualification.empty();
+    for(const auto& o:options)packed_requested_|=o.packed_requests && !o.packed_qualification.empty() &&
+        !o.diagnostic_regroup && !o.diagnostic_ordered;
     if(packed_requested_)strata::kernels::cpu::native_fmt(options[0].gu_type,options[0].d_type,
         H_,options[0].n_ff,packed_fmt_,pack_reason_);
     owners_.assign((size_t)layers_*experts_,-1);stats_={};stopping_=window_=false;

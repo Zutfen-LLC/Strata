@@ -42,28 +42,30 @@ struct Proxy {
             std::vector<uint8_t> request,response;
             while(!stopping.load() && frame(front,request)) {
                 const uint16_t msg=request[4]|(request[5]<<8);
+                const bool infer=msg==MSG_INFER || msg==MSG_INFER_ROWS || msg==MSG_INFER_PACKED || msg==MSG_INFER_ROWS_PACKED;
+                const bool rows=msg==MSG_INFER_ROWS || msg==MSG_INFER_ROWS_PACKED;
                 const bool probe=msg==MSG_STATUS && request.size()==kHeaderBytes+16;
                 if(probe && old_status)encode_frame(request,MSG_STATUS,ST_OK,nullptr,0);
                 if(msg==MSG_LOCAL_SETUP && refuse_rows && request.size()>=kHeaderBytes+8 && (request[kHeaderBytes+4]&kLocalEntryRows)) {
                     ++setups;std::vector<uint8_t> refused;encode_frame(refused,MSG_LOCAL_SETUP_ACK,ST_LOCAL_UNAVAILABLE,nullptr,0);
                     sock::send_all(front,refused.data(),refused.size(),3000);break; // retained old-worker flag refusal
                 }
-                if(msg==MSG_INFER || msg==MSG_INFER_ROWS) {
+                if(infer) {
                     std::unique_lock<std::mutex> lock(gate.mutex);++gate.entered;gate.wake.notify_all();
                     if(!gate.wake.wait_for(lock,std::chrono::seconds(3),[&]{return gate.released[index];}))break;
                     if(drop)break;
                 }
                 if(!sock::send_all(back,request.data(),request.size(),3000) || !frame(back,response))break;
                 if(probe && bad_caps && response.size()==kHeaderBytes+20)response.back()^=1;
-                if((msg==MSG_INFER || msg==MSG_INFER_ROWS) && (nonfinite || overflow) && response.size()>=kHeaderBytes+26) {
+                if(infer && (nonfinite || overflow) && response.size()>=kHeaderBytes+26) {
                     // INFER_ACK starts session/sequence then F32 partials. Preserve framing/identity.
                     const uint32_t nan=overflow?0x7f7fffffu:0x7fc00000u;
-                    const size_t offset=msg==MSG_INFER_ROWS?22:16;
+                    const size_t offset=rows?22:16;
                     for(int i=0;i<4;++i)response[kHeaderBytes+offset+i]=(uint8_t)(nan>>(8*i));
                 }
-                if(msg==MSG_INFER_ROWS && wrong_sequence)response[kHeaderBytes+8]^=1;
+                if(rows && wrong_sequence)response[kHeaderBytes+8]^=1;
                 if(!sock::send_all(front,response.data(),response.size(),3000))break;
-                if(msg==MSG_INFER || msg==MSG_INFER_ROWS) {std::lock_guard<std::mutex> lock(gate.mutex);gate.completed.push_back(index);gate.wake.notify_all();}
+                if(infer) {std::lock_guard<std::mutex> lock(gate.mutex);gate.completed.push_back(index);gate.wake.notify_all();}
             }
             sock::close_fd(front);sock::close_fd(back);
         }
@@ -171,6 +173,35 @@ void native(bool rows=false,int packed_mode=0) {
             borrowed.x.assign(2560,99.f);borrowed.ids.assign(2,0);borrowed.w.assign(2,99.f);
             require(group.finish(err),err);Input immutable(1);reference(f,group,immutable,count,rows);
         }
+        group.close();
+    }
+}
+void default_selection() {
+    check(WorkerOptions{}.packed_requests && ExpertWorkerTier::Open{}.packed_requests,
+          "automatic preference is the default independently of qualification");
+    Fixture f;
+    for(bool rows:{false,true}) for(int mode:{0,1,2,3}) {
+        auto settings=f.options();settings.residency_forever=true;
+        if(mode==1 || mode==2)settings.packed_qualification="123456789abcdef1";
+        if(mode==2)settings.packed_requests=false;
+        if(mode==3)settings.packed_qualification.clear();
+        Service service(settings);
+        auto o=option(f,service.port,{3,3});o.entry_rows=rows;
+        check(o.packed_qualification==default_packed_qualification(),"sender inherits build eligibility");
+        if(mode==1 || mode==2)o.packed_qualification=settings.packed_qualification;
+        if(mode==1)o.packed_requests=false;
+        if(mode==3)o.packed_qualification.clear();
+        ExpertWorkerGroup group;std::string err;require(group.open({o},{3,3},err),err);
+        Input in(2);require(in.post(group,err) && group.finish(err),err);reference(f,group,in,1,rows);
+        const bool expected=mode==0 && !default_packed_qualification().empty();
+        check(group.peer_stats(0).packed_requests==(expected?1u:0u),
+              "qualified defaults pack without runtime opt-in; raw override/unqualified stay raw");
+        check(group.peer_stats(0).raw_fallbacks==((mode==2)?1u:0u),
+              "receiver raw override declines capability; sender override skips packing entirely");
+        std::string report;group.report(report);
+        if(!expected)check(report.find("quantized_rows=0")!=std::string::npos ||
+                           report.find("quantized_rows=")==std::string::npos,
+                           "raw selection does no sender quantization");
         group.close();
     }
 }
@@ -349,7 +380,7 @@ void float_codec_edges() {
 }
 int main(int argc,char** argv) {
     if(argc==2 && std::string(argv[1])=="--packed") {
-        try {packed_capability();native(false,1);native(true,1);native(true,2);}
+        try {default_selection();packed_capability();native(false,1);native(true,1);native(true,2);}
         catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}
         std::printf("CPU_PACKED_GROUP failures=%d models=0\n",failures);return failures?1:0;
     }

@@ -1689,6 +1689,19 @@ if(STRATA_NATIVE_EXPERTS)
   add_library(strata_expert_worker STATIC src/worker/packed_activation.cpp src/worker/expert_wire.cpp src/worker/expert_worker.cpp
               src/worker/expert_client.cpp src/worker/wire_sock.cpp src/worker/local_source.cpp
               src/worker/rpc_timing.cpp src/worker/local_loader.cpp)
+  # Set only when these native build artifacts have an existing verified pair record.
+  # No ID is inferred from source, ISA, compiler or format support alone.
+  set(STRATA_CPU_PACKED_QUALIFICATION "" CACHE STRING "Verified packed activation build-pair ID (16 lowercase hex)")
+  if(NOT STRATA_CPU_PACKED_QUALIFICATION STREQUAL "")
+    string(LENGTH "${STRATA_CPU_PACKED_QUALIFICATION}" packed_id_length)
+    if(NOT packed_id_length EQUAL 16 OR
+       NOT STRATA_CPU_PACKED_QUALIFICATION MATCHES "^[0-9a-f]+$" OR
+       STRATA_CPU_PACKED_QUALIFICATION STREQUAL "0000000000000000")
+      message(FATAL_ERROR "STRATA_CPU_PACKED_QUALIFICATION must be a nonzero 16 lowercase hex verified build-pair ID")
+    endif()
+    target_compile_definitions(strata_expert_worker PRIVATE
+      STRATA_CPU_PACKED_QUALIFICATION="${STRATA_CPU_PACKED_QUALIFICATION}")
+  endif()
   target_include_directories(strata_expert_worker PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_include_directories(strata_expert_worker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/worker ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
   target_link_libraries(strata_expert_worker PUBLIC strata_kernels_cpu)

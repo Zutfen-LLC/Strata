@@ -28,7 +28,7 @@ void usage() {
         stderr,
         "usage: strata-expert-worker [--port P] [--memory-budget-mib N] [--workers N] "
         "[--deadline-ms N] [--verbose] [--tcp-nodelay] [--rpc-timing] "
-        "[--residency-ms N | --residency-forever] [--packed-qualification 16_HEX]\n"
+        "[--residency-ms N | --residency-forever] [--packed-qualification 16_HEX] [--raw-requests]\n"
         "       [--local-root DIR --local-manifest FILE] [--local-upload-fallback] [--local-setup-ms N]\n"
         "       [--local-load-threads N] (1..4, default 4; separate from inference --workers)\n"
         "       [--bind-ip IPv4 --allow-peer-ip IPv4 [--allow-peer-ip IPv4 ...]]\n"
@@ -107,6 +107,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--residency-forever") opt.residency_forever = true;
         else if (a == "--tcp-nodelay") opt.accepted_tcp_nodelay = true;
+        else if (a == "--raw-requests") opt.packed_requests = false;
         else if (a == "--packed-qualification") {
             if(i+1>=argc || !strata::worker::packed_qualification_valid(argv[i+1])){usage();return 2;}
             opt.packed_qualification=argv[++i];
