@@ -1,0 +1,42 @@
+[
+  {
+    "case": "q8-positive",
+    "input_bits": [
+      "3f804008",
+      "44802000",
+      "c4806000"
+    ],
+    "fused_rne_bits": "3b401000",
+    "separate_rne_bits": "3b400000"
+  },
+  {
+    "case": "q8-negative",
+    "input_bits": [
+      "3f804008",
+      "c4802000",
+      "44806000"
+    ],
+    "fused_rne_bits": "bb401000",
+    "separate_rne_bits": "bb400000"
+  },
+  {
+    "case": "cancellation",
+    "input_bits": [
+      "3f800001",
+      "3f7ffffe",
+      "bf800000"
+    ],
+    "fused_rne_bits": "a8800000",
+    "separate_rne_bits": "00000000"
+  },
+  {
+    "case": "control",
+    "input_bits": [
+      "3f800000",
+      "40000000",
+      "40400000"
+    ],
+    "fused_rne_bits": "40a00000",
+    "separate_rne_bits": "40a00000"
+  }
+]
