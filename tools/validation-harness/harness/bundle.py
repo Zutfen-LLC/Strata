@@ -128,6 +128,14 @@ def validate(cfg, source):
     if cfg.get('capture_first_logits'):
         if type(cfg['capture_first_logits']) is not bool or 'STRATA_DUMP_FIRST_LOGITS' in cfg['env']:
             raise ValueError('first-logit capture uses unique arm paths; remove the global dump prefix')
+    trace_path = cfg['env'].get('STRATA_FIRST_REQUEST_TRACE')
+    if trace_path:
+        if not cfg.get('capture_first_logits') or len(cfg['arms']) != 1 or \
+           cfg['arms'][0]['requests'] != [0] or cfg['arms'][0].get('reference'):
+            raise ValueError('first-request trace needs one captured request-zero arm and no token reference')
+        path = pathlib.Path(trace_path)
+        if not path.is_absolute() or path != root/(cfg['arms'][0]['name']+'.trace') or path.exists() or path.is_symlink():
+            raise ValueError('first-request trace needs a new unique file directly inside run_root')
     allowed = os.sched_getaffinity(0)
     lines = [line for line in pathlib.Path(cfg['assets']['requests']).read_text().splitlines() if line.startswith('GEN ')]
     if not lines or len(lines) > 64 or any(not line.startswith('GEN ') or len(line) > 16000 for line in lines):

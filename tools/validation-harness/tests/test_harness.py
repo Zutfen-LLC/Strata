@@ -224,6 +224,141 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(execute.call_count, 1)
         self.assertEqual(execute.call_args.args[0], 'raw')
 
+    def test_first_request_trace_staging_preserves_gen_env_and_unique_paths(self):
+        original = 'GEN 256 ' + ','.join(map(str, range(38)))
+        pathlib.Path(self.cfg['assets']['requests']).write_text(original+'\n')
+        self.cfg.update(capture_first_logits=True, attach_root=str(self.root), attached_worker_idle=True,
+                        cpu_route='group')
+        self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')] = '--remote-cpu-worker'
+        self.cfg['argv'] += ['--remote-cpu-entry-rows', '--remote-cpu-resident',
+                             '--prefill', '64', '--spec', '2', '--max-context', '1024']
+        self.arm.update(restart=False, requests=[0], placement_markers=[C.CPU_ROWS_OLD])
+        paths = []
+        for name in ('A0', 'B'):
+            self.arm['name'] = name
+            self.cfg['run_root'] = str(self.root/name)
+            self.cfg['env']['STRATA_FIRST_REQUEST_TRACE'] = str(self.root/name/(name+'.trace'))
+            if name == 'B':
+                self.cfg['external_gpu_rows'] = True
+                plan = self.root/'gpu.plan'; plan.write_text('synthetic plan')
+                self.cfg['assets']['gpu_plan'] = str(plan)
+                for port in range(29431, 29435):
+                    self.cfg['argv'] += ['--remote-gpu-worker', '127.0.0.1:'+str(port), '@gpu_plan']
+            with patch('subprocess.Popen') as spawn:
+                root = self.stage()
+            spawn.assert_not_called()
+            with patch.object(bundle.shutil, 'which', return_value='/synthetic/nvidia-smi'):
+                cfg = bundle.verify(root)
+            derived = driver.arm_config(cfg, cfg['arms'][0])
+            self.assertEqual(cfg['request_lines'], [original])
+            self.assertEqual(pathlib.Path(cfg['assets']['requests']).read_text(), original+'\n')
+            self.assertEqual(derived['argv'], cfg['argv'])
+            self.assertEqual(derived['env']['STRATA_FIRST_REQUEST_TRACE'], str(root/(name+'.trace')))
+            self.assertEqual(derived['env']['STRATA_DUMP_FIRST_LOGITS'], str(root/(name+'-first-logits')))
+            self.assertEqual(derived['max_requests'], 1)
+            self.assertFalse(pathlib.Path(derived['env']['STRATA_FIRST_REQUEST_TRACE']).exists())
+            expected = C.CPU_ROWS_ORDERED if name == 'A0' else C.CPU_ROWS_MIXED
+            self.assertEqual(derived['placement_markers'], [expected])
+            paths.append(derived['env']['STRATA_FIRST_REQUEST_TRACE'])
+        self.assertEqual(len(set(paths)), 2)
+
+    def test_first_request_trace_bad_config_refused_before_launch(self):
+        self.cfg.update(capture_first_logits=True, attach_root=str(self.root), attached_worker_idle=True)
+        self.arm.update(restart=False, requests=[0])
+        self.cfg['env']['STRATA_FIRST_REQUEST_TRACE'] = str(pathlib.Path(self.cfg['run_root'])/'A0.trace')
+        original = copy.deepcopy(self.cfg)
+        for fault in ('multiple-arms', 'no-capture', 'wrong-request', 'token-reference', 'relative-path', 'outside-root', 'existing'):
+            with self.subTest(fault=fault):
+                self.cfg = copy.deepcopy(original)
+                if fault == 'multiple-arms': self.cfg['arms'].append(dict(self.arm, name='B'))
+                elif fault == 'no-capture': self.cfg['capture_first_logits'] = False
+                elif fault == 'wrong-request': self.cfg['arms'][0]['requests'] = []
+                elif fault == 'token-reference': self.cfg['arms'][0]['reference'] = 'retained-reference'
+                elif fault == 'relative-path': self.cfg['env']['STRATA_FIRST_REQUEST_TRACE'] = 'A0.trace'
+                elif fault == 'outside-root': self.cfg['env']['STRATA_FIRST_REQUEST_TRACE'] = str(self.root/'outside.trace')
+                elif fault == 'existing':
+                    existing = pathlib.Path(self.cfg['run_root']); existing.mkdir()
+                    (existing/'A0.trace').write_text('preserve')
+                with patch('subprocess.Popen') as spawn, self.assertRaisesRegex(ValueError, 'first-request trace'):
+                    self.stage()
+                spawn.assert_not_called()
+        self.assertEqual((pathlib.Path(original['run_root'])/'A0.trace').read_text(), 'preserve')
+
+    def test_first_request_trace_real_broker_done_zero_and_original_gen(self):
+        root, config, cfg, name = self.fake_runtime()
+        original = 'GEN 256 ' + ','.join(map(str, range(38)))
+        cfg.update(request_lines=[original], max_requests=1, worker_count=1,
+                   placement_markers=[C.CPU_ROWS_OLD])
+        cfg['argv'] += ['--remote-cpu-worker', '127.0.0.1:27431', '--remote-cpu-entry-rows',
+                        '--prefill', '64', '--spec', '2', '--max-context', '1024']
+        cfg['env'] = dict(cfg['env'], STRATA_FIRST_REQUEST_TRACE=str(root/'A0.trace'),
+                          STRATA_DUMP_FIRST_LOGITS=str(root/'A0-first-logits'))
+        script = root/'child.py'
+        script.write_text("import json,os,pathlib,sys\n"
+            "print('strata generate: '+"+repr(C.CPU_ROWS_ORDERED)+",file=sys.stderr,flush=True)\n"
+            "print('strata generate: CPU group peers=1 READY reply_mode=entry_rows',file=sys.stderr,flush=True)\n"
+            "print('READY fixture',flush=True)\n"
+            "line=sys.stdin.readline().strip()\n"
+            "assert line=="+repr(original)+"\n"
+            "pathlib.Path('received-gen.json').write_text(json.dumps(line))\n"
+            "with open(os.environ['STRATA_FIRST_REQUEST_TRACE'],'xb') as f:f.write(b'synthetic trace')\n"
+            "with open(os.environ['STRATA_DUMP_FIRST_LOGITS']+'.0','xb') as f:f.write(b'synthetic logits')\n"
+            "print('DONE 0 38 1.0 1.0 trace 0 0 0 worker_entries=1',flush=True)\n"
+            "assert sys.stdin.readline().strip()=='QUIT'\n")
+        C.configure(root, cfg)
+        def cleanup_session():
+            for arm in list(C.SESSIONS): C.finish_session(arm, abort=True)
+        self.addCleanup(cleanup_session)
+        status = dict(complete=True, resident_bytes=cfg['worker_bytes'], session=0,
+                      loaded_bytes=cfg['worker_bytes'], verified_bytes=cfg['worker_bytes'], arena_allocations=1,
+                      network_weight_bytes=0, unloads=0, expirations=0, idle_remaining_ms=2**64-1)
+        def affinity(*args, **kwargs): return {'communication_threads': [{'tid': 123}]}
+        with patch.object(C, 'healthy'), patch.object(C, 'gpu_idle'), \
+             patch.object(C, 'wstatus', return_value={'status': status, 'legacy': {'failures': 0}}):
+            result = C.run_arm('A0', cfg, [0], affinity)
+        self.assertEqual(result['tokens_total'], 0)
+        self.assertEqual(result['requests'][0]['tokens'], [])
+        state = json.loads((root/'A0/state.json').read_text())
+        self.assertEqual(C.parse_done(state['done']['line'])['finish'], 'trace')
+        self.assertEqual((state['completed'], state['requests_sent'], state['exit_rc']), (1, 1, 0))
+        self.assertIsNone(state['failure'])
+        self.assertEqual(json.loads((root/'received-gen.json').read_text()), original)
+        launch = json.loads((root/'A0/launch.json').read_text())
+        self.assertEqual(launch['argv'], cfg['argv'])
+        for key in ('STRATA_FIRST_REQUEST_TRACE', 'STRATA_DUMP_FIRST_LOGITS'):
+            self.assertEqual(launch['env'][key], cfg['env'][key])
+        self.assertEqual((root/'A0.trace').read_bytes(), b'synthetic trace')
+        self.assertEqual((root/'A0-first-logits.0').read_bytes(), b'synthetic logits')
+        self.assertFalse(C.SESSIONS)
+
+    def test_first_request_trace_requires_expected_done_without_changing_normal_modes(self):
+        self.configure_control()
+        arm = self.root/'A0'; arm.mkdir()
+        (arm/'stdout.log').write_text('')
+        (arm/'stderr.log').write_text('')
+        base = dict(self.cfg, placement_markers=[])
+        C.ARM_LINES = ['GEN 256 '+','.join(map(str, range(38)))]
+        for enabled, finish, count, rejected in [(True,'length',0,True), (True,'trace',1,True),
+                                                  (False,'length',0,False)]:
+            with self.subTest(enabled=enabled, finish=finish, count=count):
+                configuration = dict(base, env={'STRATA_FIRST_REQUEST_TRACE': '/synthetic'} if enabled else {})
+                state = dict(active=False, requests_sent=1, completed=1,
+                             done={'line':f'DONE {count} 38 1 1 {finish} 0 0 0', 'mono':3})
+                def wait(*args):
+                    (arm/'stdout.log').write_text('T 1\n' if count else '')
+                    return state
+                C.SESSIONS['A0'] = object()
+                # Stop after the DONE acceptance boundary, without touching any worker.
+                class Accepted(Exception): pass
+                def affinity(session, io, **kw):
+                    if io: raise Accepted()
+                with patch.object(C,'healthy'), patch.object(C,'wstatus',return_value={}), \
+                     patch.object(C,'gpu_idle'), patch.object(C,'launch_session',return_value={'ready':{'mono':2},'started_mono':1}), \
+                     patch.object(C,'rpc',return_value={'sent':{'mono':2}}), patch.object(C,'wait_session',side_effect=wait):
+                    with self.assertRaisesRegex(RuntimeError,'requires DONE 0') if rejected else self.assertRaises(Accepted):
+                        C.run_arm('A0',configuration,[0],affinity)
+                C.SESSIONS.clear()
+
     def test_endpoint_mismatch_rejected(self):
         self.cfg['port'] += 1
         with self.assertRaisesRegex(ValueError, 'port mismatch'): self.stage()

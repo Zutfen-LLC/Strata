@@ -65,7 +65,8 @@ services untouched. Do not make diagnostic STATUS calls during an engine session
 
 Use the launch/config/request assets under the retained
 `strata-fanout-live-982ea405/A0` and `B-recovery` roots as bindings. Do not edit
-those evidence roots. Make two fresh diagnostic configs/run roots and change only:
+those evidence roots. Make two fresh diagnostic configs/run roots, each with exactly one arm (named
+`A0` and `B` respectively), and change only:
 
 | Binding | A0 trace | B trace |
 | --- | --- | --- |
@@ -189,3 +190,63 @@ compiler/device in this desktop environment. SYCL has its own unchanged source
 copies. Keep PR 10 as a draft until applicable compilation and the focused CUDA
 checks run. Default-path preservation is supported by guarded allocation/I/O and
 unchanged arithmetic/call order in source, not by an unperformed hardware run.
+
+## Focused bundle/run compatibility check
+
+The existing broker accepts `DONE 0 ... trace` and the existing campaign token
+count check accepts zero `T` lines. The request asset and its GEN256 line survive
+staging byte for byte. `arm_config` preserves the configured trace environment
+and adds the existing unique first-logit prefix. No broker or request rewrite was
+needed. The known old placement marker is normalized to the actual A0/B ordered
+readiness contract; the existing exact checks remain in force.
+
+A narrow harness correction requires finish `trace` and output count zero only
+when `env.STRATA_FIRST_REQUEST_TRACE` is nonempty. Without that check, an unintended
+early finish could have been accepted as a successful diagnostic request. Normal
+runs keep their existing DONE and reference acceptance rules.
+
+Preflight now requires one `[0]` arm, `capture_first_logits: true`, no token-array
+`reference`, and the exact fresh path `<run_root>/<arm.name>.trace`. This prevents
+sharing one global trace filename between multiple arms or colliding with staged
+files. The two separate configs above satisfy it. Keep
+`env.STRATA_DUMP_FIRST_LOGITS` absent: the driver sets that variable per arm.
+`first_logits_reference` may remain on A0 to gate it against its retained exact
+raw-F32 reference; do not apply A0's exact-logit reference to B.
+
+Precise diagnostic-only config delta, applied separately to retained A0 and B:
+
+```python
+cfg['run_root'] = new_absolute_arm_run_root
+arm['name'] = 'A0'  # 'B' in the second config
+arm['restart'] = False
+arm['requests'] = [0]
+arm.pop('reference', None)
+cfg['arms'] = [arm]
+cfg['capture_first_logits'] = True
+cfg['env'].pop('STRATA_DUMP_FIRST_LOGITS', None)
+cfg['env']['STRATA_FIRST_REQUEST_TRACE'] = str(Path(cfg['run_root']) / (arm['name'] + '.trace'))
+# Select the built trace engine asset. Keep every other original binding unchanged.
+```
+
+Passed locally: four new synthetic harness tests plus the existing focused
+A0/B entry-row startup-marker test. The real broker test uses only a tiny Python
+fake engine, local Unix socket and fake monitor. Worker health/status, GPU idle
+checks and affinity receipts are mocked; no real service is contacted. It checks
+unchanged GEN256 with 38 IDs, actual inherited environment and launch argv,
+zero tokens, finish `trace`, normal QUIT, owner exit and reaping. Other tests check
+fresh separate A0/B staging (including four configured synthetic CUDA peers),
+unchanged request assets and scheduling flags, bad diagnostic configs rejected
+before process launch, wrong diagnostic stop/count rejection, and unchanged
+normal-mode acceptance.
+
+```sh
+python -m unittest discover -s tools/validation-harness/tests -p test_harness.py -k first_request_trace -v
+python -m unittest discover -s tools/validation-harness/tests -p test_harness.py -k entry_row_startup_markers -v
+```
+
+The initial socket test was blocked by the desktop sandbox's Unix-socket bind
+restriction. Re-running the same bounded local test with approved sandbox
+escalation passed. An existing campaign log-handle ResourceWarning was observed;
+it did not fail the test. No full harness suite, fleet action or live request was
+run for this tooling correction. Engine source/binary behavior is unchanged from
+the trace implementation commit; only fresh harness helper staging is needed.

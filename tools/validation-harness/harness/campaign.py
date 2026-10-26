@@ -378,6 +378,9 @@ def run_arm(arm, session_config, indices, affinity):
         done = parse_done(st['done']['line']); log = path.read_text()
         tokens = tokens_between(log, offset, len(log))
         if len(tokens) != done['output_count']: raise RuntimeError('token count mismatch')
+        if session_config.get('env', {}).get('STRATA_FIRST_REQUEST_TRACE') and \
+           (done['finish'] != 'trace' or done['output_count'] != 0):
+            raise RuntimeError('first-request trace requires DONE 0 with finish trace')
         report = affinity(arm, True)
         tids = report['communication_threads']
         limit=session_config.get('communication_limit',1)
