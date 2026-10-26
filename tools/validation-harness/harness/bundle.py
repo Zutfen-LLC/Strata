@@ -54,6 +54,27 @@ def cpu_route_flag(cfg):
     return '--remote-cpu-worker' if route == 'group' else '--remote-cpu-experts'
 
 
+def validate_network_gpu(cfg):
+    argv=cfg['argv']
+    gpu=any(a.startswith('--remote-gpu-') for a in argv)
+    if '--gpu' in argv: raise ValueError('unsupported GPU visibility override')
+    if not gpu: return
+    if cfg.get('external_gpu_rows') is not True or cfg.get('cpu_route')!='group' or not cfg.get('attach_root') or \
+       cfg.get('final_worker')!='retain' or cfg.get('failure_worker')!='retain' or \
+       argv.count('--remote-cpu-worker')!=1 or '--remote-cpu-entry-rows' not in argv or '--remote-cpu-resident' not in argv or \
+       any(a in argv for a in ('--remote-cpu-local-fallback','--remote-cpu-regroup-diagnostic','--remote-gpu-experts','--remote-gpu-plan')):
+        raise ValueError('network GPUs require explicit external row peers and one retained CPU group')
+    if not 1<=argv.count('--remote-gpu-worker')<=8: raise ValueError('network GPU peer count')
+    endpoints=set()
+    for i,a in enumerate(argv):
+        if a!='--remote-gpu-worker':continue
+        if i+2>=len(argv):raise ValueError('missing GPU endpoint/plan')
+        host,port=argv[i+1].rsplit(':',1)
+        if ipaddress.ip_address(host)!=ipaddress.ip_address('127.0.0.1') or not 1<=int(port)<=65535 or argv[i+1] in endpoints:
+            raise ValueError('external GPU peers require distinct existing loopback forwards')
+        endpoints.add(argv[i+1])
+
+
 def validate(cfg, source):
     imports(source)  # parse sources and resolve dependencies; never import the side-effecting owners
     if cfg.get('role') == 'worker': return validate_worker(cfg)
@@ -101,8 +122,7 @@ def validate(cfg, source):
         raise ValueError('retained runtime sequence requires explicit service-owned residency')
     if not isinstance(cfg['gpu_uuids'], list) or not 1 <= len(cfg['gpu_uuids']) <= 8 or any(not isinstance(v,str) or not v for v in cfg['gpu_uuids']):
         raise ValueError('explicit GPU visibility list required')
-    if any(arg.startswith('--remote-gpu-') or arg == '--gpu' for arg in cfg['argv']):
-        raise ValueError('retained engine broker does not support network GPU modes')
+    validate_network_gpu(cfg)
     if 'STRATA_ARENA_MMAP' in cfg['env'] or 'STRATA_PRIMARY_DEVICE' in cfg['env']:
         raise ValueError('unsupported engine environment override')
     if cfg.get('capture_first_logits'):

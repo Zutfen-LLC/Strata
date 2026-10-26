@@ -48,6 +48,24 @@ class HarnessTests(unittest.TestCase):
             worker_bytes=1024, arms=[self.arm], final_worker='retain', failure_worker='retain',
             startup_seconds=5, worker_start_seconds=5, request_seconds=5, shutdown_seconds=5, cleanup_seconds=2)
 
+    def test_external_gpu_rows_are_narrowly_opted_in(self):
+        cfg=copy.deepcopy(self.cfg)
+        cfg.update(external_gpu_rows=True,cpu_route='group',attach_root=str(self.root))
+        cfg['argv']=['@engine','--remote-cpu-worker','127.0.0.1:27431',
+                     '--remote-cpu-entry-rows','--remote-cpu-resident',
+                     '--remote-gpu-worker','127.0.0.1:29431','/fixed.plan']
+        bundle.validate_network_gpu(cfg)
+        derived=driver.arm_config(cfg,self.arm)
+        self.assertTrue(derived['external_gpu_rows'])
+        for key,value in [('external_gpu_rows',False),('cpu_route','legacy'),('attach_root',''),('failure_worker','stop')]:
+            bad=copy.deepcopy(cfg);bad[key]=value
+            with self.assertRaises(ValueError):bundle.validate_network_gpu(bad)
+        for argv in [cfg['argv']+['--remote-cpu-local-fallback'],
+                     cfg['argv']+['--remote-gpu-worker','127.0.0.1:29431','/other.plan'],
+                     [a.replace('127.0.0.1:29431','192.0.2.1:29431') for a in cfg['argv']]]:
+            bad=copy.deepcopy(cfg);bad['argv']=argv
+            with self.assertRaises(ValueError):bundle.validate_network_gpu(bad)
+
     def cleanup_children(self):
         for child in self.children:
             if child.poll() is None: child.kill()

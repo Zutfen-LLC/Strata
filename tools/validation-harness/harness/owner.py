@@ -44,7 +44,10 @@ try:
     ENV = dict(CFG['env'])
     ENV['CUDA_VISIBLE_DEVICES'] = ','.join(CFG['gpu_uuids'])
     assert 'STRATA_ARENA_MMAP' not in ENV and 'STRATA_PRIMARY_DEVICE' not in ENV
-    assert not any(a.startswith('--remote-gpu-') or a in ['--gpu'] for a in ARGV)
+    if any(a.startswith('--remote-gpu-') for a in ARGV):
+        import bundle
+        bundle.validate_network_gpu(CFG)
+    assert '--gpu' not in ARGV
     atomic(D/'launch.json', {'argv':ARGV,'env':ENV,'limits':pathlib.Path('/proc/self/limits').read_text(),'wall':time.time(),'mono':time.monotonic()})
     ENGINE = subprocess.Popen(ARGV, env=ENV, cwd=str(R), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
     STATE['engine'] = identity(ENGINE.pid)
