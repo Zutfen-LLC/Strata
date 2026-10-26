@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
 project(strata_amd_expert_probe LANGUAGES C CXX)
+if(WIN32)
+  message(FATAL_ERROR "The experimental Vulkan executor requires the POSIX GpuCache")
+endif()
 
 # Standalone diagnostic project: the production build graph and defaults are untouched.
 option(STRATA_AMD_PROBE_VULKAN "Link the Vulkan diagnostic backend" ON)
@@ -16,9 +19,18 @@ set(GGML_VULKAN ${STRATA_AMD_PROBE_VULKAN} CACHE BOOL "" FORCE)
 set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "" FORCE)
 add_subdirectory(../.. strata EXCLUDE_FROM_ALL)
 
+# This opt-in target is intentionally absent from the production build graph.
+add_library(strata_vulkan_executor STATIC ../../src/worker/vulkan_executor.cpp)
+target_compile_features(strata_vulkan_executor PUBLIC cxx_std_17)
+target_compile_definitions(strata_vulkan_executor PUBLIC STRATA_AMD_EXECUTOR_HOST_TEST=1)
+target_link_libraries(strata_vulkan_executor PUBLIC strata_gpu_assets ggml-base ggml-cpu)
+if(STRATA_AMD_PROBE_VULKAN)
+  target_compile_definitions(strata_vulkan_executor PRIVATE STRATA_AMD_PROBE_VULKAN=1)
+  target_link_libraries(strata_vulkan_executor PRIVATE ggml-vulkan)
+endif()
 add_executable(strata-vulkan-q8-expert vulkan_q8_expert.cpp)
 target_compile_features(strata-vulkan-q8-expert PRIVATE cxx_std_17)
-target_link_libraries(strata-vulkan-q8-expert PRIVATE strata_kernels_cpu ggml-cpu ggml-base)
+target_link_libraries(strata-vulkan-q8-expert PRIVATE strata_vulkan_executor strata_kernels_cpu ggml-cpu ggml-base)
 if(STRATA_AMD_PROBE_VULKAN)
   target_compile_definitions(strata-vulkan-q8-expert PRIVATE STRATA_AMD_PROBE_VULKAN=1)
   target_link_libraries(strata-vulkan-q8-expert PRIVATE ggml-vulkan)
@@ -28,3 +40,7 @@ enable_testing()
 add_test(NAME amd_q8_expert_host COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/test_vulkan_q8_expert.py $<TARGET_FILE:strata-vulkan-q8-expert>)
 set_tests_properties(amd_q8_expert_host PROPERTIES TIMEOUT 120)
+
+add_test(NAME amd_vulkan_adapter_host COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_vulkan_executor.py $<TARGET_FILE:strata-vulkan-q8-expert>)
+set_tests_properties(amd_vulkan_adapter_host PROPERTIES TIMEOUT 120)
