@@ -1,7 +1,7 @@
 """Metadata-only export for the fixed 48x512 Q8_0 primary + one-helper experiment.
 
-Matches generate.cpp's non-per-layer profile fill and RemoteExperts::open's
-single fixed-helper scan. Refuses other placement shapes; starts no processes.
+Matches generate.cpp's fixed profile fill, ExpertCache's per-layer admission
+when requested, and RemoteExperts::open's single fixed-helper scan. Refuses other placement shapes; starts no processes.
 """
 import argparse
 import hashlib
@@ -21,7 +21,7 @@ def export(launch, profile, expected_sha, out):
         return argv[argv.index(flag) + 1]
     if value('--expert-cache') != '960' or value('--expert-cache-device1') != '1378':
         raise ValueError('requires fixed primary960/helper1378')
-    forbidden = ('--expert-cache-per-layer', '--layer-split', '--peer-device',
+    forbidden = ('--layer-split', '--peer-device',
                  '--expert-cache-device2', '--expert-cache-device3', '--expert-profile-save')
     if any(flag in argv for flag in forbidden): raise ValueError('unsupported placement transform/tier')
     profile = Path(profile)
@@ -36,13 +36,29 @@ def export(launch, profile, expected_sha, out):
     ranked = read_profile(profile)
     if len(set(ranked)) != count or set(ranked) != {(l,e) for l in range(48) for e in range(512)}:
         raise ValueError('duplicate/missing/out-of-range profile pair')
-    # Primary fixed admission; helper skips primary and takes its first N unique pairs.
-    local = set(ranked[:960+1378]); cpu = [p for p in ranked if p not in local]
+    # generate.cpp scans the complete profile in per-layer mode. ExpertCache::admit
+    # stops each layer at layer_slot_range's quota; it does not stop at rank 960.
+    per_layer = '--expert-cache-per-layer' in argv
+    if argv.count('--expert-cache-per-layer') > 1: raise ValueError('duplicate per-layer flag')
+    primary=[]; used=[0]*layers
+    for pair in ranked:
+        layer=pair[0]
+        quota=960//layers + (960%layers if layer==layers-1 else 0)
+        if per_layer and used[layer]>=quota: continue
+        if not per_layer and len(primary)>=960: break
+        primary.append(pair);used[layer]+=1
+    if len(primary)!=960: raise ValueError('primary selection did not fill 960 slots')
+    # RemoteExperts::open scans the original ranking, skipping primary residents.
+    primary_set=set(primary)
+    helper=[pair for pair in ranked if pair not in primary_set][:1378]
+    if len(helper)!=1378: raise ValueError('helper selection did not fill 1378 slots')
+    local=primary_set|set(helper); cpu = [p for p in ranked if p not in local]
     if len(cpu) != 22238: raise ValueError('CPU backing count mismatch')
     root = Path(out); root.mkdir(exist_ok=False)
     def write(name, pairs):
         (root/name).write_text(''.join(f'{l} {e}\n' for l,e in pairs))
-    write('local.txt', ranked[:2338]); write('cpu.txt', cpu)
+    write('primary.txt',primary);write('helper.txt',helper)
+    write('local.txt',[pair for pair in ranked if pair in local]);write('cpu.txt', cpu)
     bitmap = bytearray(48*64)
     for l,e in cpu: bitmap[l*64+e//8] |= 1 << (e%8)
     (root/'cpu.bitmap').write_bytes(bitmap)
@@ -54,7 +70,8 @@ def export(launch, profile, expected_sha, out):
         rows.append(dict(peer=name,experts=cap,assigned_bytes=cap*EXPERT_BYTES,payload_cap_bytes=gib*(1<<30)))
     report=dict(profile_sha256=expected_sha,local_experts=2338,cpu_experts=len(cpu),
                 cpu_bytes=len(cpu)*EXPERT_BYTES,cpu_bitmap_sha256=hashlib.sha256(bitmap).hexdigest(),peers=rows,
-                source_weight_read=0,selection='fixed profile prefix; disjoint contiguous CPU-rank slices')
+                source_weight_read=0,primary_per_layer=per_layer,primary_layer_counts=used,
+                selection='per-layer profile admission' if per_layer else 'global profile prefix')
     (root/'assignments.json').write_text(json.dumps(report,indent=2)+'\n')
     return report
 

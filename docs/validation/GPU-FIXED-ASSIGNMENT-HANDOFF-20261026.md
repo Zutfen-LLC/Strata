@@ -11,9 +11,12 @@ The existing metadata planner needs explicit assignments. The bounded
 `tools/export_fixed_gpu_assignments.py` now derives them without loading a model,
 using the existing `make_profile.read_profile` reader. It accepts only a complete
 unique version-1 48x512 ranking, a pinned profile SHA256, fixed primary960/helper1378,
-and no per-layer/multiple-helper/peer/layer-split selection. These are the engine's
-fixed profile-prefix fill followed by the single helper's scan excluding primary
-entries. It exports the exact complement bitmap and disjoint CPU-rank slices.
+and no multiple-helper/peer/layer-split selection. Without per-layer mode this is
+the engine's fixed global profile prefix. With the retained
+`--expert-cache-per-layer` flag, it scans the entire ranking and admits the first
+20 pairs in each of 48 layers, matching `ExpertCache::layer_slot_range` and
+`admit`. The single helper then scans the original ranking excluding those actual
+primary entries; it does not skip a global 960-pair prefix. It exports the exact complement bitmap and disjoint CPU-rank slices.
 The complete resident's setup identity remains the final authoritative reuse gate.
 
 ```sh
@@ -77,3 +80,16 @@ narrow opt-in regression. An initial sandbox run lacked socket permission; an
 intermediate unconditional import broke two standalone owner fixtures, corrected
 to import only in network mode before the final passing suite. No live process,
 model, resident, network or deployment operation was performed here.
+
+## Per-layer exporter correction
+
+The original exporter rejected the actual retained `--expert-cache-per-layer`
+flag before producing assignments. That was an exporter defect; no placement
+flag should be removed to work around it. The correction supports this exact
+mode and emits `primary.txt`, `helper.txt` and per-layer counts for inspection.
+The regression uses a deliberately layer-skewed complete ranking: global-prefix
+and per-layer ownership differ, while primary960/helper1378 and the full22238 /
+116135731200-byte backing are retained. It verifies every bitmap bit and that all
+9250 remote assignments are disjoint subsets of the corrected complement.
+Actual retained-profile execution remains a metadata-only operator check.
+Engine/worker product code remains at fd72e7a6.
