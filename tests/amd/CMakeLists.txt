@@ -18,6 +18,9 @@ set(STRATA_NATIVE_EXPERTS ON CACHE BOOL "" FORCE)
 set(GGML_VULKAN ${STRATA_AMD_PROBE_VULKAN} CACHE BOOL "" FORCE)
 set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "" FORCE)
 add_subdirectory(../.. strata EXCLUDE_FROM_ALL)
+# Diagnostic ISA witness inherits the actual ggml-cpu C flags, including -march=native.
+# No ggml source, kernel or architecture option is changed.
+target_sources(ggml-cpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/native_reference_isa.c)
 
 # This opt-in target is intentionally absent from the production build graph.
 add_library(strata_vulkan_executor STATIC ../../src/worker/vulkan_executor.cpp)

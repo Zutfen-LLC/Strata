@@ -1,5 +1,8 @@
 # Bounded Vulkan model offload acceptance
 
+For the subsequently requested single-entry native arithmetic discriminator, use
+[NATIVE_ROW_HANDOFF.md](NATIVE_ROW_HANDOFF.md). It adds no model or trace run.
+
 Track [issue #23](https://github.com/Zutfen-LLC/Strata/issues/23). This integration
 stacks on PR #30 and selectively incorporates the listener, mTLS and TCP_NODELAY
 code from PR #27; those PR branches remain independent. This is a run handoff,

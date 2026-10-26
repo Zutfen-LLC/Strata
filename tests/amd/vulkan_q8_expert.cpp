@@ -129,9 +129,11 @@ void save_rows(const std::filesystem::path& dir, const std::string& name, const 
 int run(int argc, char** argv) {
     const uint16_t endian = 1;
     require(*reinterpret_cast<const uint8_t*>(&endian) == 1,"fixture requires little-endian Q8/F32 storage");
-    std::string backend,output,capture,plan,source,blobs; int device = -1; bool native_boundaries = false, check_executor = false, check_residents = false, check_loopback = false;
+    std::string backend,output,capture,plan,source,blobs; int device = -1; bool native_boundaries = false, check_executor = false, check_residents = false, check_loopback = false, check_capture_native = false;
+    if(argc==2 && std::string(argv[1])=="--native-isa-check") {require_native_reference_isa();return 0;}
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+        if(arg=="--capture-native-check") {require(!check_capture_native,"duplicate capture native check");check_capture_native=true;continue;}
         if (arg == "--loopback-worker-check") { require(!check_loopback,"duplicate loopback check"); check_loopback=true; continue; }
         if (arg == "--resident-experts-check") { require(!check_residents,"duplicate resident check"); check_residents=true; continue; }
         if (arg == "--executor-check") { require(!check_executor,"duplicate executor check"); check_executor=true; continue; }
@@ -160,6 +162,7 @@ int run(int argc, char** argv) {
     require(cpu::native_fmt(8,8,H,F,fmt,why),why);
     require(fmt.gu_act == 8 && fmt.d_act == 8,"CPU reference activation type is not Q8_0");
     const bool captured=!capture.empty() || !plan.empty() || !source.empty() || !blobs.empty();
+    require(!check_capture_native || captured,"--capture-native-check requires capture source paths");
     require(!captured || (!capture.empty() && !plan.empty() && !source.empty() && !blobs.empty() && native_boundaries &&
             !check_executor && !check_residents && !check_loopback),"capture requires all four source paths and native boundaries, no synthetic acceptance mode");
     auto blob = captured ? std::vector<uint8_t>{} : fixture(fmt); if(!captured)save(std::filesystem::path(output)/"expert.q8_0",blob.data(),blob.size());
@@ -173,7 +176,7 @@ int run(int argc, char** argv) {
     }
 #endif
     ggml_backend_t selected = backend == "cpu" ? cpu_backend.get() : vk_backend.get();
-    if(captured) {capture_check(backend,device,selected,output,capture,plan,source,blobs);return 0;}
+    if(captured) {capture_check(backend,device,selected,output,capture,plan,source,blobs,check_capture_native);return 0;}
     ExpertGraph cpu_graph(cpu_backend.get(),fmt,blob);
     std::unique_ptr<ExpertGraph> controlled_graph;
     if (vk_backend || native_boundaries) controlled_graph = std::make_unique<ExpertGraph>(selected,fmt,blob,native_boundaries);

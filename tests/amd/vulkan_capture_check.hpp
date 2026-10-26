@@ -1,9 +1,48 @@
 #pragma once
+extern "C" unsigned strata_amd_native_reference_isa(void);
+extern "C" const char* strata_amd_native_reference_compiler(void);
+bool native_reference_qualified(unsigned flags) { return flags==7u; }
+void require_native_reference_isa() {
+    const unsigned flags=strata_amd_native_reference_isa();
+    std::printf("NATIVE_CPU_ISA compiler=%s flags=%u avx2=%u fma=%u f16c=%u avx512=%u avx_vnni=%u avx512_vnni=%u avx_vnni_int8=%u fast_math=%u qualified_avx2_non_vnni=%u\n",
+        strata_amd_native_reference_compiler(),flags,bool(flags&1),bool(flags&2),bool(flags&4),bool(flags&8),bool(flags&16),bool(flags&32),bool(flags&64),bool(flags&128),native_reference_qualified(flags));
+    require(native_reference_qualified(flags),"native arithmetic check requires qualified AVX2/FMA/F16C, non-VNNI/non-AVX512, no-fast-math ggml-cpu; no CPU parity claim");
+}
+void capture_native_check(const std::filesystem::path& output,size_t record,size_t entry,
+                          const strata::worker::InferRequest& q,const strata::worker::GpuAsset& asset,
+                          const cpu::NativeFmt& fmt,const std::vector<uint8_t>& blob,
+                          const std::vector<float>& x,const Rows& selected,const Boundaries& boundaries) {
+    std::vector<uint8_t> input_q,hidden_q;
+    const Rows native=native_reference(fmt,blob,x,input_q,hidden_q);
+    const auto prefix=output/"capture.native";
+    std::ofstream metrics(prefix.string()+".metrics.tsv");require(bool(metrics),"cannot create capture native metrics");
+    metrics << "comparison\tstage\tvalues\tbit_different_values\tmax_abs\trelative_L2\n";
+    compare(metrics,"capture.selected_vs_native",selected,native);
+    metrics.close();require(bool(metrics),"cannot finish capture native metrics");
+    const bool input_equal=input_q==boundaries.input_q,hidden_equal=hidden_q==boundaries.hidden_q;
+    save_rows(output,"capture.native",native);save_rows(output,"capture.selected",selected);
+    save(output/"capture.original_input.f32",x.data(),x.size()*4);
+    save(output/"capture.native_input.q8_0",input_q.data(),input_q.size());
+    save(output/"capture.selected_input.q8_0",boundaries.input_q.data(),boundaries.input_q.size());
+    save(output/"capture.native_hidden.q8_0",hidden_q.data(),hidden_q.size());
+    save(output/"capture.selected_hidden.q8_0",boundaries.hidden_q.data(),boundaries.hidden_q.size());
+    std::ofstream manifest(prefix.string()+".txt");
+    manifest << "record=" << record << "\nentry=" << entry << "\nlayer=" << q.layer
+             << "\nexpert=" << asset.expert << "\ntoken=" << entry/q.K << "\nT=" << unsigned(q.T) << "\nK=" << unsigned(q.K)
+             << "\nblob_digest=" << std::hex << asset.digest.a << ':' << asset.digest.b << std::dec
+             << "\nnative_isa_flags=" << strata_amd_native_reference_isa()
+             << "\ninput_q8_equal=" << input_equal << "\nhidden_q8_equal=" << hidden_equal
+             << "\nCPU_model_parity=unestablished\n";
+    manifest.close();require(bool(manifest),"cannot finish capture native manifest");
+    std::printf("CAPTURE_NATIVE_OBSERVED record=%zu entry=%zu layer=%u expert=%u token=%zu input_q8_equal=%d hidden_q8_equal=%d qualified_avx2_non_vnni=1 CPU_model_parity=unestablished\n",
+        record,entry,q.layer,asset.expert,entry/q.K,input_equal,hidden_equal);
+}
 // Bounded real routed inputs in the existing expert probe, using existing capture/plan/cache codecs.
 void capture_check(const std::string& backend,int device,ggml_backend_t selected,
                    const std::filesystem::path& output,const std::string& capture_path,
-                   const std::string& plan_path,const std::string& manifest_path,const std::string& blobs) {
+                   const std::string& plan_path,const std::string& manifest_path,const std::string& blobs,bool native_check=false) {
     using namespace strata::worker;
+    if(native_check)require_native_reference_isa();
     std::string err;
     CpuCaptureFile capture; LocalManifest manifest; GpuPlan plan,trusted;
     require(read_cpu_capture(capture_path,capture,err),err);
@@ -64,14 +103,19 @@ void capture_check(const std::string& backend,int device,ggml_backend_t selected
     unsigned fetches=0;open.fetch=[&](int64_t,int64_t,uint8_t*,uint32_t){++fetches;return false;};
     GpuWorkerTier tier;require(tier.open(open,err),err);
     GpuCounters before,after;require(tier.status(before,err),err);
-    size_t entries=0;
+    size_t entries=0;bool native_observed=false;
     for(size_t r:records) {
         auto q=capture.records[r].request;std::vector<uint16_t> indices;std::vector<float> expected;
         for(size_t i=0;i<q.mask.size();++i) {
             const auto* asset=plan.find(q.layer,q.ids[i]);q.mask[i]=q.mask[i] && asset;
             if(!q.mask[i])continue;
             const size_t token=i/q.K;const auto start=q.activations.begin()+token*H;
-            const auto row=direct[size_t(asset-plan.assets.data())]->run(std::vector<float>(start,start+H));
+            const size_t slot=size_t(asset-plan.assets.data());const std::vector<float> token_input(start,start+H);
+            const auto row=direct[slot]->run(token_input);
+            if(native_check && !native_observed) {
+                capture_native_check(output,r,i,q,*asset,fmt,weights[slot],token_input,row,direct[slot]->boundaries());
+                native_observed=true; // exactly one original entry, not one per token/record
+            }
             indices.push_back(uint16_t(i));expected.insert(expected.end(),row.out.begin(),row.out.end());
         }
         std::vector<int32_t> ids(q.ids.begin(),q.ids.end());
@@ -131,7 +175,15 @@ void capture_fixture_check(ggml_backend_t selected,const std::filesystem::path& 
     }
     const float logits[]={0.f,1.f};require(capture.seal(logits,2),capture.error());
     const auto result=output/"synthetic-capture-result";require(std::filesystem::create_directory(result),"fixture result directory");
-    capture_check("cpu",-1,selected,result,path,plan_path,manifest,staged.string());
+    const bool qualified=native_reference_qualified(strata_amd_native_reference_isa());
+    capture_check("cpu",-1,selected,result,path,plan_path,manifest,staged.string(),qualified);
+    require(native_reference_qualified(7) && !native_reference_qualified(3) && !native_reference_qualified(7|8) &&
+            !native_reference_qualified(7|16) && !native_reference_qualified(7|32) && !native_reference_qualified(7|64) &&
+            !native_reference_qualified(7|128),"native reference ISA policy");
+    if(!qualified) {
+        bool refused=false;try{require_native_reference_isa();}catch(...){refused=true;}
+        require(refused,"unqualified native reference accepted");
+    }
     auto refuse=[&](const std::string& cap,const std::string& source,const std::string& label) {
         const auto bad=output/label;require(std::filesystem::create_directory(bad),"fixture refusal directory");
         bool refused=false;try{capture_check("cpu",-1,selected,bad,cap,plan_path,source,staged.string());}catch(...){refused=true;}

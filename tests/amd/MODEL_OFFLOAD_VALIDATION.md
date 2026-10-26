@@ -39,3 +39,33 @@ CUDA build, HIP/SYCL builds, model prompt/decode, multi-host transport or resour
 measurements. The PR stays draft. The only GPU/model execution instructions are
 in [MODEL_OFFLOAD_HANDOFF.md](MODEL_OFFLOAD_HANDOFF.md), for later parent admission.
 CPU bit parity remains unestablished; no numerical threshold was relaxed.
+
+## Additive first-entry native arithmetic diagnostic
+
+`--capture-native-check` adds only the first intersecting entry's native
+reference and four stage metrics to the existing capture mode. The original
+5139cd08 commit and its outputs remain separate and immutable.
+
+Passed locally:
+
+- Retained native host build: new `--native-isa-check` correctly exited nonzero
+  with actual flags=23 (AVX2/FMA/F16C plus AVX-VNNI), despite cache VNNI=OFF. Its
+  synthetic capture test and public CLI refusal checks passed; no scratch service
+  was created by the refused native-check CLI.
+- Separate CPU-only Release build using `STRATA_PORTABLE=ON`, GGML AVX-VNNI and
+  AVX512 options OFF: ISA preflight exited 0 with flags=7, non-VNNI AVX2/FMA/F16C.
+  GCC 16.2.1, the same retained ggml pin, installed OpenSSL 3.6.5, no downloads.
+  The three graph/adapter/loopback CTests passed. The narrow capture test verifies
+  exactly one record0/entry0/expert1 observation, four raw F32 stage lengths,
+  bit-difference counts and numeric metrics recomputed from saved bytes, packed
+  equalities, original capture completion and public CLI artifacts. This is a
+  synthetic CPU graph substitution, not a Vulkan/native parity result.
+- The narrow public-CLI capture CTest passed again in each ISA configuration
+  after adding its final assertions. Vulkan-enabled probe syntax and whitespace
+  checks passed. Existing unrelated compiler warnings remain.
+
+Not run: new diagnostic on real expert302 or Vulkan hardware. No model, trace,
+fleet, credential or access operations. Use
+[NATIVE_ROW_HANDOFF.md](NATIVE_ROW_HANDOFF.md) once after parent dispatch. The
+initial model trace and CPU-only control outcomes described there are supplied
+parent results, not newly executed or independently verified here.
