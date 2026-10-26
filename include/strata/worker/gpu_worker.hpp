@@ -4,6 +4,10 @@
 #include <memory>
 
 namespace strata::worker {
+// Opt-in offline diagnostic snapshot of the actual metadata submitted to grouped CUDA.
+struct GpuExecutionTrace {
+    std::vector<int32_t> experts,asset_slots,start,dst,tok,original;
+};
 // Test seam substitutes only execution, never protocol validation/cache/session logic.
 class GpuExecutor {
 public:
@@ -13,6 +17,9 @@ public:
     virtual bool supports_rows() const { return false; }
     virtual bool infer_rows(const GpuPlan&, const InferRequest&, EntryRowsReply&, std::string& err) {
         err="CUDA executor does not support entry rows"; return false;
+    }
+    virtual bool infer_rows_diagnostic(const GpuPlan&,const InferRequest&,EntryRowsReply&,GpuExecutionTrace&,std::string& err) {
+        err="CUDA executor does not support diagnostic metadata";return false;
     }
     virtual void release(GpuCounters&) = 0;
 };

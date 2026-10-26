@@ -80,10 +80,13 @@ public:
     bool infer_rows(const GpuPlan& p,const InferRequest& r,EntryRowsReply& rows,std::string& err) override {
         InferReply ignored; return infer_impl(p,r,ignored,&rows,err);
     }
+    bool infer_rows_diagnostic(const GpuPlan& p,const InferRequest& r,EntryRowsReply& rows,GpuExecutionTrace& trace,std::string& err) override {
+        trace={};InferReply ignored;return infer_impl(p,r,ignored,&rows,err,&trace);
+    }
     bool infer(const GpuPlan& p,const InferRequest& r,InferReply& reply,std::string& err) override {
         return infer_impl(p,r,reply,nullptr,err);
     }
-    bool infer_impl(const GpuPlan& p,const InferRequest& r,InferReply& reply,EntryRowsReply* entry_rows,std::string& err) {
+    bool infer_impl(const GpuPlan& p,const InferRequest& r,InferReply& reply,EntryRowsReply* entry_rows,std::string& err,GpuExecutionTrace* trace=nullptr) {
         if(!loaded_ || !check(cudaSetDevice(device_),"select inference device",err)){err="CUDA executor unavailable: "+err;return false;}
         std::vector<int32_t> expert,group(r.mask.size(),-1),start,dst,tok,original;
         std::vector<unsigned long long> ptr;
@@ -95,6 +98,7 @@ public:
                 const size_t index=(size_t)(asset-p.assets.data());
                 if(index>=blobs_.size()){err="CUDA resident slot missing";return false;}
                 expert.push_back(r.ids[i]);ptr.push_back((unsigned long long)blobs_[index]);
+                if(trace)trace->asset_slots.push_back((int32_t)index);
                 group[i]=(int32_t)expert.size()-1;
             } else group[i]=(int32_t)(it-expert.begin());
         }
@@ -106,6 +110,7 @@ public:
         }
         start.push_back((int32_t)dst.size());const int32_t count=(int32_t)expert.size();
         if(!count || dst.size()>cap){err="CUDA group bounds";return false;}
+        if(trace){trace->experts=expert;trace->start=start;trace->dst=dst;trace->tok=tok;trace->original=original;}
         auto copy=[&](void* d,const void* h,size_t bytes){return check(cudaMemcpyAsync(d,h,bytes,cudaMemcpyHostToDevice,stream_),"request copy",err);};
         if(!copy(dx_,r.activations.data(),r.activations.size()*sizeof(float)) ||
            !copy(dptr_,ptr.data(),ptr.size()*sizeof(ptr[0])) || !copy(dstart_,start.data(),start.size()*sizeof(start[0])) ||

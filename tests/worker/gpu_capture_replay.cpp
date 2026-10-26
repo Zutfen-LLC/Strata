@@ -49,7 +49,7 @@ struct Inventory {
     std::vector<std::vector<uint8_t>> masks;
     size_t active=0,selected=0,missing=0;uint64_t bytes=0;
 };
-Inventory inventory(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,const fs::path& blobs,bool print) {
+Inventory inventory(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,const fs::path& blobs,bool print,const std::vector<size_t>& chosen={}) {
     (void)select(f,plans); // existing model/geometry/plan checks; also require a real intersection
     require(plans.size()<=4,"survey limited to four B plans");
     std::map<std::pair<int,int>,size_t> owners;
@@ -58,7 +58,9 @@ Inventory inventory(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,co
         for(const auto& a:plans[p].assets)require(owners.emplace(std::make_pair(a.layer,a.expert),p).second,"overlapping B assignments");
     }
     Inventory result;result.masks.resize(f.records.size());
-    result.records=diagnostic::capture_row_samples(f,"SURVEY_SAMPLE");
+    result.records=chosen.empty()?diagnostic::capture_row_samples(f,"SURVEY_SAMPLE"):chosen;
+    require(result.records.size()<=16,"record selection bound");
+    for(size_t r:result.records)require(r<f.records.size(),"selected record absent");
     std::map<std::pair<int,int>,size_t> selected;
     for(size_t r:result.records) {
         const auto& record=f.records[r];const auto& q=record.request;
@@ -100,15 +102,19 @@ struct StageSummary {
 std::map<std::string,StageSummary> summaries;
 bool surveying=false;std::string context;std::pair<size_t,size_t> context_order;
 // Restrict the existing validated plan codec to one asset, retaining model/layout identity.
-GpuPlan one_asset(const GpuPlan& p,const GpuAsset& a) {
+GpuPlan subset_plan(const GpuPlan& p,const std::vector<GpuAsset>& assets) {
     std::vector<uint8_t> wire;std::string err;require(encode_gpu_plan(p,wire,err),err);
-    const size_t slot=p.find(a.layer,a.expert)-p.assets.data(),at=48+28*slot;
+    require(!assets.empty() && assets.size()<=20,"bounded nonempty expert subset");
     std::vector<uint8_t> one(wire.begin(),wire.begin()+48);
-    one[44]=1;one[45]=one[46]=one[47]=0;
-    one.insert(one.end(),wire.begin()+at,wire.begin()+at+28);
+    one[44]=assets.size();one[45]=one[46]=one[47]=0;
+    for(const auto& a:assets) {
+        const auto* found=p.find(a.layer,a.expert);require(found && found->digest==a.digest,"subset asset binding");
+        const size_t at=48+28*(found-p.assets.data());one.insert(one.end(),wire.begin()+at,wire.begin()+at+28);
+    }
     const auto d=blob_digest(one);put<uint64_t>(one,d.a);put<uint64_t>(one,d.b);
     GpuPlan out;require(decode_gpu_plan(one.data(),one.size(),out,err),err);return out;
 }
+GpuPlan one_asset(const GpuPlan& p,const GpuAsset& a){return subset_plan(p,{a});}
 std::vector<uint8_t> read_blob(const std::string& path,const GpuAsset& a) {
     require(a.bytes==5222400,"single Q8_0 expert size bound");
     std::ifstream in(path,std::ios::binary|std::ios::ate);
@@ -157,6 +163,58 @@ CpuRows cpu_rows(const InferRequest& q,const std::vector<uint8_t>& b,const cpu::
         const void* hv=hq;float* out=c.rows.data()+t*f.n_embd;cpu::native_down_rows(f,b.data(),&hv,1,&out,0,f.n_embd);
     }
     return c;
+}
+void cpu_info() {
+    ggml_cpu_init();std::printf("CPU_BUILD compiler=%s ggml_avx=%d ggml_avx2=%d ggml_avx512=%d ggml_fma=%d ggml_f16c=%d\n",
+        __VERSION__,ggml_cpu_has_avx(),ggml_cpu_has_avx2(),ggml_cpu_has_avx512(),ggml_cpu_has_fma(),ggml_cpu_has_f16c());
+    for(const char* name:{"STRATA_FORCE_ISA","STRATA_FORCE_AVX2","STRATA_CPU_IQ_ALL_EXACT1"})
+        std::printf("ENV %s=%s\n",name,std::getenv(name)?std::getenv(name):"<unset>");
+}
+void export_cpu_row(const fs::path& prefix,const CpuRows& c,const cpu::NativeFmt& fmt,size_t t) {
+    auto write=[&](const char* suffix,const void* data,size_t bytes){std::ofstream out(prefix.string()+suffix,std::ios::binary);
+        require(bool(out.write((const char*)data,bytes)),"CPU control output failed");};
+    write(".input.q8_0",c.act.data()+t*cpu::kNativeActBytes,fmt.act_bytes);
+    write(".gate.f32",c.gate.data()+t*640,640*4);write(".up.f32",c.up.data()+t*640,640*4);
+    write(".hidden.f32",c.hidden.data()+t*640,640*4);write(".hidden.q8_0",c.hq.data()+t*fmt.h_bytes,fmt.h_bytes);
+    write(".row.f32",c.rows.data()+t*2560,2560*4);
+}
+void cpu_control(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,const fs::path& blobs,const fs::path& root) {
+    (void)select(f,plans);require(f.records.size()>828,"CPU control requires original record IDs 0 and 828");
+    require(fs::create_directory(root),"CPU control output must be a new directory");cpu_info();
+    cpu::NativeFmt fmt;std::string err;require(cpu::native_fmt(8,8,2560,640,fmt,err),err);
+    for(const auto [r,i]:{std::pair<size_t,size_t>{0,2},{828,13}}) {
+        const auto& q=f.records[r].request;require(q.T<=2 && q.K==10 && i<q.mask.size() && q.mask[i] &&
+            q.ids[i]==(r==0?77:390) && q.layer==(r==0?0:12),"CPU control retained entry binding mismatch");
+        const GpuAsset* asset=nullptr;const GpuPlan* plan=nullptr;
+        for(const auto& p:plans)if(const auto* a=p.find(q.layer,q.ids[i])){require(!asset,"overlapping control assignment");asset=a;plan=&p;}
+        require(asset,"CPU control entry absent from actual B plans");const auto b=read_blob((blobs/key(*plan,*asset)).string(),*asset);
+        const auto c=cpu_rows(q,b,fmt);const size_t t=i/q.K;
+        const auto prefix=root/("record-"+std::to_string(r)+"-entry-"+std::to_string(i));
+        export_cpu_row(prefix,c,fmt,t);
+        std::printf("CPU_CONTROL record=%zu entry=%zu layer=%u token=%zu expert=%u asset_digest=%s%s input_digest=%s%s bytes=21320\n",
+            r,i,q.layer,t,q.ids[i],hex(asset->digest.a).c_str(),hex(asset->digest.b).c_str(),
+            hex(blob_digest(q.activations.data()+t*2560,2560*4).a).c_str(),hex(blob_digest(q.activations.data()+t*2560,2560*4).b).c_str());
+    }
+}
+void trace_check(const InferRequest& q,const GpuPlan& p,const GpuExecutionTrace& tr) {
+    auto print=[](const char* name,const auto& values){std::printf("META %s=",name);for(auto v:values)std::printf("%d,",int(v));std::puts("");};
+    print("experts",tr.experts);print("asset_slots",tr.asset_slots);print("grp_start",tr.start);
+    print("ent_dst",tr.dst);print("ent_tok",tr.tok);print("original_entries",tr.original);
+    std::printf("META cap_groups=%zu cap_entries=%zu grid_groups=0\n",tr.experts.size(),tr.dst.size());
+    require(tr.start.size()==tr.experts.size()+1 && !tr.start.empty() && tr.start.front()==0 &&
+        tr.asset_slots.size()==tr.experts.size() && tr.dst.size()==tr.tok.size() && tr.dst.size()==tr.original.size() &&
+        tr.start.back()==int(tr.dst.size()),"executor diagnostic metadata shape");
+    std::vector<uint8_t> seen(q.mask.size());
+    for(size_t g=0;g<tr.experts.size();++g) {
+        const auto* asset=p.find(q.layer,tr.experts[g]);require(asset && tr.asset_slots[g]==asset-p.assets.data(),"executor asset slot identity");
+        require(tr.start[g]>=0 && tr.start[g]<tr.start[g+1],"executor group start bounds");
+        for(int j=tr.start[g];j<tr.start[g+1];++j) {
+            const int i=tr.original[j];require(i>=0 && size_t(i)<seen.size() && q.mask[i] && !seen[i] &&
+                q.ids[i]==tr.experts[g] && tr.tok[j]==i/q.K && tr.dst[j]==j,"executor actual group/index mapping");seen[i]=1;
+        }
+    }
+    require(seen==q.mask,"executor trace entry coverage");
+
 }
 // Freeze one row matrix to isolate the REAL mixed reducer. This fixture computes no experts.
 struct Frozen final:GpuExecutor {
@@ -226,6 +284,16 @@ void record_reduce(const InferRequest& q,const std::vector<uint8_t>& expected,co
 }
 #ifdef STRATA_CAPTURE_CUDA
 void cu(cudaError_t s){require(s==cudaSuccess,cudaGetErrorString(s));}
+void cuda_info() {
+    int device=0,runtime=0,driver=0;cudaDeviceProp p{};cu(cudaGetDevice(&device));cu(cudaGetDeviceProperties(&p,device));
+    cu(cudaRuntimeGetVersion(&runtime));cu(cudaDriverGetVersion(&driver));
+    std::printf("CUDA_BUILD device=%d name=%s cc=%d.%d runtime=%d driver=%d compiled_cudart=%d compiler=%s\n",
+        device,p.name,p.major,p.minor,runtime,driver,CUDART_VERSION,__VERSION__);
+    for(const char* name:{"CUDA_VISIBLE_DEVICES","STRATA_KQ_SPLIT","STRATA_GROUPED_V1","STRATA_OLD_IQ_MMVQ","STRATA_NO_SUB16_GU",
+        "STRATA_GU_SWIGLU","STRATA_EXP_MODE","STRATA_SM75_EXP","STRATA_SM75_PERF","STRATA_SM60_TABLE","STRATA_SM61_TABLE",
+        "STRATA_SM70_TABLE","STRATA_EXPERT_V2","STRATA_EXPERT_V2K"})
+        std::printf("ENV %s=%s\n",name,std::getenv(name)?std::getenv(name):"<unset>");
+}
 struct Device {void* p=nullptr;explicit Device(size_t n){cu(cudaMalloc(&p,n));}~Device(){if(p)cudaFree(p);}operator void*(){return p;}};
 void packed_compare(const char* tag,const uint8_t* a,const uint8_t* b,int blocks) {
     size_t scales=0,codes=0;int first=-1,maxcode=0,maxcode_index=-1,maxscale_block=-1;double maxscale=0;
@@ -249,7 +317,7 @@ void packed_compare(const char* tag,const uint8_t* a,const uint8_t* b,int blocks
         if((scales||codes) && context_order<s.earliest_order){s.earliest_order=context_order;s.earliest=context+" "+tag+" first_code="+std::to_string(first);}
     }
 }
-std::vector<float> cuda_rows(const InferRequest& q,const std::vector<uint8_t>& b,const cpu::NativeFmt& f,const CpuRows& c) {
+std::vector<float> cuda_rows(const InferRequest& q,const std::vector<uint8_t>& b,const cpu::NativeFmt& f,const CpuRows& c,bool compare_cpu=true) {
     using namespace strata::kernels;
     std::vector<int32_t> tok,original;
     for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]){tok.push_back(i/q.K);original.push_back(i);}
@@ -265,7 +333,7 @@ std::vector<float> cuda_rows(const InferRequest& q,const std::vector<uint8_t>& b
     upload(ptr,&wp,8);upload(st,start,8);upload(ng,&groups,4);upload(dd,dst.data(),count*4);upload(tt,tok.data(),count*4);
     quantize_q8_1_rows((float*)x.p,q.T,f.n_embd,xq,nullptr);cu(cudaGetLastError());
     std::vector<uint8_t> packed(q.T*(f.n_embd/32)*36);cu(cudaMemcpy(packed.data(),xq,packed.size(),cudaMemcpyDeviceToHost));
-    for(int t=0;t<q.T;++t) {
+    for(int t=0;compare_cpu && t<q.T;++t) {
         if(surveying && std::find(q.mask.begin()+t*q.K,q.mask.begin()+(t+1)*q.K,1)==q.mask.begin()+(t+1)*q.K)continue;
         packed_compare(("input_token_"+std::to_string(t)).c_str(),c.act.data()+t*cpu::kNativeActBytes,
                        packed.data()+t*(f.n_embd/32)*36,f.n_embd/32);
@@ -276,8 +344,8 @@ std::vector<float> cuda_rows(const InferRequest& q,const std::vector<uint8_t>& b
                           1,count,xq,scratch,(float*)out.p,nullptr);cu(cudaGetLastError());
     std::vector<float> result(count*f.n_embd),expected(result.size());cu(cudaMemcpy(result.data(),out,result.size()*4,cudaMemcpyDeviceToHost));
     for(int j=0;j<count;++j)std::copy_n(c.rows.data()+tok[j]*f.n_embd,f.n_embd,expected.data()+j*f.n_embd);
-    const bool row_bits=metrics("CPU_vs_direct_CUDA_unweighted",expected,result);
-    if(!row_bits || surveying) {
+    const bool row_bits=!compare_cpu || metrics("CPU_vs_direct_CUDA_unweighted",expected,result);
+    if(compare_cpu && (!row_bits || surveying)) {
         const size_t fa=(count*f.n_ff*4+255)&~size_t(255);
         std::vector<float> gate(count*f.n_ff),up(gate.size()),cg(gate.size()),cpu_up(gate.size());
         std::vector<uint8_t> hq(count*(f.n_ff/32)*36);
@@ -416,6 +484,66 @@ int survey(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,const fs::p
         std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count(),executor_bits);
     surveying=false;return executor_bits?0:1;
 }
+int grouped_control(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,const fs::path& blobs,const fs::path& root) {
+    require(std::getenv("STRATA_KQ_SPLIT") && std::string(std::getenv("STRATA_KQ_SPLIT"))=="0","grouped control requires explicit STRATA_KQ_SPLIT=0 matching the audited network worker");
+    const auto inv=inventory(f,plans,blobs,true,{0,828});
+    require(!inv.missing && inv.active<=40,"grouped control requires the two records' staged blobs");
+    require(f.records[0].request.layer==0 && f.records[828].request.layer==12,"grouped control record/layer identity");
+    require(fs::create_directory(root),"grouped scratch must be a new directory");
+    const auto cache_dir=root/"batch-cache";require(fs::create_directory(cache_dir),"create bounded batch cache");
+    cu(cudaSetDevice(0));cuda_info();cpu::NativeFmt fmt;std::string err;require(cpu::native_fmt(8,8,2560,640,fmt,err),err);
+    const auto start=std::chrono::steady_clock::now();auto deadline=[&]{require(std::chrono::steady_clock::now()-start<std::chrono::seconds(60),"grouped control 60-second bound");};
+    size_t batches=0,calls=0;GpuCache cache;
+    for(size_t r:inv.records)for(size_t peer=0;peer<plans.size();++peer) {
+        deadline();auto q=f.records[r].request;std::vector<GpuAsset> assets;
+        for(size_t i=0;i<q.mask.size();++i)q.mask[i]=inv.masks[r][i] && plans[peer].owns(q.layer,q.ids[i]);
+        for(const auto& a:plans[peer].assets)if(a.layer==q.layer) {
+            bool used=false;for(size_t i=0;i<q.mask.size();++i)used|=q.mask[i] && q.ids[i]==a.expert;
+            if(used)assets.push_back(a);
+        }
+        if(assets.empty())continue;
+        const auto p=subset_plan(plans[peer],assets);std::vector<float> standalone(q.mask.size()*2560);
+        for(const auto& a:assets) {
+            deadline();auto one=q;for(size_t i=0;i<one.mask.size();++i)one.mask[i]=q.mask[i] && q.ids[i]==a.expert;
+            const auto b=read_blob((blobs/key(plans[peer],a)).string(),a);const auto c=cpu_rows(one,b,fmt);
+            const auto rows=cuda_rows(one,b,fmt,c,false);size_t j=0;
+            for(size_t i=0;i<one.mask.size();++i)if(one.mask[i])std::copy_n(rows.data()+j++*2560,2560,standalone.data()+i*2560);
+        }
+        // Bounded batch weights are read/published one blob at a time. No full plan or resident is loaded.
+        cache.close();uint64_t removed=0;std::vector<uint8_t> missing;
+        require(cache.open(cache_dir.string(),128ull<<20,err)&&cache.cleanup_unassigned(p,removed,err)&&cache.prepare(p,missing,err),err);
+        for(size_t i=0;i<assets.size();++i)if(missing[i]) {
+            const auto b=read_blob((blobs/key(plans[peer],assets[i])).string(),assets[i]);require(cache.publish(assets[i],b.data(),b.size(),err),err);
+        }
+        auto executor=create_cuda_gpu_executor(0);GpuCounters counters;require(executor->prepare(p,256ull<<20,cache,counters,err),err);
+        std::printf("BATCH record=%zu layer=%u peer=%zu original_placement=%s%s experts=%zu gpu_weight_bytes=%llu\n",r,q.layer,peer,
+            hex(plans[peer].placement_id.a).c_str(),hex(plans[peer].placement_id.b).c_str(),assets.size(),(unsigned long long)counters.gpu_weight_bytes);
+        for(const auto& a:assets)std::printf("BATCH_ASSET expert=%u original_B_slot=%zu digest=%s%s\n",a.expert,
+            size_t(plans[peer].find(a.layer,a.expert)-plans[peer].assets.data()),hex(a.digest.a).c_str(),hex(a.digest.b).c_str());
+        GpuExecutionTrace trace;int last_expert=-1;
+        for(int phase=0;phase<3;++phase) {
+            deadline();auto test=q;test.session=1;test.sequence=phase+1;test.partition_id=p.placement_id.a;
+            if(phase==1)for(size_t i=0;i<test.mask.size();++i)test.mask[i]=q.mask[i] && q.ids[i]==last_expert;
+            EntryRowsReply reply;require(executor->infer_rows_diagnostic(p,test,reply,trace,err),err);
+            std::printf("BATCH_PHASE record=%zu peer=%zu phase=%d kind=%s\n",r,peer,phase,phase==1?"one_real_expert_scratch_perturbation":"full_B_peer_batch");
+            trace_check(test,p,trace);last_expert=trace.experts.back();std::vector<uint16_t> indices;std::vector<float> reference;
+            for(size_t i=0;i<test.mask.size();++i)if(test.mask[i]){indices.push_back(i);reference.insert(reference.end(),standalone.begin()+i*2560,standalone.begin()+(i+1)*2560);}
+            std::printf("META restored_indices=");for(auto i:reply.indices)std::printf("%u,",unsigned(i));std::puts("");
+            require(reply.indices==indices,"grouped restored entry identity mismatch");++calls;
+            if(!metrics("standalone_vs_B_peer_batch",reference,reply.rows)) {
+                for(size_t j=0;j<reference.size();++j)if(std::memcmp(&reference[j],&reply.rows[j],4)) {
+                    uint32_t a,b;std::memcpy(&a,&reference[j],4);std::memcpy(&b,&reply.rows[j],4);
+                    std::printf("GROUPED_STOP record=%zu entry=%u token=%u channel=%zu peer=%zu phase=%d standalone=%.9g grouped=%.9g standalone_bits=%08x grouped_bits=%08x\n",
+                        r,indices[j/2560],indices[j/2560]/q.K,j%2560,peer,phase,reference[j],reply.rows[j],a,b);break;
+                }
+                return 1;
+            }
+        }
+        executor->release(counters);cache.close();++batches;
+    }
+    std::printf("GROUPED_DONE records=0,828 batches=%zu executor_calls=%zu seconds=%.6f bitexact=1 max_resident_experts=20 no_listeners=1\n",
+        batches,calls,std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count());return 0;
+}
 #endif
 
 }
@@ -454,17 +582,35 @@ int main(int argc,char** argv) {
             require(fs::exists(private_cache/key(other,other.assets[0])) && !fs::exists(private_cache/key(p,p.assets[0])),"one-expert private cache rotation");
             std::vector<float> real(20*2560);for(int i=0;i<20;++i)std::copy_n(c.rows.data()+(i/10)*2560,2560,real.data()+i*2560);
             record_reduce(sq,inv.masks[0],{p,other},real,real);
-            std::puts("SELF_CHECK selection=1 digest=1 repeated_expert_T2=1 mixed_reducer=1 survey_inventory=1 subset_reducer=1 actual_cuda=0");return 0;
+            auto tq=r.request;for(size_t i=0;i<tq.mask.size();++i)tq.mask[i]=tq.ids[i]==1;
+            GpuExecutionTrace tr;tr.experts={1};tr.asset_slots={0};tr.start={0,3};tr.dst={0,1,2};tr.tok={0,1,1};tr.original={1,3,5};
+            trace_check(tq,p,tr);tr.tok[1]=0;refused=false;try{trace_check(tq,p,tr);}catch(...){refused=true;}require(refused,"bad actual trace mapping refused");
+            GpuPlan full;require(make_gpu_plan(fixture.m,{{0,0},{0,1}},full,err),err);
+            require(subset_plan(full,full.assets).placement_id==full.placement_id,"multi-expert subset preserves metadata");
+            const auto out=fixture.root/"cpu-export";export_cpu_row(out,c,fixture.fmt,0);size_t exported=0;
+            for(const char* suffix:{".input.q8_0",".gate.f32",".up.f32",".hidden.f32",".hidden.q8_0",".row.f32"})exported+=fs::file_size(out.string()+suffix);
+            require(exported==21320,"one-entry CPU export size bound");
+            std::puts("SELF_CHECK selection=1 digest=1 repeated_expert_T2=1 mixed_reducer=1 survey_inventory=1 subset_reducer=1 batch_metadata=1 cpu_export=1 actual_cuda=0");return 0;
         }
         const bool selecting=argc>=4 && std::string(argv[1])=="--select";
         const bool running=argc>=6 && std::string(argv[1])=="--run";
         const bool listing=argc>=5 && std::string(argv[1])=="--inventory";
         const bool survey_mode=argc>=6 && std::string(argv[1])=="--survey";
-        if(!selecting && !running && !listing && !survey_mode)throw std::runtime_error("usage: --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey CAPTURE BLOB_DIR NEW_SCRATCH B_PLAN... | --self-check");
+        const bool grouped=argc>=6 && std::string(argv[1])=="--grouped";
+        const bool cpu_mode=argc>=6 && std::string(argv[1])=="--cpu-control";
+        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check");
         CpuCaptureFile f;std::string err;require(read_cpu_capture(argv[2],f,err),err);
         std::vector<GpuPlan> plans;const int begin=selecting?3:listing?4:5;
         for(int i=begin;i<argc;++i){GpuPlan p;require(read_gpu_plan(argv[i],p,err),err);plans.push_back(p);}
         if(listing)return inventory(f,plans,argv[3],true).missing?3:0;
+        if(cpu_mode){cpu_control(f,plans,argv[3],argv[4]);return 0;}
+        if(grouped) {
+#ifdef STRATA_CAPTURE_CUDA
+            return grouped_control(f,plans,argv[3],argv[4]);
+#else
+            throw std::runtime_error("--grouped requires CUDA target gpu_capture_replay");
+#endif
+        }
         if(survey_mode) {
 #ifdef STRATA_CAPTURE_CUDA
             return survey(f,plans,argv[3],argv[4]);

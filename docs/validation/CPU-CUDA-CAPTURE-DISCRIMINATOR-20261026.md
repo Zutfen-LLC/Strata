@@ -212,3 +212,79 @@ body was extracted without changing its arithmetic. Existing group fixtures
 continue to test the socket/session wrapper. Local CPU-only Release builds and
 both focused CTests passed (2/2 in 8.38 s) after this extraction. Expanded actual
 CUDA compilation/execution remains pending on 03; no numerical fix is proposed.
+
+## Two-record grouped-batch control and CPU comparison
+
+`--grouped` is fixed to original records 0 and 828 (layers 0 and 12). It uses
+their real B-peer expert sets and compares the production executor's grouped
+outputs to direct standalone CUDA rows, restored to the original entry indices.
+For each nonempty peer batch it runs full batch, one real expert, then full batch
+again on the same prepared executor and scratch. It stops on the first mismatch
+or after those two records. There are at most eight prepared batches and 24
+executor calls, with a 60-second guard between bounded operations.
+
+The batch control must hold its small simultaneous expert set: at most 20 experts
+(104,448,000 bytes), rather than the survey's single expert. Host staging still
+reads one 5,222,400-byte blob at a time. No complete B plan, full model or resident
+arena is loaded. Its private 128 MiB cache rotates only owned scratch assets.
+It opens no listeners or worker connections.
+
+An opt-in executor method copies the actual submitted expert/asset-slot, group
+start, destination, token and original-entry arrays to the diagnostic. Ordinary
+inference does not request a snapshot. No kernel arithmetic or row weighting is
+changed. The log includes the original B plan digest/slots, subset resident slots,
+actual restored indices, device capability, runtime/driver/compiler versions and
+relevant environment settings. A mismatch prints the original record/entry/token,
+channel, phase and both F32 values and raw bits. This tests bounded subset plans
+on 03; it does not claim to exercise all slots in the original large fleet plans.
+
+The parent's identity audit confirmed the live A0/B engine and CPU worker hashes,
+request/model assets and first-logit alignment. Live network workers had no
+STRATA overrides, so KQ splitting was off. The prior survey receipt did not retain
+its entire inherited STRATA environment. Use the clean environment below for this
+control, explicitly setting KQ splitting off; do not expand the flag matrix.
+
+After updating the qualified 03 source to this commit, reuse the existing build:
+
+```sh
+cmake --build "$build" --target gpu_capture_replay gpu_capture_replay_check -j 2
+sha256sum "$build/gpu_capture_replay" "$diag/cpu-capture.bin" "$diag"/B-*.plan
+env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+  CUDA_VISIBLE_DEVICES=0 STRATA_KQ_SPLIT=0 \
+  "$build/gpu_capture_replay" --grouped "$diag/cpu-capture.bin" \
+  "$diag/blobs" "$diag/grouped-1" "$diag"/B-*.plan
+```
+
+Exit 0 means all requested comparisons matched exactly. Exit 1 is a row-bit
+mismatch; exit 2 is an input, CUDA or metadata invariant failure. Preserve stdout,
+stderr, exit status, the checked source pin and printed binary/asset hashes.
+Do not automatically run another request or model trace.
+
+`--cpu-control` executes only native CPU functions for record 0/entry 2/expert 77
+and record 828/entry 13/expert 390. It verifies each blob and exports six files per
+entry: native input bytes, gate/up F32, hidden F32, native hidden bytes and down
+F32. Both entries total exactly 42,640 bytes. Output identities and GGML CPU feature
+flags are printed. It does not use CUDA, a socket or a resident.
+
+Run this on 03 with the CPU target, then on 02 using its existing qualified CPU
+worker build configuration and GGML source/options. Do not copy the 03 executable
+to 02 as a substitute for checking the 02 build. The supplied audit reports both
+as GNU 14.2 Release, GGML 3cf03257f, native AVX2/FMA/F16C and no AVX512/VNNI;
+different library hashes alone do not establish different arithmetic.
+
+```sh
+env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+  "$build/gpu_capture_replay_check" --cpu-control "$diag/cpu-capture.bin" \
+  "$diag/blobs" "$diag/cpu-control-03" "$diag"/B-*.plan
+```
+
+For 02, substitute its qualified worker build, retained capture path, staged two
+verified blobs and original B plans, and a new output directory. Only those two
+blobs (10,444,800 bytes) are needed. Compare the twelve identically named files
+with `diff -rq` after staging the small outputs together. The first differing
+stage separates quantization, gate/up, hidden processing or down arithmetic.
+
+Local validation: CPU-only Release target builds and both focused CTests passed
+(2/2 in 8.32 s), including metadata mapping/refusal, multi-expert plan encoding and
+the 21,320-byte one-entry CPU export bound. Actual CUDA compilation and grouped
+execution remain pending on 03; the PR stays draft.
