@@ -2,6 +2,7 @@
 #pragma once
 #include "strata/worker/gpu_assets.hpp"
 #include <functional>
+#include "strata/worker/tls.hpp"
 
 namespace strata::worker {
 inline constexpr uint32_t kGpuWireMagic = 0x31574753u; // SGW1
@@ -35,9 +36,9 @@ struct Cursor {
     bool done() const { return ok && i == p.size(); }
 };
 bool send(uintptr_t fd, uint16_t msg, uint16_t status, const std::vector<uint8_t>& p,
-          int ms, const std::function<bool()>& cancel, std::string& err);
+          int ms, const std::function<bool()>& cancel, std::string& err, TlsSession* tls = nullptr);
 bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
-             const std::function<bool()>& cancel, std::string& err, int response_wait_ms = 0);
+             const std::function<bool()>& cancel, std::string& err, int response_wait_ms = 0, TlsSession* tls = nullptr);
 std::vector<uint8_t> binding(uint64_t session, const GpuPlan& plan);
 bool binding(Cursor& c, uint64_t session, const GpuPlan& plan);
 bool encode_request(const GpuPlan& plan, const InferRequest& r, std::vector<uint8_t>& p);

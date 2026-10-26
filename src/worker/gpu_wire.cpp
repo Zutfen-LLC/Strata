@@ -16,7 +16,7 @@ uint64_t Cursor::get(size_t n) {
     return v;
 }
 bool send(uintptr_t fd, uint16_t msg, uint16_t status, const std::vector<uint8_t>& p,
-          int ms, const std::function<bool()>& cancel, std::string& err) {
+          int ms, const std::function<bool()>& cancel, std::string& err, TlsSession* tls) {
     if (p.size() > kGpuFrameMax || ms <= 0) { err = "CUDA frame exceeds bound or deadline"; return false; }
     // Match the CPU transport: queue the complete frame through one bounded
     // writer. Separate header/body sends can leave a short write awaiting ACK.
@@ -28,13 +28,17 @@ bool send(uintptr_t fd, uint16_t msg, uint16_t status, const std::vector<uint8_t
         std::chrono::steady_clock::now()-began).count(); };
     frame.insert(frame.end(), p.begin(), p.end());
     const int left = remaining(); // Copy time cannot renew the original I/O budget.
-    if (left <= 0 || !sock::send_all_controlled((sock_fd)fd, frame.data(), frame.size(), left, cancel)) {
+    if (left <= 0 || !(tls ? tls->send_all(frame.data(), frame.size(), left, cancel) :
+        sock::send_all_controlled((sock_fd)fd, frame.data(), frame.size(), left, cancel))) {
         err = "CUDA worker send disconnected or exceeded deadline"; return false;
     }
     return true;
 }
 bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
-             const std::function<bool()>& cancel, std::string& err, int response_wait_ms) {
+             const std::function<bool()>& cancel, std::string& err, int response_wait_ms, TlsSession* tls) {
+    auto read = [&](void* p, size_t n, int budget) {
+        return tls ? tls->recv_all(p,n,budget,cancel) : sock::recv_all_controlled((sock_fd)fd,p,n,budget,cancel);
+    };
     if(ms<=0){err="CUDA frame requires a positive I/O deadline";return false;}
     std::vector<uint8_t> h(kHeaderBytes);
     size_t first = 0;
@@ -42,7 +46,7 @@ bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
     // response byte uses the remaining whole-setup budget; once a frame begins,
     // its remaining header and payload retain the short total frame-I/O budget.
     if (response_wait_ms > 0) {
-        if (!sock::recv_all_controlled((sock_fd)fd,h.data(),1,response_wait_ms,cancel)) {
+        if (!read(h.data(),1,response_wait_ms)) {
             err="CUDA setup response missing, disconnected or total setup deadline"; return false;
         }
         first=1;
@@ -50,7 +54,7 @@ bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
     const auto began=std::chrono::steady_clock::now();
     auto remaining=[&] { return ms-(int)std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now()-began).count(); };
-    if (ms <= 0 || !sock::recv_all_controlled((sock_fd)fd, h.data()+first, h.size()-first, ms, cancel)) {
+    if (ms <= 0 || !read(h.data()+first, h.size()-first, ms)) {
         err = "CUDA worker reply missing, disconnected or deadline"; return false;
     }
     Cursor c{h};
@@ -75,7 +79,7 @@ bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
         err = "unsupported or malformed CUDA protocol (requires SGW1 CUDA/q8_1 capability)"; return false;
     }
     f.payload.resize((size_t)n);
-    if (n && (remaining()<=0 || !sock::recv_all_controlled((sock_fd)fd, f.payload.data(), f.payload.size(), remaining(), cancel))) {
+    if (n && (remaining()<=0 || !read(f.payload.data(), f.payload.size(), remaining()))) {
         err = "incomplete CUDA worker frame"; return false;
     }
     return true;

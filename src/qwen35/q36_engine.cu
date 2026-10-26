@@ -3747,7 +3747,8 @@ int strata::qwen35::run(int argc, char** argv) {
             return 2;
         }
         if (a == "--remote-gpu-worker" || a == "--remote-gpu-experts" || a == "--remote-gpu-plan" ||
-            a == "--remote-gpu-setup-ms" || a == "--remote-gpu-deadline-ms") {
+            a == "--remote-gpu-setup-ms" || a == "--remote-gpu-deadline-ms" ||
+            a.rfind("--remote-gpu-tls-",0)==0) {
 #ifndef STRATA_NATIVE_EXPERTS
             std::fprintf(stderr, "strata-q36: %s requires STRATA_NATIVE_EXPERTS=ON; network CUDA workers are unsupported by this family\n", a.c_str());
 #else

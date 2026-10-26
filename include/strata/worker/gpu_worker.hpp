@@ -25,6 +25,7 @@ public:
 };
 std::unique_ptr<GpuExecutor> create_cuda_gpu_executor(int device);
 struct GpuWorkerOptions {
+    TlsConfig tls;
     GpuPlan plan; // trusted operator metadata, immutable for the life of this process
     std::string cache_root;
     std::string bind_ip = "127.0.0.1";

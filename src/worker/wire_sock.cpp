@@ -1,5 +1,11 @@
 // src/worker/wire_sock.cpp - inferswarm #348: the socket layer's implementation.
 #include "wire_sock.hpp"
+#include "strata/worker/tls.hpp"
+#ifdef STRATA_WORKER_TLS
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/x509v3.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -374,3 +380,164 @@ bool connect_host(const std::string& host, uint16_t port, int deadline_ms, sock_
 }
 
 }  // namespace strata::worker::sock
+
+namespace strata::worker {
+#ifdef STRATA_WORKER_TLS
+namespace {
+bool exact_dns_name(const std::string& name) {
+    if (name.empty() || name.size() > 253) return false;
+    size_t label = 0;
+    for (size_t i = 0; i <= name.size(); ++i) {
+        if (i == name.size() || name[i] == '.') {
+            if (i == label || i-label > 63 || name[label] == '-' || name[i-1] == '-') return false;
+            label = i+1;
+        } else if (!((name[i] >= 'a' && name[i] <= 'z') || (name[i] >= 'A' && name[i] <= 'Z') ||
+                     (name[i] >= '0' && name[i] <= '9') || name[i] == '-')) return false;
+    }
+    return true;
+}
+SSL_CTX* tls_context(const TlsConfig& c, std::string& err) {
+    if (c.ca_file.empty() || c.cert_file.empty() || c.key_file.empty() || c.peer_dns.empty() ||
+        c.ca_file.find('\0') != std::string::npos || c.cert_file.find('\0') != std::string::npos ||
+        c.key_file.find('\0') != std::string::npos || c.peer_dns.find('\0') != std::string::npos ||
+        !exact_dns_name(c.peer_dns)) {
+        err = "mTLS requires CA, certificate, key and exact peer SAN DNS identity"; return nullptr;
+    }
+    SSL_CTX* ctx = SSL_CTX_new(TLS_method());
+    if (!ctx) { err = "mTLS context allocation failed"; return nullptr; }
+    SSL_CTX_set_default_passwd_cb(ctx, [](char*, int, int, void*) { return 0; });
+    // A dedicated trust file, never the machine's implicit trust store. No resumption/0-RTT.
+    if (!SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION) ||
+        !SSL_CTX_set_max_early_data(ctx, 0) || !SSL_CTX_set_num_tickets(ctx, 0) ||
+        !SSL_CTX_load_verify_locations(ctx, c.ca_file.c_str(), nullptr) ||
+        !SSL_CTX_use_certificate_chain_file(ctx, c.cert_file.c_str()) ||
+        !SSL_CTX_use_PrivateKey_file(ctx, c.key_file.c_str(), SSL_FILETYPE_PEM) ||
+        !SSL_CTX_check_private_key(ctx)) {
+        SSL_CTX_free(ctx); err = "mTLS configuration rejected (CA/certificate/key/TLS policy)"; return nullptr;
+    }
+    SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
+    SSL_CTX_set_options(ctx, SSL_OP_NO_RENEGOTIATION);
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+    return ctx;
+}
+// OpenSSL's ordinary socket BIO uses send(...,0), which can terminate a Linux worker on
+// SIGPIPE. Keep signal policy unchanged: use the same MSG_NOSIGNAL policy as plain I/O.
+int bio_create(BIO* b) { BIO_set_init(b, 1); return 1; }
+int bio_destroy(BIO*) { return 1; } // descriptor remains caller-owned
+int bio_read(BIO* b, char* p, int n) {
+    BIO_clear_retry_flags(b);
+    const auto fd = (sock_fd)(uintptr_t)BIO_get_data(b);
+    const int result = (int)::recv(fd, p, n, 0);
+    if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) BIO_set_retry_read(b);
+    return result;
+}
+int bio_write(BIO* b, const char* p, int n) {
+    BIO_clear_retry_flags(b);
+    const auto fd = (sock_fd)(uintptr_t)BIO_get_data(b);
+    const int result = (int)::send(fd, p, n, MSG_NOSIGNAL);
+    if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) BIO_set_retry_write(b);
+    return result;
+}
+long bio_control(BIO*, int command, long, void*) { return command == BIO_CTRL_FLUSH ? 1 : 0; }
+const BIO_METHOD* socket_bio() {
+    static const auto method = [] {
+        BIO_METHOD* m = BIO_meth_new(BIO_TYPE_SOURCE_SINK, "strata nonblocking socket");
+        if (m && (!BIO_meth_set_create(m, bio_create) || !BIO_meth_set_destroy(m, bio_destroy) ||
+                  !BIO_meth_set_read(m, bio_read) || !BIO_meth_set_write(m, bio_write) ||
+                  !BIO_meth_set_ctrl(m, bio_control))) { BIO_meth_free(m); m = nullptr; }
+        return m;
+    }();
+    return method;
+}
+bool tls_wait(SSL* ssl, int result, sock_fd fd, const sock::Budget& budget,
+              const std::function<bool()>& cancel) {
+    const int error = SSL_get_error(ssl, result);
+    return (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) &&
+        sock::wait_fd(fd, error == SSL_ERROR_WANT_WRITE, budget, cancel);
+}
+}
+#endif
+bool TlsConfig::validate(std::string& err) const {
+    if (!enabled()) return true;
+#ifdef STRATA_WORKER_TLS
+    SSL_CTX* ctx = tls_context(*this, err);
+    if (!ctx) return false;
+    SSL_CTX_free(ctx); return true;
+#else
+    err = "mTLS requires a POSIX build with STRATA_WORKER_TLS=ON"; return false;
+#endif
+}
+TlsSession::~TlsSession() { reset(); }
+void TlsSession::reset() {
+#ifdef STRATA_WORKER_TLS
+    if (ssl_) SSL_free((SSL*)ssl_); // never block on peer close_notify during error cleanup
+#endif
+    ssl_ = nullptr;
+}
+bool TlsSession::handshake(uintptr_t fd, const TlsConfig& c, bool server, int ms,
+                           const std::function<bool()>& cancel, std::string& err) {
+    reset();
+#ifdef STRATA_WORKER_TLS
+    const sock::Budget budget(ms);
+    if (ms <= 0 || (cancel && cancel())) { err = "mTLS handshake deadline/cancel"; return false; }
+    SSL_CTX* ctx = tls_context(c, err);
+    if (!ctx) return false;
+    SSL* ssl = SSL_new(ctx); SSL_CTX_free(ctx);
+    const auto method = socket_bio();
+    BIO* bio = method ? BIO_new(method) : nullptr;
+    if (!ssl || !bio || !sock::nonblocking((sock_fd)fd)) {
+        SSL_free(ssl); BIO_free(bio); err = "mTLS socket initialization failed"; return false;
+    }
+    BIO_set_data(bio, (void*)fd);
+    SSL_set_bio(ssl, bio, bio);
+    SSL_set_hostflags(ssl, X509_CHECK_FLAG_NEVER_CHECK_SUBJECT | X509_CHECK_FLAG_NO_WILDCARDS);
+    if (!SSL_set1_host(ssl, c.peer_dns.c_str())) {
+        SSL_free(ssl); err = "mTLS peer identity configuration failed"; return false;
+    }
+    for (;;) {
+        if (budget.remaining() == 0 || (cancel && cancel())) break;
+        ERR_clear_error();
+        const int result = server ? SSL_accept(ssl) : SSL_connect(ssl);
+        if (result == 1) {
+            X509* peer = SSL_get1_peer_certificate(ssl);
+            const bool verified = peer && SSL_get_verify_result(ssl) == X509_V_OK;
+            X509_free(peer);
+            if (verified && budget.remaining() != 0 && (!cancel || !cancel())) { ssl_ = ssl; fd_ = fd; return true; }
+            break;
+        }
+        if (!tls_wait(ssl, result, (sock_fd)fd, budget, cancel)) break;
+    }
+    SSL_free(ssl); err = "mTLS handshake failed: peer verification, disconnect, cancellation or deadline";
+#else
+    (void)fd; (void)c; (void)server; (void)ms; (void)cancel;
+    err = "mTLS requires a POSIX build with STRATA_WORKER_TLS=ON";
+#endif
+    return false;
+}
+bool TlsSession::io(void* data, size_t n, int ms, const std::function<bool()>& cancel, bool write) {
+#ifdef STRATA_WORKER_TLS
+    const sock::Budget budget(ms);
+    if (!ssl_ || ms <= 0) { reset(); return false; }
+    size_t off = 0;
+    while (off < n) {
+        if (budget.remaining() == 0 || (cancel && cancel())) break;
+        size_t done = 0;
+        ERR_clear_error();
+        const int result = write ? SSL_write_ex((SSL*)ssl_, (char*)data + off, n - off, &done)
+                                 : SSL_read_ex((SSL*)ssl_, (char*)data + off, n - off, &done);
+        if (result == 1 && done) { off += done; continue; }
+        if (!tls_wait((SSL*)ssl_, result, (sock_fd)fd_, budget, cancel)) break;
+    }
+    if (off == n && budget.remaining() != 0 && (!cancel || !cancel())) return true;
+#else
+    (void)data; (void)n; (void)ms; (void)cancel; (void)write;
+#endif
+    reset(); return false;
+}
+bool TlsSession::send_all(const void* p, size_t n, int ms, const std::function<bool()>& cancel) {
+    return io(const_cast<void*>(p), n, ms, cancel, true);
+}
+bool TlsSession::recv_all(void* p, size_t n, int ms, const std::function<bool()>& cancel) {
+    return io(p, n, ms, cancel, false);
+}
+} // namespace strata::worker
