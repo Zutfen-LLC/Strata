@@ -1,3 +1,4 @@
+#include "strata/core/first_request_trace.hpp"
 #include "strata/core/logit_bias.hpp"
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
@@ -3425,6 +3426,17 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: network CUDA experts need --remote-cpu-experts, its trusted local manifest, "
                              "one legacy endpoint/plan or 1..8 --remote-gpu-worker pairs, and positive setup/deadline budgets\n");
         return 2;
+    }
+    if (strata::core::FirstRequestTrace::enabled()) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_GPU_METAL)
+        std::fprintf(stderr, "first-request trace currently requires CUDA\n"); return 2;
+#endif
+        if (!o.serve || !o.remote_cpu_experts || o.batch != 0 || !o.layer_split.empty() ||
+            o.pipeline_windows > 0 || o.vision || cpu_capture_path || o.remote_gpu_legacy ||
+            !std::getenv("STRATA_DUMP_FIRST_LOGITS")) {
+            std::fprintf(stderr, "first-request trace requires serial remote CPU text serve, "
+                                 "no split/pipeline and STRATA_DUMP_FIRST_LOGITS\n"); return 2;
+        }
     }
     if(cpu_capture_path && (!o.remote_cpu_legacy || !o.remote_cpu_workers.empty() ||
         !o.remote_cpu_resident || o.remote_cpu_local_manifest.empty() || o.remote_gpu_experts ||
@@ -12680,6 +12692,19 @@ int main(int argc, char** argv) {
                 wait_before[(size_t) r] = remote_experts[(size_t) r].ms_wait();
             }
             cur = ids;
+            if (!strata::core::first_request_trace().begin(ids.data(), ids.size())) {
+                std::printf("ERR first-request trace: create failed or prompt exceeds 64 tokens\n"); return 1;
+            }
+            if (strata::core::first_request_trace().active()) {
+                if (max_new > INT32_MAX) { std::printf("ERR first-request trace: GEN length exceeds int32\n"); return 1; }
+                const int32_t binding[] = {(int32_t)max_new, (int32_t)o.prefill_chunk, o.spec, (int32_t)o.max_context,
+                                           (int32_t)g.n_layers, (int32_t)g.n_embd, (int32_t)g.n_expert,
+                                           (int32_t)ss.k, (int32_t)g.hc};
+                if (!strata::core::first_request_trace().record(10, -1, 0, 1, 9, binding)) {
+                    std::printf("ERR first-request trace: request binding write failed\n"); return 1;
+                }
+            }
+
             const Clock::time_point r0 = Clock::now();
             const int64_t streamed0 = sp.chain_experts_streamed();   // the DONE line's experts_streamed= is the difference
             // ---- where this request starts reading: the live session, or a checkpoint, whose tokens AND pictures are
@@ -15296,6 +15321,9 @@ int main(int argc, char** argv) {
                         if (!written)
                             std::fprintf(stderr, "strata serve: STRATA_DUMP_FIRST_LOGITS: cannot write %s\n", path.c_str());
                         if (f && std::fclose(f)) written=false;
+                        if (!written && strata::core::first_request_trace().active()) {
+                            std::printf("ERR first-request trace: first-logit dump failed\n"); return 1;
+                        }
 #ifdef STRATA_NATIVE_EXPERTS
                         if(drive.capture && drive.capture->active() &&
                            (!written || !drive.capture->seal(row.data(),row.size()))) {
@@ -15305,6 +15333,18 @@ int main(int argc, char** argv) {
                         if(drive.capture) max_new=1;
 #endif
                     }
+                }
+                if (first_window && strata::core::first_request_trace().active()) {
+                    std::vector<float> first((size_t)ver.vocab());
+                    if (!ver.copy_logits(merged ? T-1 : 0, first.data()) ||
+                        !strata::core::first_request_trace().finish(first.data(), first.size())) {
+                        std::printf("ERR first-request trace: incomplete first logits\n"); return 1;
+                    }
+                    // Original GEN, prompt read and first verify have already run unchanged.
+                    // End before commit, draft, token emission or any continuation window.
+                    cancelled = true;
+                    finish = "trace";
+                    break;
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;

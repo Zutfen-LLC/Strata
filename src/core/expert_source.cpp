@@ -1,5 +1,6 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/core/first_request_trace.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/platform/aux_cpus.hpp"
@@ -4365,6 +4366,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                                 float* out) {
     using namespace strata::kernels::cpu;
     if (d.failed) return;
+    bool traced_network = false;
 #ifndef STRATA_NATIVE_EXPERTS
     // A caller cannot attach a worker to a build that does not link its implementation.
     // Refuse before lookahead, source reads, GPU planning or any partial output.
@@ -4990,6 +4992,10 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             if(gpu_worker_error.empty())gpu_worker_error="mixed CPU rows were not completed";
             d.failed=true;d.fail=gpu_worker_error.c_str();d.fail_layer=d.layers;return;
         }
+        if (first_request_trace().active()) {
+            first_request_trace().record(12, d.layers, first_request_trace().slice, n_tok, H, mixed_partial.data());
+            traced_network = true;
+        }
         if(std::find(expected.begin(),expected.end(),1)!=expected.end())
             d.remote_opt->accumulate_host(mixed_partial.data(),expected.data(),(int)n_tok,(int)k);
     } else if (gpu_worker_sent)
@@ -5004,6 +5010,11 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         const bool time_worker_merge = d.worker && d.worker->rpc_timing_enabled();
         const auto worker_merge_start = time_worker_merge ? std::chrono::steady_clock::now()
                                                           : std::chrono::steady_clock::time_point{};
+        if (first_request_trace().active()) {
+            first_request_trace().record(12, d.layers, first_request_trace().slice, n_tok, H,
+                                         d.cpu_group ? d.cpu_group->partials() : d.worker->partials());
+            traced_network = true;
+        }
         d.remote_opt->accumulate_host(d.cpu_group ? d.cpu_group->partials() : d.worker->partials(),
                                       worker_mask.data(), (int)n_tok, (int)k);
         if (time_worker_merge)
@@ -5011,6 +5022,21 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                                               std::chrono::steady_clock::now() - worker_merge_start).count());
     }
 #endif
+    if (first_request_trace().active()) {
+        if (!traced_network) {
+            const std::vector<float> zero((size_t)n_tok * H, 0.0f);
+            first_request_trace().record(12, d.layers, first_request_trace().slice, n_tok, H, zero.data());
+        }
+        first_request_trace().record(9, d.layers, first_request_trace().slice, n_tok, k, kind);
+#ifdef STRATA_NETWORK_CUDA_WORKER
+        if (d.gpu_worker) for (size_t peer=0; peer<d.gpu_worker->size(); ++peer) {
+            if (!d.gpu_worker->active(peer)) continue;
+            int32_t mask[kMaxWindowEntries];
+            for (int64_t i=0; i<n; ++i) mask[i] = d.gpu_worker->mask(peer)[i];
+            first_request_trace().record(20+(int64_t)peer, d.layers, first_request_trace().slice, n_tok, k, mask);
+        }
+#endif
+    }
     const auto c4 = std::chrono::steady_clock::now();
     pt("ran");
     auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
