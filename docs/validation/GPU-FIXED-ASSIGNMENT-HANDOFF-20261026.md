@@ -93,3 +93,25 @@ and per-layer ownership differ, while primary960/helper1378 and the full22238 /
 9250 remote assignments are disjoint subsets of the corrected complement.
 Actual retained-profile execution remains a metadata-only operator check.
 Engine/worker product code remains at fd72e7a6.
+
+## Retained startup-marker compatibility
+
+The retained `CPU entry rows ready schema=1 ordered_reduce=1` config marker was
+not updated when the bridge changed its startup log. Arm derivation and the
+pre-GEN check now normalize only recognized readiness-marker spellings to the
+mode implied by argv. Do not use the earlier broad string replacement to
+`reduction=`; existing configs containing it are normalized to the exact mode.
+All unrelated configured placement/cache/zero-load markers remain required.
+
+A0/A1 require the exact full line `strata generate: CPU entry rows ready schema=1
+reduction=CPU original-order` and a READY CPU group reporting `reply_mode=entry_rows`
+without execution delegation. B requires the exact full line ending
+`reduction=CPU+CUDA original-order union`, plus its READY CPU group reporting both
+`execution_delegated=1` and `reduction=deferred`. Cross-mode, weighted, missing
+state and substring-only imitations fail before GEN. A focused test with literal
+new A0/B startup text covers retained old/current/broad marker configurations and
+preserved unrelated marker failures. Product code is unchanged at fd72e7a6.
+
+Update tooling and restage each arm into a new run root; staged helper hashes must
+not be edited in place. The old configured readiness marker can remain: it now
+maps exactly from that arm's argv. No engine build or CPU resident reload is needed.

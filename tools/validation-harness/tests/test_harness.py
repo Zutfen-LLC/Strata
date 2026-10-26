@@ -66,6 +66,33 @@ class HarnessTests(unittest.TestCase):
             bad=copy.deepcopy(cfg);bad['argv']=argv
             with self.assertRaises(ValueError):bundle.validate_network_gpu(bad)
 
+    def test_entry_row_startup_markers_match_actual_a0_and_b(self):
+        a0_argv=['@engine','--remote-cpu-worker','127.0.0.1:17431',
+                 '--remote-cpu-resident','--remote-cpu-entry-rows']
+        b_argv=a0_argv+['--remote-gpu-worker','127.0.0.1:29431','@gpu01']
+        group='strata generate: CPU group peers=1 READY group_request_wall_ms=0 caller_wait_ms=0 (peer timings overlap; do not sum as wall time) reply_mode=entry_rows row_reduce_ms=0'
+        a0='strata generate: CPU entry rows ready schema=1 reduction=CPU original-order\n'+group+'\ncache_hit=1 reused=116135731200 B\n'
+        b='strata generate: CPU entry rows ready schema=1 reduction=CPU+CUDA original-order union\n'+group+' execution_delegated=1 reduction=deferred\ncache_hit=1 reused=116135731200 B\n'
+        for argv,text,expected in [(a0_argv,a0,C.CPU_ROWS_ORDERED),(b_argv,b,C.CPU_ROWS_MIXED)]:
+            for marker in [C.CPU_ROWS_OLD,C.CPU_ROWS_PREFIX,C.CPU_ROWS_ORDERED,C.CPU_ROWS_MIXED]:
+                cfg=dict(argv=argv,placement_markers=[marker,'cache_hit=1 reused=116135731200 B'])
+                C.check_startup_markers(cfg,text)
+                self.assertEqual(C.startup_markers(argv,[marker]),[expected])
+                # Exercise the actual arm-config normalization as well as direct retained callers.
+                cfg=copy.deepcopy(self.cfg);cfg['argv']=argv
+                arm=copy.deepcopy(self.arm);arm['placement_markers']=[marker]
+                self.assertEqual(driver.arm_config(cfg,arm)['placement_markers'],[expected])
+        for argv,text in [(a0_argv,b),(b_argv,a0),(b_argv,b.replace(' execution_delegated=1 reduction=deferred','')),
+                          (a0_argv,a0.replace(group,group+' execution_delegated=1 reduction=deferred')),
+                          (a0_argv,a0.replace('strata generate: '+C.CPU_ROWS_ORDERED,'prefix strata generate: '+C.CPU_ROWS_ORDERED+' suffix')),
+                          (b_argv,b.replace('reply_mode=entry_rows','reply_mode=weighted'))]:
+            with self.assertRaises(RuntimeError):
+                C.check_startup_markers(dict(argv=argv,placement_markers=[C.CPU_ROWS_OLD]),text)
+        with self.assertRaisesRegex(RuntimeError,'missing placement marker: required-other-marker'):
+            C.check_startup_markers(dict(argv=a0_argv,placement_markers=[C.CPU_ROWS_OLD,'required-other-marker']),a0)
+        # Unrelated legacy modes keep their existing configured marker behavior.
+        C.check_startup_markers(dict(argv=['@engine'],placement_markers=['legacy-ready']),'legacy-ready')
+
     def cleanup_children(self):
         for child in self.children:
             if child.poll() is None: child.kill()

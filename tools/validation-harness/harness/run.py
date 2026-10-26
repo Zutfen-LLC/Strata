@@ -35,7 +35,7 @@ def arm_config(cfg, arm):
     result['manifest_path'] = cfg['assets']['manifest']
     result['manifest_sha256'] = bundle.sha(result['manifest_path'])
     result['max_requests'] = len(arm['requests'])
-    result['placement_markers'] = arm['placement_markers']
+    result['placement_markers'] = C.startup_markers(result['argv'], arm['placement_markers'])
     result['engine_main_mask'] = arm['engine_main_mask']
     if cfg.get('capture_first_logits'):
         result['env']=dict(cfg['env'],STRATA_DUMP_FIRST_LOGITS=str(pathlib.Path(cfg['run_root'])/(arm['name']+'-first-logits')))

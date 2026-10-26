@@ -316,6 +316,47 @@ def launch_session(arm, session_config):
     return wait_session(R / arm, lambda row: row['ready'] is not None, cfg['startup_seconds'], owner)
 
 
+# Exact readiness contracts emitted by the fd72e7a6 engine. Configs retained from
+# before that bridge used ordered_reduce=1; normalize only known marker spellings.
+CPU_ROWS_OLD = 'CPU entry rows ready schema=1 ordered_reduce=1'
+CPU_ROWS_PREFIX = 'CPU entry rows ready schema=1 reduction='
+CPU_ROWS_ORDERED = CPU_ROWS_PREFIX + 'CPU original-order'
+CPU_ROWS_MIXED = CPU_ROWS_PREFIX + 'CPU+CUDA original-order union'
+
+
+def startup_markers(argv, configured):
+    markers = list(configured)
+    if '--remote-cpu-entry-rows' not in argv: return markers
+    mixed = '--remote-gpu-worker' in argv or '--remote-gpu-experts' in argv
+    expected = CPU_ROWS_MIXED if mixed else CPU_ROWS_ORDERED
+    known = {CPU_ROWS_OLD, CPU_ROWS_PREFIX, CPU_ROWS_ORDERED, CPU_ROWS_MIXED}
+    known |= {'strata generate: ' + marker for marker in tuple(known)}
+    markers = [expected if marker in known else marker for marker in markers]
+    if expected not in markers: markers.append(expected)
+    return markers
+
+
+def check_startup_markers(session_config, text):
+    argv = session_config['argv']
+    if '--remote-cpu-entry-rows' in argv:
+        mixed = '--remote-gpu-worker' in argv or '--remote-gpu-experts' in argv
+        expected = CPU_ROWS_MIXED if mixed else CPU_ROWS_ORDERED
+        lines = text.splitlines()
+        if 'strata generate: ' + expected not in lines:
+            raise RuntimeError('missing exact entry-row readiness: ' + expected)
+        prefix = f"strata generate: CPU group peers={argv.count('--remote-cpu-worker')} READY "
+        groups = [line for line in lines if line.startswith(prefix)]
+        if len(groups) != 1 or 'reply_mode=entry_rows' not in groups[0].split():
+            raise RuntimeError('missing exact CPU group entry-row readiness')
+        tokens = groups[0].split()
+        delegated = 'execution_delegated=1' in tokens and 'reduction=deferred' in tokens
+        if mixed != delegated or (not mixed and any(token.startswith('execution_delegated=') or
+                                                  token == 'reduction=deferred' for token in tokens)):
+            raise RuntimeError('CPU row reduction/delegation mode mismatch')
+    for marker in startup_markers(argv, session_config['placement_markers']):
+        if marker not in text: raise RuntimeError('missing placement marker: ' + marker)
+
+
 def run_arm(arm, session_config, indices, affinity):
     """Retained READY/GEN/DONE/QUIT sequence, with config-selected requests and no worker control
     between engine launch and owner reap. Cold load uses indices=[]; its timing stays separate."""
@@ -325,8 +366,7 @@ def run_arm(arm, session_config, indices, affinity):
     affinity(arm, False, phase='ready')  # loader helpers have joined; final compute masks precede every GEN
     startup = st['ready']['mono'] - st['started_mono']
     text = (R / arm / 'stderr.log').read_text()
-    for marker in session_config['placement_markers']:
-        if marker not in text: raise RuntimeError('missing placement marker: ' + marker)
+    check_startup_markers(session_config, text)
     rows = []; io_tids = set()
     for k, index in enumerate(indices):
         healthy(); affinity(arm, False)
