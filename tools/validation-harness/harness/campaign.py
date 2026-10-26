@@ -357,6 +357,22 @@ def check_startup_markers(session_config, text):
         if marker not in text: raise RuntimeError('missing placement marker: ' + marker)
 
 
+def check_quality_completion(done, tokens, path):
+    import array
+    import math
+    if done['finish'] not in ('stop', 'length') or not 0 < len(tokens) <= 32:
+        raise RuntimeError('invalid quality generation completion')
+    raw = path.read_bytes()
+    if not raw or len(raw) % 4 or len(raw) > 4 << 20:
+        raise RuntimeError('invalid quality first logits')
+    logits = array.array('f'); logits.frombytes(raw)
+    if sys.byteorder != 'little': logits.byteswap()
+    if any(not math.isfinite(v) for v in logits):
+        raise RuntimeError('nonfinite quality first logits')
+    if any(type(t) is not int or not 0 <= t < len(logits) for t in tokens):
+        raise RuntimeError('invalid quality token ID')
+
+
 def run_arm(arm, session_config, indices, affinity):
     """Retained READY/GEN/DONE/QUIT sequence, with config-selected requests and no worker control
     between engine launch and owner reap. Cold load uses indices=[]; its timing stays separate."""
@@ -378,6 +394,8 @@ def run_arm(arm, session_config, indices, affinity):
         done = parse_done(st['done']['line']); log = path.read_text()
         tokens = tokens_between(log, offset, len(log))
         if len(tokens) != done['output_count']: raise RuntimeError('token count mismatch')
+        if cfg.get('evaluation_mode') == 'quality':
+            check_quality_completion(done, tokens, R / (arm + '-first-logits.' + str(k)))
         if session_config.get('env', {}).get('STRATA_FIRST_REQUEST_TRACE') and \
            (done['finish'] != 'trace' or done['output_count'] != 0):
             raise RuntimeError('first-request trace requires DONE 0 with finish trace')
@@ -390,6 +408,7 @@ def run_arm(arm, session_config, indices, affinity):
         rows.append({'index': index + 1, 'tokens': tokens, 'output_count': done['output_count'],
             'worker_entries': done.get('worker_entries'), 'prompt_s': done['prompt_s'],
             'decode_s': done['decode_s'], 'sent_mono': ack['sent']['mono'], 'done_mono': st['done']['mono']})
+        if cfg.get('evaluation_mode') == 'quality': rows[-1]['finish'] = done['finish']
     finish_session(arm)
     gpu_idle(); after = wstatus(); atom(R / ('worker-after-' + arm + '.json'), after)
     status = after['status']
