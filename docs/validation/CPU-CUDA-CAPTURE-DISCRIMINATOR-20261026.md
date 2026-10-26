@@ -288,3 +288,9 @@ Local validation: CPU-only Release target builds and both focused CTests passed
 (2/2 in 8.32 s), including metadata mapping/refusal, multi-expert plan encoding and
 the 21,320-byte one-entry CPU export bound. Actual CUDA compilation and grouped
 execution remain pending on 03; the PR stays draft.
+
+
+The exact actual window-0/layer-0 follow-up is now bounded to 13 CUDA rows and
+reuses the accepted full record-0 SRA1 CPU rows only after raw identity and A0
+reconstruction gates. See [first-boundary replay](FIRST-BOUNDARY-REPLAY-20261026.md).
+It does not repeat this document's prior surveys or controls.

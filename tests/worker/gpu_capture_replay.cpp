@@ -146,6 +146,7 @@ bool metrics(const char* label,const std::vector<float>& a,const std::vector<flo
     }
     return first==a.size();
 }
+#include "first_boundary_replay.hpp"
 struct CpuRows {std::vector<float> rows,gate,up,hidden;std::vector<uint8_t> act,hq;};
 CpuRows cpu_rows(const InferRequest& q,const std::vector<uint8_t>& b,const cpu::NativeFmt& f) {
     CpuRows c;c.act.resize(q.T*cpu::kNativeActBytes);c.rows.resize(q.T*f.n_embd);
@@ -544,11 +545,118 @@ int grouped_control(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,co
     std::printf("GROUPED_DONE records=0,828 batches=%zu executor_calls=%zu seconds=%.6f bitexact=1 max_resident_experts=20 no_listeners=1\n",
         batches,calls,std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count());return 0;
 }
+int first_boundary(const CpuCaptureFile& f,const FirstBoundary& b,const std::vector<GpuPlan>& plans,
+                   const fs::path& blobs,const fs::path& root) {
+    // Every historical/SRA1 gate precedes CUDA initialization or weight reads.
+    const auto a0=boundary_cpu_gate(f,b);
+    const auto inv=inventory(f,plans,blobs,true,{0});
+    require(plans.size()==4 && inv.selected==13 && inv.assets.size()==13 && inv.bytes==67891200,
+        "BOUNDARY B assignment count/bytes mismatch");
+    const auto& original=f.records[0].request;
+    for(size_t peer=0;peer<4;++peer)for(size_t i=0;i<20;++i)
+        require(bool(b.peers[peer][i])==plans[peer].owns(0,original.ids[i]),"BOUNDARY B plan/trace peer ownership mismatch");
+    require(!inv.missing,"BOUNDARY selected blobs missing; no full-model fallback");
+    require(fs::create_directory(root),"BOUNDARY output must be a new directory");
+    const auto cache_dir=root/"one-expert-cache";require(fs::create_directory(cache_dir),"BOUNDARY private cache create failed");
+    std::string err;GpuCache cache;auto rows=b.rows;const auto start=std::chrono::steady_clock::now();
+    cu(cudaSetDevice(0));cpu_info();cuda_info();size_t calls=0;
+    for(const auto& selected:inv.assets) {
+        require(std::chrono::steady_clock::now()-start<std::chrono::seconds(60),"BOUNDARY 60-second CUDA budget exceeded");
+        const auto& plan=plans[selected.plan];const auto p=one_asset(plan,selected.asset);
+        const auto blob=read_blob((blobs/key(plan,selected.asset)).string(),selected.asset);
+        stage_cache(cache,cache_dir,p,blob);
+        auto executor=create_cuda_gpu_executor(0);GpuCounters counters;
+        require(executor->prepare(p,256ull<<20,cache,counters,err),err);
+        auto q=original;for(size_t i=0;i<20;++i)q.mask[i]=b.peers[selected.plan][i] && q.ids[i]==selected.asset.expert;
+        q.session=1;q.sequence=1;q.partition_id=p.placement_id.a;
+        EntryRowsReply reply;require(executor->infer_rows(p,q,reply,err),err);
+        std::vector<uint16_t> expected;for(size_t i=0;i<20;++i)if(q.mask[i])expected.push_back((uint16_t)i);
+        require(expected.size()==1 && reply.indices==expected && reply.rows.size()==2560,"BOUNDARY CUDA original-entry association mismatch");
+        const size_t i=expected[0];std::vector<float> cpu_row(b.rows.begin()+i*2560,b.rows.begin()+(i+1)*2560);
+        std::printf("BOUNDARY_ROW entry=%zu token=%zu expert=%u peer=%zu ",i,i/10,q.ids[i],selected.plan);
+        metrics("CPU_vs_CUDA_unweighted",cpu_row,reply.rows);
+        std::copy(reply.rows.begin(),reply.rows.end(),rows.begin()+i*2560);
+        executor->release(counters);cache.close();++calls;
+    }
+    auto mixed=boundary_reduce(b,rows,"actual_mixed_rows");
+    auto save=[&](const char* name,const std::vector<float>& data){std::ofstream out(root/name,std::ios::binary);
+        require(bool(out.write((const char*)data.data(),data.size()*4)),"BOUNDARY result write failed");};
+    save("CPU-original-entry-rows.f32",b.rows);save("mixed-original-entry-rows.f32",rows);
+    save("reconstructed-A0-union.f32",a0);save("reconstructed-B-union.f32",mixed);
+    const bool exact=metrics("actual_rows_reconstruct_recorded_B_union",b.b,mixed);
+    metrics("recorded_A0_vs_recorded_B_union",b.a0,b.b);
+    std::printf("BOUNDARY_DONE A0_bits=1 B_bits=%d identical_row_controls=1 CUDA_rows=%zu CUDA_blobs=%zu "
+        "blob_bytes=67891200 seconds=%.6f no_CPU_recompute=1 no_listeners=1 model_parity=unestablished\n",
+        exact,calls,inv.assets.size(),std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count());
+    return exact?0:1;
+}
 #endif
 
+void first_boundary_check() {
+    FirstBoundary b;b.prompt.resize(38*4);for(size_t i=0;i<38;++i)b.prompt[4*i]=(uint8_t)i;
+    b.x.assign(5120,.1f);b.weights.assign(20,1.f);b.expected.assign(20,1);b.cpu_mask.assign(20,1);b.peers.assign(4,std::vector<uint8_t>(20));
+    b.rows.assign(20*2560,0.f);b.ids.resize(20);
+    for(size_t i=0;i<20;++i){b.ids[i]=(uint32_t)i;if(i<13){b.cpu_mask[i]=0;b.peers[i%4][i]=1;}}
+    // Cancelling values make a regrouped sum differ from original-entry order.
+    for(int t=0;t<2;++t)for(int h=0;h<2560;++h) {
+        b.rows[(t*10)*2560+h]=1e20f;b.rows[(t*10+1)*2560+h]=-1e20f;b.rows[(t*10+2)*2560+h]=1.f;
+    }
+    b.a0=boundary_reference(b,b.rows);b.b=b.a0;b.sra_partial=b.a0;
+    CpuCaptureFile f;f.setup.n_embd=2560;f.setup.n_ff=640;f.setup.gu_type=f.setup.d_type=8;
+    f.prompt_tokens=38;f.max_new=256;f.tokens=blob_digest(b.prompt);f.windows.push_back({1,1,2,0});
+    CpuCaptureRecord r;r.window=1;r.sent=true;r.request.layer=0;r.request.T=2;r.request.K=10;
+    r.request.activations=b.x;r.request.weights=b.weights;r.request.mask=b.expected;
+    for(auto id:b.ids)r.request.ids.push_back((uint16_t)id);
+    r.partials=b.a0;f.records.push_back(r);
+    (void)boundary_cpu_gate(f,b);
+    auto changed=b.rows;changed[2*2560]+=.125f;b.b=boundary_reference(b,changed);
+    require(metrics("synthetic_boundary_B",b.b,boundary_reduce(b,changed,"synthetic_mixed")),"synthetic B reconstruction");
+    auto refuse=[&](auto change){auto bad=f;change(bad);bool stopped=false;try{boundary_historic(bad,b);}catch(...){stopped=true;}
+        require(stopped,"boundary identity mismatch not refused");};
+    refuse([](auto& bad){bad.records[0].request.activations[0]+=.1f;});
+    refuse([](auto& bad){bad.records[0].request.ids[0]++;});
+    refuse([](auto& bad){bad.records[0].request.weights[0]+=.1f;});
+    refuse([](auto& bad){bad.records[0].request.mask[0]=0;});
+    refuse([](auto& bad){bad.records[0].token_begin=1;});
+    refuse([](auto& bad){bad.records[0].partials[0]+=.1f;});
+    auto bad_rows=b;bad_rows.rows[2*2560]+=.125f;bool stopped=false;
+    try{(void)boundary_cpu_gate(f,bad_rows);}catch(...){stopped=true;}
+    require(stopped,"SRA1 row mismatch not refused");
+    b.sra_partial[0]+=.1f;stopped=false;try{boundary_historic(f,b);}catch(...){stopped=true;}
+    require(stopped,"SRA1 partial mismatch not refused");b.sra_partial=b.a0;
+    // Exercise the exact bounded parser with a synthetic packet, then corrupt its header.
+    std::vector<uint8_t> packet{'S','F','B','1'};
+    for(uint32_t v:{2u,10u,2560u,38u,256u,0u,0u,0u})put(packet,v);
+    packet.insert(packet.end(),FirstBoundarySraSha,FirstBoundarySraSha+32);
+    auto append=[&](const auto& v){const auto* p=(const uint8_t*)v.data();packet.insert(packet.end(),p,p+v.size()*sizeof(v[0]));};
+    append(b.prompt);append(b.x);append(b.ids);append(b.weights);append(b.expected);append(b.cpu_mask);
+    for(const auto& mask:b.peers)append(mask);
+    append(b.a0);append(b.b);append(b.rows);append(b.sra_partial);
+    require(packet.size()==287220,"synthetic boundary packet size");
+    char path[]="/tmp/strata-first-boundary-XXXXXX";const int fd=mkstemp(path);require(fd>=0,"boundary fixture create");close(fd);
+    struct Cleanup {const char* path;~Cleanup(){std::remove(path);}} cleanup{path};
+    auto write=[&]{std::ofstream out(path,std::ios::binary);require(bool(out.write((char*)packet.data(),packet.size())),"boundary fixture write");};
+    write();const auto decoded=read_boundary(path);(void)boundary_cpu_gate(f,decoded);
+    packet[36]^=1;write();stopped=false;try{(void)read_boundary(path);}catch(...){stopped=true;}
+    require(stopped,"bad packet SRA1 binding not refused");
+    std::puts("BOUNDARY_CHECK raw_identity_refusals=6 SRA1_partial_and_row_refusals=1 packet_refusal=1 ordered_reconstruction=1 identical_row_controls=1 actual_CUDA=0");
+}
 }
 int main(int argc,char** argv) {
     try {
+        if(argc==2 && std::string(argv[1])=="--boundary-check") {first_boundary_check();return 0;}
+        if(argc>=2 && std::string(argv[1])=="--boundary") {
+            require(argc==10,"--boundary requires CAPTURE PACKET BLOB_DIR NEW_OUTPUT and four B plans in original peer order");
+            CpuCaptureFile f;std::string err;require(read_cpu_capture(argv[2],f,err),err);
+            const auto b=read_boundary(argv[3]);
+#ifdef STRATA_CAPTURE_CUDA
+            std::vector<GpuPlan> plans;for(int i=6;i<argc;++i){GpuPlan p;require(read_gpu_plan(argv[i],p,err),err);plans.push_back(p);}
+            return first_boundary(f,b,plans,argv[4],argv[5]);
+#else
+            (void)boundary_cpu_gate(f,b);
+            throw std::runtime_error("--boundary needs CUDA target gpu_capture_replay; CPU reuse gates passed, CUDA not run");
+#endif
+        }
         if(argc==2 && std::string(argv[1])=="--self-check") {
             // The real fixture writes GGUF slices, so test digest refusal separately below.
             Fixture fixture;GpuPlan p;std::string err;require(make_gpu_plan(fixture.m,{{0,1}},p,err),err);
@@ -598,7 +706,7 @@ int main(int argc,char** argv) {
         const bool survey_mode=argc>=6 && std::string(argv[1])=="--survey";
         const bool grouped=argc>=6 && std::string(argv[1])=="--grouped";
         const bool cpu_mode=argc>=6 && std::string(argv[1])=="--cpu-control";
-        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check");
+        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check | --boundary CAPTURE PACKET BLOB_DIR NEW_OUTPUT B_PLAN... | --boundary-check");
         CpuCaptureFile f;std::string err;require(read_cpu_capture(argv[2],f,err),err);
         std::vector<GpuPlan> plans;const int begin=selecting?3:listing?4:5;
         for(int i=begin;i<argc;++i){GpuPlan p;require(read_gpu_plan(argv[i],p,err),err);plans.push_back(p);}
