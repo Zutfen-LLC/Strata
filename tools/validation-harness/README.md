@@ -114,3 +114,7 @@ For the separate explicit `evaluation_mode: "quality"` answer screen, see
 [QUALITY.md](QUALITY.md). It freezes twelve short mechanically scored cases and
 retains exact/numeric mismatches as diagnostics. Exact mode remains the default.
 No hardware or model result is implied by this prospective run contract.
+
+The separate [100-case v2 contract](QUALITY_V2.md) uses explicit
+`quality_suite: "v2-100"` within quality mode. It keeps the original twelve-case
+suite/scorer intact and reports paired semantic and formatting regressions.
