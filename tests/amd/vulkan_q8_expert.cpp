@@ -46,6 +46,11 @@ void finite(const std::vector<float>& v) {
     for (float x : v) require(std::isfinite(x), "nonfinite expert value");
 }
 struct Rows { std::vector<float> gate, up, hidden, out; };
+float host_swiglu(float gate, float up) { return (gate/(1.f+std::exp(-gate)))*up; }
+struct Boundaries {
+    std::vector<uint8_t> input_q, hidden_q;
+    std::vector<float> input_f, down_f;
+};
 void validate(const Rows& r) {
     require(r.gate.size() == F && r.up.size() == F && r.hidden.size() == F && r.out.size() == H,
             "expert result shape mismatch");
@@ -98,7 +103,7 @@ Rows native_reference(const cpu::NativeFmt& fmt, const std::vector<uint8_t>& blo
     for (int row = 0; row < F; ++row) {
         dot(H, &r.gate[row], 0, blob.data()+row*fmt.gu_row, 0, aq.data(), 0, 1);
         dot(H, &r.up[row], 0, blob.data()+fmt.up_off+row*fmt.gu_row, 0, aq.data(), 0, 1);
-        const float recomposed = (r.gate[row]/(1.f+std::exp(-r.gate[row])))*r.up[row];
+        const float recomposed = host_swiglu(r.gate[row],r.up[row]);
         require(!std::memcmp(&recomposed,&r.hidden[row],sizeof(float)), "native hidden projection seam mismatch");
     }
     validate(r); return r;
@@ -107,15 +112,19 @@ Rows native_reference(const cpu::NativeFmt& fmt, const std::vector<uint8_t>& blo
 class ExpertGraph {
     Context ctx_{nullptr,ggml_free};
     Buffer buf_{nullptr,ggml_backend_buffer_free};
-    ggml_cgraph* graph_ = nullptr;
+    ggml_cgraph *graph_ = nullptr, *down_graph_ = nullptr;
     ggml_tensor *x_ = nullptr, *g_ = nullptr, *u_ = nullptr, *hidden_ = nullptr, *out_ = nullptr;
     ggml_backend_t backend_;
+    cpu::NativeFmt fmt_;
+    bool native_boundaries_;
+    Boundaries boundaries_;
     std::vector<float> read(ggml_tensor* t) {
         std::vector<float> v(static_cast<size_t>(ggml_nelements(t)));
         ggml_backend_tensor_get(t,v.data(),0,v.size()*sizeof(float)); return v;
     }
 public:
-    ExpertGraph(ggml_backend_t backend, const cpu::NativeFmt& fmt, const std::vector<uint8_t>& blob):backend_(backend) {
+    ExpertGraph(ggml_backend_t backend, const cpu::NativeFmt& fmt, const std::vector<uint8_t>& blob,
+                bool native_boundaries = false):backend_(backend),fmt_(fmt),native_boundaries_(native_boundaries) {
         ggml_init_params p{2u<<20,nullptr,true};
         ctx_.reset(ggml_init(p)); require(bool(ctx_), "ggml metadata allocation failed");
         auto* gate = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,H,F);
@@ -123,12 +132,18 @@ public:
         auto* down = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,F,H);
         x_ = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_F32,H,1);
         g_ = ggml_mul_mat(ctx_.get(),gate,x_); u_ = ggml_mul_mat(ctx_.get(),up,x_);
-        hidden_ = ggml_mul(ctx_.get(),ggml_silu(ctx_.get(),g_),u_);
+        hidden_ = native_boundaries_ ? ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_F32,F,1) :
+                  ggml_mul(ctx_.get(),ggml_silu(ctx_.get(),g_),u_);
         out_ = ggml_mul_mat(ctx_.get(),down,hidden_);
-        graph_ = ggml_new_graph(ctx_.get()); ggml_build_forward_expand(graph_,out_);
+        graph_ = ggml_new_graph(ctx_.get());
+        if (native_boundaries_) {
+            ggml_build_forward_expand(graph_,g_); ggml_build_forward_expand(graph_,u_);
+            down_graph_ = ggml_new_graph(ctx_.get()); ggml_build_forward_expand(down_graph_,out_);
+        } else ggml_build_forward_expand(graph_,out_);
         // Direct backend execution only. Unsupported operations stop; no scheduler/CPU fallback.
-        for (int i = 0; i < ggml_graph_n_nodes(graph_); ++i)
-            require(ggml_backend_supports_op(backend_,ggml_graph_node(graph_,i)), "backend declines expert operation");
+        for (auto* graph : {graph_,down_graph_}) if (graph)
+            for (int i = 0; i < ggml_graph_n_nodes(graph); ++i)
+                require(ggml_backend_supports_op(backend_,ggml_graph_node(graph,i)), "backend declines expert operation");
         buf_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),backend_));
         require(bool(buf_), "backend expert allocation failed");
         require(ggml_backend_buffer_get_size(buf_.get()) < (16u<<20), "unexpected backend tensor allocation above 16 MiB");
@@ -137,7 +152,29 @@ public:
         ggml_backend_tensor_set(down,blob.data()+fmt.down_off,0,fmt.bytes-fmt.down_off);
     }
     size_t buffer_bytes() const { return ggml_backend_buffer_get_size(buf_.get()); }
+    const Boundaries& boundaries() const { return boundaries_; }
     Rows run(const std::vector<float>& x) {
+        if (native_boundaries_) {
+            boundaries_.input_q.resize(fmt_.act_bytes); boundaries_.input_f.resize(H);
+            cpu::native_quant_act(fmt_,x.data(),boundaries_.input_q.data());
+            ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float(boundaries_.input_q.data(),boundaries_.input_f.data(),H);
+            finite(boundaries_.input_f);
+            ggml_backend_tensor_set(x_,boundaries_.input_f.data(),0,H*sizeof(float));
+            require(ggml_backend_graph_compute(backend_,graph_) == GGML_STATUS_SUCCESS,"hybrid gate/up compute failed");
+            ggml_backend_synchronize(backend_);
+            Rows r{read(g_),read(u_),std::vector<float>(F),{}};
+            finite(r.gate); finite(r.up);
+            for (int i = 0; i < F; ++i) r.hidden[i] = host_swiglu(r.gate[i],r.up[i]);
+            finite(r.hidden);
+            boundaries_.hidden_q.resize(fmt_.h_bytes); boundaries_.down_f.resize(F);
+            cpu::native_quant_h(fmt_,r.hidden.data(),boundaries_.hidden_q.data());
+            ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float(boundaries_.hidden_q.data(),boundaries_.down_f.data(),F);
+            finite(boundaries_.down_f);
+            ggml_backend_tensor_set(hidden_,boundaries_.down_f.data(),0,F*sizeof(float));
+            require(ggml_backend_graph_compute(backend_,down_graph_) == GGML_STATUS_SUCCESS,"hybrid down compute failed");
+            ggml_backend_synchronize(backend_);
+            r.out = read(out_); validate(r); return r;
+        }
         ggml_backend_tensor_set(x_,x.data(),0,x.size()*sizeof(float));
         require(ggml_backend_graph_compute(backend_,graph_) == GGML_STATUS_SUCCESS,"backend expert compute failed");
         ggml_backend_synchronize(backend_);
@@ -171,9 +208,11 @@ void save_rows(const std::filesystem::path& dir, const std::string& name, const 
 int run(int argc, char** argv) {
     const uint16_t endian = 1;
     require(*reinterpret_cast<const uint8_t*>(&endian) == 1,"fixture requires little-endian Q8/F32 storage");
-    std::string backend,output; int device = -1;
+    std::string backend,output; int device = -1; bool native_boundaries = false;
     for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i]; require(i+1 < argc,"missing option value"); const std::string value = argv[++i];
+        std::string arg = argv[i];
+        if (arg == "--native-q8-boundaries") { require(!native_boundaries,"duplicate native-boundary control"); native_boundaries = true; continue; }
+        require(i+1 < argc,"missing option value"); const std::string value = argv[++i];
         if (arg == "--backend") backend = value;
         else if (arg == "--out-dir") output = value;
         else if (arg == "--device") {
@@ -202,12 +241,13 @@ int run(int argc, char** argv) {
 #endif
     ggml_backend_t selected = backend == "cpu" ? cpu_backend.get() : vk_backend.get();
     ExpertGraph cpu_graph(cpu_backend.get(),fmt,blob);
-    std::unique_ptr<ExpertGraph> vk_graph;
-    if (vk_backend) vk_graph = std::make_unique<ExpertGraph>(selected,fmt,blob);
-    auto& selected_graph = vk_graph ? *vk_graph : cpu_graph;
+    std::unique_ptr<ExpertGraph> controlled_graph;
+    if (vk_backend || native_boundaries) controlled_graph = std::make_unique<ExpertGraph>(selected,fmt,blob,native_boundaries);
+    auto& selected_graph = controlled_graph ? *controlled_graph : cpu_graph;
     std::ofstream manifest(std::filesystem::path(output)/"manifest.txt"), metrics(std::filesystem::path(output)/"metrics.tsv");
     require(bool(manifest) && bool(metrics),"cannot create evidence");
     manifest << "schema=1\nH=2560\nFF=640\nT=1\nweight_type=Q8_0\ncpu_activation=Q8_0\n"
+             << "mode=" << (native_boundaries ? "hybrid_native_q8_boundaries" : "raw_f32") << '\n'
              << "backend=" << ggml_backend_name(selected) << "\ndevice=" << device
              << "\ndescription=" << ggml_backend_dev_description(ggml_backend_get_device(selected))
              << "\nweight_bytes=" << blob.size() << "\nweight_fnv1a64=" << std::hex << digest(blob.data(),blob.size()) << std::dec
@@ -220,8 +260,15 @@ int run(int argc, char** argv) {
         const Rows native2 = native_reference(fmt,blob,x,aq2,hq2); exact_repeat(native,native2);
         require(aq == aq2 && hq == hq2,"native packed repeat changed bytes");
         const Rows cpu_rows = cpu_graph.run(x); exact_repeat(cpu_rows,cpu_graph.run(x));
-        const Rows selected_rows = vk_graph ? vk_graph->run(x) : cpu_rows;
-        if (vk_graph) exact_repeat(selected_rows,vk_graph->run(x));
+        const Rows selected_rows = controlled_graph ? controlled_graph->run(x) : cpu_rows;
+        const Boundaries boundaries = selected_graph.boundaries();
+        if (controlled_graph) exact_repeat(selected_rows,controlled_graph->run(x));
+        if (native_boundaries) {
+            const auto& again = selected_graph.boundaries();
+            require(boundaries.input_q == aq && boundaries.input_q == again.input_q &&
+                    boundaries.hidden_q == again.hidden_q && same(boundaries.input_f,again.input_f) &&
+                    same(boundaries.down_f,again.down_f),"hybrid boundary bytes changed on repeat");
+        }
         if (zero) for (float v : selected_rows.out) require(v == 0,"zero expert produced nonzero output");
         else require(std::any_of(native.out.begin(),native.out.end(),[](float v){return v != 0;}),"degenerate signal fixture");
         compare(metrics,name+".cpu_graph_vs_native",cpu_rows,native);
@@ -231,6 +278,12 @@ int run(int argc, char** argv) {
         save(dir/(name+".input.f32"),x.data(),x.size()*4); save(dir/(name+".native_input.q8_0"),aq.data(),aq.size());
         save(dir/(name+".native_hidden.q8_0"),hq.data(),hq.size());
         save_rows(dir,name+".native",native); save_rows(dir,name+".cpu_graph",cpu_rows); save_rows(dir,name+".selected",selected_rows);
+        if (native_boundaries) {
+            save(dir/(name+".selected_input.q8_0"),boundaries.input_q.data(),boundaries.input_q.size());
+            save(dir/(name+".selected_input.f32"),boundaries.input_f.data(),boundaries.input_f.size()*4);
+            save(dir/(name+".selected_hidden.q8_0"),boundaries.hidden_q.data(),boundaries.hidden_q.size());
+            save(dir/(name+".selected_down_input.f32"),boundaries.down_f.data(),boundaries.down_f.size()*4);
+        }
         manifest << name << "_input_fnv1a64=" << std::hex << digest(x.data(),x.size()*4) << std::dec << '\n';
     }
     metrics.close(); manifest.close(); require(bool(metrics) && bool(manifest),"evidence write failed");

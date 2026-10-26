@@ -17,6 +17,7 @@ def compare(root):
     manifest = dict(line.split("=", 1) for line in (root / "manifest.txt").read_text().splitlines())
     assert (manifest["H"], manifest["FF"], manifest["T"]) == ("2560", "640", "1")
     assert manifest["backend"].startswith("Vulkan"), "selected backend is not Vulkan"
+    assert manifest.get("mode", "raw_f32") == "raw_f32", "raw-F32 comparator cannot qualify a hybrid run"
     assert manifest["weight_fnv1a64"] == "e6d5f545e2145434"
     assert manifest["signal_input_fnv1a64"] == "b46eda2ec728b1b9"
     blob = (root / "expert.q8_0").read_bytes()

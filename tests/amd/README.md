@@ -44,6 +44,45 @@ Every backend is explicit. `--backend vulkan --device N` never selects CPU after
 an error; `--backend cpu` forbids a device number. The selected backend name,
 device description, fixture identities and tensor-buffer size are recorded.
 
+## Opt-in native Q8 boundary control
+
+The default remains `mode=raw_f32`. Add **`--native-q8-boundaries`** for one
+diagnostic-only **hybrid** control:
+
+```text
+host native_quant_act -> Q8_0 -> dequantized F32
+  -> selected-backend Q8 gate and up matvecs
+  -> host native-expression SwiGLU
+  -> host native_quant_h -> Q8_0 -> dequantized F32
+  -> selected-backend Q8 down matvec
+```
+
+When Vulkan is selected, all three weight matrices remain on Vulkan and all
+three matvecs execute there. The host does activation quantization/dequantization
+and the same F32 SwiGLU expression checked against the actual native reference.
+It does not substitute CPU weight projections. This introduces a host boundary
+and synchronization between gate/up and down; it is a correctness discriminator,
+not an optimized worker or throughput claim.
+
+The manifest labels `mode=hybrid_native_q8_boundaries`; the raw-F32 comparator
+refuses this mode. Gate/up/down accumulation can still differ from native CPU
+integer dots and reduction order. No CPU bit-parity or numerical acceptance is
+promised for Vulkan. `selected.hidden.f32` is the host SwiGLU value before its
+quantization, while `selected_down_input.f32` is what actually enters down.
+
+In addition to the unchanged native-reference files, each case saves:
+
+| File suffix | Meaning |
+| --- | --- |
+| `selected_input.q8_0` | Native quantization of original input; 2720 bytes |
+| `selected_input.f32` | Dequantization uploaded for gate/up; 10240 bytes |
+| `selected_hidden.q8_0` | Native quantization of selected-backend host hidden; 680 bytes |
+| `selected_down_input.f32` | Dequantization uploaded for down; 2560 bytes |
+
+Host checks exercise this control on CPU, verify its stage rows against the
+actual native reference, packed/dequantized boundary bytes and cross-process
+determinism. These host-only assertions do not impose a Vulkan parity gate.
+
 ## Build and check
 
 Use pinned llama.cpp `3cf03257f219afbe7334045ff7c6a06ac68c627d`. Reuse retained
@@ -69,6 +108,23 @@ across processes, finite stage metrics and zero controls, and checks invalid
 backend/device options and refusal to overwrite an existing output directory.
 For a CPU-only development machine use `-DSTRATA_AMD_PROBE_VULKAN=OFF`; that build
 refuses Vulkan execution. This checks the fixture, not a GPU.
+
+For an existing configured **Unix Makefiles** build at the same source path,
+after updating only this diagnostic's source/test files, use:
+
+```bash
+cmake --build "$AMD_BUILD" --target strata-vulkan-q8-expert/fast -- -j2
+ctest --test-dir "$AMD_BUILD" -R '^amd_q8_expert_host$' \
+  --output-on-failure --timeout 120
+```
+
+The Make `/fast` target compiles/links this executable without traversing the
+existing dependency targets, including ggml's always-checked shader generator.
+Use it only after the original complete build passed, with unchanged CMake,
+dependency sources, compiler and configuration. Do not reconfigure, relocate the
+source, edit ggml or delete its cache for this incremental control. Preserve the
+old executable and choose new output/log paths. Add `--native-q8-boundaries` to
+each die's invocation below; the original raw screen needs no repeat.
 
 ## Two dies, sequential execution
 
