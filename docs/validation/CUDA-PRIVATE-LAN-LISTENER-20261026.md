@@ -3,7 +3,8 @@
 This opt-in listener change is stacked on PR #10 at
 `ce30b1dc7fc6a93a878476e97d673bb8d82b77a2`, including the qualified hybrid
 arithmetic implementation `9e7cf13e6ec0b96a465eb687c17075559d611650`.
-It permits a matched SSH/direct TCP experiment. No timing result is claimed.
+It permits a matched SSH/direct TCP experiment. The supplied completed hardware
+qualification and its limits are recorded below.
 
 ## Worker flags
 
@@ -87,9 +88,10 @@ settings (including missing values and repeated malformed peers). This verifies
 CLI routing, not a CUDA executable. Initial sandbox test attempts failed because
 socket creation was blocked; the same tests passed with local socket permission.
 
-Not run: CUDA compilation/link/execution (`nvcc` unavailable), physical private
-LAN binding, SSH forwarding, hardware inference or the A/B/A experiment. The PR
-remains draft pending the targeted CUDA build and parent-run qualification.
+Not run locally: CUDA compilation/link/execution (`nvcc` unavailable), physical
+private LAN binding, SSH forwarding, hardware inference or the A/B/A experiment.
+The supplied Hermes build and completed A/B/A qualification are recorded below.
+The PR remains draft; no default change or merge is implied.
 
 ## Python harness follow-up
 
@@ -158,3 +160,62 @@ peer test (`test_fast_stop_is_reconciled_after_worker_exit_without_second_stop`)
 This establishes a prior peer-suite instability, not a fully green overall suite;
 no identity/lifecycle check was bypassed or changed. No CUDA rebuild, hardware run
 or performance claim is part of these Python results.
+
+
+## Supplied completed hardware qualification
+
+[Hermes terminal receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793038492475179?thread_ts=1793035428.783899&cid=C0C5MK91H3L)
+reports the matched SSH/direct-private-TCP/SSH A/B/A complete with RC0 in every
+arm. This receipt was read for publication; private raw artifacts were not
+independently inspected or hardware results reproduced by this coding thread.
+
+All arms used the same patched CUDA worker ELF, SHA256
+`38cd6b15a161f74a3145fb02c81b895a489fdf805e93bc112dc7893ca68a53e8`,
+built from **worker source `6df429ac`**. The **Python harness was `60e8779a`**.
+These are separate source/build pins: the Python follow-up did not rebuild the
+worker, and its PR head must not be described as the worker ELF's build revision.
+Coordinator, plans, cache assignments, budgets and environment were unchanged,
+including `STRATA_CUDA_Q8_CPU_REFERENCE=1` on all four GPU workers.
+
+Warm original prompt0, GEN256, 213 output tokens, normal `stop`; loading/startup
+excluded from generation timing:
+
+| Arm | Transport | Prompt s | Decode s | Reported TPS | Generation wall s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| A0 | SSH forwards | 4.0474 | 29.0209 | 7.340 | 33.068 |
+| B | Direct private TCP | 3.1207 | 21.9263 | 9.714 | 25.047 |
+| A1 | SSH forwards | 4.0557 | 29.0551 | 7.331 | 33.111 |
+
+All 213 tokens and raw first-logit bytes were identical across A0, B and A1 and
+the qualified reference. Compared with the arithmetic mean of A0/A1 (decode
+29.0380 s, reported TPS 7.3355, generation wall 33.0895 s), direct TCP delivered
+approximately **32.4% higher TPS, 24.5% less decode time and 24.3% less generation
+wall time**. Percentages are calculated from the reported rounded timings/TPS.
+This measures the tested forwarding configuration collectively, including its
+transport path and processing. It does not isolate encryption cost, identify all
+network overhead, or establish the result for other prompts/configurations.
+
+Hermes recorded loopback worker listeners for A0/A1 (`127.0.0.1:27432/27433`)
+and direct B listeners at `10.0.0.146:27432`, `10.0.0.222:27432`,
+`10.0.0.222:27433` and `10.0.0.204:27432`. The receipt reports CPU-reference
+markers and no peer denials. A0's launcher escaping error caused worker03a's log
+to be overwritten by worker03b in a shared log directory. Distinct listener and
+in-run process evidence and exact A0 output were retained; B/A1 have separate
+per-worker logs. **Not every individual A0 worker log survived.** No rerun was
+performed to replace this missing evidence.
+
+Supplied evidence roots retained on Hermes:
+
+- `/home/hermes/strata-A0lan-lanab-20261026T140500Z/`
+- `/home/hermes/strata-Blan-lanab-20261026T140500Z/`
+- `/home/hermes/strata-A1lan-lanab-20261026T140500Z/`
+- Corresponding per-worker `lanab-{A0,B,A1}-*` directories.
+
+The receipt confirms all owned temporary GPU workers/listeners and SSH forwards
+were cleaned up, the role02 CPU resident PID `1222708` remained intact, and no
+firewall changes were required. The existing 51/52 synthetic-suite caveat above
+remains; hardware qualification does not turn it into a fully passing suite.
+
+This completes this bounded one-prompt/configuration qualification. Defaults and
+numerical gates remain unchanged; no merge, new benchmark or runtime configuration
+change is part of publishing this result.
