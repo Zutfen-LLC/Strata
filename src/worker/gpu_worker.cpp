@@ -33,7 +33,7 @@ bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
 }
 void GpuWorkerService::reset() {
     if (executor_) executor_->release(counters_);
-    negotiated_ = setup_ = ready_ = false;
+    negotiated_ = setup_ = ready_ = rows_ = false;
     session_ = sequence_ = 0; missing_.clear();
     std::vector<uint8_t>().swap(upload_); uploading_ = SIZE_MAX;
 }
@@ -94,9 +94,11 @@ bool GpuWorkerService::dispatch(const WireFrame& in, WireFrame& out, std::string
     Cursor c{in.payload};
     if (in.msg == GPU_HELLO) {
         const auto version = c.get(4), capability = c.get(4), numerics = c.get(4);
-        if (negotiated_ || !c.done() || version != kGpuWireVersion || capability != kGpuCapabilityCuda ||
+        if (negotiated_ || !c.done() || version != kGpuWireVersion || (capability != kGpuCapabilityCuda && capability != (kGpuCapabilityCuda|kGpuCapabilityEntryRows)) ||
             numerics != kGpuNumericsQ8_1) return refuse(ST_PROTOCOL,"unsupported CUDA capability/numerics");
-        put(out.payload,kGpuWireVersion,4); put(out.payload,kGpuCapabilityCuda,4);
+        rows_ = (capability & kGpuCapabilityEntryRows)!=0;
+        if(rows_ && !executor_->supports_rows()) return refuse(ST_PROTOCOL,"CUDA entry rows unsupported");
+        put(out.payload,kGpuWireVersion,4); put(out.payload,capability,4);
         put(out.payload,kGpuNumericsQ8_1,4); put(out.payload,kUploadChunkMax,4);
         negotiated_ = true; return true;
     }
@@ -166,7 +168,8 @@ bool GpuWorkerService::dispatch(const WireFrame& in, WireFrame& out, std::string
         // prepare synchronizes all copies and verifies allocations before READY is observable.
         cache_stats(); ready_ = true; out.payload = binding(session_,options_.plan); return true;
     }
-    if (in.msg == GPU_INFER) {
+    if (in.msg == GPU_INFER || in.msg == GPU_INFER_ROWS) {
+        if ((in.msg == GPU_INFER_ROWS) != rows_) return refuse(ST_PROTOCOL,"CUDA reply mode was not negotiated");
         ++counters_.requests;
         if (!ready_) return refuse(ST_NOT_READY,"CUDA weights are not READY");
         InferRequest r;
@@ -181,6 +184,15 @@ bool GpuWorkerService::dispatch(const WireFrame& in, WireFrame& out, std::string
         }
         for (float v : r.activations) if (!std::isfinite(v)) return refuse(ST_NONFINITE,"activation is nonfinite");
         if (!entries) return refuse(ST_BAD_REQUEST,"empty CUDA request");
+        if(rows_) {
+            EntryRowsReply reply; reply.session=session_; reply.sequence=r.sequence;
+            const auto begin=now_ns();
+            if(!executor_->infer_rows(options_.plan,r,reply,err)) {out.status=ST_INTERNAL;return false;}
+            counters_.service_ns+=now_ns()-begin;
+            if(!encode_rows_reply(options_.plan,blob_digest(in.payload),r,reply,out.payload))
+                return refuse(ST_INTERNAL,"CUDA executor row shape/indices/association/finiteness");
+            sequence_=r.sequence; counters_.entries+=entries; return true;
+        }
         InferReply reply; reply.session=session_; reply.sequence=r.sequence;
         const auto begin=now_ns();
         if (!executor_->infer(options_.plan,r,reply,err)) {out.status=ST_INTERNAL;return false;}

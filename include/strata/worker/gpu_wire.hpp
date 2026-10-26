@@ -7,6 +7,7 @@ namespace strata::worker {
 inline constexpr uint32_t kGpuWireMagic = 0x31574753u; // SGW1
 inline constexpr uint32_t kGpuWireVersion = 1;
 inline constexpr uint32_t kGpuCapabilityCuda = 1;
+inline constexpr uint32_t kGpuCapabilityEntryRows = 2;
 // NativeExpertLayout Q8_0 weights, q8_1 activations, FP32 SwiGLU/output. Approximate,
 // never the CPU worker's native-bitwise numerical contract.
 inline constexpr uint32_t kGpuNumericsQ8_1 = 1;
@@ -14,7 +15,7 @@ inline constexpr size_t kGpuFrameMax = kGpuPlanMax + 64;
 enum GpuMsg : uint16_t {
     GPU_HELLO = 1, GPU_HELLO_ACK, GPU_SETUP, GPU_SETUP_ACK, GPU_UPLOAD, GPU_UPLOAD_ACK,
     GPU_READY, GPU_READY_ACK, GPU_INFER, GPU_INFER_ACK, GPU_STATUS, GPU_STATUS_ACK,
-    GPU_STOP, GPU_STOP_ACK
+    GPU_STOP, GPU_STOP_ACK, GPU_INFER_ROWS, GPU_INFER_ROWS_ACK
 };
 struct GpuCounters {
     uint64_t assigned_bytes = 0, cached_bytes = 0, transferred_bytes = 0;
@@ -44,6 +45,9 @@ bool decode_request(const GpuPlan& plan, const std::vector<uint8_t>& p, InferReq
 std::vector<uint8_t> encode_reply(const GpuPlan& plan, Digest128 request, const InferReply& r);
 bool decode_reply(const GpuPlan& plan, Digest128 request, const InferRequest& r,
                   const std::vector<uint8_t>& p, InferReply& out);
+// Rows retain original frame-entry indices and raw unweighted F32 values.
+bool encode_rows_reply(const GpuPlan&, Digest128, const InferRequest&, const EntryRowsReply&, std::vector<uint8_t>&);
+bool decode_rows_reply(const GpuPlan&, Digest128, const InferRequest&, const std::vector<uint8_t>&, EntryRowsReply&);
 std::vector<uint8_t> counters(const GpuCounters& c);
 bool counters(const std::vector<uint8_t>& p, GpuCounters& c);
 } // namespace gpu_codec

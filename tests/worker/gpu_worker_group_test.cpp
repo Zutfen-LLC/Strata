@@ -2,6 +2,7 @@
 #include "local_fixture.hpp"
 #include "strata/worker/gpu_group.hpp"
 #include "strata/worker/gpu_worker.hpp"
+#include "strata/worker/expert_worker.hpp"
 #include "strata/core/cpu_first_remote_post.hpp"
 #include <algorithm>
 #include <condition_variable>
@@ -40,6 +41,15 @@ struct Executor final : GpuExecutor {
         gate.completed.push_back(index);gate.wake.notify_all();
         const float values[]={1e20f,-1e20f,1.f};
         out.partials.assign((size_t)r.T*p.n_embd,values[index]);return true;
+    }
+    bool supports_rows() const override { return true; }
+    bool infer_rows(const GpuPlan& p,const InferRequest& r,EntryRowsReply& out,std::string& err) override {
+        InferReply ignored;if(!infer(p,r,ignored,err))return false;
+        for(size_t i=0;i<r.mask.size();++i)if(r.mask[i]) {
+            out.indices.push_back((uint16_t)i);
+            for(size_t h=0;h<p.n_embd;++h)out.rows.push_back(h==1?-0.f:ignored.partials[h]);
+        }
+        return true;
     }
     void release(GpuCounters& c) override {c.gpu_allocated_bytes=c.gpu_weight_bytes=0;}
 };
@@ -92,8 +102,8 @@ void configuration(const Network& n) {
     check(!parse_gpu_endpoint("localhost:7432",parsed)&&!parse_gpu_endpoint("127.0.0.1:0",parsed)&&
           !parse_gpu_endpoint("127.0.0.1:65536",parsed)&&!parse_gpu_endpoint("127.0.0.1:12x",parsed),"bad endpoint syntax refused");
 }
-void exchange(bool failure) {
-    Network n(true);configuration(n);GpuWorkerGroup group;std::string err;
+void exchange(bool failure,bool rows=false) {
+    Network n(true);for(auto& o:n.options)o.entry_rows=rows;configuration(n);GpuWorkerGroup group;std::string err;
     require(group.open(n.options,err),err);
     // Ready worker 0 survives worker 2's 800ms prepare and another 650ms idle,
     // both longer than the service's 300ms idle receive budget.
@@ -131,7 +141,26 @@ void exchange(bool failure) {
     } else {
         require(finished,err);
         check(n.gate.completed==std::vector<int>({2,0,1}),"replies deliberately complete out of configuration order");
-        check(group.partials(0)[0]==1e20f&&group.partials(1)[0]==-1e20f&&group.partials(2)[0]==1.f,
+        if(rows) {
+            std::vector<float> dense(4*2560), expected(2560), actual(2560);
+            const float values[]={1e20f,-1e20f,1.f};
+            for(size_t p=0;p<3;++p) {
+                const auto& reply=group.entry_rows(p);
+                require(reply.indices==std::vector<uint16_t>{(uint16_t)p},"original sparse entry index");
+                std::vector<float> reference(2560,values[p]);reference[1]=-0.f;
+                check(reply.rows.size()==reference.size() && !std::memcmp(reply.rows.data(),reference.data(),2560*4),
+                      "backend rows byte-identical including negative zero");
+                std::copy(reply.rows.begin(),reply.rows.end(),dense.begin()+p*2560);
+            }
+            const float original_weights[]={.1f,.2f,.3f,.4f};
+            ExpertWorkerService::accumulate_partial(1,4,owned,original_weights,dense.data(),2560,actual.data());
+            for(int h=0;h<2560;++h) {
+                float acc=0.f;
+                for(int e=0;e<3;++e) {const float product=original_weights[e]*(h==1?-0.f:values[e]);acc=acc+product;}
+                expected[h]=acc;
+            }
+            check(!std::memcmp(actual.data(),expected.data(),2560*4),"ordered reducer equals independent original-order reference");
+        } else check(group.partials(0)[0]==1e20f&&group.partials(1)[0]==-1e20f&&group.partials(2)[0]==1.f,
               "configuration-indexed results independent of arrival order");
         check(group.mask(0)[0]&&!group.mask(0)[3]&&group.mask(2)[2],"copied disjoint masks exclude CPU share");
         group.close();
@@ -199,7 +228,7 @@ int main(int argc,char** argv) {
     const rlimit memory{768ull<<20,768ull<<20},cpu{20,20},file{128ull<<20,128ull<<20};
     if(setrlimit(RLIMIT_AS,&memory)||setrlimit(RLIMIT_CPU,&cpu)||setrlimit(RLIMIT_FSIZE,&file))return 2;
     alarm(argc==1?40:120);
-    try {if(argc>1)external(argc,argv);else {exchange(false);exchange(true);single_and_setup_failure();}}
+    try {if(argc>1)external(argc,argv);else {exchange(false);exchange(true);exchange(false,true);exchange(true,true);single_and_setup_failure();}}
     catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}
     if(argc==1)std::printf("GPU_WORKER_GROUP_V1 failures=%d endpoints=3 models=0 cuda=0\n",failures);
     else std::printf("GPU_WORKER_GROUP_EXTERNAL_V1 failures=%d client_cuda=0 remote_cuda=%d models=0 GEN=0\n",

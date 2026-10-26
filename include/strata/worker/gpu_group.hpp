@@ -25,6 +25,7 @@ public:
     bool active(size_t) const;
     const uint8_t* mask(size_t) const;
     const float* partials(size_t index = 0) const;
+    const EntryRowsReply& entry_rows(size_t index = 0) const; // valid only after successful finish
     void report(std::string&) const;
 private:
     struct Impl;

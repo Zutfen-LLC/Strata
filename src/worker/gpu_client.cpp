@@ -11,7 +11,7 @@ namespace {
 uint64_t now_ms(){return(uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 }
 GpuWorkerTier::~GpuWorkerTier(){close();}
-void GpuWorkerTier::close(){sock_fd fd=(sock_fd)fd_;sock::close_fd(fd);fd_=~(uintptr_t)0;ready_=false;posted_=served_=false;reply_.partials.clear();cancelled_={};setup_end_=0;}
+void GpuWorkerTier::close(){sock_fd fd=(sock_fd)fd_;sock::close_fd(fd);fd_=~(uintptr_t)0;ready_=false;posted_=served_=false;reply_.partials.clear();rows_reply_={};cancelled_={};setup_end_=0;}
 bool GpuWorkerTier::fail(const std::string& why,std::string& err){
     err=why;why_=why;dead_=true;++stats_.failures;close();return false;
 }
@@ -39,7 +39,7 @@ bool GpuWorkerTier::open(const Open& in,std::string& err){
     if(dead_) {err="CUDA tier is dead; create a new engine session: "+why_;return false;}
     if(ready_){err="CUDA tier placement is already frozen";return false;}
     if(in.deadline_ms<1 || in.setup_ms<1 || !validate_gpu_plan(in.plan,err))return false;
-    close();stats_={};remote_={};plan_=in.plan;cancelled_=in.cancelled;deadline_ms_=in.deadline_ms;
+    close();stats_={};remote_={};plan_=in.plan;rows_=in.entry_rows;cancelled_=in.cancelled;deadline_ms_=in.deadline_ms;
     const auto began=now_ms();setup_end_=began+(uint64_t)in.setup_ms;
     sock_fd fd=kBadFd;
     const auto cancel=[&]{return(cancelled_&&cancelled_())||now_ms()>=setup_end_;};
@@ -47,12 +47,12 @@ bool GpuWorkerTier::open(const Open& in,std::string& err){
         return fail("CUDA worker connection failed: "+err,err);
     fd_=(uintptr_t)fd;
     std::vector<uint8_t> payload;
-    put(payload,kGpuWireVersion,4);put(payload,kGpuCapabilityCuda,4);put(payload,kGpuNumericsQ8_1,4);
+    put(payload,kGpuWireVersion,4);put(payload,kGpuCapabilityCuda|(rows_?kGpuCapabilityEntryRows:0),4);put(payload,kGpuNumericsQ8_1,4);
     WireFrame response;
     if(!exchange(GPU_HELLO,payload,GPU_HELLO_ACK,response,err))return false;
     Cursor hello{response.payload};
     const auto version=hello.get(4),capability=hello.get(4),numerics=hello.get(4),chunk=hello.get(4);
-    if(!hello.done() || version!=kGpuWireVersion || capability!=kGpuCapabilityCuda || numerics!=kGpuNumericsQ8_1 ||
+    if(!hello.done() || version!=kGpuWireVersion || capability!=(kGpuCapabilityCuda|(rows_?kGpuCapabilityEntryRows:0)) || numerics!=kGpuNumericsQ8_1 ||
        !chunk || chunk>kUploadChunkMax)return fail("unsupported CUDA capability/numerical contract",err);
     std::vector<uint8_t> encoded;
     if(!encode_gpu_plan(plan_,encoded,err))return fail(err,err);
@@ -103,7 +103,7 @@ bool GpuWorkerTier::open(const Open& in,std::string& err){
 bool GpuWorkerTier::post(int64_t layer,const float* x,const int32_t* ids,const float* weights,
                          const uint8_t* owned,int T,int K,std::string& err){
     if(posted_)return fail("CUDA post called before prior window finished",err);
-    posted_=served_=false;reply_.partials.clear();
+    posted_=served_=false;reply_.partials.clear();rows_reply_={};
     if(dead_){err=why_;return false;}
     if(!ready_ || !x || !ids || !weights || !owned || layer<0 || layer>=plan_.n_layers || T<1 || T>kMaxT || K<1 || K>kMaxK)
         return fail("CUDA request invalid state, geometry or pointers",err);
@@ -122,11 +122,17 @@ bool GpuWorkerTier::post(int64_t layer,const float* x,const int32_t* ids,const f
     std::vector<uint8_t> payload;
     if(!gpu_codec::encode_request(plan_,r,payload))return fail("CUDA inference encode failed",err);
     const auto began=now_ms();WireFrame response;
-    if(!exchange(GPU_INFER,payload,GPU_INFER_ACK,response,err))return false;
-    InferReply result;
-    if(!gpu_codec::decode_reply(plan_,blob_digest(payload),r,response.payload,result))
-        return fail("CUDA reply malformed, duplicate, missing, nonfinite or stale",err);
-    reply_=std::move(result);sequence_=r.sequence;posted_=true;
+    if(!exchange(rows_?GPU_INFER_ROWS:GPU_INFER,payload,rows_?GPU_INFER_ROWS_ACK:GPU_INFER_ACK,response,err))return false;
+    if(rows_) {
+        if(!gpu_codec::decode_rows_reply(plan_,blob_digest(payload),r,response.payload,rows_reply_))
+            return fail("CUDA entry rows malformed, missing, duplicate, nonfinite or stale",err);
+    } else {
+        InferReply result;
+        if(!gpu_codec::decode_reply(plan_,blob_digest(payload),r,response.payload,result))
+            return fail("CUDA reply malformed, duplicate, missing, nonfinite or stale",err);
+        reply_=std::move(result);
+    }
+    sequence_=r.sequence;posted_=true;
     ++stats_.requests;stats_.entries+=count;stats_.request_ms+=(double)(now_ms()-began);return true;
 }
 bool GpuWorkerTier::finish(std::string& err){

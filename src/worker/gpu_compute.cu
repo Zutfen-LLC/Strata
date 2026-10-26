@@ -76,7 +76,14 @@ public:
         c.gpu_peak_bytes=std::max(c.gpu_peak_bytes,(uint64_t)observed_bytes_);
         loaded_=true;return true;
     }
+    bool supports_rows() const override { return true; }
+    bool infer_rows(const GpuPlan& p,const InferRequest& r,EntryRowsReply& rows,std::string& err) override {
+        InferReply ignored; return infer_impl(p,r,ignored,&rows,err);
+    }
     bool infer(const GpuPlan& p,const InferRequest& r,InferReply& reply,std::string& err) override {
+        return infer_impl(p,r,reply,nullptr,err);
+    }
+    bool infer_impl(const GpuPlan& p,const InferRequest& r,InferReply& reply,EntryRowsReply* entry_rows,std::string& err) {
         if(!loaded_ || !check(cudaSetDevice(device_),"select inference device",err)){err="CUDA executor unavailable: "+err;return false;}
         std::vector<int32_t> expert,group(r.mask.size(),-1),start,dst,tok,original;
         std::vector<unsigned long long> ptr;
@@ -114,6 +121,18 @@ public:
         // Restore original entry association and apply routing weights once in entry order.
         std::vector<int32_t> packed(r.mask.size(),-1);
         for(size_t j=0;j<original.size();++j)packed[(size_t)original[j]]=(int32_t)j;
+        if(entry_rows) {
+            entry_rows->session=r.session;entry_rows->sequence=r.sequence;
+            entry_rows->indices.clear();entry_rows->rows.clear();
+            for(size_t i=0;i<r.mask.size();++i)if(r.mask[i]) {
+                if(packed[i]<0){err="CUDA missing packed result";return false;}
+                const float* row=rows.data()+(size_t)packed[i]*p.n_embd;
+                for(size_t h=0;h<p.n_embd;++h)if(!std::isfinite(row[h])){err="nonfinite CUDA expert result";return false;}
+                entry_rows->indices.push_back((uint16_t)i);
+                entry_rows->rows.insert(entry_rows->rows.end(),row,row+p.n_embd);
+            }
+            return true;
+        }
         reply.partials.assign((size_t)r.T*p.n_embd,0.f);
         for(size_t i=0;i<r.mask.size();++i)if(r.mask[i]){
             if(packed[i]<0){err="CUDA missing packed result";return false;}

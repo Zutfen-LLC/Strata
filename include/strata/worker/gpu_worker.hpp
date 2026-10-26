@@ -10,6 +10,10 @@ public:
     virtual ~GpuExecutor() = default;
     virtual bool prepare(const GpuPlan&, uint64_t reserve, GpuCache&, GpuCounters&, std::string&) = 0;
     virtual bool infer(const GpuPlan&, const InferRequest&, InferReply&, std::string&) = 0;
+    virtual bool supports_rows() const { return false; }
+    virtual bool infer_rows(const GpuPlan&, const InferRequest&, EntryRowsReply&, std::string& err) {
+        err="CUDA executor does not support entry rows"; return false;
+    }
     virtual void release(GpuCounters&) = 0;
 };
 std::unique_ptr<GpuExecutor> create_cuda_gpu_executor(int device);
@@ -38,7 +42,7 @@ private:
     GpuCounters counters_;
     uintptr_t listener_ = ~(uintptr_t)0;
     std::atomic<bool> stop_{false};
-    bool negotiated_ = false, setup_ = false, ready_ = false;
+    bool negotiated_ = false, setup_ = false, ready_ = false, rows_ = false;
     uint64_t session_ = 0, sequence_ = 0, session_serial_ = 0;
     uint64_t setup_started_ = 0;
     std::vector<uint8_t> missing_, upload_;
