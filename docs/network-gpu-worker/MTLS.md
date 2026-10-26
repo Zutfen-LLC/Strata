@@ -55,6 +55,12 @@ trust store is read or modified by this feature. Files are loaded when connectio
 are created, so an existing session does not pick up changed trust or certificates.
 No enrollment, reload/rotation process or online revocation checking is included.
 
+For a targeted transport experiment, the GPU worker accepts the valueless
+`--tcp-nodelay` flag. It enables TCP_NODELAY on accepted sockets after the existing
+source-IP check. The default remains off; the coordinator connector already
+enables it. Startup logs record `accepted_nodelay=on|off`. This flag changes neither
+TLS policy nor framing and does not imply a measured LAN/model improvement.
+
 A connection performs one handshake before SGW1 HELLO, then carries setup, uploads,
 status and repeated inference frames under TLS. Frame bytes, numerical code, caches,
 batching and thread ownership are unchanged. Handshake time uses the RPC deadline
@@ -96,6 +102,29 @@ client, worker, cache and session logic with a fake executor; it is not CUDA har
 validation. It also rejects plaintext/TLS mismatches in both directions. Repeat the
 three existing GPU tests in a separate `STRATA_WORKER_TLS=OFF` build to check the
 compatibility path and refusal of TLS configuration by a TLS-disabled binary.
+
+On Linux, `tls_io_diagnostic` provides a bounded, model-free transport comparison:
+
+```sh
+cmake --build build-mtls --target tls_io_diagnostic -j 4
+build-mtls/tls_io_diagnostic --rounds 16 > /approved/local-output.csv
+```
+
+The executable uses actual SGW1 framing with pre-encoded, codec-validated synthetic
+inference/entry-row payloads for `(T,K)` shapes `(1,1)`, `(1,2)`, `(1,8)` and `(8,10)`.
+It compares plaintext/TLS with accepted-worker TCP_NODELAY off/on in two trials.
+The coordinator-side NODELAY policy stays on. Each case uses one persistent
+connection, excludes handshake and two warmups, and checks payload bytes exactly.
+The fixture does not run GPU dispatch, model arithmetic or cache work.
+
+Linux linker wrappers collect per-side socket send/receive calls, successful size
+ranges/byte counts, EAGAIN counts, poll calls and time inside poll. They preserve
+errno and exist only in the diagnostic executable; production I/O has no new
+instrumentation. TLS still uses the normal mutual chain/exact-SAN checks and the
+existing disposable local fixture. A short correctness run is registered with
+CTest, with no performance threshold. Counts/timings are instrumented loopback
+observations and cannot establish LAN throughput or hardware TPS recovery. Keep
+raw results local until their publication is authorized.
 
 ## Future matched benchmark and permissions
 

@@ -59,8 +59,8 @@ void GpuWorkerService::run() {
     while (!stop_.load()) {
         sock_fd peer = kBadFd;
         const bool accepted = allowed_peers_.empty()
-            ? sock::accept_one((sock_fd)listener_, peer, 100)
-            : sock::accept_allowed((sock_fd)listener_, peer, 100, false, allowed_peers_);
+            ? sock::accept_one((sock_fd)listener_, peer, 100, options_.accepted_tcp_nodelay)
+            : sock::accept_allowed((sock_fd)listener_, peer, 100, options_.accepted_tcp_nodelay, allowed_peers_);
         if (!accepted) continue;
         reset(); serve((uintptr_t)peer); sock::close_fd(peer); reset();
     }

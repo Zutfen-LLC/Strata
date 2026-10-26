@@ -30,6 +30,7 @@ struct GpuWorkerOptions {
     std::string cache_root;
     std::string bind_ip = "127.0.0.1";
     std::vector<std::string> allow_peer_ips; // exact numeric coordinator addresses
+    bool accepted_tcp_nodelay = false; // explicit transport experiment; default unchanged
     uint64_t cache_budget = 24ull << 30;
     uint64_t runtime_reserve = 1ull << 30;
     int deadline_ms = 10000, setup_ms = 600000;
