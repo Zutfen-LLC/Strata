@@ -174,7 +174,7 @@ struct ExpertWorkerService::Impl {
     struct InferenceWorkspace {
         InferRequest request;
         InferReply reply;
-        std::vector<uint8_t> nact, payload;
+        std::vector<uint8_t> nact;
         std::vector<strata::kernels::cpu::ExpertJobMulti> jobs;
         std::vector<int16_t> job_of;
         std::vector<float> rows;
@@ -267,6 +267,7 @@ struct ExpertWorkerService::Impl {
     // ---- frame io ----
     bool recv_frame(sock_fd fd, WireFrame& f, bool& malformed);
     bool send_frame(sock_fd fd, uint16_t msg, uint16_t status, const std::vector<uint8_t>& payload);
+    bool send_encoded_frame(sock_fd fd, uint16_t msg, uint16_t status);
 
     // ---- handlers: each replies once and returns false only to close the connection ----
     void on_setup_begin(sock_fd fd, const uint8_t *p, size_t n, bool use_local = false);
@@ -363,6 +364,12 @@ bool ExpertWorkerService::Impl::send_frame(sock_fd fd, uint16_t msg, uint16_t st
     auto& buf = send_buffer;
     if(msg==MSG_INFER_ROWS_ACK)buf.reserve(kHeaderBytes+payload.size());
     encode_frame(buf, msg, status, payload.data(), payload.size());
+    return send_encoded_frame(fd, msg, status);
+}
+
+bool ExpertWorkerService::Impl::send_encoded_frame(sock_fd fd, uint16_t msg, uint16_t status) {
+    auto& buf = send_buffer;
+    if (buf.size() < kHeaderBytes || buf.size() - kHeaderBytes > kMaxFrameBytes) return false;
     // An admitted inference reply is active work: its existing I/O deadline still applies.
     // Telemetry/setup/refusal replies must not pin idle weights behind a slow reader.
     const bool active_reply = (msg == MSG_INFER_ACK || msg==MSG_INFER_ROWS_ACK) && status == ST_OK;
@@ -950,33 +957,36 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
             decode_recorded = true;
         }
     };
-    // every reply path goes through here: status + payload, sent and counted as reply bytes
-    auto reply = [&](uint16_t status, const std::vector<uint8_t>& payload, uint64_t encode_start_ns = 0) {
+    // Every reply path sends and counts the completed contiguous frame here.
+    auto reply = [&](uint16_t status, uint64_t encode_start_ns = 0) {
         finish_decode();
         if (measure && !encode_start_ns) encode_start_ns = mono_ns();
-        counters->infer_out_bytes += kHeaderBytes + payload.size();
-        const bool sent = send_frame(fd, rows_reply?MSG_INFER_ROWS_ACK:MSG_INFER_ACK, status, payload);
+        const uint16_t msg = rows_reply ? MSG_INFER_ROWS_ACK : MSG_INFER_ACK;
+        if (status != ST_OK) encode_frame(send_buffer, msg, status, nullptr, 0);
+        const size_t bytes = send_buffer.size();
+        counters->infer_out_bytes += bytes;
+        const bool sent = send_encoded_frame(fd, msg, status);
         if (measure) {
             timing->add_phase(RpcTimingPhase::WorkerEncodeSend, mono_ns() - encode_start_ns);
             timing->add_phase(RpcTimingPhase::WorkerRequest, mono_ns() - request_start_ns);
         }
         if (measure)
             timing->finish_call(tokens, entries, experts, kHeaderBytes + n,
-                                sent ? kHeaderBytes + payload.size() : 0, sent && status == ST_OK);
+                                sent ? bytes : 0, sent && status == ST_OK);
         if (sent && status == ST_OK && resident_complete)
             idle_since_ns = mono_ns(); // idle starts after the successful request's reply completes
     };
     if (state == State::Empty) {
         fail(ST_WRONG_STATE);
-        reply(ST_WRONG_STATE, {});
+        reply(ST_WRONG_STATE);
         return;
     }
-    if(rows_reply && !entry_rows){fail(ST_WRONG_STATE);reply(ST_WRONG_STATE,{});return;}
+    if(rows_reply && !entry_rows){fail(ST_WRONG_STATE);reply(ST_WRONG_STATE);return;}
     auto& r = scratch.request;
-    if(packed_request && !packed){fail(ST_WRONG_STATE);reply(ST_WRONG_STATE,{});return;}
+    if(packed_request && !packed){fail(ST_WRONG_STATE);reply(ST_WRONG_STATE);return;}
     if (!decode_infer(p, n, manifest.n_layers, manifest.n_expert, manifest.n_embd, r,packed_request)) {
         fail(ST_BAD_REQUEST);
-        reply(ST_BAD_REQUEST, {});
+        reply(ST_BAD_REQUEST);
         return;
     }
     if (measure) {
@@ -990,12 +1000,12 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
              (unsigned long long) r.session, (unsigned long long) r.model_id,
              (unsigned long long) r.partition_id);
         fail(ST_STALE_SESSION);
-        reply(ST_STALE_SESSION, {});
+        reply(ST_STALE_SESSION);
         return;
     }
     if (state != State::Ready) {
         fail(ST_NOT_READY);
-        reply(ST_NOT_READY, {});
+        reply(ST_NOT_READY);
         return;
     }
     if (have_sequence && r.sequence <= last_sequence) {
@@ -1003,7 +1013,7 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
         logf("inference refused: sequence %llu is not past %llu", (unsigned long long) r.sequence,
              (unsigned long long) last_sequence);
         fail(ST_BAD_REQUEST);
-        reply(ST_BAD_REQUEST, {});
+        reply(ST_BAD_REQUEST);
         return;
     }
     for (size_t i = 0; i < r.mask.size(); ++i) {
@@ -1011,7 +1021,7 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
         if (!manifest.owns(r.layer, r.ids[i])) {
             logf("inference refused: entry %zu names expert %u, owned by the GPU side", i, r.ids[i]);
             fail(ST_NOT_OWNED);
-            reply(ST_NOT_OWNED, {});
+            reply(ST_NOT_OWNED);
             return;
         }
     }
@@ -1035,15 +1045,15 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
                 logf("inference refused: expert %u appears more than %d times among the owned entries",
                      r.ids[i], kMaxT);
                 fail(ST_BAD_REQUEST);
-                reply(ST_BAD_REQUEST, {});
+                reply(ST_BAD_REQUEST);
                 return;
             }
         }
     }
     for (size_t i = 0; i < r.weights.size(); ++i)
-        if (!std::isfinite(r.weights[i])) { fail(ST_NONFINITE); reply(ST_NONFINITE, {}); return; }
+        if (!std::isfinite(r.weights[i])) { fail(ST_NONFINITE); reply(ST_NONFINITE); return; }
     for (size_t i = 0; i < r.activations.size(); ++i)
-        if (!std::isfinite(r.activations[i])) { fail(ST_NONFINITE); reply(ST_NONFINITE, {}); return; }
+        if (!std::isfinite(r.activations[i])) { fail(ST_NONFINITE); reply(ST_NONFINITE); return; }
 
     auto& rep = scratch.reply;
     std::string err;
@@ -1053,7 +1063,7 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
     if (!execute(r, rep.partials, err, measure ? &measured : nullptr,rows_reply)) {
         logf("inference refused: %s", err.c_str());
         fail(ST_NOT_OWNED);
-        reply(ST_NOT_OWNED, {});
+        reply(ST_NOT_OWNED);
         return;
     }
     if (measure) {
@@ -1069,13 +1079,13 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
     rep.session = session;
     rep.sequence = r.sequence;
     const uint64_t encode_start = measure ? mono_ns() : 0;
-    auto& payload = scratch.payload;
+    auto& frame = send_buffer;
     if(rows_reply) {
-        if(!encode_infer_rows_ack(r,manifest.n_embd,scratch.rows.data(),payload)) {
-            fail(ST_NONFINITE);reply(ST_NONFINITE,{});return;
+        if(!encode_infer_rows_ack_frame(r,manifest.n_embd,scratch.rows.data(),frame)) {
+            fail(ST_NONFINITE);reply(ST_NONFINITE);return;
         }
-    } else encode_infer_ack(rep, payload);
-    reply(ST_OK, payload, encode_start);
+    } else encode_infer_ack_frame(rep, frame);
+    reply(ST_OK, encode_start);
 }
 
 void ExpertWorkerService::Impl::on_status(sock_fd fd) {

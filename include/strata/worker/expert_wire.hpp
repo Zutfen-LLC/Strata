@@ -228,8 +228,11 @@ bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, In
 bool encode_infer_rows_ack(const InferRequest&, uint16_t H, const float* entry_rows, std::vector<uint8_t>&);
 bool decode_infer_rows_ack(const uint8_t*, size_t, uint16_t H, const InferRequest&, EntryRowsReply&);
 
-/// Builds a whole frame - the 16-byte header plus the payload.  The ONE place the header is written,
-/// shared by the worker, the client and the tests, so the three cannot drift apart.
+/// Encode successful replies directly into a complete frame, without a separate payload buffer.
+void encode_infer_ack_frame(const InferReply&, std::vector<uint8_t>&);
+bool encode_infer_rows_ack_frame(const InferRequest&, uint16_t H, const float* entry_rows, std::vector<uint8_t>&);
+
+/// Builds a whole frame - the 16-byte header plus the payload. Shares header encoding with reply codecs.
 void encode_frame(std::vector<uint8_t>& out, uint16_t msg, uint16_t status, const void* payload, size_t n);
 
 /// The name of a status code, for logs and tests.

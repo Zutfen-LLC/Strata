@@ -61,11 +61,9 @@ struct Cursor {
     }
 };
 
-}  // namespace
-
-void encode_frame(std::vector<uint8_t>& out, uint16_t msg, uint16_t status, const void* payload,
-                  size_t n) {
-    out.resize(kHeaderBytes + n);
+// The caller has reserved the header and finished appending the payload.
+void finish_frame(std::vector<uint8_t>& out, uint16_t msg, uint16_t status) {
+    const size_t n = out.size() - kHeaderBytes;
     out[0] = 'S';
     out[1] = 'E';
     out[2] = 'W';
@@ -75,6 +73,14 @@ void encode_frame(std::vector<uint8_t>& out, uint16_t msg, uint16_t status, cons
     out[6] = (uint8_t) status;
     out[7] = (uint8_t) (status >> 8);
     for (int b = 0; b < 8; ++b) out[8 + b] = (uint8_t) (n >> (8 * b));
+}
+
+}  // namespace
+
+void encode_frame(std::vector<uint8_t>& out, uint16_t msg, uint16_t status, const void* payload,
+                  size_t n) {
+    out.resize(kHeaderBytes + n);
+    finish_frame(out, msg, status);
     if (n > 0) std::memcpy(out.data() + kHeaderBytes, payload, n);
 }
 
@@ -227,12 +233,22 @@ std::vector<uint8_t> encode_infer_ack(const InferReply& r) {
     return o;
 }
 
-void encode_infer_ack(const InferReply& r, std::vector<uint8_t>& o) {
+namespace {
+void encode_ack(const InferReply& r, std::vector<uint8_t>& o, size_t prefix) {
     o.clear();
-    o.reserve(16 + r.partials.size() * 4);
+    o.reserve(prefix + 16 + r.partials.size() * 4);
+    o.resize(prefix);
     put_u64(o, r.session);
     put_u64(o, r.sequence);
     put_f32s(o,r.partials.data(),r.partials.size());
+}
+
+}  // namespace
+
+void encode_infer_ack(const InferReply& r, std::vector<uint8_t>& o) { encode_ack(r, o, 0); }
+void encode_infer_ack_frame(const InferReply& r, std::vector<uint8_t>& o) {
+    encode_ack(r, o, kHeaderBytes);
+    finish_frame(o, MSG_INFER_ACK, ST_OK);
 }
 
 bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, InferReply& r) {
@@ -245,13 +261,15 @@ bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, In
     return true;
 }
 
-bool encode_infer_rows_ack(const InferRequest& q,uint16_t H,const float* rows,std::vector<uint8_t>& out) {
+namespace {
+bool encode_rows_ack(const InferRequest& q,uint16_t H,const float* rows,std::vector<uint8_t>& out,size_t prefix) {
     out.clear();
     const size_t entries=(size_t)q.T*q.K;
     if(!H || H>kMaxNEmbd || !q.T || q.T>kMaxT || !q.K || q.K>kMaxK || q.mask.size()!=entries)return false;
     const size_t count=std::count_if(q.mask.begin(),q.mask.end(),[](uint8_t v){return v!=0;});
     if(count && !rows)return false;
-    out.reserve(20+count*(2+(size_t)H*4));
+    out.reserve(prefix+20+count*(2+(size_t)H*4));
+    out.resize(prefix);
     put_u64(out,q.session);put_u64(out,q.sequence);put_u16(out,kEntryRowsVersion);put_u16(out,(uint16_t)count);
     for(size_t i=0;i<entries;++i) {
         if(!q.mask[i])continue;
@@ -260,6 +278,16 @@ bool encode_infer_rows_ack(const InferRequest& q,uint16_t H,const float* rows,st
         if(!std::all_of(row,row+H,[](float v){return std::isfinite(v);})) {out.clear();return false;}
         put_f32s(out,row,H);
     }
+    return true;
+}
+}  // namespace
+
+bool encode_infer_rows_ack(const InferRequest& q,uint16_t H,const float* rows,std::vector<uint8_t>& out) {
+    return encode_rows_ack(q,H,rows,out,0);
+}
+bool encode_infer_rows_ack_frame(const InferRequest& q,uint16_t H,const float* rows,std::vector<uint8_t>& out) {
+    if(!encode_rows_ack(q,H,rows,out,kHeaderBytes))return false;
+    finish_frame(out,MSG_INFER_ROWS_ACK,ST_OK);
     return true;
 }
 bool decode_infer_rows_ack(const uint8_t* p,size_t n,uint16_t H,const InferRequest& q,EntryRowsReply& out) {

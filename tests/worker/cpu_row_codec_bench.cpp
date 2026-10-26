@@ -57,6 +57,10 @@ struct Shape {
         if(indexed)return encode_infer_rows_ack(q,H,rows.data(),payload);
         encode_infer_ack(weighted,payload);return true;
     }
+    bool frame_direct(bool indexed) {
+        if(indexed)return encode_infer_rows_ack_frame(q,H,rows.data(),frame);
+        encode_infer_ack_frame(weighted,frame);return true;
+    }
     bool decode(bool indexed) {
         return indexed?decode_infer_rows_ack(payload.data(),payload.size(),H,q,decoded_rows):
             decode_infer_ack(payload.data(),payload.size(),H,q.T,decoded_weighted);
@@ -91,6 +95,7 @@ struct Shape {
         expected.clear();expected.insert(expected.end(),{'S','E','W','1'});le(expected,msg,2);
         le(expected,ST_OK,2);le(expected,payload.size(),8);expected.insert(expected.end(),payload.begin(),payload.end());
         need(frame==expected,"exact independent frame mismatch");
+        need(frame_direct(indexed) && frame==expected,"direct frame differs from independent reference/old path");
         need(decode(indexed),"decode refused fixture");
         if(indexed) {
             need(decoded_rows.session==q.session && decoded_rows.sequence==q.sequence &&
@@ -131,6 +136,11 @@ void benchmark(Shape& s,bool indexed) {
     measure(s,indexed,"encode",payload,[&]{const bool ok=s.encode(indexed);escape(s.payload.data());return ok;});
     measure(s,indexed,"frame_copy",frame,[&]{encode_frame(s.frame,indexed?MSG_INFER_ROWS_ACK:MSG_INFER_ACK,
         ST_OK,s.payload.data(),s.payload.size());escape(s.frame.data());return true;});
+    measure(s,indexed,"encode_then_frame",frame,[&]{
+        if(!s.encode(indexed))return false;
+        encode_frame(s.frame,indexed?MSG_INFER_ROWS_ACK:MSG_INFER_ACK,ST_OK,s.payload.data(),s.payload.size());
+        escape(s.frame.data());return true;});
+    measure(s,indexed,"encode_direct_frame",frame,[&]{const bool ok=s.frame_direct(indexed);escape(s.frame.data());return ok;});
     measure(s,indexed,"decode",payload,[&]{const bool ok=s.decode(indexed);
         escape(indexed?s.decoded_rows.rows.data():s.decoded_weighted.partials.data());return ok;});
     measure(s,indexed,"central_prepare_reduce",(indexed?s.rows.size():s.weighted.partials.size())*sizeof(float),[&]{const bool ok=s.central(indexed);

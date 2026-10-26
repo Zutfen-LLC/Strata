@@ -276,6 +276,13 @@ void row_codec() {
     put<uint16_t>(expected,0);put<uint32_t>(expected,0x80000000);put<uint32_t>(expected,0x3f800000);
     put<uint16_t>(expected,3);put<uint32_t>(expected,0xc0000000);put<uint32_t>(expected,0x3f000000);
     check(bytes==expected,"indexed row codec exact little-endian bytes including signed zero/nonzero mask normalization");
+    std::vector<uint8_t> framed,reference;
+    auto check_frame = [&](uint16_t H,const float* rows) {
+        encode_frame(reference,MSG_INFER_ROWS_ACK,ST_OK,bytes.data(),bytes.size());
+        require(encode_infer_rows_ack_frame(q,H,rows,framed),"direct row frame encodes");
+        check(framed==reference,"direct sparse/empty/maximum row frame equals old path");
+    };
+    check_frame(2,source);
     EntryRowsReply reply;require(decode_infer_rows_ack(bytes.data(),bytes.size(),2,q,reply),"decode rows");
     check(reply.indices==std::vector<uint16_t>({0,3}) && std::signbit(reply.rows[0]) && reply.rows[3]==.5f,"exact requested row set/bits");
     for(int mode=0;mode<7;++mode) {
@@ -293,14 +300,21 @@ void row_codec() {
     InferReply legacy;legacy.session=q.session;legacy.sequence=q.sequence;legacy.partials={-0.f,1.f};
     auto old=encode_infer_ack(legacy);expected.resize(16);put<uint32_t>(expected,0x80000000);put<uint32_t>(expected,0x3f800000);
     check(old==expected,"legacy weighted reply bytes unchanged");
+    encode_frame(reference,MSG_INFER_ACK,ST_OK,old.data(),old.size());
+    encode_infer_ack_frame(legacy,framed);
+    check(framed==reference,"direct weighted frame preserves signed zero bytes");
     q.mask.assign(4,0);require(encode_infer_rows_ack(q,2,nullptr,bytes),"empty row reply");
+    check_frame(2,nullptr);
     require(decode_infer_rows_ack(bytes.data(),bytes.size(),2,q,reply),"decode empty rows");
     check(bytes.size()==20 && reply.rows.empty() && reply.indices.empty(),"empty reply cannot expose prior rows");
     q.T=kMaxT;q.K=kMaxK;q.mask.assign(kMaxT*kMaxK,1);std::vector<float> maximum(kMaxT*kMaxK*kMaxNEmbd,0.f);
     require(encode_infer_rows_ack(q,kMaxNEmbd,maximum.data(),bytes),"encode maximum rows");
+    check_frame(kMaxNEmbd,maximum.data());
     check(bytes.size()==kEntryRowsPayloadMax && bytes.size()+kHeaderBytes==819396,"strict maximum row payload/frame bytes");
     require(decode_infer_rows_ack(bytes.data(),bytes.size(),kMaxNEmbd,q,reply),"decode maximum rows");
     check(reply.rows.capacity()<=kEntryRowsMax*kMaxNEmbd && reply.indices.capacity()<=kEntryRowsMax,"decoded row retention bounded after warmup");
+    check(!encode_infer_rows_ack_frame(q,0,maximum.data(),framed) && framed.empty(),"direct frame refuses invalid geometry");
+    check(!encode_infer_rows_ack_frame(q,kMaxNEmbd,nullptr,framed) && framed.empty(),"direct frame refuses missing selected rows");
 }
 void packed_capability() {
     Fixture f;auto settings=f.options();settings.residency_forever=true;
@@ -355,6 +369,10 @@ void float_codec_edges() {
     put<uint64_t>(expected,q.session);put<uint64_t>(expected,q.sequence);put<uint16_t>(expected,1);
     put<uint16_t>(expected,1);put<uint16_t>(expected,1);for(auto w:words)put<uint32_t>(expected,w);
     check(bytes==expected,"bulk row bytes equal independent scalar edge reference");
+    std::vector<uint8_t> framed,reference;
+    encode_frame(reference,MSG_INFER_ROWS_ACK,ST_OK,bytes.data(),bytes.size());
+    require(encode_infer_rows_ack_frame(q,H,rows.data(),framed),"direct float edge frame");
+    check(framed==reference,"direct row frame preserves all finite edge bits");
     std::vector<uint8_t> unaligned(1,0);unaligned.insert(unaligned.end(),bytes.begin(),bytes.end());
     EntryRowsReply reply;require(decode_infer_rows_ack(unaligned.data()+1,bytes.size(),H,q,reply),"unaligned row decode");
     check(reply.indices==std::vector<uint16_t>{1} && !std::memcmp(reply.rows.data(),rows.data()+H,H*4),
@@ -365,6 +383,7 @@ void float_codec_edges() {
               "bulk row decoding still refuses infinity/NaN without output");
         std::memcpy(&rows.back(),&bad,4);
         check(!encode_infer_rows_ack(q,H,rows.data(),corrupt) && corrupt.empty(),"bulk row encoding still refuses infinity/NaN");
+        check(!encode_infer_rows_ack_frame(q,H,rows.data(),framed) && framed.empty(),"direct frame clears prior bytes on infinity/NaN");
     }
     InferReply legacy;legacy.session=q.session;legacy.sequence=q.sequence;
     auto legacy_words=words;legacy_words.insert(legacy_words.end(),{0x7f800000u,0xff800000u,nan});
@@ -372,6 +391,9 @@ void float_codec_edges() {
     expected.clear();put<uint64_t>(expected,q.session);put<uint64_t>(expected,q.sequence);
     for(auto w:legacy_words)put<uint32_t>(expected,w);
     encode_infer_ack(legacy,bytes);check(bytes==expected,"legacy reply edge bytes including permitted nonfinite payloads unchanged");
+    encode_frame(reference,MSG_INFER_ACK,ST_OK,bytes.data(),bytes.size());
+    encode_infer_ack_frame(legacy,framed);
+    check(framed==reference,"direct weighted frame preserves permitted nonfinite bits");
     unaligned.assign(1,0);unaligned.insert(unaligned.end(),bytes.begin(),bytes.end());InferReply decoded;
     require(decode_infer_ack(unaligned.data()+1,bytes.size(),(uint16_t)legacy_words.size(),1,decoded),"unaligned legacy decode");
     check(!std::memcmp(decoded.partials.data(),legacy.partials.data(),legacy_words.size()*4),"legacy float edge payload bits unchanged");
