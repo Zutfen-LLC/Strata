@@ -38,7 +38,10 @@ fixed.plan` to its supported serial remote-CPU configuration, including the trus
 and outside all local GPU caches. Model, layout and placement are frozen for the
 session; change them only by closing the session and starting a new one.
 
-Both services bind loopback. Use an existing trusted transport; the protocol does
+For the opt-in encrypted coordinator/GPU-worker path, see [persistent mTLS](MTLS.md).
+Plain direct TCP is an explicit test mode; source-IP filtering provides no encryption.
+
+Both services bind loopback by default. Use an existing trusted transport; the protocol does
 not provide authentication. SGW1 negotiates CUDA execution, q8_1 activations and
 F32 results separately from the unchanged SEW1 CPU native-bitwise contract.
 Incompatible peers fail rather than silently selecting another arithmetic path.

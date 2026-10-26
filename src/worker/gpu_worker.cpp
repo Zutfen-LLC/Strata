@@ -34,6 +34,7 @@ bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
         if (err.empty()) err = "invalid CUDA worker options or reserve (minimum 64 MiB)";
         return false;
     }
+    if (!options_.tls.validate(err)) return false;
     if (!cache_.open(options_.cache_root, options_.cache_budget, err)) return false;
     sock_fd fd = kBadFd;
     const bool listening = options_.bind_ip == "127.0.0.1" && allowed_peers_.empty()
@@ -53,8 +54,8 @@ void GpuWorkerService::run() {
     while (!stop_.load()) {
         sock_fd peer = kBadFd;
         const bool accepted = allowed_peers_.empty()
-            ? sock::accept_one((sock_fd)listener_, peer, 100)
-            : sock::accept_allowed((sock_fd)listener_, peer, 100, false, allowed_peers_);
+            ? sock::accept_one((sock_fd)listener_, peer, 100, options_.accepted_tcp_nodelay)
+            : sock::accept_allowed((sock_fd)listener_, peer, 100, options_.accepted_tcp_nodelay, allowed_peers_);
         if (!accepted) continue;
         reset(); serve((uintptr_t)peer); sock::close_fd(peer); reset();
     }
@@ -74,9 +75,15 @@ void GpuWorkerService::run() {
 void GpuWorkerService::serve(uintptr_t fd) {
     const auto cancel = [&] { return stop_.load() || (setup_ && !ready_ &&
         now_ms() - setup_started_ >= (uint64_t)options_.setup_ms); };
+    TlsSession session;
+    TlsSession* tls = options_.tls.enabled() ? &session : nullptr;
+    std::string handshake_error;
+    if (tls && !tls->handshake(fd,options_.tls,true,options_.deadline_ms,cancel,handshake_error)) {
+        ++counters_.failures; return;
+    }
     while (!cancel()) {
         WireFrame in, out; std::string err;
-        if (!gpu_codec::receive(fd,in,kGpuFrameMax,options_.deadline_ms,cancel,err)) {
+        if (!gpu_codec::receive(fd,in,kGpuFrameMax,options_.deadline_ms,cancel,err,0,tls)) {
             ++counters_.failures; return;
         }
         if (in.status != ST_OK) { ++counters_.failures; return; }
@@ -87,7 +94,7 @@ void GpuWorkerService::serve(uintptr_t fd) {
                 in.msg,status_name(out.status),(unsigned long long)options_.plan.model_id,
                 (unsigned long long)options_.plan.placement_id.a,(unsigned long long)options_.plan.placement_id.b,err.c_str());
         }
-        if (!gpu_codec::send(fd,out.msg,out.status,out.payload,options_.deadline_ms,cancel,err)) {
+        if (!gpu_codec::send(fd,out.msg,out.status,out.payload,options_.deadline_ms,cancel,err,tls)) {
             ++counters_.failures; return;
         }
         // A refused operation ends this connection/session. No partial result or retry is possible.
