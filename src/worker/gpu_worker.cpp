@@ -20,6 +20,15 @@ GpuWorkerService::~GpuWorkerService() {
     sock_fd fd = (sock_fd)listener_; sock::close_fd(fd);
 }
 bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
+    if (!sock::listener_policy(options_.bind_ip, options_.allow_peer_ips, allowed_peers_, err)) return false;
+    in_addr address{};
+    ::inet_pton(AF_INET, options_.bind_ip.c_str(), &address); // parsed by listener_policy
+    const uint32_t ip = ntohl(address.s_addr);
+    if ((ip >> 24) != 127 && (ip >> 24) != 10 && (ip >> 20) != 0xac1 &&
+        (ip >> 16) != 0xc0a8) {
+        err = "CUDA bind IP must be loopback or one specific RFC1918 private interface address";
+        return false;
+    }
     if (!executor_ || options_.deadline_ms < 1 || options_.setup_ms < 1 ||
         (options_.vulkan ? options_.runtime_reserve != 0 : options_.runtime_reserve < (64ull << 20)) ||
         !validate_gpu_plan(options_.plan, err)) {
@@ -32,7 +41,10 @@ bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
     }
     if (!cache_.open(options_.cache_root, options_.cache_budget, err)) return false;
     sock_fd fd = kBadFd;
-    if (!sock::listen_loopback(port, fd, err)) return false;
+    const bool listening = options_.bind_ip == "127.0.0.1" && allowed_peers_.empty()
+        ? sock::listen_loopback(port, fd, err)
+        : sock::listen_ipv4(options_.bind_ip, port, fd, err);
+    if (!listening) return false;
     listener_ = (uintptr_t)fd;
     return true;
 }
@@ -45,7 +57,10 @@ void GpuWorkerService::reset() {
 void GpuWorkerService::run() {
     while (!stop_.load()) {
         sock_fd peer = kBadFd;
-        if (!sock::accept_one((sock_fd)listener_, peer, 100)) continue;
+        const bool accepted = allowed_peers_.empty()
+            ? sock::accept_one((sock_fd)listener_, peer, 100)
+            : sock::accept_allowed((sock_fd)listener_, peer, 100, false, allowed_peers_);
+        if (!accepted) continue;
         reset(); serve((uintptr_t)peer); sock::close_fd(peer); reset();
     }
     reset();

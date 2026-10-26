@@ -248,6 +248,61 @@ void setup_budget_checks(const Fixture& f,const GpuPlan& plan){
         check(service.service.counters().gpu_allocated_bytes==0,"setup stop releases GPU allocations before counter read");
     }
 }
+// Exercise the real listener/session path with synthetic execution only.
+void listener_checks(const Fixture& f,const GpuPlan& p){
+    auto probe=[&](const std::string& bind,const std::vector<std::string>& peers,bool valid){
+        GpuWorkerOptions o;o.bind_ip=bind;o.allow_peer_ips=peers;o.plan=p;
+        // Empty cache root is a deterministic sentinel after listener validation, before bind.
+        GpuWorkerService service(o,std::make_unique<FakeExecutor>());uint16_t port=0;std::string err;
+        check(!service.listen(port,err),"policy probe never opens a socket");
+        check((err=="CUDA cache root must already be an operator-created directory")==valid,
+              "CUDA listener policy accepts only explicit private settings or loopback defaults");
+    };
+    probe("127.0.0.1",{},true);
+    for(const auto* ip:{"10.1.2.3","172.16.0.1","172.31.255.254","192.168.1.2"}){
+        probe(ip,{"10.1.2.4","127.0.0.1"},true);probe(ip,{},false);
+    }
+    const std::vector<std::string> bad{"","0.0.0.0","0.1.2.3","224.0.0.1","255.255.255.255",
+        "localhost","::1","10.1.2.3/24","10.1.2.999",std::string("10.1.2.3\0extra",14)};
+    for(const auto& ip:bad){probe(ip,{"10.1.2.4"},false);probe("10.1.2.3",{"10.1.2.4",ip},false);}
+    for(const auto* ip:{"8.8.8.8","192.0.2.1","169.254.1.2","172.15.255.255","172.32.0.1","192.169.1.1"})
+        probe(ip,{"10.1.2.4"},false);
+    for(int deadline:{0,-1}){
+        auto o=options_for(f,p,"cache-listener-deadline-"+std::to_string(deadline));
+        o.allow_peer_ips={"127.0.0.1"};o.deadline_ms=deadline;
+        GpuWorkerService service(o,std::make_unique<FakeExecutor>());uint16_t port=0;std::string err;
+        check(!service.listen(port,err),"filtered listener retains bounded frame deadline requirement");
+    }
+    for(int mode=0;mode<3;++mode){
+        const char* bind=mode==2?"127.0.0.4":"127.0.0.1";
+        auto o=options_for(f,p,"cache-listener-"+std::to_string(mode));o.bind_ip=bind;
+        if(mode)o.allow_peer_ips={"127.0.0.1","127.0.0.3","127.0.0.1"};
+        o.deadline_ms=5000;
+        GpuService service(o,std::make_unique<FakeExecutor>());
+        auto connect_source=[&](const char* source){
+            sock_fd fd=::socket(AF_INET,SOCK_STREAM,0);require(fd!=kBadFd,"source socket");
+            sockaddr_in from{},to{};from.sin_family=to.sin_family=AF_INET;to.sin_port=htons(service.port);
+            require(::inet_pton(AF_INET,source,&from.sin_addr)==1&&
+                    ::inet_pton(AF_INET,bind,&to.sin_addr)==1,"numeric fixture addresses");
+            if(::bind(fd,(sockaddr*)&from,sizeof from)!=0||::connect(fd,(sockaddr*)&to,sizeof to)!=0){
+                sock::close_fd(fd);require(false,"source connect");}
+            return fd;
+        };
+        auto denied=connect_source("127.0.0.2");
+        if(mode){
+            pollfd ready{denied,POLLIN,0};check(::poll(&ready,1,1500)>0,"denied source closes before frame deadline");
+            char byte;const auto n=::recv(denied,&byte,1,MSG_DONTWAIT);
+            check(n==0||(n<0&&errno==ECONNRESET),"denied source receives no protocol bytes");
+        }else raw_setup(denied,p); // unchanged default admits any source that can reach loopback
+        sock::close_fd(denied);
+        for(const auto* source:{"127.0.0.1","127.0.0.3"}){
+            auto fd=connect_source(source);raw_setup(fd,p);sock::close_fd(fd);
+        }
+        int fetches=0;GpuWorkerTier tier;auto open=open_for(f,p,service.port,fetches);open.host=bind;std::string err;
+        require(tier.open(open,err),err);run_tier(tier,p);tier.close();
+        service.stop();check(service.service.counters().requests==1,"allowed inference survives rejected peer");
+    }
+}
 void lifecycle(const Fixture& f,const GpuPlan& p){
     unsupported_peer_check(f,p);codec_checks(p);malformed_peer_checks(f,p);malformed_peer_checks(f,p,true);setup_budget_checks(f,p);std::string err;
     {
@@ -372,6 +427,6 @@ int main(int argc,char** argv){
         if(argc==2&&std::string(argv[1])=="--cuda"){cuda_checks(fixture,plan);return failures?1:0;}
 #endif
         require(argc==1,"usage: gpu_worker_test [--emit-plan FILE [--addition] | --peer HOST PORT FILE | --cuda]");
-        lifecycle(fixture,plan);return failures?1:0;
+        listener_checks(fixture,plan);lifecycle(fixture,plan);return failures?1:0;
     }catch(const std::exception& e){std::fprintf(stderr,"FAIL gpu fixture: %s\n",e.what());return 1;}
 }
