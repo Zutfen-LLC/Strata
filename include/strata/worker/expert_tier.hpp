@@ -42,7 +42,7 @@ public:
         const LocalManifest *local = nullptr; // trusted reusable manifest, opt-in
         bool local_fallback = false;
         bool resident = false; // negotiate persistent cache; requires local manifest and worker TTL
-        bool resident_reuse_only = false; // diagnostic: refuse empty cache, never load/upload
+        bool resident_reuse_only = false; // refuse empty cache, never load/upload
         bool diagnostic_regroup = false; // diagnostic: sequential virtual peers on the full cache
         bool diagnostic_ordered = false; // diagnostic: shadow full reply, reconstruct rows, exact bit gate
         std::string packed_qualification = default_packed_qualification(); // build-pair eligibility

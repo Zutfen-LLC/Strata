@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cmath>
 #include <mutex>
+#include <limits>
 #include <sys/resource.h>
 
 namespace {
@@ -141,6 +142,7 @@ void exchange(bool failure,bool rows=false) {
     } else {
         require(finished,err);
         check(n.gate.completed==std::vector<int>({2,0,1}),"replies deliberately complete out of configuration order");
+        check(group.mask(0)[0]&&!group.mask(0)[3]&&group.mask(2)[2],"copied disjoint masks exclude CPU share");
         if(rows) {
             std::vector<float> dense(4*2560), expected(2560), actual(2560);
             const float values[]={1e20f,-1e20f,1.f};
@@ -160,9 +162,27 @@ void exchange(bool failure,bool rows=false) {
                 expected[h]=acc;
             }
             check(!std::memcmp(actual.data(),expected.data(),2560*4),"ordered reducer equals independent original-order reference");
+            std::vector<float> cpu(4*2560,0.f),mixed;
+            std::fill(cpu.begin()+3*2560,cpu.end(),.125f);
+            std::vector<uint8_t> cpu_mask{0,0,0,1},full{1,1,1,1};
+            require(group.reduce_rows(cpu,cpu_mask,full,original_weights,1,4,mixed,err),err);
+            for(int h=0;h<2560;++h)expected[h]=expected[h]+original_weights[3]*.125f;
+            check(!std::memcmp(mixed.data(),expected.data(),2560*4),"mixed CPU/GPU union reduced once in original order");
+            auto gap=cpu_mask;gap[3]=0;
+            check(!group.reduce_rows(cpu,gap,full,original_weights,1,4,mixed,err)&&mixed.empty(),"mixed gap refuses before commit");
+            auto overlap=cpu_mask;overlap[0]=1;
+            check(!group.reduce_rows(cpu,overlap,full,original_weights,1,4,mixed,err)&&mixed.empty(),"mixed duplicate ownership refuses before commit");
+            auto foreign=full;foreign[0]=0;
+            check(!group.reduce_rows(cpu,cpu_mask,foreign,original_weights,1,4,mixed,err),"mixed foreign GPU row refuses");
+            cpu[3*2560]=std::numeric_limits<float>::infinity();
+            check(!group.reduce_rows(cpu,cpu_mask,full,original_weights,1,4,mixed,err),"mixed nonfinite CPU row refuses");
+            int32_t cpu_ids[]={3,3,3,3};uint8_t no_gpu[]={0,0,0,0};x[0]=0;
+            require(group.post(0,x,cpu_ids,original_weights,no_gpu,1,4,err)&&group.finish(err),err);
+            cpu.assign(4*2560,.125f);cpu_mask=full;
+            require(group.reduce_rows(cpu,cpu_mask,full,original_weights,1,4,mixed,err),err);
+            check(mixed.size()==2560,"CPU-only window clears prior GPU rows before mixed assembly");
         } else check(group.partials(0)[0]==1e20f&&group.partials(1)[0]==-1e20f&&group.partials(2)[0]==1.f,
               "configuration-indexed results independent of arrival order");
-        check(group.mask(0)[0]&&!group.mask(0)[3]&&group.mask(2)[2],"copied disjoint masks exclude CPU share");
         group.close();
     }
     for(auto& s:n.servers) {s->stop();check(s->service.counters().gpu_allocated_bytes==0,"owned executor released after group close/failure");}

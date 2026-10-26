@@ -4376,6 +4376,9 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
 #endif
 #ifdef STRATA_NATIVE_EXPERTS
+    if (d.cpu_group && d.cpu_group->deferred_rows() && !d.gpu_worker) {
+        d.failed=true;d.fail="delegated CPU rows require the matching CUDA group";d.fail_layer=d.layers;return;
+    }
     if (d.cpu_group && !d.cpu_group->ready()) {
         d.failed=true; d.fail="the fixed CPU worker group is unavailable"; d.fail_layer=d.layers; return;
     }
@@ -4394,6 +4397,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         d.fail = "the frozen network CUDA worker session is unavailable; start a new CPU-only session explicitly";
         d.fail_layer = d.layers;
         return;
+    }
+#endif
+#if defined(STRATA_NETWORK_CUDA_WORKER) && defined(STRATA_NATIVE_EXPERTS)
+    const bool ordered_mixed=d.cpu_group && d.gpu_worker;
+    if((ordered_mixed && (d.worker || !d.cpu_group->deferred_rows())) ||
+       (d.gpu_worker && d.gpu_worker->row_mode()!=ordered_mixed)) {
+        d.failed=true;d.fail="mixed CPU/CUDA requires delegated unweighted entry rows";d.fail_layer=d.layers;return;
     }
 #endif
     if (n_tok < 1 || n_tok > MAXT) {
@@ -4456,7 +4466,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     auto worker_holds = [&](int32_t e) {
 #ifdef STRATA_NATIVE_EXPERTS
         return gpu_worker_holds(e) || (d.worker != nullptr && d.worker->holds(d.layers, e)) ||
-               (d.cpu_group != nullptr && d.cpu_group->holds(d.layers,e));
+               (d.cpu_group != nullptr && d.cpu_group->executes(d.layers,e));
 #else
         (void)e;
         return false;
@@ -4651,11 +4661,34 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         }
     }
 #endif
+#ifdef STRATA_NETWORK_CUDA_WORKER
+    if(ordered_mixed)for(int64_t i=0;i<n;++i) {
+        const int32_t e=ids[i];
+        const bool backed=d.cpu_group->holds(d.layers,e), cpu=d.cpu_group->executes(d.layers,e), gpu=gpu_worker_holds(e);
+        if(e<0 || e>=d.n_expert || (gpu && !backed) || (backed && (cpu==gpu || kind[i]!=(gpu?4:3))) || kind[i]==-1) {
+            d.failed=true;d.fail="mixed execution has a gap, overlap, foreign expert or changed local placement";d.fail_layer=d.layers;return;
+        }
+    }
+    bool drain_cpu=false,drain_gpu=false;
+    auto drain_network=[&] {
+        // Covers every early return after submission, including a later CPU/helper failure.
+        if(drain_cpu) {
+            drain_cpu=false;
+            try {std::string ignored;d.cpu_group?d.cpu_group->finish(ignored):d.worker->finish(ignored);} catch(...) {}
+        }
+        if(drain_gpu) {
+            drain_gpu=false;
+            try {std::string ignored;d.gpu_worker->finish(ignored);} catch(...) {}
+        }
+    };
+    struct DrainNetwork { decltype(drain_network)& fn; ~DrainNetwork(){fn();} } network_guard{drain_network};
+#endif
     auto post_cpu_worker = [&]() -> bool {
         if (d.worker != nullptr || d.cpu_group != nullptr) {
             bool any = false;
             for (int64_t i = 0; i < n; ++i) any = any || kind[i] == 3;
-            if (any || (d.worker && d.worker->capture() && d.worker->capture()->active())) {
+            if (any || (d.cpu_group && d.cpu_group->deferred_rows()) ||
+                (d.worker && d.worker->capture() && d.worker->capture()->active())) {
                 if (d.remote_opt == nullptr || d.remote_opt->cur_weights() == nullptr) {
                     d.failed = true;
                     d.fail = "the remote CPU-expert worker needs the verifier's routing weights (remote_opt)";
@@ -4676,6 +4709,9 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     return false;
                 }
                 worker_sent = d.cpu_group ? d.cpu_group->posted() : d.worker->posted();
+#ifdef STRATA_NETWORK_CUDA_WORKER
+                drain_cpu=worker_sent;
+#endif
             }
         }
         return true;
@@ -4691,14 +4727,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             d.fail_layer = d.layers;
             return false;
         }
+        drain_gpu=d.gpu_worker!=nullptr;
         return true;
     };
     // Submit copied CPU inputs before queueing every remote GPU share. A failed
     // GPU post (or exception) must join CPU before returning; no partial merges.
-    if (!cpu_first_remote_post(post_cpu_worker, post_gpu_worker, [&] {
-            if (worker_sent && !(d.cpu_group ? d.cpu_group->finish(worker_error) : d.worker->finish(worker_error)))
-                std::fprintf(stderr, "strata: CPU request drain after GPU post failure: %s\n", worker_error.c_str());
-        })) return;
+    if (!cpu_first_remote_post(post_cpu_worker, post_gpu_worker, drain_network)) return;
 #else
     if (!post_cpu_worker()) return;
 #endif
@@ -4910,10 +4944,11 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
 #ifdef STRATA_NATIVE_EXPERTS
     if (d.worker != nullptr || d.cpu_group != nullptr) {   // all CPU peers finish before any merge
-        // a failure ANYWHERE between the post and here returned early; the tier's own post() joins any
-        // leftover request before its next use, and the destructor joins the last one, so no window can
-        // commit on top of a reply that never arrived.  The partial joins the merge AFTER every helper
-        // tier's - the documented order, deterministic run to run.
+        // Every CPU share must finish before any network result can reach the merge.
+        // In CUDA-worker builds the window guard also drains GPU exchanges on early failure.
+#ifdef STRATA_NETWORK_CUDA_WORKER
+        drain_cpu=false;
+#endif
         if (!(d.cpu_group ? d.cpu_group->finish(worker_error) : d.worker->finish(worker_error))) {
             d.failed = true;
             d.fail = worker_error.c_str();
@@ -4922,7 +4957,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         }
     }
 #ifdef STRATA_NETWORK_CUDA_WORKER
-    if (gpu_worker_sent && !d.gpu_worker->finish(gpu_worker_error)) {
+    drain_gpu=false;
+    if (d.gpu_worker && !d.gpu_worker->finish(gpu_worker_error)) {
         d.failed = true;
         d.fail = gpu_worker_error.c_str();
         d.fail_layer = d.layers;
@@ -4944,11 +4980,27 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // All participating workers and local helpers have succeeded before either network contribution
     // reaches the merge. On any loss, the request latches failed and neither partial is committed here.
 #ifdef STRATA_NETWORK_CUDA_WORKER
-    if (gpu_worker_sent)
+    if(ordered_mixed) {
+        static thread_local std::vector<uint8_t> expected;
+        static thread_local std::vector<float> mixed_partial;
+        expected.assign((size_t)n,0);
+        for(int64_t i=0;i<n;++i)expected[(size_t)i]=d.cpu_group->holds(d.layers,ids[i]);
+        if(!d.cpu_group->rows_ready() || !d.gpu_worker->reduce_rows(d.cpu_group->entry_rows(),d.cpu_group->entry_mask(),
+            expected,d.remote_opt->cur_weights(),(int)n_tok,(int)k,mixed_partial,gpu_worker_error)) {
+            if(gpu_worker_error.empty())gpu_worker_error="mixed CPU rows were not completed";
+            d.failed=true;d.fail=gpu_worker_error.c_str();d.fail_layer=d.layers;return;
+        }
+        if(std::find(expected.begin(),expected.end(),1)!=expected.end())
+            d.remote_opt->accumulate_host(mixed_partial.data(),expected.data(),(int)n_tok,(int)k);
+    } else if (gpu_worker_sent)
         for (size_t i=0;i<d.gpu_worker->size();++i) if (d.gpu_worker->active(i))
             d.remote_opt->accumulate_host(d.gpu_worker->partials(i), d.gpu_worker->mask(i), (int)n_tok, (int)k);
 #endif
-    if (worker_sent) {
+    if (worker_sent
+#ifdef STRATA_NETWORK_CUDA_WORKER
+        && !ordered_mixed
+#endif
+    ) {
         const bool time_worker_merge = d.worker && d.worker->rpc_timing_enabled();
         const auto worker_merge_start = time_worker_merge ? std::chrono::steady_clock::now()
                                                           : std::chrono::steady_clock::time_point{};

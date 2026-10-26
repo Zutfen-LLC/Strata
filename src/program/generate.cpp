@@ -1030,7 +1030,8 @@ void usage() {
                  "  --remote-cpu-regroup-diagnostic off|on|ordered  reuse-only control, split reduction or exact row reconstruction\n"
                  "  --remote-cpu-packed-qualification 16_HEX  override verified build-pair record; default from build\n"
                  "  --remote-cpu-raw-requests  force raw F32 requests; eligible peers otherwise select packed automatically\n"
-                 "  --remote-cpu-entry-rows  opt-in group entry-row replies and original-order CPU reduction; requires capable workers\n"
+                 "  --remote-cpu-entry-rows  opt-in original-order rows; with network CUDA requires one resident CPU endpoint\n"
+                 "                       and no fallback; reuses full backing and reduces CPU+CUDA rows once\n"
                  "  --remote-cpu-local-manifest FILE  opt-in trusted slice manifest; needs configured local worker\n"
                  "  --remote-cpu-local-fallback  allow upload for absent local experts (worker must allow it)\n"
                  "  --remote-cpu-resident  opt-in persistent worker cache; needs local manifest and worker TTL\n"
@@ -3386,8 +3387,13 @@ int main(int argc, char** argv) {
     // inferswarm #349: the remote CPU-expert worker is a bounded, opt-in mode.  It refuses UP FRONT every
     // configuration whose execution path it does not implement, rather than silently running a different
     // one: the modes below are the ones the integration was framed for (see docs/CPU_WORKER.md).
-    if (!o.remote_cpu_workers.empty() && (o.remote_cpu_legacy || o.remote_cpu_local_manifest.empty() || o.remote_gpu_experts)) {
-        std::fprintf(stderr,"fixed CPU group needs its trusted local manifest, excludes legacy --remote-cpu-experts and network GPU mode\n");return 2;
+    const bool mixed_worker_rows=!o.remote_cpu_workers.empty() && o.remote_gpu_experts;
+    if (!o.remote_cpu_workers.empty() && (o.remote_cpu_legacy || o.remote_cpu_local_manifest.empty())) {
+        std::fprintf(stderr,"fixed CPU group needs its trusted local manifest and excludes legacy --remote-cpu-experts\n");return 2;
+    }
+    if(mixed_worker_rows && (o.remote_cpu_workers.size()!=1 || !o.remote_cpu_entry_rows ||
+        !o.remote_cpu_resident || o.remote_cpu_local_fallback || o.remote_cpu_regroup_diagnostic>=0 || cpu_capture_path)) {
+        std::fprintf(stderr,"mixed CPU/CUDA requires one resident CPU group endpoint, entry rows and no fallback/diagnostic/capture; setup is reuse-only\n");return 2;
     }
     if(o.remote_cpu_regroup_diagnostic>=0 && (o.remote_cpu_workers.size()!=1 || o.remote_cpu_legacy ||
         !o.remote_cpu_resident || o.remote_cpu_local_manifest.empty() || o.remote_cpu_local_fallback ||
@@ -6806,7 +6812,7 @@ int main(int argc, char** argv) {
             wopen.packed_qualification = o.remote_cpu_packed_qualification;
         wopen.packed_requests = !o.remote_cpu_raw_requests && !o.remote_cpu_workers.empty() &&
             !cpu_capture_path && o.remote_cpu_regroup_diagnostic<0;
-        wopen.resident_reuse_only = cpu_capture_path != nullptr || o.remote_cpu_regroup_diagnostic>=0;
+        wopen.resident_reuse_only = mixed_worker_rows || cpu_capture_path != nullptr || o.remote_cpu_regroup_diagnostic>=0;
         wopen.diagnostic_regroup = o.remote_cpu_regroup_diagnostic==1;
         wopen.diagnostic_ordered = o.remote_cpu_regroup_diagnostic==2;
         wopen.model_name = o.pack.c_str();
@@ -6835,13 +6841,14 @@ int main(int argc, char** argv) {
             wopen.resident=o.remote_cpu_resident;
             wopen.setup_ms=o.remote_cpu_setup_ms;
         }
+        std::vector<uint8_t> gpu_delegated; // execution only; never changes the full CPU setup bitmap
 #ifdef STRATA_NETWORK_CUDA_WORKER
         std::vector<strata::worker::GpuWorkerTier::Open> gpu_open;
         if (o.remote_gpu_experts) {
           auto endpoints=o.remote_gpu_workers;
           if(endpoints.empty())endpoints.push_back({o.remote_gpu_host,o.remote_gpu_plan,(uint16_t)o.remote_gpu_port});
           for(const auto& endpoint:endpoints) {
-            strata::worker::GpuWorkerTier::Open item;
+            strata::worker::GpuWorkerTier::Open item;item.entry_rows=mixed_worker_rows;
             item.host=endpoint.host;item.port=endpoint.port;item.deadline_ms=o.remote_gpu_deadline_ms;item.setup_ms=o.remote_gpu_setup_ms;
             auto& gpu_plan=item.plan;
             if (!strata::worker::read_gpu_plan(endpoint.plan, gpu_plan, err)) {
@@ -6871,6 +6878,11 @@ int main(int argc, char** argv) {
           if(!strata::worker::GpuWorkerGroup::validate(gpu_open,err)) {
             std::fprintf(stderr,"strata generate: network GPU group: %s\n",err.c_str());return 1;
           }
+          if(mixed_worker_rows) {
+            gpu_delegated.assign(wopen.partition.size(),0);
+            for(const auto& item:gpu_open)for(const auto& a:item.plan.assets)
+                gpu_delegated[(size_t)a.layer*stride+a.expert/8]|=(uint8_t)(1u<<(a.expert%8));
+          }
         }
 #endif
         const auto wt0 = Clock::now();
@@ -6886,10 +6898,11 @@ int main(int argc, char** argv) {
                 if(wopen.partition[(size_t)l*stride+e/8]&(1u<<(e%8))) {
                     peers[ordinal++%peers.size()].partition[(size_t)l*stride+e/8]|=(uint8_t)(1u<<(e%8));
                 }
-            cpu_opened=cpu_group.open(peers,wopen.partition,err);
+            cpu_opened=cpu_group.open(peers,wopen.partition,err,gpu_delegated);
         } else cpu_opened=worker_tier.open(wopen,err);
         if(!cpu_opened) {std::fprintf(stderr,"strata generate: CPU setup: %s\n",err.c_str());return 1;}
-        if(o.remote_cpu_entry_rows)std::fprintf(stderr,"strata generate: CPU entry rows ready schema=1 ordered_reduce=1\n");
+        if(o.remote_cpu_entry_rows)std::fprintf(stderr,"strata generate: CPU entry rows ready schema=1 reduction=%s\n",
+            mixed_worker_rows?"CPU+CUDA original-order union":"CPU original-order");
         if(o.remote_cpu_regroup_diagnostic>=0)
             std::fprintf(stderr,"strata generate: CPU regroup diagnostic=%s reuse_only=1 sequential=1\n",
                          o.remote_cpu_regroup_diagnostic==2?"ordered":o.remote_cpu_regroup_diagnostic?"on":"off");
@@ -6919,7 +6932,7 @@ int main(int argc, char** argv) {
             // The CPU worker above retains the identical full partition and arena. Only execution
             // ownership changes for this explicitly assigned subset; no CPU setup identity is rewritten.
             for (const auto& item : gpu_open) for (const auto& a : item.plan.assets)
-                if (!worker_tier.holds(a.layer, a.expert)) {
+                if (!(grouped_cpu ? cpu_group.holds(a.layer,a.expert) : worker_tier.holds(a.layer, a.expert))) {
                     std::fprintf(stderr, "strata generate: network GPU assignment is outside the frozen CPU partition\n");
                     return 1;
                 }
@@ -6941,11 +6954,13 @@ int main(int argc, char** argv) {
             }
             // Cold selective transfer may take minutes. Preserve the existing CPU connection's
             // receive deadline without changing its partition or extending its residency TTL.
-            strata::worker::CpuSetupKeepalive cpu_keepalive(worker_tier);
-            for(auto& gopen:gpu_open)gopen.cancelled=[&] {return cpu_keepalive.failed();};
+            // The group already has its keeper; never create a second owner of its CPU socket.
+            std::unique_ptr<strata::worker::CpuSetupKeepalive> cpu_keepalive;
+            if(!grouped_cpu)cpu_keepalive=std::make_unique<strata::worker::CpuSetupKeepalive>(worker_tier);
+            for(auto& gopen:gpu_open)gopen.cancelled=[&] {return grouped_cpu ? cpu_group.dead() : cpu_keepalive->failed();};
             const bool gpu_ready = gpu_worker_tier.open(gpu_open, err);
             std::string cpu_setup_error;
-            const bool cpu_still_ready = cpu_keepalive.finish(cpu_setup_error);
+            const bool cpu_still_ready = grouped_cpu ? cpu_group.probe_idle(cpu_setup_error) : cpu_keepalive->finish(cpu_setup_error);
             if (!cpu_still_ready) {
                 std::fprintf(stderr, "strata generate: %s\n", cpu_setup_error.c_str());
                 return 1;

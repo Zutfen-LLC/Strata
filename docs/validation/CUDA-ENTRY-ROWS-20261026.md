@@ -1,6 +1,8 @@
 # Optional CUDA entry-row transport
 
-Issue #18, first bounded slice on draft PR #10. Base: `5b508f68c0969f07f018d97bfda3945637fb74d0`.
+Issue #18, first bounded slice at `01539e99b0b5a4b83f4270605b4bda0ab0cf6da0` on draft PR #10.
+The mixed follow-on is described in [ORDERED-MIXED-CUDA-20261026.md](ORDERED-MIXED-CUDA-20261026.md).
+Base: `5b508f68c0969f07f018d97bfda3945637fb74d0`.
 
 `GpuWorkerTier::Open::entry_rows=true` selects unweighted F32 rows. All peers in a
 `GpuWorkerGroup` must use the same mode. After successful `finish`,
@@ -50,7 +52,7 @@ synthetic loopback sockets.
 
 No CUDA compiler is installed locally. **The changed CUDA source and CUDA-only
 fixture are uncompiled and unexecuted here.** The draft remains unqualified for
-hardware use. No model, worker or fleet operation was performed.
+hardware use. No live model, worker or fleet operation was performed.
 
 ## Targeted CUDA follow-up
 
@@ -68,3 +70,19 @@ The extended CUDA fixture checks direct versus transported CUDA row bytes and an
 independent ordered reduction of those rows against the existing CUDA weighted
 result. These checks are pending. Wire exactness does not imply CPU/CUDA kernel
 or activation-quantizer equality, full-model equality or a throughput gain.
+
+## Supplied CUDA result for the first slice
+
+The parent supplied Hermes's result at `01539e99b0b5a4b83f4270605b4bda0ab0cf6da0`:
+CUDA 13.1.115, architecture 86, Release build passed. All five requested tests passed:
+`gpu_frame_test` 0.08 s, `gpu_worker_test` 1.92 s, `gpu_worker_group_test` 7.90 s,
+`gpu_worker_cuda_test` 1.03 s and `gpu_worker_dispatch_test` 1.81 s. No requested
+check was skipped. Actual CUDA executed the assigned entries; transported row
+bytes were exact, the direct CUDA weighted result matched its independent ordered
+row reference, and the three-worker dispatcher reported zero failures.
+
+This is supplied execution evidence, not a local run or an independent inspection
+of private artifacts. It validates the first slice only. It does not qualify the
+subsequent mixed bridge or establish CPU/CUDA kernel equality. The parent reported
+all test processes reaped, GPU memory returned to baseline and no existing resident
+or other fleet host touched.

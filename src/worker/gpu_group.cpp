@@ -1,4 +1,5 @@
 #include "strata/worker/gpu_group.hpp"
+#include "strata/worker/expert_worker.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -37,7 +38,8 @@ struct GpuWorkerGroup::Impl {
     std::vector<EntryRowsReply> rows;
     bool entry_rows=false;
     std::atomic<bool> failed{false};
-    bool ready=false, posted=false;
+    bool ready=false, posted=false, finished=false;
+    int T=0,K=0;
     int layers=0, experts=0, H=0;
     std::string reason;
 
@@ -148,7 +150,7 @@ void GpuWorkerGroup::close() {
     auto& d=*impl_;
     for(auto& p:d.peers) {std::lock_guard<std::mutex> lock(p->mutex);p->stopping=true;p->wake.notify_all();}
     for(auto& p:d.peers) {if(p->thread.joinable())p->thread.join();p->tier.close();}
-    d.peers.clear();d.ready=d.posted=false;d.outputs.clear();d.rows.clear();d.masks.clear();d.active.clear();
+    d.peers.clear();d.ready=d.posted=d.finished=false;d.outputs.clear();d.rows.clear();d.masks.clear();d.active.clear();
 }
 bool GpuWorkerGroup::holds(int64_t l,int32_t e)const{return impl_->owner(l,e)>=0;}
 bool GpuWorkerGroup::dead()const{return impl_->failed.load();}
@@ -165,6 +167,7 @@ bool GpuWorkerGroup::post(int64_t l,const float* x,const int32_t* ids,const floa
     if(d.failed.load()){err=d.error();close();return false;}
     if(!d.ready || d.posted || !x || !ids || !weights || !owned || l<0 || l>=d.layers || T<1 || T>kMaxT || K<1 || K>kMaxK)
         return refuse("invalid CUDA group post state or geometry");
+    d.finished=false;d.T=T;d.K=K;
     const size_t n=(size_t)T*K;
     for(size_t i=0;i<n;++i)if(ids[i]<0 || ids[i]>=d.experts || !std::isfinite(weights[i]) ||
         owned[i]!=(d.owner(l,ids[i])>=0))return refuse("CUDA group ownership/ids/weights mismatch");
@@ -195,7 +198,42 @@ bool GpuWorkerGroup::finish(std::string& err) {
     for(size_t i=0;i<d.peers.size();++i)if(d.active[i]) {
         std::lock_guard<std::mutex> lock(d.peers[i]->mutex);d.outputs[i]=d.peers[i]->output;d.rows[i]=d.peers[i]->rows;
     }
-    return true;
+    d.finished=true;return true;
+}
+bool GpuWorkerGroup::row_mode()const{return impl_->entry_rows;}
+bool GpuWorkerGroup::reduce_rows(const std::vector<float>& cpu_rows,const std::vector<uint8_t>& cpu_mask,
+                                 const std::vector<uint8_t>& expected,const float* weights,int T,int K,
+                                 std::vector<float>& partials,std::string& err)const {
+    const auto& d=*impl_;partials.clear();
+    auto refuse=[&](const char* why){err=why;return false;};
+    const size_t n=(size_t)T*K;
+    if(!ready() || !d.entry_rows || !d.finished || T<1 || T>kMaxT || K<1 || K>kMaxK || T!=d.T || K!=d.K || !weights ||
+       expected.size()!=n || cpu_mask.size()!=n || cpu_rows.size()!=n*d.H)
+        return refuse("ordered mixed row state/shape mismatch");
+    std::vector<float> rows(cpu_rows);std::vector<uint8_t> seen(cpu_mask);
+    for(size_t i=0;i<n;++i) {
+        if(expected[i]>1 || cpu_mask[i]>1 || cpu_mask[i]>expected[i] || !std::isfinite(weights[i]))
+            return refuse("ordered mixed CPU ownership/weights mismatch");
+        if(cpu_mask[i])for(int h=0;h<d.H;++h)if(!std::isfinite(rows[i*d.H+h]))return refuse("nonfinite mixed CPU row");
+    }
+    for(size_t p=0;p<d.rows.size();++p)if(d.active[p]) {
+        const auto& reply=d.rows[p];
+        if(reply.rows.size()!=reply.indices.size()*(size_t)d.H || d.masks[p].size()!=n)
+            return refuse("ordered mixed GPU row shape mismatch");
+        std::vector<uint8_t> peer_seen(n,0);
+        for(size_t j=0;j<reply.indices.size();++j) {
+            const size_t i=reply.indices[j];
+            if(i>=n || !expected[i] || !d.masks[p][i] || seen[i])return refuse("ordered mixed row overlap/foreign index");
+            for(int h=0;h<d.H;++h)if(!std::isfinite(reply.rows[j*d.H+h]))return refuse("nonfinite mixed GPU row");
+            seen[i]=peer_seen[i]=1;std::copy_n(reply.rows.data()+j*d.H,d.H,rows.data()+i*d.H);
+        }
+        if(peer_seen!=d.masks[p])return refuse("ordered mixed GPU rows missing");
+    }
+    if(seen!=expected)return refuse("ordered mixed row coverage gap");
+    std::vector<float> sum((size_t)T*d.H);
+    ExpertWorkerService::accumulate_partial(T,K,expected.data(),weights,rows.data(),d.H,sum.data());
+    if(!std::all_of(sum.begin(),sum.end(),[](float v){return std::isfinite(v);}))return refuse("ordered mixed sum nonfinite");
+    partials=std::move(sum);return true;
 }
 void GpuWorkerGroup::report(std::string& out)const {
     std::ostringstream text;text<<"CUDA group workers="<<size()<<" "<<(dead()?"DEAD":"READY");

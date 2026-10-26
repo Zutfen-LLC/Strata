@@ -164,7 +164,7 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
         WorkerCacheInfo cache;
         if (!in.local || !in.resident || !client_.cache_status(cache,err) || !cache.complete || cache.session ||
             cache.idle_remaining_ms!=kResidencyNoExpiry) {
-            err="diagnostic requires an idle complete forever-resident cache";client_.close();return false;
+            err="reuse-only setup requires an idle complete forever-resident cache";client_.close();return false;
         }
     }
     m.nonce = (uint64_t) t0 ^ ((uint64_t) (uintptr_t) this << 32);
@@ -224,7 +224,7 @@ bool ExpertWorkerTier::open(const Open& in, std::string& err) {
     };
     st_.cache_hit = client_.cache_hit();
     if (in.resident_reuse_only && !st_.cache_hit) {
-        err="diagnostic requires a resident cache hit";return failed();
+        err="reuse-only setup requires a resident cache hit";return failed();
     }
     st_.reused_bytes = client_.reused_bytes();
     st_.session = client_.session();

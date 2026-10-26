@@ -399,6 +399,47 @@ void float_codec_edges() {
     check(!std::memcmp(decoded.partials.data(),legacy.partials.data(),legacy_words.size()*4),"legacy float edge payload bits unchanged");
     check(!decode_infer_ack(bytes.data(),bytes.size()-1,(uint16_t)legacy_words.size(),1,decoded),"legacy truncated reply refused");
 }
+void delegation() {
+    Fixture f;auto settings=f.options();settings.residency_forever=true;settings.deadline_ms=300;
+    Service service(settings);std::string err;auto o=option(f,service.port,{3,3});o.entry_rows=true;
+    {ExpertWorkerGroup warm;require(warm.open({o},{3,3},err),err);warm.close();}
+    auto cache=[&] {
+        ExpertWorkerClient client;require(client.connect_host("127.0.0.1",service.port,3000,err),err);
+        WorkerCacheInfo info;require(client.cache_status(info,err),err);client.close();return info;
+    };
+    const auto before=cache();
+    o.resident_reuse_only=true;
+    check(!ExpertWorkerGroup::validate_delegation({o},{3,3},{4,0},err),"foreign GPU delegation refused before setup");
+    auto bad=o;bad.entry_rows=false;
+    check(!ExpertWorkerGroup::validate_delegation({bad},{3,3},{2,2},err),"weighted CPU delegation refused");
+    bad=o;bad.resident_reuse_only=false;
+    check(!ExpertWorkerGroup::validate_delegation({bad},{3,3},{2,2},err),"delegation cannot load a replacement arena");
+    ExpertWorkerGroup group;require(group.open({o},{3,3},err,{2,2}),err);
+    check(group.peer_stats(0).cache_hit && group.peer_stats(0).reused_bytes==before.resident_bytes,
+          "delegated execution attaches the exact full resident cache");
+    check(group.holds(0,1)&&!group.executes(0,1)&&group.executes(0,0),"backing and execution ownership are separate");
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    require(group.probe_idle(err),err); // longer than service idle deadline, with existing keeper
+    Input in(1);in.mask={1,0};require(in.post(group,err)&&group.finish(err),err);
+    check(group.rows_ready() && group.deferred_rows() && !group.partials() && group.entry_mask()==in.mask,
+          "delegated CPU returns rows without a separate weighted reduction");
+    std::vector<const uint8_t*> pointers{f.blobs[0].data(),nullptr};std::vector<float> expected;
+    const float unit[]={1,0};
+    require(ExpertWorkerService::direct_native_partial(f.fmt,1,2,in.mask.data(),unit,in.x.data(),pointers.data(),expected,err),err);
+    check(!std::memcmp(expected.data(),group.entry_rows().data(),2560*4),"CPU row view preserves unweighted original-entry bytes");
+    in.ids={1,1};in.mask={0,0};require(in.post(group,err)&&group.finish(err),err);
+    check(group.rows_ready()&&!group.served()&&group.entry_mask()==in.mask &&
+          std::all_of(group.entry_rows().begin(),group.entry_rows().end(),[](float v){return v==0.f;}),
+          "all-GPU window exposes a fresh empty CPU row selection");
+    group.close();
+    auto mismatch=o;mismatch.partition={1,1};ExpertWorkerGroup refused;
+    check(!refused.open({mismatch},{1,1},err,{0,0}),"changed resident partition refused rather than reloaded");
+    const auto after=cache();
+    check(after.complete && after.resident_bytes==before.resident_bytes && after.loaded_bytes==before.loaded_bytes &&
+          after.arena_allocations==before.arena_allocations && after.unloads==before.unloads && after.expirations==before.expirations,
+          "full backing bytes, load/allocation/unload counters unchanged after reuse and mismatch refusal");
+}
+
 }
 int main(int argc,char** argv) {
     if(argc==2 && std::string(argv[1])=="--packed") {
@@ -406,7 +447,7 @@ int main(int argc,char** argv) {
         catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}
         std::printf("CPU_PACKED_GROUP failures=%d models=0\n",failures);return failures?1:0;
     }
-    try {row_codec();float_codec_edges();row_capability();native();native(true);setup_failure_and_zero_work();setup_failure_and_zero_work(true);slow_second_setup();
+    try {delegation();row_codec();float_codec_edges();row_capability();native();native(true);setup_failure_and_zero_work();setup_failure_and_zero_work(true);slow_second_setup();
         for(int mode=0;mode<5;++mode)controlled(mode);for(int mode=0;mode<6;++mode)controlled(mode,true);}
     catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}
     std::printf("CPU_WORKER_GROUP failures=%d models=0\n",failures);return failures?1:0;

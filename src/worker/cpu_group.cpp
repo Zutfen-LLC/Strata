@@ -60,12 +60,27 @@ bool ExpertWorkerGroup::validate(const std::vector<Open>& options, const std::ve
         return refuse("CPU complement has nonzero padding bits");
     return true;
 }
+bool ExpertWorkerGroup::validate_delegation(const std::vector<Open>& options, const std::vector<uint8_t>& expected,
+                                            const std::vector<uint8_t>& delegated, std::string& err) {
+    if(!validate(options,expected,err))return false;
+    if(delegated.empty())return true;
+    if(options.size()!=1 || !options[0].entry_rows || !options[0].resident_reuse_only ||
+       !options[0].resident || options[0].local_fallback || options[0].diagnostic_regroup || options[0].diagnostic_ordered ||
+       delegated.size()!=expected.size()) {
+        err="CUDA delegation requires one reuse-only resident CPU endpoint, entry rows and no fallback/diagnostic";return false;
+    }
+    for(size_t i=0;i<expected.size();++i)if(delegated[i]&~expected[i]) {
+        err="CUDA execution delegation escapes CPU backing";return false;
+    }
+    return true;
+}
 bool ExpertWorkerGroup::open(const std::vector<Open>& options, const std::vector<uint8_t>& expected,
-                            std::string& err) {
+                            std::string& err, const std::vector<uint8_t>& delegated) {
     if (dead()) { err=error(); return false; }
-    if (ready_ || !validate(options,expected,err)) { if(err.empty())err="CPU group already open";return false; }
+    if (ready_ || !validate_delegation(options,expected,delegated,err)) { if(err.empty())err="CPU group already open";return false; }
     layers_=options[0].n_layers;experts_=options[0].n_expert;H_=options[0].n_embd;
     entry_rows_=options[0].entry_rows;row_reduce_ms_=0;
+    delegated_=delegated;deferred_rows_=!delegated.empty();rows_ready_=false;
     packed_requested_=false;pack_calls_=quantized_rows_=pack_ns_=0;pack_reason_.clear();
     for(const auto& o:options)packed_requested_|=o.packed_requests && !o.packed_qualification.empty() &&
         !o.diagnostic_regroup && !o.diagnostic_ordered;
@@ -131,20 +146,32 @@ void ExpertWorkerGroup::close() {
     if(keeper_.joinable())keeper_.join();
     for(auto& peer:peers_)peer->close(); // each joins its existing request thread before socket close
     peers_.clear();endpoints_.clear();masks_.clear();active_.clear();combined_.clear();owners_.clear();
-    rows_.clear();weights_.clear();owned_.clear();
+    rows_.clear();weights_.clear();owned_.clear();delegated_.clear();rows_ready_=false;
     ready_=posted_=served_=false;
 }
 bool ExpertWorkerGroup::holds(int64_t l,int32_t e) const {
     return l>=0 && l<layers_ && e>=0 && e<experts_ && !owners_.empty() && owners_[(size_t)l*experts_+e]>=0;
 }
+bool ExpertWorkerGroup::executes(int64_t l,int32_t e) const {
+    return holds(l,e) && (delegated_.empty() || !(delegated_[(size_t)l*((experts_+7u)/8u)+e/8]&(1u<<(e%8))));
+}
+bool ExpertWorkerGroup::probe_idle(std::string& err) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(!ready_ || failed_.load() || window_) {err=reason_.empty()?"CPU group not idle/ready":reason_;return false;}
+    for(size_t p=0;p<peers_.size();++p)if(!peers_[p]->keepalive_if_idle(err)) {
+        reason_="CPU peer "+std::to_string(p)+" setup probe: "+err;failed_.store(true);err=reason_;return false;
+    }
+    return true;
+}
 bool ExpertWorkerGroup::post(int64_t l,const float* x,const int32_t* ids,const float* weights,
                              const uint8_t* owned,int T,int K,std::string& err) {
-    served_=false;combined_.clear();
+    served_=rows_ready_=false;combined_.clear();
     if(posted_) {err="CPU group already has an unfinished window";fail(err);std::string drain;finish(drain);return false;}
+    rows_.clear();owned_.clear();
     if(!ready() || posted_ || !x || !ids || !weights || !owned || l<0 || l>=layers_ ||
         T<1 || T>kMaxT || K<1 || K>kMaxK) {err="invalid CPU group post";fail(err);return false;}
     for(int i=0;i<T*K;++i) if(ids[i]<0 || ids[i]>=experts_ || !std::isfinite(weights[i]) ||
-        owned[i]!=(holds(l,ids[i])?1:0)) {err="CPU group ownership/ids/weights mismatch";fail(err);return false;}
+        owned[i]!=(executes(l,ids[i])?1:0)) {err="CPU group ownership/ids/weights mismatch";fail(err);return false;}
     for(int i=0;i<T*H_;++i)if(!std::isfinite(x[i])) {err="CPU group activation nonfinite";fail(err);return false;}
     if(entry_rows_) {
         rows_.assign((size_t)T*K*H_,0.f);weights_.assign(weights,weights+(size_t)T*K);
@@ -209,7 +236,7 @@ bool ExpertWorkerGroup::finish(std::string& err) {
                 }
             }
             if(ok && seen!=owned_) {err="CPU entry rows missing";ok=false;}
-            if(ok) {
+            if(ok && !deferred_rows_) {
                 combined_.resize((size_t)T_*H_);
                 ExpertWorkerService::accumulate_partial(T_,K_,owned_.data(),weights_.data(),rows_.data(),H_,combined_.data());
                 if(!std::all_of(combined_.begin(),combined_.end(),[](float v){return std::isfinite(v);})) {
@@ -236,8 +263,9 @@ bool ExpertWorkerGroup::finish(std::string& err) {
     for(const auto& peer:peers_) {stats_.requests+=peer->stats().requests;stats_.entries+=peer->stats().entries;}
     {std::lock_guard<std::mutex> lock(mutex_);
      ok=ok && !failed_.load();posted_=false;
+     rows_ready_=ok && entry_rows_;
      served_=ok && std::find(active_.begin(),active_.end(),1)!=active_.end();window_=false;wake_.notify_all();}
-    if(!ok) {combined_.clear();if(err.empty())err=error();fail(err);return false;}
+    if(!ok) {combined_.clear();rows_.clear();owned_.clear();rows_ready_=false;if(err.empty())err=error();fail(err);return false;}
     return true;
 }
 bool ExpertWorkerGroup::peer_status(size_t i,WorkerStatusInfo& out,std::string& err) {
@@ -250,6 +278,7 @@ void ExpertWorkerGroup::report(std::string& out) const {
     if(packed_requested_)text<<" pack_calls="<<pack_calls_<<" quantized_rows="<<quantized_rows_
         <<" pack_ns="<<pack_ns_<<" pack_fallback_reason="<<pack_reason_;
     if(entry_rows_)text<<" reply_mode=entry_rows row_reduce_ms="<<row_reduce_ms_;
+    if(deferred_rows_)text<<" execution_delegated=1 reduction=deferred";
     for(size_t i=0;i<peers_.size();++i) {std::string row;peers_[i]->report(row);
         text<<"\nCPU peer["<<i<<"] "<<endpoints_[i].host<<":"<<endpoints_[i].port<<" "<<row;}
     out=text.str();
