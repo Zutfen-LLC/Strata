@@ -1,0 +1,273 @@
+// Bounded offline discriminator, not a benchmark or a model acceptance test.
+#include "local_fixture.hpp"
+#include "strata/worker/cpu_capture.hpp"
+#include "strata/worker/gpu_group.hpp"
+#include "strata/worker/gpu_worker.hpp"
+#include "ggml-cpu.h"
+#include <cmath>
+#include <iomanip>
+#include <sstream>
+#ifdef STRATA_CAPTURE_CUDA
+#include "strata/kernels/iq_kernels.hpp"
+#include <cuda_runtime.h>
+#endif
+
+namespace cpu = strata::kernels::cpu;
+namespace {
+struct Selection { size_t record, entry, plan; GpuAsset asset; };
+Selection select(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans) {
+    require(f.setup.gu_type==8 && f.setup.d_type==8 && f.setup.n_embd==2560 && f.setup.n_ff==640,
+            "requires plain Q8_0 2560x640 capture");
+    for(const auto& p:plans) {
+        std::string err;require(validate_gpu_plan(p,err),err);
+        require(p.model_id==f.setup.model_id && p.n_layers==f.setup.n_layers && p.n_expert==f.setup.n_expert &&
+                p.n_embd==f.setup.n_embd && p.n_ff==f.setup.n_ff,"capture/assignment model geometry mismatch");
+    }
+    for(size_t r=0;r<f.records.size();++r) {
+        const auto& q=f.records[r].request;
+        if(!f.records[r].sent)continue;
+        require(q.T>=1 && q.T<=2 && q.K>=1 && q.K<=10 && q.mask.size()==size_t(q.T*q.K) &&
+                q.ids.size()==q.mask.size() && q.weights.size()==q.mask.size() &&
+                q.activations.size()==size_t(q.T)*2560,"capture record bound");
+        for(size_t i=0;i<q.mask.size();++i)if(q.mask[i])for(size_t p=0;p<plans.size();++p)
+            if(const auto* a=plans[p].find(q.layer,q.ids[i]))return {r,i,p,*a};
+    }
+    throw std::runtime_error("no active captured entry intersects supplied B assignments");
+}
+std::string hex(uint64_t v,int width=16) {std::ostringstream s;s<<std::hex<<std::setfill('0')<<std::setw(width)<<v;return s.str();}
+std::string key(const GpuPlan& p,const GpuAsset& a) {
+    return "sgpu1-"+hex(p.model_id)+"-"+hex(p.layout_id.a)+hex(p.layout_id.b)+"-"+
+        hex(a.layer,4)+"-"+hex(a.expert,4)+"-"+hex(a.bytes)+"-"+hex(a.digest.a)+hex(a.digest.b)+".blob";
+}
+// Restrict the existing validated plan codec to one asset, retaining model/layout identity.
+GpuPlan one_asset(const GpuPlan& p,const GpuAsset& a) {
+    std::vector<uint8_t> wire;std::string err;require(encode_gpu_plan(p,wire,err),err);
+    const size_t slot=p.find(a.layer,a.expert)-p.assets.data(),at=48+28*slot;
+    std::vector<uint8_t> one(wire.begin(),wire.begin()+48);
+    one[44]=1;one[45]=one[46]=one[47]=0;
+    one.insert(one.end(),wire.begin()+at,wire.begin()+at+28);
+    const auto d=blob_digest(one);put<uint64_t>(one,d.a);put<uint64_t>(one,d.b);
+    GpuPlan out;require(decode_gpu_plan(one.data(),one.size(),out,err),err);return out;
+}
+std::vector<uint8_t> read_blob(const std::string& path,const GpuAsset& a) {
+    require(a.bytes==5222400,"single Q8_0 expert size bound");
+    std::ifstream in(path,std::ios::binary|std::ios::ate);
+    require(in && in.tellg()==std::streamoff(a.bytes),"selected blob size mismatch");
+    std::vector<uint8_t> b(a.bytes);in.seekg(0);require(bool(in.read((char*)b.data(),b.size())),"selected blob short read");
+    require(blob_digest(b)==a.digest,"selected assignment/blob digest mismatch");return b;
+}
+bool metrics(const char* label,const std::vector<float>& a,const std::vector<float>& b) {
+    require(a.size()==b.size(),"metric shape");double sum=0,den=0,maxabs=0;size_t first=a.size();
+    for(size_t i=0;i<a.size();++i) {
+        require(std::isfinite(a[i]) && std::isfinite(b[i]),"nonfinite diagnostic result");
+        const double d=double(a[i])-b[i];sum+=d*d;den+=double(a[i])*a[i];maxabs=std::max(maxabs,std::fabs(d));
+        if(first==a.size() && std::memcmp(&a[i],&b[i],4))first=i;
+    }
+    std::printf("COMPARE %s bits=%d first=%zu maxabs=%.9g relL2=%.9g\n",label,first==a.size(),first,maxabs,std::sqrt(sum/(den+1e-300)));
+    return first==a.size();
+}
+struct CpuRows {std::vector<float> rows,gate,up,hidden;std::vector<uint8_t> act,hq;};
+CpuRows cpu_rows(const InferRequest& q,const std::vector<uint8_t>& b,const cpu::NativeFmt& f) {
+    CpuRows c;c.act.resize(q.T*cpu::kNativeActBytes);c.rows.resize(q.T*f.n_embd);
+    c.hidden.resize(q.T*f.n_ff);c.gate.resize(c.hidden.size());c.up.resize(c.hidden.size());c.hq.resize(q.T*f.h_bytes);
+    const auto dot=ggml_get_type_traits_cpu(GGML_TYPE_Q8_0)->vec_dot;
+    for(int t=0;t<q.T;++t) {
+        void* a=c.act.data()+t*cpu::kNativeActBytes;cpu::native_quant_act(f,q.activations.data()+t*f.n_embd,a);
+        const void* av=a;float* h=c.hidden.data()+t*f.n_ff;
+        cpu::native_gu_rows(f,b.data(),&av,1,&h,0,f.n_ff);
+        for(int j=0;j<f.n_ff;++j) {
+            dot(f.n_embd,&c.gate[t*f.n_ff+j],0,b.data()+j*f.gu_row,0,av,0,1);
+            dot(f.n_embd,&c.up[t*f.n_ff+j],0,b.data()+f.up_off+j*f.gu_row,0,av,0,1);
+        }
+        void* hq=c.hq.data()+t*f.h_bytes;cpu::native_quant_h(f,h,hq);
+        const void* hv=hq;float* out=c.rows.data()+t*f.n_embd;cpu::native_down_rows(f,b.data(),&hv,1,&out,0,f.n_embd);
+    }
+    return c;
+}
+// Freeze one row matrix to isolate the REAL mixed reducer. This fixture computes no experts.
+struct Frozen final:GpuExecutor {
+    std::vector<float> rows;
+    explicit Frozen(std::vector<float> r):rows(std::move(r)){}
+    bool prepare(const GpuPlan& p,uint64_t,GpuCache& cache,GpuCounters& c,std::string& err)override {
+        std::vector<uint8_t> b;for(const auto& a:p.assets)if(!cache.read(a,b,err))return false;
+        c.gpu_weight_bytes=p.assigned_bytes();c.gpu_allocated_bytes=p.assigned_bytes();return true;
+    }
+    bool supports_rows()const override{return true;}
+    bool infer(const GpuPlan&,const InferRequest&,InferReply&,std::string&)override{return false;}
+    bool infer_rows(const GpuPlan& p,const InferRequest& q,EntryRowsReply& out,std::string&)override {
+        for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]) {
+            out.indices.push_back(i);out.rows.insert(out.rows.end(),rows.begin()+i*p.n_embd,rows.begin()+(i+1)*p.n_embd);
+        }return true;
+    }
+    void release(GpuCounters& c)override{c.gpu_allocated_bytes=c.gpu_weight_bytes=0;}
+};
+void fixed_reduce(const GpuPlan& p,const InferRequest& original,const std::vector<uint8_t>& blob,
+                  const std::vector<float>& rows,const fs::path& root) {
+    GpuWorkerOptions o;o.plan=p;o.cache_root=root.string();o.cache_budget=16ull<<20;o.deadline_ms=3000;
+    GpuWorkerService service(o,std::make_unique<Frozen>(rows));uint16_t port=0;std::string err;
+    require(service.listen(port,err),err);
+    std::thread server([&]{service.run();});
+    struct Join {GpuWorkerService& s;std::thread& t;~Join(){s.stop();if(t.joinable())t.join();}} join{service,server};
+    GpuWorkerTier::Open open;open.plan=p;open.port=port;open.entry_rows=true;open.deadline_ms=3000;open.setup_ms=10000;
+    open.fetch=[&](int64_t l,int64_t e,uint8_t* out,uint32_t n){
+        if(!p.owns(l,e)||n!=blob.size())return false;
+        std::memcpy(out,blob.data(),n);return true;};
+    GpuWorkerGroup group;require(group.open({open},err),err);
+    auto gpu=original.mask,cpu_mask=original.mask;
+    std::vector<int32_t> ids(original.ids.begin(),original.ids.end());
+    for(size_t i=0;i<gpu.size();++i) {
+        gpu[i]=original.mask[i] && p.owns(original.layer,ids[i]);cpu_mask[i]=original.mask[i] && !gpu[i];
+    }
+    require(group.post(original.layer,original.activations.data(),ids.data(),original.weights.data(),gpu.data(),original.T,original.K,err)&&group.finish(err),err);
+    std::vector<float> ref(original.T*p.n_embd),mixed;
+    ExpertWorkerService::accumulate_partial(original.T,original.K,original.mask.data(),original.weights.data(),rows.data(),p.n_embd,ref.data());
+    require(group.reduce_rows(rows,cpu_mask,original.mask,original.weights.data(),original.T,original.K,mixed,err),err);
+    require(metrics("fixed_rows_mixed_vs_unsplit",ref,mixed),"identical fixed rows regrouped or misindexed");
+    auto overlap=cpu_mask;const size_t first=std::find(gpu.begin(),gpu.end(),1)-gpu.begin();
+    require(first<gpu.size(),"fixed reducer requires a GPU row");overlap[first]=1;
+    require(!group.reduce_rows(rows,overlap,original.mask,original.weights.data(),original.T,original.K,mixed,err),"mixed overlap not refused");
+    group.close();
+}
+#ifdef STRATA_CAPTURE_CUDA
+void cu(cudaError_t s){require(s==cudaSuccess,cudaGetErrorString(s));}
+struct Device {void* p=nullptr;explicit Device(size_t n){cu(cudaMalloc(&p,n));}~Device(){if(p)cudaFree(p);}operator void*(){return p;}};
+void packed_compare(const char* tag,const uint8_t* a,const uint8_t* b,int blocks) {
+    size_t scales=0,codes=0;int first=-1;
+    for(int k=0;k<blocks;++k) {
+        const bool scale=std::memcmp(a+34*k,b+36*k,2)!=0;scales+=scale;
+        for(int j=0;j<32;++j)if(a[34*k+2+j]!=b[36*k+4+j]){++codes;if(first<0)first=32*k+j;}
+    }
+    std::printf("PACKED %s blocks=%d scale_mismatches=%zu code_mismatches=%zu first_code=%d unused_sum_ignored=1 actual_cuda=1\n",tag,blocks,scales,codes,first);
+}
+std::vector<float> cuda_rows(const InferRequest& q,const std::vector<uint8_t>& b,const cpu::NativeFmt& f,const CpuRows& c) {
+    using namespace strata::kernels;
+    std::vector<int32_t> tok,original;
+    for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]){tok.push_back(i/q.K);original.push_back(i);}
+    const int count=tok.size();require(count>0 && count<=2,"selected entry count bound");
+    std::vector<int32_t> dst(count);for(int j=0;j<count;++j)dst[j]=j;
+    const int32_t start[]={0,count},groups=1;
+    auto L=native_expert_layout(8,8,f.n_embd,f.n_ff);
+    Device weights(b.size()),x(q.activations.size()*4),xq(q.T*(f.n_embd/32)*36),ptr(8),st(8),ng(4),dd(count*4),tt(count*4),
+        scratch(native_expert_scratch_bytes(count,f.n_ff)),out(count*f.n_embd*4);
+    const unsigned long long wp=(unsigned long long)weights.p;
+    auto upload=[](void* d,const void* h,size_t n){cu(cudaMemcpy(d,h,n,cudaMemcpyHostToDevice));};
+    upload(weights,b.data(),b.size());upload(x,q.activations.data(),q.activations.size()*4);
+    upload(ptr,&wp,8);upload(st,start,8);upload(ng,&groups,4);upload(dd,dst.data(),count*4);upload(tt,tok.data(),count*4);
+    quantize_q8_1_rows((float*)x.p,q.T,f.n_embd,xq,nullptr);cu(cudaGetLastError());
+    std::vector<uint8_t> packed(q.T*(f.n_embd/32)*36);cu(cudaMemcpy(packed.data(),xq,packed.size(),cudaMemcpyDeviceToHost));
+    for(int t=0;t<q.T;++t)packed_compare(("input_token_"+std::to_string(t)).c_str(),c.act.data()+t*cpu::kNativeActBytes,
+                                        packed.data()+t*(f.n_embd/32)*36,f.n_embd/32);
+    // Mark unwritten stage scratch as NaN. Some fused kernels do not materialize gate/up.
+    cu(cudaMemset(scratch,0xff,native_expert_scratch_bytes(count,f.n_ff)));
+    native_expert_grouped(L,(unsigned long long*)ptr.p,(int32_t*)st.p,(int32_t*)ng.p,(int32_t*)dd.p,(int32_t*)tt.p,
+                          1,count,xq,scratch,(float*)out.p,nullptr);cu(cudaGetLastError());
+    std::vector<float> result(count*f.n_embd),expected(result.size());cu(cudaMemcpy(result.data(),out,result.size()*4,cudaMemcpyDeviceToHost));
+    for(int j=0;j<count;++j)std::copy_n(c.rows.data()+tok[j]*f.n_embd,f.n_embd,expected.data()+j*f.n_embd);
+    if(!metrics("CPU_vs_direct_CUDA_unweighted",expected,result)) {
+        const size_t fa=(count*f.n_ff*4+255)&~size_t(255);
+        std::vector<float> gate(count*f.n_ff),up(gate.size()),cg(gate.size()),cpu_up(gate.size());
+        std::vector<uint8_t> hq(count*(f.n_ff/32)*36);
+        cu(cudaMemcpy(gate.data(),scratch,gate.size()*4,cudaMemcpyDeviceToHost));
+        cu(cudaMemcpy(up.data(),(uint8_t*)scratch.p+fa,up.size()*4,cudaMemcpyDeviceToHost));
+        cu(cudaMemcpy(hq.data(),(uint8_t*)scratch.p+3*fa,hq.size(),cudaMemcpyDeviceToHost));
+        for(int j=0;j<count;++j) {
+            std::copy_n(c.gate.data()+tok[j]*f.n_ff,f.n_ff,cg.data()+j*f.n_ff);
+            std::copy_n(c.up.data()+tok[j]*f.n_ff,f.n_ff,cpu_up.data()+j*f.n_ff);
+            packed_compare(("hidden_entry_"+std::to_string(original[j])).c_str(),c.hq.data()+tok[j]*f.h_bytes,hq.data()+j*(f.n_ff/32)*36,f.n_ff/32);
+        }
+        const auto finite=[](float v){return std::isfinite(v);};
+        if(!std::all_of(gate.begin(),gate.end(),finite)||!std::all_of(up.begin(),up.end(),finite)) {
+            std::puts("STAGE gate_up_unavailable_or_nonfinite=1 hidden_F32_not_read=1");return result;
+        }
+        metrics("CPU_vs_CUDA_gate",cg,gate);metrics("CPU_vs_CUDA_up",cpu_up,up);
+        // Feed the actual CUDA scale/codes to CPU dot, removing input quantization as a variable.
+        std::vector<uint8_t> common(q.T*cpu::kNativeActBytes);
+        for(int t=0;t<q.T;++t)for(int k=0;k<f.n_embd/32;++k) {
+            auto* a=common.data()+t*cpu::kNativeActBytes+k*34;
+            const auto* g=packed.data()+(t*(f.n_embd/32)+k)*36;
+            std::memcpy(a,g,2);std::memcpy(a+2,g+4,32);
+        }
+        const auto dot=ggml_get_type_traits_cpu(GGML_TYPE_Q8_0)->vec_dot;
+        for(int j=0;j<count;++j)for(int k=0;k<f.n_ff;++k) {
+            const auto* a=common.data()+tok[j]*cpu::kNativeActBytes;
+            dot(f.n_embd,&cg[j*f.n_ff+k],0,b.data()+k*f.gu_row,0,a,0,1);
+            dot(f.n_embd,&cpu_up[j*f.n_ff+k],0,b.data()+f.up_off+k*f.gu_row,0,a,0,1);
+        }
+        metrics("CPU_common_CUDA_input_vs_CUDA_gate",cg,gate);
+        metrics("CPU_common_CUDA_input_vs_CUDA_up",cpu_up,up);
+        // The fused SwiGLU/quantizer need not materialize h. Do not inspect unwritten scratch.
+        std::puts("STAGE hidden_F32_not_read_fused_kernel_may_not_materialize_it=1");
+    }
+    return result;
+}
+int run(const CpuCaptureFile& f,const GpuPlan& assigned,const Selection& s,const std::string& path,const fs::path& root) {
+    auto p=one_asset(assigned,s.asset);auto b=read_blob(path,s.asset);std::string err;
+    require(fs::create_directory(root),"scratch must be a new directory; existing cache/residents refused");
+    const auto cache_dir=root/"one-expert-cache";require(fs::create_directory(cache_dir),"create isolated cache");
+    cpu::NativeFmt fmt;require(cpu::native_fmt(8,8,2560,640,fmt,err),err);
+    auto q=f.records[s.record].request;const auto full_mask=q.mask;
+    for(size_t i=0;i<q.mask.size();++i)q.mask[i]=full_mask[i] && q.ids[i]==s.asset.expert;
+    const auto c=cpu_rows(q,b,fmt);cu(cudaSetDevice(0));
+    const auto direct=cuda_rows(q,b,fmt,c);
+    GpuCache cache;std::vector<uint8_t> missing;require(cache.open(cache_dir.string(),16ull<<20,err)&&cache.prepare(p,missing,err)&&
+        cache.publish(s.asset,b.data(),b.size(),err),err);
+    auto executor=create_cuda_gpu_executor(0);GpuCounters counters;
+    require(executor->prepare(p,256ull<<20,cache,counters,err),err);
+    q.session=1;q.sequence=1;q.partition_id=p.placement_id.a;EntryRowsReply reply;
+    require(executor->infer_rows(p,q,reply,err),err);
+    std::vector<uint16_t> indices;for(size_t i=0;i<q.mask.size();++i)if(q.mask[i])indices.push_back(i);
+    require(reply.indices==indices,"executor original-entry association mismatch");
+    const bool executor_bits=metrics("direct_CUDA_vs_GPU_executor_unweighted",direct,reply.rows);
+    std::printf("EXECUTOR gpu_weight_bytes=%llu selected_experts=1 entries=%zu actual_cuda=1\n",(unsigned long long)counters.gpu_weight_bytes,indices.size());
+    executor->release(counters);cache.close();
+    // Other entries are surrogate rows derived from this one real expert. This isolates reduction,
+    // and does NOT claim to reproduce full captured partials, B routing, or full-model logits.
+    auto original=f.records[s.record].request;std::vector<float> fixed(original.mask.size()*2560);
+    for(size_t i=0;i<original.mask.size();++i)std::copy_n(c.rows.data()+(i/original.K)*2560,2560,fixed.data()+i*2560);
+    for(size_t j=0;j<indices.size();++j)std::copy_n(reply.rows.data()+j*2560,2560,fixed.data()+indices[j]*2560);
+    std::puts("REDUCTION fixed_real_selected_rows=1 surrogate_other_rows=1 loopback_fixture_only=1");
+    fixed_reduce(p,original,b,fixed,cache_dir);
+    return executor_bits ? 0 : 1; // CPU/CUDA differences are reported, never silently accepted as model parity.
+}
+#endif
+
+}
+int main(int argc,char** argv) {
+    try {
+        if(argc==2 && std::string(argv[1])=="--self-check") {
+            // The real fixture writes GGUF slices, so test digest refusal separately below.
+            Fixture fixture;GpuPlan p;std::string err;require(make_gpu_plan(fixture.m,{{0,1}},p,err),err);
+            CpuCaptureFile f;f.setup=fixture.setup();CpuCaptureRecord r;r.sent=true;r.request.layer=0;r.request.T=2;
+            r.request.K=3;r.request.ids={0,1,0,1,0,1};r.request.mask={1,1,1,1,1,1};r.request.weights.assign(6,1.f);r.request.activations.assign(5120,.1f);f.records.push_back(r);
+            const auto s=select(f,{p});require(s.entry==1 && s.asset.expert==1,"first B intersection");
+            auto one=one_asset(p,s.asset);const auto c=cpu_rows(r.request,fixture.blobs[1],fixture.fmt);
+            require(c.rows.size()==5120,"native CPU row shape");
+            std::vector<float> rows(6*2560);const float adversarial[]={1e20f,-1e20f,1.f,1.f,1e20f,-1e20f};
+            for(int i=0;i<6;++i)std::fill_n(rows.data()+i*2560,2560,adversarial[i]);
+            const auto root=fixture.root/"fixed";fs::create_directory(root);fixed_reduce(one,r.request,fixture.blobs[1],rows,root);
+            auto none=f;none.records[0].request.mask={1,0,1,0,1,0};bool refused=false;
+            try{select(none,{p});}catch(...){refused=true;}require(refused,"missing intersection refused");
+            auto foreign=p;foreign.model_id^=1;refused=false;try{select(f,{foreign});}catch(...){refused=true;}require(refused,"foreign model refused");
+            const auto file=fixture.root/"single.blob";{std::ofstream o(file,std::ios::binary);o.write((char*)fixture.blobs[1].data(),fixture.blobs[1].size());}
+            require(read_blob(file.string(),s.asset)==fixture.blobs[1],"bound blob read");
+            auto bad=s.asset;bad.digest.a^=1;refused=false;try{read_blob(file.string(),bad);}catch(...){refused=true;}require(refused,"bad digest refused");
+            std::puts("SELF_CHECK selection=1 digest=1 repeated_expert_T2=1 mixed_reducer=1 actual_cuda=0");return 0;
+        }
+        const bool selecting=argc>=4 && std::string(argv[1])=="--select";
+        const bool running=argc>=6 && std::string(argv[1])=="--run";
+        if(!selecting && !running)throw std::runtime_error("usage: --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --self-check");
+        CpuCaptureFile f;std::string err;require(read_cpu_capture(argv[2],f,err),err);
+        std::vector<GpuPlan> plans;const int begin=selecting?3:5;
+        for(int i=begin;i<argc;++i){GpuPlan p;require(read_gpu_plan(argv[i],p,err),err);plans.push_back(p);}
+        const auto s=select(f,plans);const auto& q=f.records[s.record].request;const auto& p=plans[s.plan];
+        std::printf("SELECT record=%zu entry=%zu layer=%u token=%zu expert=%u plan=%s original_placement=%s%s bytes=%llu digest=%s%s cache_key=%s\n",
+            s.record,s.entry,q.layer,s.entry/q.K,s.asset.expert,argv[begin+s.plan],hex(p.placement_id.a).c_str(),hex(p.placement_id.b).c_str(),
+            (unsigned long long)s.asset.bytes,hex(s.asset.digest.a).c_str(),hex(s.asset.digest.b).c_str(),key(p,s.asset).c_str());
+        if(selecting)return 0;
+#ifdef STRATA_CAPTURE_CUDA
+        return run(f,p,s,argv[3],argv[4]);
+#else
+        throw std::runtime_error("--run requires CUDA target gpu_capture_replay; CPU target only selects/tests");
+#endif
+    }catch(const std::exception& e){std::fprintf(stderr,"REFUSED %s\n",e.what());return 2;}
+}
