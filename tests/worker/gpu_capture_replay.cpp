@@ -3,9 +3,12 @@
 #include "strata/worker/cpu_capture.hpp"
 #include "strata/worker/gpu_group.hpp"
 #include "strata/worker/gpu_worker.hpp"
+#include "mixed_rows.hpp"
+#include "cpu_capture_rows.hpp"
 #include "ggml-cpu.h"
 #include <cmath>
 #include <iomanip>
+#include <map>
 #include <sstream>
 #ifdef STRATA_CAPTURE_CUDA
 #include "strata/kernels/iq_kernels.hpp"
@@ -39,6 +42,63 @@ std::string key(const GpuPlan& p,const GpuAsset& a) {
     return "sgpu1-"+hex(p.model_id)+"-"+hex(p.layout_id.a)+hex(p.layout_id.b)+"-"+
         hex(a.layer,4)+"-"+hex(a.expert,4)+"-"+hex(a.bytes)+"-"+hex(a.digest.a)+hex(a.digest.b)+".blob";
 }
+struct SurveyAsset {size_t plan;GpuAsset asset;std::vector<size_t> records;};
+struct Inventory {
+    std::vector<SurveyAsset> assets;
+    std::vector<size_t> records;
+    std::vector<std::vector<uint8_t>> masks;
+    size_t active=0,selected=0,missing=0;uint64_t bytes=0;
+};
+Inventory inventory(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,const fs::path& blobs,bool print) {
+    (void)select(f,plans); // existing model/geometry/plan checks; also require a real intersection
+    require(plans.size()<=4,"survey limited to four B plans");
+    std::map<std::pair<int,int>,size_t> owners;
+    for(size_t p=0;p<plans.size();++p) {
+        require(plans[p].layout_id==plans[0].layout_id,"B plan layout identities differ");
+        for(const auto& a:plans[p].assets)require(owners.emplace(std::make_pair(a.layer,a.expert),p).second,"overlapping B assignments");
+    }
+    Inventory result;result.masks.resize(f.records.size());
+    result.records=diagnostic::capture_row_samples(f,"SURVEY_SAMPLE");
+    std::map<std::pair<int,int>,size_t> selected;
+    for(size_t r:result.records) {
+        const auto& record=f.records[r];const auto& q=record.request;
+        require(q.T>=1 && q.T<=2 && q.K>=1 && q.K<=10 && q.mask.size()==size_t(q.T*q.K) &&
+            q.ids.size()==q.mask.size() && q.weights.size()==q.mask.size() && q.activations.size()==size_t(q.T)*2560,"survey record bounds");
+        auto& mask=result.masks[r];mask.assign(q.mask.size(),0);
+        if(!record.sent)continue;
+        for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]) {
+            ++result.active;const auto id=std::make_pair(int(q.layer),int(q.ids[i]));const auto owner=owners.find(id);
+            if(owner==owners.end())continue;
+            const auto p=owner->second;const auto& a=*plans[p].find(q.layer,q.ids[i]);
+            auto it=selected.find(id);
+            if(it==selected.end()) {
+                const size_t index=result.assets.size();selected.emplace(id,index);result.assets.push_back({p,a,{}});it=selected.find(id);
+                result.bytes+=a.bytes;const auto file=blobs/key(plans[p],a);
+                const bool present=fs::is_regular_file(file) && fs::file_size(file)==a.bytes;result.missing+=!present;
+                if(print)std::printf("ASSET index=%zu plan=%zu layer=%u expert=%u bytes=%llu available=%d cache_key=%s\n",
+                    index,p,a.layer,a.expert,(unsigned long long)a.bytes,present,key(plans[p],a).c_str());
+                if(print && !present)std::printf("NEEDED plan=%zu cache_key=%s bytes=%llu\n",p,key(plans[p],a).c_str(),(unsigned long long)a.bytes);
+            }
+            auto& records=result.assets[it->second].records;
+            if(records.empty() || records.back()!=r)records.push_back(r);
+            mask[i]=1;++result.selected;
+            if(print)std::printf("ENTRY record=%zu entry=%zu layer=%u token=%zu expert=%u plan=%zu asset=%zu\n",r,i,q.layer,i/q.K,a.expert,p,it->second);
+        }
+        if(print)std::printf("RECORD record=%zu selected=%zu excluded=%zu\n",r,std::count(mask.begin(),mask.end(),1),
+            std::count(q.mask.begin(),q.mask.end(),1)-std::count(mask.begin(),mask.end(),1));
+    }
+    require(!result.assets.empty() && result.active<=225 && result.selected<=225 && result.assets.size()<=225,"survey missing sample intersection or exceeds retained 225-entry bound");
+    if(print)std::printf("INVENTORY records=%zu capture_records=%zu active_entries=%zu selected_entries=%zu unique_blobs=%zu total_blob_bytes=%llu missing_blobs=%zu "
+        "weight_residency_experts=1 max_extra_private_cache_bytes=5222400 deadline_seconds=300\n",
+        result.records.size(),f.records.size(),result.active,result.selected,result.assets.size(),(unsigned long long)result.bytes,result.missing);
+    return result;
+}
+struct StageSummary {
+    size_t observations=0,different=0,scales=0,codes=0;double maxabs=0,maxrel=0,maxscale=0;int maxcode=0;
+    std::pair<size_t,size_t> earliest_order{SIZE_MAX,SIZE_MAX};std::string earliest,max_at,maxrel_at,maxscale_at,maxcode_at;
+};
+std::map<std::string,StageSummary> summaries;
+bool surveying=false;std::string context;std::pair<size_t,size_t> context_order;
 // Restrict the existing validated plan codec to one asset, retaining model/layout identity.
 GpuPlan one_asset(const GpuPlan& p,const GpuAsset& a) {
     std::vector<uint8_t> wire;std::string err;require(encode_gpu_plan(p,wire,err),err);
@@ -56,14 +116,28 @@ std::vector<uint8_t> read_blob(const std::string& path,const GpuAsset& a) {
     std::vector<uint8_t> b(a.bytes);in.seekg(0);require(bool(in.read((char*)b.data(),b.size())),"selected blob short read");
     require(blob_digest(b)==a.digest,"selected assignment/blob digest mismatch");return b;
 }
+void stage_cache(GpuCache& cache,const fs::path& root,const GpuPlan& p,const std::vector<uint8_t>& b) {
+    cache.close();std::string err;uint64_t removed=0;std::vector<uint8_t> missing;
+    require(cache.open(root.string(),16ull<<20,err)&&cache.cleanup_unassigned(p,removed,err)&&cache.prepare(p,missing,err),err);
+    require(missing.size()==1,"private diagnostic cache requires exactly one asset");
+    if(missing[0])require(cache.publish(p.assets[0],b.data(),b.size(),err),err);
+}
 bool metrics(const char* label,const std::vector<float>& a,const std::vector<float>& b) {
-    require(a.size()==b.size(),"metric shape");double sum=0,den=0,maxabs=0;size_t first=a.size();
+    require(a.size()==b.size(),"metric shape");double sum=0,den=0,maxabs=0;size_t first=a.size(),max_index=0;
     for(size_t i=0;i<a.size();++i) {
         require(std::isfinite(a[i]) && std::isfinite(b[i]),"nonfinite diagnostic result");
-        const double d=double(a[i])-b[i];sum+=d*d;den+=double(a[i])*a[i];maxabs=std::max(maxabs,std::fabs(d));
+        const double d=double(a[i])-b[i];sum+=d*d;den+=double(a[i])*a[i];
+        if(std::fabs(d)>maxabs){maxabs=std::fabs(d);max_index=i;}
         if(first==a.size() && std::memcmp(&a[i],&b[i],4))first=i;
     }
     std::printf("COMPARE %s bits=%d first=%zu maxabs=%.9g relL2=%.9g\n",label,first==a.size(),first,maxabs,std::sqrt(sum/(den+1e-300)));
+    if(surveying) {
+        auto& s=summaries[label];++s.observations;const bool differs=first!=a.size();s.different+=differs;
+        if(differs && context_order<s.earliest_order){s.earliest_order=context_order;s.earliest=context+" first_float="+std::to_string(first);}
+        if(maxabs>s.maxabs){s.maxabs=maxabs;s.max_at=context+" max_float="+std::to_string(max_index);}
+        const double relative=std::sqrt(sum/(den+1e-300));
+        if(relative>s.maxrel){s.maxrel=relative;s.maxrel_at=context;}
+    }
     return first==a.size();
 }
 struct CpuRows {std::vector<float> rows,gate,up,hidden;std::vector<uint8_t> act,hq;};
@@ -128,16 +202,52 @@ void fixed_reduce(const GpuPlan& p,const InferRequest& original,const std::vecto
     require(!group.reduce_rows(rows,overlap,original.mask,original.weights.data(),original.T,original.K,mixed,err),"mixed overlap not refused");
     group.close();
 }
+void record_reduce(const InferRequest& q,const std::vector<uint8_t>& expected,const std::vector<GpuPlan>& plans,
+                   const std::vector<float>& cpu_rows,const std::vector<float>& gpu_rows) {
+    std::vector<float> cpu_sum(q.T*2560),gpu_sum(cpu_sum.size()),fixed(cpu_rows),reference(cpu_sum.size()),mixed;
+    ExpertWorkerService::accumulate_partial(q.T,q.K,expected.data(),q.weights.data(),cpu_rows.data(),2560,cpu_sum.data());
+    ExpertWorkerService::accumulate_partial(q.T,q.K,expected.data(),q.weights.data(),gpu_rows.data(),2560,gpu_sum.data());
+    metrics("record_CPU_vs_CUDA_weighted_B_subset",cpu_sum,gpu_sum);
+    for(bool hybrid:{false,true}) {
+        std::vector<EntryRowsReply> replies(plans.size());std::vector<std::vector<uint8_t>> masks(plans.size(),std::vector<uint8_t>(expected.size()));
+        auto cpu_mask=expected;fixed=cpu_rows;
+        for(size_t i=0;i<expected.size();++i)if(expected[i] && (!hybrid || ((q.ids[i]+q.layer)&1))) {
+            cpu_mask[i]=0;std::copy_n(gpu_rows.data()+i*2560,2560,fixed.data()+i*2560);
+            for(size_t p=0;p<plans.size();++p)if(plans[p].owns(q.layer,q.ids[i])) {
+                masks[p][i]=1;replies[p].indices.push_back(i);
+                replies[p].rows.insert(replies[p].rows.end(),gpu_rows.begin()+i*2560,gpu_rows.begin()+(i+1)*2560);
+            }
+        }
+        std::vector<MixedRowsPeer> peers;for(size_t p=0;p<plans.size();++p)peers.push_back({replies[p],masks[p]});
+        std::string err;ExpertWorkerService::accumulate_partial(q.T,q.K,expected.data(),q.weights.data(),fixed.data(),2560,reference.data());
+        require(reduce_mixed_rows(2560,q.T,q.K,cpu_rows,cpu_mask,expected,q.weights.data(),peers,mixed,err),err);
+        require(metrics(hybrid?"record_real_CPU_CUDA_rows_mixed_vs_unsplit":"record_all_CUDA_rows_mixed_vs_unsplit",reference,mixed),"real fixed row reducer mismatch");
+    }
+}
 #ifdef STRATA_CAPTURE_CUDA
 void cu(cudaError_t s){require(s==cudaSuccess,cudaGetErrorString(s));}
 struct Device {void* p=nullptr;explicit Device(size_t n){cu(cudaMalloc(&p,n));}~Device(){if(p)cudaFree(p);}operator void*(){return p;}};
 void packed_compare(const char* tag,const uint8_t* a,const uint8_t* b,int blocks) {
-    size_t scales=0,codes=0;int first=-1;
+    size_t scales=0,codes=0;int first=-1,maxcode=0,maxcode_index=-1,maxscale_block=-1;double maxscale=0;
     for(int k=0;k<blocks;++k) {
         const bool scale=std::memcmp(a+34*k,b+36*k,2)!=0;scales+=scale;
-        for(int j=0;j<32;++j)if(a[34*k+2+j]!=b[36*k+4+j]){++codes;if(first<0)first=32*k+j;}
+        uint16_t as,bs;std::memcpy(&as,a+34*k,2);std::memcpy(&bs,b+36*k,2);
+        const double scale_delta=std::fabs(double(ggml_fp16_to_fp32(as))-ggml_fp16_to_fp32(bs));
+        if(scale_delta>maxscale){maxscale=scale_delta;maxscale_block=k;}
+        for(int j=0;j<32;++j)if(a[34*k+2+j]!=b[36*k+4+j]) {
+            ++codes;if(first<0)first=32*k+j;
+            const int delta=std::abs(int((int8_t)a[34*k+2+j])-int((int8_t)b[36*k+4+j]));
+            if(delta>maxcode){maxcode=delta;maxcode_index=32*k+j;}
+        }
     }
-    std::printf("PACKED %s blocks=%d scale_mismatches=%zu code_mismatches=%zu first_code=%d unused_sum_ignored=1 actual_cuda=1\n",tag,blocks,scales,codes,first);
+    std::printf("PACKED %s blocks=%d scale_mismatches=%zu code_mismatches=%zu first_code=%d max_scale_delta=%.9g max_code_delta=%d unused_sum_ignored=1 actual_cuda=1\n",tag,blocks,scales,codes,first,maxscale,maxcode);
+    if(surveying) {
+        auto& s=summaries[std::string(tag).rfind("input_token_",0)==0?"input_quant":"hidden_quant"];
+        ++s.observations;s.scales+=scales;s.codes+=codes;s.different+=bool(scales||codes);
+        if(maxscale>s.maxscale){s.maxscale=maxscale;s.maxscale_at=context+" "+tag+" block="+std::to_string(maxscale_block);}
+        if(maxcode>s.maxcode){s.maxcode=maxcode;s.maxcode_at=context+" "+tag+" code="+std::to_string(maxcode_index);}
+        if((scales||codes) && context_order<s.earliest_order){s.earliest_order=context_order;s.earliest=context+" "+tag+" first_code="+std::to_string(first);}
+    }
 }
 std::vector<float> cuda_rows(const InferRequest& q,const std::vector<uint8_t>& b,const cpu::NativeFmt& f,const CpuRows& c) {
     using namespace strata::kernels;
@@ -155,15 +265,19 @@ std::vector<float> cuda_rows(const InferRequest& q,const std::vector<uint8_t>& b
     upload(ptr,&wp,8);upload(st,start,8);upload(ng,&groups,4);upload(dd,dst.data(),count*4);upload(tt,tok.data(),count*4);
     quantize_q8_1_rows((float*)x.p,q.T,f.n_embd,xq,nullptr);cu(cudaGetLastError());
     std::vector<uint8_t> packed(q.T*(f.n_embd/32)*36);cu(cudaMemcpy(packed.data(),xq,packed.size(),cudaMemcpyDeviceToHost));
-    for(int t=0;t<q.T;++t)packed_compare(("input_token_"+std::to_string(t)).c_str(),c.act.data()+t*cpu::kNativeActBytes,
-                                        packed.data()+t*(f.n_embd/32)*36,f.n_embd/32);
+    for(int t=0;t<q.T;++t) {
+        if(surveying && std::find(q.mask.begin()+t*q.K,q.mask.begin()+(t+1)*q.K,1)==q.mask.begin()+(t+1)*q.K)continue;
+        packed_compare(("input_token_"+std::to_string(t)).c_str(),c.act.data()+t*cpu::kNativeActBytes,
+                       packed.data()+t*(f.n_embd/32)*36,f.n_embd/32);
+    }
     // Mark unwritten stage scratch as NaN. Some fused kernels do not materialize gate/up.
     cu(cudaMemset(scratch,0xff,native_expert_scratch_bytes(count,f.n_ff)));
     native_expert_grouped(L,(unsigned long long*)ptr.p,(int32_t*)st.p,(int32_t*)ng.p,(int32_t*)dd.p,(int32_t*)tt.p,
                           1,count,xq,scratch,(float*)out.p,nullptr);cu(cudaGetLastError());
     std::vector<float> result(count*f.n_embd),expected(result.size());cu(cudaMemcpy(result.data(),out,result.size()*4,cudaMemcpyDeviceToHost));
     for(int j=0;j<count;++j)std::copy_n(c.rows.data()+tok[j]*f.n_embd,f.n_embd,expected.data()+j*f.n_embd);
-    if(!metrics("CPU_vs_direct_CUDA_unweighted",expected,result)) {
+    const bool row_bits=metrics("CPU_vs_direct_CUDA_unweighted",expected,result);
+    if(!row_bits || surveying) {
         const size_t fa=(count*f.n_ff*4+255)&~size_t(255);
         std::vector<float> gate(count*f.n_ff),up(gate.size()),cg(gate.size()),cpu_up(gate.size());
         std::vector<uint8_t> hq(count*(f.n_ff/32)*36);
@@ -195,6 +309,16 @@ std::vector<float> cuda_rows(const InferRequest& q,const std::vector<uint8_t>& b
         }
         metrics("CPU_common_CUDA_input_vs_CUDA_gate",cg,gate);
         metrics("CPU_common_CUDA_input_vs_CUDA_up",cpu_up,up);
+        std::vector<float> same_hidden(result.size());std::vector<uint8_t> common_h(f.h_bytes);
+        for(int j=0;j<count;++j) {
+            for(int k=0;k<f.n_ff/32;++k) {
+                const auto* g=hq.data()+(j*(f.n_ff/32)+k)*36;
+                std::memcpy(common_h.data()+k*34,g,2);std::memcpy(common_h.data()+k*34+2,g+4,32);
+            }
+            const void* h=common_h.data();float* outrow=same_hidden.data()+j*f.n_embd;
+            cpu::native_down_rows(f,b.data(),&h,1,&outrow,0,f.n_embd);
+        }
+        metrics("CPU_common_CUDA_hidden_vs_CUDA_down",same_hidden,result);
         // The fused SwiGLU/quantizer need not materialize h. Do not inspect unwritten scratch.
         std::puts("STAGE hidden_F32_not_read_fused_kernel_may_not_materialize_it=1");
     }
@@ -229,6 +353,69 @@ int run(const CpuCaptureFile& f,const GpuPlan& assigned,const Selection& s,const
     fixed_reduce(p,original,b,fixed,cache_dir);
     return executor_bits ? 0 : 1; // CPU/CUDA differences are reported, never silently accepted as model parity.
 }
+int survey(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,const fs::path& blobs,const fs::path& root) {
+    const auto inv=inventory(f,plans,blobs,true);
+    require(!inv.missing,"selected blobs missing; stage only the NEEDED basenames before replay");
+    require(fs::create_directory(root),"survey scratch must be a new directory");
+    const auto cache_dir=root/"one-expert-cache";require(fs::create_directory(cache_dir),"create survey private cache");
+    std::string err;GpuCache cache;
+    cpu::NativeFmt fmt;require(cpu::native_fmt(8,8,2560,640,fmt,err),err);cu(cudaSetDevice(0));
+    surveying=true;summaries.clear();const auto start=std::chrono::steady_clock::now();
+    auto deadline=[&]{require(std::chrono::steady_clock::now()-start<std::chrono::seconds(300),"survey 300-second bound reached");};
+    std::vector<std::vector<float>> cpu_dense(f.records.size()),gpu_dense(f.records.size());
+    for(size_t r:inv.records){cpu_dense[r].resize(f.records[r].request.mask.size()*2560);gpu_dense[r].resize(cpu_dense[r].size());}
+    bool executor_bits=true;size_t calls=0;
+    for(size_t ai=0;ai<inv.assets.size();++ai) {
+        deadline();const auto& selected=inv.assets[ai];const auto& assigned=plans[selected.plan];
+        const auto p=one_asset(assigned,selected.asset);const auto b=read_blob((blobs/key(assigned,selected.asset)).string(),selected.asset);
+        auto request=[&](size_t r) {
+            auto q=f.records[r].request;
+            for(size_t i=0;i<q.mask.size();++i)q.mask[i]=inv.masks[r][i] && q.ids[i]==selected.asset.expert;
+            return q;
+        };
+        for(size_t r:selected.records) {
+            deadline();auto q=request(r);const auto first=std::find(q.mask.begin(),q.mask.end(),1)-q.mask.begin();
+            context_order={r,size_t(first)};context="record="+std::to_string(r)+" layer="+std::to_string(q.layer)+" expert="+std::to_string(selected.asset.expert);
+            std::printf("CONTEXT %s asset=%zu plan=%zu phase=CPU_direct_CUDA\n",context.c_str(),ai,selected.plan);
+            const auto c=cpu_rows(q,b,fmt);const auto direct=cuda_rows(q,b,fmt,c);size_t j=0;
+            for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]) {
+                std::copy_n(c.rows.data()+(i/q.K)*2560,2560,cpu_dense[r].data()+i*2560);
+                std::copy_n(direct.data()+j++*2560,2560,gpu_dense[r].data()+i*2560);
+            }
+            ++calls;
+        }
+        // Only the newly created private diagnostic cache is rotated. Staged/fleet caches are read-only inputs.
+        stage_cache(cache,cache_dir,p,b);
+        auto executor=create_cuda_gpu_executor(0);GpuCounters counters;require(executor->prepare(p,256ull<<20,cache,counters,err),err);
+        uint64_t sequence=0;
+        for(size_t r:selected.records) {
+            deadline();auto q=request(r);q.session=1;q.sequence=++sequence;q.partition_id=p.placement_id.a;
+            const auto first=std::find(q.mask.begin(),q.mask.end(),1)-q.mask.begin();context_order={r,size_t(first)};
+            context="record="+std::to_string(r)+" layer="+std::to_string(q.layer)+" expert="+std::to_string(selected.asset.expert);
+            EntryRowsReply reply;require(executor->infer_rows(p,q,reply,err),err);
+            std::vector<uint16_t> indices;std::vector<float> direct;
+            for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]){indices.push_back(i);direct.insert(direct.end(),gpu_dense[r].begin()+i*2560,gpu_dense[r].begin()+(i+1)*2560);}
+            require(indices==reply.indices,"survey executor original-entry association mismatch");
+            std::printf("CONTEXT %s phase=GPU_executor\n",context.c_str());
+            executor_bits=metrics("direct_CUDA_vs_GPU_executor_unweighted",direct,reply.rows)&&executor_bits;
+            for(size_t j=0;j<indices.size();++j)std::copy_n(reply.rows.data()+j*2560,2560,gpu_dense[r].data()+indices[j]*2560);
+        }
+        executor->release(counters);cache.close();
+    }
+    cache.close();
+    for(size_t r:inv.records)if(std::find(inv.masks[r].begin(),inv.masks[r].end(),1)!=inv.masks[r].end()) {
+        deadline();context_order={r,0};context="record="+std::to_string(r);std::printf("CONTEXT %s phase=weighted_subset_reduction surrogate_rows=0\n",context.c_str());
+        record_reduce(f.records[r].request,inv.masks[r],plans,cpu_dense[r],gpu_dense[r]);
+    }
+    for(const auto& [label,s]:summaries)std::printf("SUMMARY stage=%s observations=%zu differing=%zu maxabs=%.9g max_relL2=%.9g "
+        "scale_mismatches=%zu code_mismatches=%zu max_scale_delta=%.9g max_code_delta=%d earliest=[%s] maxabs_at=[%s] max_relL2_at=[%s] max_scale_at=[%s] max_code_at=[%s]\n",
+        label.c_str(),s.observations,s.different,s.maxabs,s.maxrel,s.scales,s.codes,s.maxscale,s.maxcode,s.earliest.c_str(),s.max_at.c_str(),s.maxrel_at.c_str(),s.maxscale_at.c_str(),s.maxcode_at.c_str());
+    std::printf("SURVEY records=%zu selected_entries=%zu unique_blobs=%zu expert_record_calls=%zu total_blob_bytes=%llu "
+        "seconds=%.6f executor_bits=%d surrogate_rows=0 no_listeners=1 full_capture_partials_checked=0 model_parity=unestablished\n",
+        inv.records.size(),inv.selected,inv.assets.size(),calls,(unsigned long long)inv.bytes,
+        std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count(),executor_bits);
+    surveying=false;return executor_bits?0:1;
+}
 #endif
 
 }
@@ -251,14 +438,40 @@ int main(int argc,char** argv) {
             const auto file=fixture.root/"single.blob";{std::ofstream o(file,std::ios::binary);o.write((char*)fixture.blobs[1].data(),fixture.blobs[1].size());}
             require(read_blob(file.string(),s.asset)==fixture.blobs[1],"bound blob read");
             auto bad=s.asset;bad.digest.a^=1;refused=false;try{read_blob(file.string(),bad);}catch(...){refused=true;}require(refused,"bad digest refused");
-            std::puts("SELF_CHECK selection=1 digest=1 repeated_expert_T2=1 mixed_reducer=1 actual_cuda=0");return 0;
+            GpuPlan other;require(make_gpu_plan(fixture.m,{{0,0}},other,err),err);
+            auto sample=f;auto& sq=sample.records[0].request;sq.K=10;sq.ids.resize(20);sq.mask.assign(20,1);sq.weights.assign(20,.1f);
+            for(int i=0;i<20;++i)sq.ids[i]=i%2;
+            auto inv=inventory(sample,{p,other},fixture.root,false);
+            require(inv.records.size()==1 && inv.assets.size()==2 && inv.selected==20 && inv.missing==2,"survey exact bounded inventory");
+            for(const auto& selected:inv.assets) {
+                const std::vector<GpuPlan> plans{p,other};const auto out=fixture.root/key(plans[selected.plan],selected.asset);
+                const auto& b=fixture.blobs[selected.asset.expert];std::ofstream o(out,std::ios::binary);o.write((char*)b.data(),b.size());
+            }
+            inv=inventory(sample,{p,other},fixture.root,false);require(inv.missing==0,"survey staged inventory");
+            GpuCache rotating;const auto private_cache=fixture.root/"rotating";fs::create_directory(private_cache);
+            stage_cache(rotating,private_cache,p,fixture.blobs[1]);
+            stage_cache(rotating,private_cache,other,fixture.blobs[0]);rotating.close();
+            require(fs::exists(private_cache/key(other,other.assets[0])) && !fs::exists(private_cache/key(p,p.assets[0])),"one-expert private cache rotation");
+            std::vector<float> real(20*2560);for(int i=0;i<20;++i)std::copy_n(c.rows.data()+(i/10)*2560,2560,real.data()+i*2560);
+            record_reduce(sq,inv.masks[0],{p,other},real,real);
+            std::puts("SELF_CHECK selection=1 digest=1 repeated_expert_T2=1 mixed_reducer=1 survey_inventory=1 subset_reducer=1 actual_cuda=0");return 0;
         }
         const bool selecting=argc>=4 && std::string(argv[1])=="--select";
         const bool running=argc>=6 && std::string(argv[1])=="--run";
-        if(!selecting && !running)throw std::runtime_error("usage: --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --self-check");
+        const bool listing=argc>=5 && std::string(argv[1])=="--inventory";
+        const bool survey_mode=argc>=6 && std::string(argv[1])=="--survey";
+        if(!selecting && !running && !listing && !survey_mode)throw std::runtime_error("usage: --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey CAPTURE BLOB_DIR NEW_SCRATCH B_PLAN... | --self-check");
         CpuCaptureFile f;std::string err;require(read_cpu_capture(argv[2],f,err),err);
-        std::vector<GpuPlan> plans;const int begin=selecting?3:5;
+        std::vector<GpuPlan> plans;const int begin=selecting?3:listing?4:5;
         for(int i=begin;i<argc;++i){GpuPlan p;require(read_gpu_plan(argv[i],p,err),err);plans.push_back(p);}
+        if(listing)return inventory(f,plans,argv[3],true).missing?3:0;
+        if(survey_mode) {
+#ifdef STRATA_CAPTURE_CUDA
+            return survey(f,plans,argv[3],argv[4]);
+#else
+            throw std::runtime_error("--survey requires CUDA target gpu_capture_replay");
+#endif
+        }
         const auto s=select(f,plans);const auto& q=f.records[s.record].request;const auto& p=plans[s.plan];
         std::printf("SELECT record=%zu entry=%zu layer=%u token=%zu expert=%u plan=%s original_placement=%s%s bytes=%llu digest=%s%s cache_key=%s\n",
             s.record,s.entry,q.layer,s.entry/q.K,s.asset.expert,argv[begin+s.plan],hex(p.placement_id.a).c_str(),hex(p.placement_id.b).c_str(),

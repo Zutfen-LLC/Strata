@@ -113,3 +113,102 @@ Not run locally: CUDA compilation or execution, retained real capture selection,
 and real CPU/CUDA parity. No CUDA toolkit is installed on this machine. The PR
 remains draft pending the targeted CUDA host build/replay. No product arithmetic,
 default, tolerance, resident, network access policy or model support is changed.
+
+## Supplied first real-entry result at e275891d
+
+The parent supplied a completed Hermes replay on 03, not a private-artifact audit
+by this coding task. Record 0, entry 2, layer 0, token 0, expert 77 intersected the
+actual B peer 03b plan. Its 5,222,400-byte blob passed the assignment digest check.
+The actual replay took 0.615 s; the synthetic CTest also passed.
+
+Both input tokens had zero scale/code differences across 80 blocks each. The
+selected entry's hidden activation had zero differences across 20 blocks. The
+CPU/direct-CUDA row difference was max absolute 1.49011612e-08, relative L2
+1.05761476e-07. Gate/up max absolute differences were 2.98023224e-07 and
+2.38418579e-07, relative L2 1.87733338e-07 and 2.02152427e-07. Feeding actual CUDA
+input scale/codes to CPU dots left those gate/up discrepancies unchanged.
+Direct CUDA/executor rows and the fixed-row mixed/unsplit reduction were exact.
+The latter still used surrogate rows for other experts.
+
+Thus the crafted rounding case was not triggered in this real entry. Tiny
+backend arithmetic differences exist before reduction, but this observation does
+not explain the live 0.0754367 logit relative L2 failure. It does not establish
+parity for other experts or routing. No model, resident or access change occurred
+in the supplied replay.
+
+## Bounded survey of the retained real samples
+
+The same executable now supports `--inventory` and `--survey`. Inventory reuses
+`capture_row_samples`: first/last records for T1/T2 at layers 0, 12, 24 and 47,
+up to the existing 16 samples and 225 active entries. It does not replay every
+record in the larger capture. It validates disjoint B plans, reports every
+original entry/peer association and deduplicates blobs by layer/expert.
+
+Stage the original four B plans and capture as before. Use a flat read-only
+`diag/blobs` directory containing the required cache basenames. Existing local
+cache files can be referenced there; the tool only reads these staged inputs,
+never opens them through GpuCache or changes their original caches.
+
+First build just the CPU-capable inventory target and inspect the exact counts:
+
+```sh
+cmake --build "$build" --target gpu_capture_replay_check -j 2
+"$build/gpu_capture_replay_check" --inventory "$diag/cpu-capture.bin" \
+  "$diag/blobs" "$diag"/B-*.plan
+```
+
+Inventory exit 3 means missing files. Its `NEEDED plan=N cache_key=... bytes=...`
+lines are the exact staging list; `plan=N` is the zero-based supplied plan order.
+Stage only these verified selected assets from their corresponding B caches,
+then repeat inventory to require zero missing files. Do not transfer full model
+shards or all B assets. Inventory checks file type and size; replay verifies each
+asset's digest before loading it.
+
+Then build and run the actual CUDA survey once:
+
+```sh
+cmake --build "$build" --target gpu_capture_replay -j 2
+"$build/gpu_capture_replay" --survey "$diag/cpu-capture.bin" \
+  "$diag/blobs" "$diag/survey-1" "$diag"/B-*.plan
+```
+
+Survey refuses missing files before CUDA work. It loads one unique expert at a
+time and reuses that expert across its sampled records. Direct CUDA allocations
+are released before the executor prepares that same expert. The private scratch
+cache rotates only files the diagnostic itself created and retains at most one
+5,222,400-byte blob. Staged blobs are preserved.
+
+Hard bounds are 225 entries/unique blobs and 300 seconds, checked between bounded
+expert operations. The absolute staging upper bound is 1,175,040,000 bytes;
+inventory provides the actual smaller count. The two retained row matrices take
+at most 6,553,600 bytes. The existing capture reader is capped at 96 MiB; its
+transient input/decoded copies, metadata and one-expert buffers keep this a small
+diagnostic rather than a resident arena. The supplied one-entry 0.615 s elapsed
+time is not a calibrated survey prediction. Even multiplying it by the 225-entry
+upper bound gives about 138 s; the 300 s stop is a conservative guard, not a
+throughput claim. The target host is the verified i3-10100F/16 GB PC with two
+RTX 3060 cards, not a large-RAM server.
+
+Survey emits per-expert/record contexts and stage summaries for input quantization,
+gate/up, hidden quantization, down rows and direct CUDA/executor parity. A down
+control feeds actual CUDA hidden scale/codes to CPU down dots. Summary fields
+identify earliest differences and maximum absolute/relative discrepancies;
+quantizer observation counts may repeat the same token input across experts.
+Fused kernels may leave gate/up scratch unavailable; those stages are explicitly
+reported as unavailable rather than interpreted as real values. Hidden F32 is
+still not assumed to be materialized.
+
+For each record, only its real B-intersection rows participate. The tool compares
+native CPU and CUDA subset sums with the captured routing weights, then requires
+exact assembly/reduction for all-CUDA and fixed CPU/CUDA row mixtures. All rows
+in these controls are real computations; no surrogate rows are used. The mixed
+control assigns experts by fixed layer/expert parity solely to exercise both
+sources; it does not claim this is B's original CPU placement. Non-B entries are
+excluded and counted. Captured full partials and model logits are not reproduced.
+
+The survey opens no listeners or worker connections. Its reducer is the same
+internal pure function called by GpuWorkerGroup: the old assembly/check/reduction
+body was extracted without changing its arithmetic. Existing group fixtures
+continue to test the socket/session wrapper. Local CPU-only Release builds and
+both focused CTests passed (2/2 in 8.38 s) after this extraction. Expanded actual
+CUDA compilation/execution remains pending on 03; no numerical fix is proposed.
