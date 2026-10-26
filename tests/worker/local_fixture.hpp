@@ -1,4 +1,8 @@
 #pragma once
+#ifdef STRATA_TEST_TLS
+#include "tls_fixture.hpp"
+inline TlsFixture* transport_certificates = nullptr;
+#endif
 // Real client, service, native index and GGUF fixtures. No external model is needed.
 #include "ggml.h"
 #include "strata/worker/expert_tier.hpp"
@@ -161,6 +165,9 @@ struct Fixture {
     }
     WorkerOptions options() const {
         WorkerOptions o;
+#ifdef STRATA_TEST_TLS
+        if(transport_certificates) o.tls=transport_certificates->config("worker","coordinator.test");
+#endif
         o.workers = 2;
         o.local_root = root.string();
         o.local_manifest = (root / "local.manifest").string();
@@ -193,6 +200,12 @@ struct Service {
 };
 void connect(ExpertWorkerClient &c, Service &s) {
     std::string err;
+#ifdef STRATA_TEST_TLS
+    if(transport_certificates) {
+        require(c.connect_transport("127.0.0.1",s.port,5000,{},
+                transport_certificates->config("coordinator","worker.test"),false,err),err); return;
+    }
+#endif
     require(c.connect_host("127.0.0.1", s.port, 5000, err), err);
 }
 void setup(ExpertWorkerClient &c, const Fixture &f, bool fallback = true) {

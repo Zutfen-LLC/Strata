@@ -415,6 +415,11 @@ SSL_CTX* tls_context(const TlsConfig& c, std::string& err) {
         !SSL_CTX_check_private_key(ctx)) {
         SSL_CTX_free(ctx); err = "mTLS configuration rejected (CA/certificate/key/TLS policy)"; return nullptr;
     }
+    X509* own = SSL_CTX_get0_certificate(ctx);
+    if (!own || X509_cmp_current_time(X509_get0_notBefore(own)) >= 0 ||
+        X509_cmp_current_time(X509_get0_notAfter(own)) <= 0) {
+        SSL_CTX_free(ctx); err = "mTLS local certificate expired or not yet valid"; return nullptr;
+    }
     SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
     SSL_CTX_set_options(ctx, SSL_OP_NO_RENEGOTIATION);
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
@@ -507,7 +512,10 @@ bool TlsSession::handshake(uintptr_t fd, const TlsConfig& c, bool server, int ms
         }
         if (!tls_wait(ssl, result, (sock_fd)fd, budget, cancel)) break;
     }
-    SSL_free(ssl); err = "mTLS handshake failed: peer verification, disconnect, cancellation or deadline";
+    const long verification = SSL_get_verify_result(ssl);
+    err = verification == X509_V_OK ? "mTLS handshake failed: TLS mismatch, missing certificate, disconnect, cancellation or deadline" :
+        std::string("mTLS peer verification failed: ") + X509_verify_cert_error_string(verification);
+    SSL_free(ssl);
 #else
     (void)fd; (void)c; (void)server; (void)ms; (void)cancel;
     err = "mTLS requires a POSIX build with STRATA_WORKER_TLS=ON";

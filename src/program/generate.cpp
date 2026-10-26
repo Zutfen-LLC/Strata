@@ -569,7 +569,7 @@ struct Options {
     /// and computes its weighted partials; see docs/CPU_WORKER.md and worker/expert_tier.hpp.
     bool remote_cpu_experts = false, remote_cpu_legacy = false;
     std::vector<strata::worker::CpuEndpoint> remote_cpu_workers;
-    std::string remote_cpu_host = "127.0.0.1";   ///< the worker, or the local end of an owned SSH forward
+    std::string remote_cpu_host = "127.0.0.1";   ///< numeric worker route; plaintext loopback is local-only
     int remote_cpu_port = 7431;
     int remote_cpu_deadline_ms = 10000;
     std::string remote_cpu_local_manifest;
@@ -584,6 +584,9 @@ struct Options {
     bool remote_gpu_experts = false;
     bool remote_gpu_legacy = false;
     std::vector<strata::worker::GpuEndpoint> remote_gpu_workers;
+    std::string remote_cpu_tls_ca, remote_cpu_tls_cert, remote_cpu_tls_key;
+    std::vector<std::string> remote_cpu_tls_peers;
+    bool remote_cpu_plaintext_test = false, remote_gpu_plaintext_test = false;
     std::string remote_gpu_tls_ca, remote_gpu_tls_cert, remote_gpu_tls_key;
     std::vector<std::string> remote_gpu_tls_peers;
     std::string remote_gpu_host = "127.0.0.1", remote_gpu_plan;
@@ -1045,6 +1048,9 @@ void usage() {
                  "                       needs --remote-cpu-experts, its trusted --remote-cpu-local-manifest,\n"
                  "                       and --remote-gpu-plan; CPU residency stays intact, CUDA owns the assigned subset\n"
                  "  --remote-gpu-plan FILE  frozen selective expert plan (plain Q8_0/Q8_0 only)\n"
+                 "  --remote-cpu-tls-ca FILE --remote-cpu-tls-cert FILE --remote-cpu-tls-key FILE\n"
+                 "  --remote-cpu-tls-peer DNS  repeat per CPU endpoint; exact SAN identity\n"
+                 "  --remote-cpu-plaintext-test / --remote-gpu-plaintext-test  insecure development only\n"
                  "  --remote-gpu-tls-ca FILE --remote-gpu-tls-cert FILE --remote-gpu-tls-key FILE\n"
                  "  --remote-gpu-tls-peer DNS  repeat per GPU endpoint in order; exact SAN identity\n"
                  "  --remote-gpu-worker HOST:PORT PLAN  repeat for 1..8 disjoint parallel workers;\n"
@@ -2323,10 +2329,24 @@ int main(int argc, char** argv) {
         "--resident-budget-gib", "--model", "--ctx", "--chunk", "--n", "--force", "--emb",
         "--dump-full-logits", "--bench-pp", "--bench-tg", "--draft-vocab", "--expert-vram",
         "--cpu-threads", "--expert-slots", "--hybrid-rows",
-        "--remote-cpu-packed-qualification", "--remote-cpu-experts", "--remote-cpu-worker", "--remote-cpu-local-manifest", "--remote-cpu-setup-ms", "--remote-cpu-deadline-ms", "--remote-cpu-regroup-diagnostic",
+        "--remote-cpu-tls-ca", "--remote-cpu-tls-cert", "--remote-cpu-tls-key", "--remote-cpu-tls-peer", "--remote-cpu-packed-qualification", "--remote-cpu-experts", "--remote-cpu-worker", "--remote-cpu-local-manifest", "--remote-cpu-setup-ms", "--remote-cpu-deadline-ms", "--remote-cpu-regroup-diagnostic",
     };
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
+        if (a == "--remote-gpu-plaintext-test") {
+#ifndef STRATA_NETWORK_CUDA_WORKER
+            std::fprintf(stderr,"GPU plaintext-test requires network CUDA worker build\n");return 2;
+#else
+            continue;
+#endif
+        }
+        if (a.rfind("--remote-cpu-tls-",0)==0) {
+#ifndef STRATA_NATIVE_EXPERTS
+            std::fprintf(stderr,"CPU mTLS requires STRATA_NATIVE_EXPERTS=ON\n");return 2;
+#else
+            if(i+1>=argc || !*argv[i+1]){std::fprintf(stderr,"CPU mTLS options require nonempty values\n");return 2;}
+#endif
+        }
         if (a == "--remote-gpu-worker" || a == "--remote-gpu-experts" || a == "--remote-gpu-plan" ||
             a == "--remote-gpu-setup-ms" || a == "--remote-gpu-deadline-ms" ||
             a == "--remote-gpu-tls-ca" || a == "--remote-gpu-tls-cert" ||
@@ -2346,7 +2366,7 @@ int main(int argc, char** argv) {
 #endif
         }
 #ifndef STRATA_NATIVE_EXPERTS
-        if (a == "--remote-cpu-raw-requests" || a == "--remote-cpu-packed-qualification" || a == "--remote-cpu-experts" || a == "--remote-cpu-worker" || a == "--remote-cpu-local-manifest" ||
+        if (a == "--remote-cpu-plaintext-test" || a == "--remote-cpu-raw-requests" || a == "--remote-cpu-packed-qualification" || a == "--remote-cpu-experts" || a == "--remote-cpu-worker" || a == "--remote-cpu-local-manifest" ||
             a == "--remote-cpu-local-fallback" || a == "--remote-cpu-resident" ||
             a == "--remote-cpu-setup-ms" || a == "--remote-cpu-deadline-ms" ||
             a == "--remote-cpu-rpc-timing" || a == "--remote-cpu-regroup-diagnostic" || a == "--remote-cpu-entry-rows") {
@@ -2659,6 +2679,12 @@ int main(int argc, char** argv) {
             endpoint.plan=next("--remote-gpu-worker PLAN");
             o.remote_gpu_workers.push_back(std::move(endpoint));o.remote_gpu_experts=true;
         }
+        else if (a == "--remote-cpu-tls-ca") o.remote_cpu_tls_ca=next("--remote-cpu-tls-ca");
+        else if (a == "--remote-cpu-tls-cert") o.remote_cpu_tls_cert=next("--remote-cpu-tls-cert");
+        else if (a == "--remote-cpu-tls-key") o.remote_cpu_tls_key=next("--remote-cpu-tls-key");
+        else if (a == "--remote-cpu-tls-peer") o.remote_cpu_tls_peers.emplace_back(next("--remote-cpu-tls-peer"));
+        else if (a == "--remote-cpu-plaintext-test") o.remote_cpu_plaintext_test=true;
+        else if (a == "--remote-gpu-plaintext-test") o.remote_gpu_plaintext_test=true;
         else if (a == "--remote-gpu-tls-ca") o.remote_gpu_tls_ca=next("--remote-gpu-tls-ca");
         else if (a == "--remote-gpu-tls-cert") o.remote_gpu_tls_cert=next("--remote-gpu-tls-cert");
         else if (a == "--remote-gpu-tls-key") o.remote_gpu_tls_key=next("--remote-gpu-tls-key");
@@ -3431,8 +3457,23 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: local worker sources require --mmap-experts and --native GGUF reference slices\n");
         return 2;
     }
+    const bool cpu_tls = !o.remote_cpu_tls_ca.empty() || !o.remote_cpu_tls_cert.empty() ||
+        !o.remote_cpu_tls_key.empty() || !o.remote_cpu_tls_peers.empty();
+    if (cpu_tls && (!o.remote_cpu_experts || o.remote_cpu_tls_ca.empty() || o.remote_cpu_tls_cert.empty() ||
+        o.remote_cpu_tls_key.empty() || o.remote_cpu_tls_peers.size() !=
+        (o.remote_cpu_workers.empty()?size_t(1):o.remote_cpu_workers.size()) || o.remote_cpu_plaintext_test)) {
+        std::fprintf(stderr,"CPU mTLS requires CA/cert/key and one --remote-cpu-tls-peer per endpoint; excludes plaintext-test\n");return 2;
+    }
+    const bool cpu_remote = o.remote_cpu_workers.empty() ? o.remote_cpu_host!="127.0.0.1" :
+        std::any_of(o.remote_cpu_workers.begin(),o.remote_cpu_workers.end(),[](const auto& e){return e.host!="127.0.0.1";});
+    if(o.remote_cpu_experts && cpu_remote && !cpu_tls && !o.remote_cpu_plaintext_test) {
+        std::fprintf(stderr,"Remote CPU transport requires mTLS; --remote-cpu-plaintext-test is development only\n");return 2;
+    }
     const bool gpu_tls = !o.remote_gpu_tls_ca.empty() || !o.remote_gpu_tls_cert.empty() ||
         !o.remote_gpu_tls_key.empty() || !o.remote_gpu_tls_peers.empty();
+    if (o.remote_gpu_experts && ((!gpu_tls && !o.remote_gpu_plaintext_test) || (gpu_tls && o.remote_gpu_plaintext_test))) {
+        std::fprintf(stderr,"GPU transport requires mTLS or explicit --remote-gpu-plaintext-test (mutually exclusive)\n");return 2;
+    }
     if (gpu_tls && (!o.remote_gpu_experts || o.remote_gpu_tls_ca.empty() || o.remote_gpu_tls_cert.empty() ||
         o.remote_gpu_tls_key.empty() || o.remote_gpu_tls_peers.size() !=
         (o.remote_gpu_workers.empty()?size_t(1):o.remote_gpu_workers.size()))) {
@@ -6837,6 +6878,9 @@ int main(int argc, char** argv) {
         strata::worker::ExpertWorkerTier::Open wopen;
         wopen.host = o.remote_cpu_host;
         wopen.port = (uint16_t) o.remote_cpu_port;
+        wopen.plaintext_test = o.remote_cpu_plaintext_test;
+        if(cpu_tls && !grouped_cpu)
+            wopen.tls={o.remote_cpu_tls_ca,o.remote_cpu_tls_cert,o.remote_cpu_tls_key,o.remote_cpu_tls_peers[0]};
         wopen.deadline_ms = o.remote_cpu_deadline_ms;
         wopen.rpc_timing = o.remote_cpu_rpc_timing;
         wopen.entry_rows = o.remote_cpu_entry_rows;
@@ -6883,6 +6927,7 @@ int main(int argc, char** argv) {
           for(const auto& endpoint:endpoints) {
             strata::worker::GpuWorkerTier::Open item;item.entry_rows=mixed_worker_rows;
             item.host=endpoint.host;item.port=endpoint.port;item.deadline_ms=o.remote_gpu_deadline_ms;item.setup_ms=o.remote_gpu_setup_ms;
+            item.plaintext_test=o.remote_gpu_plaintext_test;
             if(gpu_tls) {
                 item.tls={o.remote_gpu_tls_ca,o.remote_gpu_tls_cert,o.remote_gpu_tls_key,o.remote_gpu_tls_peers[tls_peer_index++]};
                 if(!item.tls.validate(err)) {std::fprintf(stderr,"GPU mTLS: %s\n",err.c_str());return 1;}
@@ -6928,6 +6973,7 @@ int main(int argc, char** argv) {
             std::vector<strata::worker::ExpertWorkerTier::Open> peers(o.remote_cpu_workers.size(),wopen);
             for(size_t p=0;p<peers.size();++p) {
                 peers[p].host=o.remote_cpu_workers[p].host;peers[p].port=o.remote_cpu_workers[p].port;
+                if(cpu_tls) peers[p].tls={o.remote_cpu_tls_ca,o.remote_cpu_tls_cert,o.remote_cpu_tls_key,o.remote_cpu_tls_peers[p]};
                 peers[p].partition.assign(wopen.partition.size(),0);
             }
             size_t ordinal=0;

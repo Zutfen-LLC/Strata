@@ -236,12 +236,12 @@ struct Frozen final:GpuExecutor {
 };
 void fixed_reduce(const GpuPlan& p,const InferRequest& original,const std::vector<uint8_t>& blob,
                   const std::vector<float>& rows,const fs::path& root) {
-    GpuWorkerOptions o;o.plan=p;o.cache_root=root.string();o.cache_budget=16ull<<20;o.deadline_ms=3000;
+    GpuWorkerOptions o;o.plaintext_test=true;o.plan=p;o.cache_root=root.string();o.cache_budget=16ull<<20;o.deadline_ms=3000;
     GpuWorkerService service(o,std::make_unique<Frozen>(rows));uint16_t port=0;std::string err;
     require(service.listen(port,err),err);
     std::thread server([&]{service.run();});
     struct Join {GpuWorkerService& s;std::thread& t;~Join(){s.stop();if(t.joinable())t.join();}} join{service,server};
-    GpuWorkerTier::Open open;open.plan=p;open.port=port;open.entry_rows=true;open.deadline_ms=3000;open.setup_ms=10000;
+    GpuWorkerTier::Open open;open.plaintext_test=true;open.plan=p;open.port=port;open.entry_rows=true;open.deadline_ms=3000;open.setup_ms=10000;
     open.fetch=[&](int64_t l,int64_t e,uint8_t* out,uint32_t n){
         if(!p.owns(l,e)||n!=blob.size())return false;
         std::memcpy(out,blob.data(),n);return true;};

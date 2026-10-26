@@ -149,7 +149,7 @@ bool delayed_acquisition_keeps_cpu_ready(const fs::path& root, const cpu::Native
     WorkerOptions co;
     co.workers = 1; co.memory_budget = 16ull << 20; co.deadline_ms = 200;
     services.cpu = std::make_unique<ExpertWorkerService>(co);
-    GpuWorkerOptions go;
+    GpuWorkerOptions go;go.plaintext_test=true;
     go.plan = assigned; go.cache_root = cache.string(); go.cache_budget = 32ull << 20;
     services.cuda = std::make_unique<GpuWorkerService>(go, create_cuda_gpu_executor(0));
     std::string err;
@@ -169,7 +169,7 @@ bool delayed_acquisition_keeps_cpu_ready(const fs::path& root, const cpu::Native
     const uint64_t session = cpu_tier.stats().session;
     CpuSetupKeepalive keepalive(cpu_tier, 25);
     GpuWorkerTier gpu_tier;
-    GpuWorkerTier::Open gop;
+    GpuWorkerTier::Open gop;gop.plaintext_test=true;
     gop.port = gp; gop.plan = assigned;
     gop.cancelled = [&] { return keepalive.failed(); };
     gop.fetch = [&](int64_t l, int64_t e, uint8_t* dst, uint32_t n) {
@@ -217,7 +217,7 @@ int main(int argc,char** argv) {
     Services services;
     WorkerOptions co; co.workers = 1; co.memory_budget = 64ull << 20;
     services.cpu = std::make_unique<ExpertWorkerService>(co);
-    GpuWorkerOptions go; go.plan = plans[0]; go.cache_root = (root / "cache").string(); go.cache_budget = 32ull << 20;
+    GpuWorkerOptions go;go.plaintext_test=true; go.plan = plans[0]; go.cache_root = (root / "cache").string(); go.cache_budget = 32ull << 20;
     auto loss_executor=std::make_unique<ControlledLoss>();auto* controlled_loss=loss_executor.get();
     services.cuda = std::make_unique<GpuWorkerService>(go, std::move(loss_executor));
     uint16_t cp = 0, gp = 0;

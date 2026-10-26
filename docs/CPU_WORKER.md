@@ -1,5 +1,12 @@
 # The resident CPU-expert worker (`strata-expert-worker`)
 
+Current native transport policy: remote CPU nodes require mutual TLS by default;
+accepted-worker TCP_NODELAY is on. Local `127.0.0.1` resident use may remain local-only
+plaintext. Historical plaintext/SSH examples below describe earlier development
+work; for new remote launches use [mTLS configuration and migration](network-gpu-worker/MTLS.md)
+and [certificate lifecycle](network-gpu-worker/CERTIFICATE-LIFECYCLE.md).
+
+
 The worker is a small service, bound to loopback by default, that holds one model's CPU-owned expert blobs in RAM and computes
 their weighted partial sums with Strata's native CPU kernels (`ggml-cpu` arithmetic through
 `native_expert.hpp`). A GPU engine process keeps its model, router and cache on its own machine and sends

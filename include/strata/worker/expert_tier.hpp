@@ -37,7 +37,9 @@ class ExpertWorkerTier {
 public:
     /// `model_name` is truncated to the manifest's 47 characters (the worker's log only).
     struct Open {
-        std::string host = "127.0.0.1";   ///< the worker, or an SSH tunnel's local end
+        std::string host = "127.0.0.1";   ///< numeric worker route; loopback without TLS is local-only
+        TlsConfig tls;
+        bool plaintext_test = false;
         uint16_t port = 7431;
         const LocalManifest *local = nullptr; // trusted reusable manifest, opt-in
         bool local_fallback = false;

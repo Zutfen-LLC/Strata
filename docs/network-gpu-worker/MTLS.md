@@ -1,4 +1,4 @@
-# Persistent mutual TLS (opt-in development slice)
+# Persistent mutual TLS for native workers
 
 Plain direct TCP has source-IP filtering but no encryption or certificate identity.
 For encrypted native GPU worker connections, build with `STRATA_WORKER_TLS=ON`.
@@ -9,18 +9,20 @@ resumption and early data are disabled. No plaintext retry occurs after TLS fail
 Identity checks use [OpenSSL verification](https://docs.openssl.org/3.5/man3/SSL_set1_host/);
 nonblocking I/O follows [OpenSSL retry rules](https://docs.openssl.org/3.5/man3/SSL_get_error/).
 
-This slice covers the POSIX native CUDA coordinator/GPU-worker path, including
-parallel GPU groups. CPU-worker connections remain unchanged. The reusable
-`TlsConfig`/`TlsSession` interface lives beside the shared socket helpers; a future
-CPU-worker integration should pass it through the CPU frame reader/writer rather
-than add another TLS implementation. HIP, SYCL, Metal and Windows network GPU
-support is not added.
+Native CPU client/service/coordinator transport and GPU transport reuse the same
+`TlsConfig`/`TlsSession` implementation. CPU binary framing, raw/packed activations,
+indexed-row reduction, cache and local resident attachment contracts are unchanged.
+HIP/SYCL/Metal/Windows GPU network support is not added.
 
 ## Build and configure
 
-Add `-DSTRATA_WORKER_TLS=ON` to the existing native CUDA build. The option defaults
-to OFF so existing binaries and fleet launch configuration keep their behavior.
-A binary built without TLS rejects a nonempty TLS configuration.
+Add `-DSTRATA_WORKER_TLS=ON` to the native worker build. The build option remains
+OFF for dependency compatibility; a TLS-disabled binary rejects TLS configuration
+and refuses remote transport unless plaintext development mode is explicit.
+New remote CPU and all GPU connections require mTLS by default. Purely local CPU
+connections to `127.0.0.1` may retain plaintext resident attachment; this is local-only,
+not inter-node encryption. Do not use loopback SSH forwards to imply secure product
+inference transport. SSH is for administration; inter-node inference uses mTLS.
 
 For each GPU worker, add these arguments to its existing plan/cache/listener args:
 
@@ -53,13 +55,19 @@ key must be a readable PEM private key with permissions limited to its process
 account; encrypted keys fail without an interactive password prompt. No system
 trust store is read or modified by this feature. Files are loaded when connections
 are created, so an existing session does not pick up changed trust or certificates.
-No enrollment, reload/rotation process or online revocation checking is included.
+No enrollment/renewal controller or online revocation checking is included.
 
-For a targeted transport experiment, the GPU worker accepts the valueless
-`--tcp-nodelay` flag. It enables TCP_NODELAY on accepted sockets after the existing
-source-IP check. The default remains off; the coordinator connector already
-enables it. Startup logs record `accepted_nodelay=on|off`. This flag changes neither
-TLS policy nor framing and does not imply a measured LAN/model improvement.
+CPU workers accept the same four TLS arguments. The coordinator uses
+`--remote-cpu-tls-ca`, `--remote-cpu-tls-cert`, `--remote-cpu-tls-key` and one
+`--remote-cpu-tls-peer` per CPU endpoint, in order. See
+[certificate lifecycle and supervisor design](CERTIFICATE-LIFECYCLE.md) for identity
+mapping, rotation, expiry diagnostics, removal and implemented versus planned work.
+
+Accepted CPU and GPU sockets now enable TCP_NODELAY by default, after source-IP
+admission; existing `--tcp-nodelay` remains accepted. Coordinator sockets already
+enable it. This is the intended latency policy. The prior matched mTLS GPU pair at
+PR #27's `935c2415` reported 8.15 to 9.05 TPS with exact tokens/first logits; that
+supplied result does not establish CPU-worker performance. No new campaign is run.
 
 A connection performs one handshake before SGW1 HELLO, then carries setup, uploads,
 status and repeated inference frames under TLS. Frame bytes, numerical code, caches,
@@ -71,13 +79,28 @@ EOF or failed/partial I/O ends the session. Cleanup does not wait for close_noti
 The socket BIO uses the existing MSG_NOSIGNAL policy without changing process
 signal handling. Transport selection is shown as `mTLS` or `plaintext-test` in logs.
 
-Omitting all TLS options retains plaintext solely for compatibility and explicitly
-selected local/matched tests. It is not the recommended production configuration.
-Do not expose workers on an untrusted network or change deployed defaults based on
-this draft. This does not encrypt CPU-worker traffic, which still needs its existing
-trusted transport.
+## Migration and deliberate development mode
+
+Old remote launch configurations that omit TLS now fail with a configuration
+error. Add explicit TLS paths and identities on both peers and build both with TLS
+support. Old binaries do not understand these flags: upgrade both ends before
+launching. A TLS/plaintext wire mismatch fails authentication/protocol I/O within
+finite deadlines; it never selects a compatible but weaker mode automatically.
+SEW1/SGW1 frame contents have not changed, so no protocol version bump is needed.
+
+Disposable plaintext tests must use worker `--plaintext-test` and coordinator
+`--remote-cpu-plaintext-test` or `--remote-gpu-plaintext-test` as appropriate.
+The API equivalents are `plaintext_test=true` on worker/tier options and the CPU
+client's explicit `connect_transport` call. TLS and plaintext-test flags are mutually
+exclusive. Plaintext tests are insecure even on a private network. Merely omitting
+TLS is not a remote development opt-in. Local-only CPU loopback use remains available.
+No running service or deployed configuration is changed by this source migration.
 
 ## Local checks
+
+[CPU/core validation and build handoff](../validation/CPU-WORKER-CORE-MTLS-20261026.md)
+contains the current CPU/GPU bounded suite and migration limits. The original GPU
+commands below remain useful for that subset.
 
 With a local checkout of the repository-pinned llama.cpp revision
 `3cf03257f219afbe7334045ff7c6a06ac68c627d` in `$GGML_ROOT`:

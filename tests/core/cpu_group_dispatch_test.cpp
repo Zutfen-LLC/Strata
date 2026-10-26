@@ -101,13 +101,13 @@ void mixed() {
     strata::core::expert_pool_dispatch_multi(missing_gpu,nullptr,nullptr,1,10,&poison);
     check(missing_gpu.failed&&poison==99.f,"delegated CPU group cannot fall back to a CPU partial without its GPU group");
     check(group.peer_stats(0).cache_hit && group.peer_stats(0).reused_bytes==before.resident_bytes,"mixed fixture reuses full resident ownership");
-    GpuWorkerOptions gpu_options;require(make_gpu_plan(f.m,{{0,1},{1,1}},gpu_options.plan,err),err);
+    GpuWorkerOptions gpu_options;gpu_options.plaintext_test=true;require(make_gpu_plan(f.m,{{0,1},{1,1}},gpu_options.plan,err),err);
     gpu_options.cache_root=(f.root/"gpu-cache").string();fs::create_directory(gpu_options.cache_root);
     auto executor=std::make_unique<LossRows>();auto* loss=executor.get();
     GpuWorkerService gpu_service(gpu_options,std::move(executor));uint16_t port=0;
     require(gpu_service.listen(port,err),err);std::thread gpu_thread([&]{gpu_service.run();});
     struct Stop {GpuWorkerService& service;std::thread& thread;~Stop(){service.stop();if(thread.joinable())thread.join();}} stop{gpu_service,gpu_thread};
-    GpuWorkerTier::Open go;go.port=port;go.plan=gpu_options.plan;go.entry_rows=true;
+    GpuWorkerTier::Open go;go.plaintext_test=true;go.port=port;go.plan=gpu_options.plan;go.entry_rows=true;
     go.cancelled=[&]{return group.dead();};
     go.fetch=[&](int64_t l,int64_t e,uint8_t* dst,uint32_t bytes) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));

@@ -41,11 +41,11 @@ GpuPlan plan_for(const Fixture& f,bool addition=false){
     require(make_gpu_plan(f.m,assigned,p,err),err);return p;
 }
 GpuWorkerOptions options_for(const Fixture& f,const GpuPlan& plan,const std::string& suffix){
-    GpuWorkerOptions o;o.plan=plan;o.cache_root=(f.root/suffix).string();fs::create_directory(o.cache_root);
+    GpuWorkerOptions o;o.plaintext_test=true;o.plan=plan;o.cache_root=(f.root/suffix).string();fs::create_directory(o.cache_root);
     o.cache_budget=64ull<<20;o.runtime_reserve=256ull<<20;o.deadline_ms=2000;o.setup_ms=30000;return o;
 }
 GpuWorkerTier::Open open_for(const Fixture& f,const GpuPlan& plan,uint16_t port,int& fetches){
-    GpuWorkerTier::Open o;o.plan=plan;o.port=port;o.deadline_ms=5000;o.setup_ms=30000;
+    GpuWorkerTier::Open o;o.plaintext_test=true;o.plan=plan;o.port=port;o.deadline_ms=5000;o.setup_ms=30000;
     o.fetch=[&f,&fetches](int64_t l,int64_t e,uint8_t* dst,uint32_t n){++fetches;
         const auto& b=f.blobs[(size_t)l*2+e];if(n!=b.size())return false;std::memcpy(dst,b.data(),n);return true;};return o;
 }
@@ -254,7 +254,7 @@ void setup_budget_checks(const Fixture& f,const GpuPlan& plan){
 // Exercise the real listener/session path with synthetic execution only.
 void listener_checks(const Fixture& f,const GpuPlan& p){
     auto probe=[&](const std::string& bind,const std::vector<std::string>& peers,bool valid){
-        GpuWorkerOptions o;o.bind_ip=bind;o.allow_peer_ips=peers;o.plan=p;
+        GpuWorkerOptions o;o.plaintext_test=true;o.bind_ip=bind;o.allow_peer_ips=peers;o.plan=p;
         // Empty cache root is a deterministic sentinel after listener validation, before bind.
         GpuWorkerService service(o,std::make_unique<FakeExecutor>());uint16_t port=0;std::string err;
         check(!service.listen(port,err),"policy probe never opens a socket");
@@ -355,11 +355,17 @@ void lifecycle(const Fixture& f,const GpuPlan& p){
 }
 #ifdef STRATA_TEST_TLS
 void tls_lifecycle(const Fixture& f,const GpuPlan& p,bool nodelay) {
+    check(GpuWorkerOptions{}.accepted_tcp_nodelay,"GPU accepted NODELAY defaults on");
+    auto secure_default=options_for(f,p,"cache-secure-default-"+std::to_string(nodelay));
+    secure_default.plaintext_test=false;
+    {GpuWorkerService denied(secure_default,std::make_unique<FakeExecutor>());uint16_t port=0;std::string why;
+     check(!denied.listen(port,why) && why.find("requires mTLS")!=std::string::npos,
+           "GPU old plaintext configuration has explicit migration error");}
     TlsFixture certificates;
-    auto options=options_for(f,p,"cache-tls-"+std::to_string(nodelay));options.accepted_tcp_nodelay=nodelay;options.tls=certificates.config("worker","coordinator.test");
+    auto options=options_for(f,p,"cache-tls-"+std::to_string(nodelay));options.accepted_tcp_nodelay=nodelay;options.plaintext_test=false;options.tls=certificates.config("worker","coordinator.test");
     GpuService service(options,std::make_unique<FakeExecutor>());
     std::string err;int fetches=0;auto open=open_for(f,p,service.port,fetches);
-    open.tls=certificates.config("coordinator","worker.test");
+    open.plaintext_test=false;open.tls=certificates.config("coordinator","worker.test");
     GpuWorkerTier tier;require(tier.open(open,err),err);const auto session=tier.stats().session;
     auto first=run_tier(tier,p),second=run_tier(tier,p);GpuCounters counters;
     require(tier.status(counters,err),err);
@@ -370,7 +376,7 @@ void tls_lifecycle(const Fixture& f,const GpuPlan& p,bool nodelay) {
     check(fetches==0 && warm.stats().cache_reused_bytes==p.assigned_bytes(),"mTLS reconnect reuses verified cache");
     warm.close();GpuWorkerTier wrong;open.tls.peer_dns="wrong.test";
     check(!wrong.open(open,err)&&wrong.dead()&&!wrong.ready(),"GPU mTLS identity failure latches dead without plaintext retry");
-    auto plain=open;plain.tls={};plain.deadline_ms=200;
+    auto plain=open;plain.tls={};plain.plaintext_test=true;plain.deadline_ms=200;
     GpuWorkerTier plaintext;check(!plaintext.open(plain,err)&&plaintext.dead(),"plaintext client refused by mTLS GPU service");
     GpuService plain_service(options_for(f,p,"cache-plain-refusal-"+std::to_string(nodelay)),std::make_unique<FakeExecutor>());
     auto tls_to_plain=open;tls_to_plain.port=plain_service.port;tls_to_plain.tls.peer_dns="worker.test";
@@ -429,7 +435,7 @@ void cuda_checks(const Fixture& f,const GpuPlan& p){
 #endif
 int peer(const Fixture& f,const GpuPlan& p,const std::string& host,uint16_t port){
     GpuAssetSource source;std::string err;require(source.open(f.root.string(),f.m,p,err),err);
-    GpuWorkerTier::Open o;o.plan=p;o.host=host;o.port=port;o.deadline_ms=5000;o.setup_ms=60000;
+    GpuWorkerTier::Open o;o.plaintext_test=true;o.plan=p;o.host=host;o.port=port;o.deadline_ms=5000;o.setup_ms=60000;
     o.fetch=[&](int64_t layer,int64_t expert,uint8_t* dst,uint32_t bytes){
         const auto* a=p.find((int)layer,(int)expert);
         return a&&source.read_into(*a,dst,bytes,err);};
@@ -460,6 +466,10 @@ int main(int argc,char** argv){
 #ifndef STRATA_TEST_TLS
         TlsConfig disabled;disabled.ca_file="unused-test-path";
         check(!disabled.validate(err),"TLS request fails closed in TLS-disabled build");
+        ExpertWorkerClient cpu;
+        check(!cpu.connect_transport("127.0.0.1",1,100,{},disabled,false,err) &&
+              err.find("STRATA_WORKER_TLS=ON")!=std::string::npos,
+              "CPU TLS request fails before connect in TLS-disabled build");
 #endif
         listener_checks(fixture,plan);lifecycle(fixture,plan);return failures?1:0;
     }catch(const std::exception& e){std::fprintf(stderr,"FAIL gpu fixture: %s\n",e.what());return 1;}

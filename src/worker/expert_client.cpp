@@ -25,41 +25,67 @@ ExpertWorkerClient::~ExpertWorkerClient() { close(); }
 
 bool ExpertWorkerClient::connect_host(const std::string& host, uint16_t port, int deadline_ms,
                                       std::string& err) {
+    return connect_transport(host, port, deadline_ms, {}, {}, false, err);
+}
+
+bool ExpertWorkerClient::connect_local(const std::string& host, uint16_t port, int ms,
+                                      const std::function<bool()>& cancel, std::string& err) {
+    return connect_transport(host, port, ms, cancel, {}, false, err);
+}
+
+bool ExpertWorkerClient::connect_transport(const std::string& host, uint16_t port, int ms,
+    const std::function<bool()>& cancel, const TlsConfig& config, bool plaintext_test, std::string& err) {
     close();
+    if (!config.enabled() && !plaintext_test && host != "127.0.0.1") {
+        err = "remote CPU worker requires mTLS; plaintext-test is explicit development only"; return false;
+    }
+    if (config.enabled() && plaintext_test) { err = "mTLS and plaintext-test are mutually exclusive"; return false; }
+    if (ms <= 0 || !config.validate(err)) { if (ms <= 0) err = "CPU transport requires a positive deadline"; return false; }
+    const auto began = mono_ns();
     sock_fd fd = kBadFd;
-    if (!sock::connect_host(host, port, deadline_ms, fd, err)) return false;
-    fd_ = (uintptr_t) fd;
-    deadline_ms_ = deadline_ms;
+    if (!sock::connect_numeric_controlled(host, port, ms, cancel, fd, err)) return false;
+    fd_ = (uintptr_t)fd;
+    deadline_ms_ = ms;
+    use_tls_ = config.enabled();
+    const int remaining = (int)std::max<int64_t>(0, (int64_t)ms - (int64_t)((mono_ns()-began)/1000000));
+    if (use_tls_ && !tls_.handshake(fd_, config, false, remaining, cancel, err)) {
+        close(); err = "CPU worker mTLS failed (check peer identity, validity and TLS-capable binary): " + err; return false;
+    }
     return true;
 }
 
-bool ExpertWorkerClient::connect_local(const std::string &host, uint16_t port, int deadline_ms,
-                                       const std::function<bool()> &cancel, std::string &err) {
-    close();
-    sock_fd fd = kBadFd;
-    if (!sock::connect_numeric_controlled(host, port, deadline_ms, cancel, fd, err))
-        return false;
-    fd_ = (uintptr_t)fd;
-    deadline_ms_ = deadline_ms;
-    return true;
+bool ExpertWorkerClient::send_bytes(const void* p, size_t n) {
+    const bool ok = use_tls_ ? tls_.send_all(p,n,deadline_ms_,setup_cancelled_) :
+        sock::send_all_controlled((sock_fd)fd_,p,n,deadline_ms_,setup_cancelled_);
+    if (!ok) close();
+    return ok;
+}
+bool ExpertWorkerClient::recv_bytes(void* p, size_t n) {
+    const bool ok = use_tls_ ? tls_.recv_all(p,n,deadline_ms_,setup_cancelled_) :
+        sock::recv_all_controlled((sock_fd)fd_,p,n,deadline_ms_,setup_cancelled_);
+    if (!ok) close();
+    return ok;
 }
 
 bool ExpertWorkerClient::send_frame(uint16_t msg, uint16_t st, const std::vector<uint8_t>& payload,
                                     std::string& err) {
     if (setup_cancelled_ && setup_cancelled_()) {
         err = "setup cancelled or timed out";
+        close();
         return false;
     }
     if (!fd_ok(fd_)) {
         err = "not connected";
+        close();
         return false;
     }
     std::vector<uint8_t> temporary;
     auto& buf = msg == MSG_INFER || msg == MSG_INFER_ROWS || msg == MSG_INFER_PACKED || msg == MSG_INFER_ROWS_PACKED ? infer_frame_ : temporary;
     if(msg==MSG_INFER_ROWS)buf.reserve(kHeaderBytes+payload.size());
     encode_frame(buf, msg, st, payload.data(), payload.size());
-    if (!sock::send_all_controlled((sock_fd)fd_, buf.data(), buf.size(), deadline_ms_, setup_cancelled_)) {
+    if (!send_bytes(buf.data(), buf.size())) {
         err = "send failed or timed out";
+        close();
         return false;
     }
     return true;
@@ -68,11 +94,13 @@ bool ExpertWorkerClient::send_frame(uint16_t msg, uint16_t st, const std::vector
 bool ExpertWorkerClient::recv_frame(uint16_t want_msg, WireFrame& f, std::string& err) {
     if (setup_cancelled_ && setup_cancelled_()) {
         err = "setup cancelled or timed out";
+        close();
         return false;
     }
     uint8_t head[kHeaderBytes];
-    if (!sock::recv_all_controlled((sock_fd)fd_, head, sizeof head, deadline_ms_, setup_cancelled_)) {
+    if (!recv_bytes(head, sizeof head)) {
         err = "connection closed, short frame or deadline while waiting for the reply";
+        close();
         return false;
     }
     const uint32_t magic = (uint32_t) head[0] | (uint32_t) head[1] << 8 | (uint32_t) head[2] << 16 |
@@ -111,25 +139,29 @@ bool ExpertWorkerClient::recv_frame(uint16_t want_msg, WireFrame& f, std::string
         break;
     default:
         err = "unexpected reply type";
+        close();
         return false;
     }
     if (magic != kWireMagic || f.msg != want_msg || len > cap) {
         err = "malformed reply";
+        close();
         return false;
     }
     if (setup_cancelled_ && setup_cancelled_()) {
         err = "setup cancelled or timed out";
+        close();
         return false;
     }
     if(f.msg==MSG_INFER_ROWS_ACK)f.payload.reserve((size_t)len);
     f.payload.resize((size_t) len);
-    if (len > 0 && !sock::recv_all_controlled((sock_fd)fd_, f.payload.data(), f.payload.size(), deadline_ms_,
-                                              setup_cancelled_)) {
+    if (len > 0 && !recv_bytes(f.payload.data(), f.payload.size())) {
         err = "reply payload cut short";
+        close();
         return false;
     }
     if (setup_cancelled_ && setup_cancelled_()) {
         err = "setup cancelled or timed out";
+        close();
         return false;
     }
     return true;
@@ -551,6 +583,8 @@ bool ExpertWorkerClient::shutdown(std::string& err) {
 }
 
 void ExpertWorkerClient::close() {
+    tls_.reset();
+    use_tls_ = false;
     if (fd_ok(fd_)) {
         sock_fd fd = (sock_fd) fd_;
         sock::close_fd(fd);

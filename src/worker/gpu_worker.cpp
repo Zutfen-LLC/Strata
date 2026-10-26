@@ -34,6 +34,9 @@ bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
         if (err.empty()) err = "invalid CUDA worker options or reserve (minimum 64 MiB)";
         return false;
     }
+    if ((!options_.tls.enabled() && !options_.plaintext_test) || (options_.tls.enabled() && options_.plaintext_test)) {
+        err="GPU listener requires mTLS or explicit --plaintext-test (mutually exclusive)"; return false;
+    }
     if (!options_.tls.validate(err)) return false;
     if (!cache_.open(options_.cache_root, options_.cache_budget, err)) return false;
     sock_fd fd = kBadFd;
@@ -79,6 +82,7 @@ void GpuWorkerService::serve(uintptr_t fd) {
     TlsSession* tls = options_.tls.enabled() ? &session : nullptr;
     std::string handshake_error;
     if (tls && !tls->handshake(fd,options_.tls,true,options_.deadline_ms,cancel,handshake_error)) {
+        std::fprintf(stderr,"cuda-worker mTLS handshake rejected: %s\n",handshake_error.c_str());
         ++counters_.failures; return;
     }
     while (!cancel()) {

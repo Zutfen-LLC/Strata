@@ -33,7 +33,8 @@ void usage() {
         "       [--local-load-threads N] (1..4, default 4; separate from inference --workers)\n"
         "       [--bind-ip IPv4 --allow-peer-ip IPv4 [--allow-peer-ip IPv4 ...]]\n"
         "  binds 127.0.0.1 by default; LAN needs exact peers and an operator-managed firewall\n"
-        "  source filtering provides neither authentication nor encryption; trusted LAN only\n");
+        "  --tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer COORDINATOR_SAN_DNS\n"
+        "  remote requires mTLS; --plaintext-test explicitly permits insecure development\n");
 }
 }  // namespace
 
@@ -69,6 +70,13 @@ int main(int argc, char** argv) {
         else if (a == "--memory-budget-mib") opt.memory_budget = (uint64_t) next("--memory-budget-mib") << 20;
         else if (a == "--workers") opt.workers = (int) next("--workers");
         else if (a == "--deadline-ms") opt.deadline_ms = (int) next("--deadline-ms");
+        else if (a == "--plaintext-test") opt.plaintext_test = true;
+        else if (a == "--tls-ca" || a == "--tls-cert" || a == "--tls-key" || a == "--tls-peer") {
+            if (i+1>=argc || !*argv[i+1]) { usage(); return 2; }
+            auto& value = a=="--tls-ca" ? opt.tls.ca_file : a=="--tls-cert" ? opt.tls.cert_file :
+                          a=="--tls-key" ? opt.tls.key_file : opt.tls.peer_dns;
+            value=argv[++i];
+        }
         else if (a == "--bind-ip" || a == "--allow-peer-ip") {
             if (i + 1 >= argc) { usage(); return 2; }
             if (a == "--bind-ip") opt.bind_ip = argv[++i];
@@ -129,11 +137,11 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::fprintf(stderr, "strata-worker: listening on %s:%u (budget %llu MiB, %d pool workers, "
-                         "accepted TCP_NODELAY %s, RPC timing %s)\n",
+                         "accepted TCP_NODELAY %s, RPC timing %s, transport %s)\n",
                  opt.bind_ip.c_str(), (unsigned) port, (unsigned long long) (opt.memory_budget >> 20), opt.workers,
-                 opt.accepted_tcp_nodelay ? "on" : "off", opt.rpc_timing ? "on" : "off");
+                 opt.accepted_tcp_nodelay ? "on" : "off", opt.rpc_timing ? "on" : "off", opt.tls.enabled() ? "mTLS" : opt.plaintext_test ? "plaintext-test" : "local-only");
     for (const auto& peer : opt.allow_peer_ips)
-        std::fprintf(stderr, "strata-worker: allowed source %s (trusted LAN; no authentication/encryption)\n",
+        std::fprintf(stderr, "strata-worker: allowed source %s (additional source-IP filter)\n",
                      peer.c_str());
     if (opt.local_load_threads > 1)
         std::fprintf(stderr, "strata-worker: local loading lanes=%d; read/verify are summed lane work, "
