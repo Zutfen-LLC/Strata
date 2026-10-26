@@ -40,7 +40,7 @@ void executor_check(const std::string& backend, int device, const std::filesyste
     InferReply weighted;
     require(!executor->infer(plan,r,weighted,err),"weighted inference accepted");
     auto bad=r; bad.T=2;
-    require(!executor->infer_rows(plan,bad,reply,err),"T2 accepted");
+    require(!executor->infer_rows(plan,bad,reply,err),"malformed T2 accepted");
     bad=r; bad.mask={0,0,2};
     require(!executor->infer_rows(plan,bad,reply,err),"invalid entry mask accepted");
     bad=r; bad.ids[2]=1;

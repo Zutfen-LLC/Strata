@@ -134,3 +134,17 @@ or model weights. Its optional `--latency` compares split framing, contiguous
 framing and fixture-only accepted-side TCP_NODELAY; timing has no CI pass threshold.
 The residency fixture starts its own tiny synthetic worker and must never target
 an existing service. See [attributed results and unrun checks](VALIDATION.md).
+
+## Explicit Vulkan endpoints
+
+The coordinator accepts `--remote-gpu-worker vulkan@HOST:PORT PLAN` for an opt-in
+Q8_0 H2560/FF640 hybrid worker. CUDA remains the default for unprefixed endpoints;
+`cuda@HOST:PORT` is equivalent. Vulkan requires indexed rows, full resident CPU
+group backing and the existing original-order union reducer. Its HELLO advertises
+Vulkan hybrid arithmetic, not CUDA or native CPU bit equivalence. A private
+Vulkan endpoint requires the existing exact-SAN mTLS configuration and listener
+allowlist. Worker windows contain at most eight tokens, evaluated through the
+existing single-row graphs using the token at `entry / K`; weights stay resident.
+See [the bounded model handoff](../../tests/amd/MODEL_OFFLOAD_HANDOFF.md) for the
+real routed row comparison and unchanged CPU trace/logit gates. Model acceptance
+and this revision's GPU execution remain pending; no fallback is permitted.

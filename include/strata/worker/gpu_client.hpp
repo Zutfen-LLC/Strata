@@ -3,7 +3,7 @@
 #include <functional>
 
 namespace strata::worker {
-// Fixed opt-in GPU tier: CUDA default, Vulkan hybrid loopback only. A failure latches it dead. The engine
+// Fixed opt-in GPU tier: CUDA default, Vulkan hybrid by explicit endpoint. A failure latches it dead. The engine
 // must abort the affected request and may start a new CPU-only session explicitly.
 class GpuWorkerTier {
 public:
@@ -12,7 +12,7 @@ public:
         uint16_t port=7432;
         int deadline_ms=10000,setup_ms=600000;
         GpuPlan plan;
-        bool vulkan=false; // opt-in hybrid contract, requires 127.0.0.1 and indexed rows
+        bool vulkan=false; // opt-in hybrid contract, requires indexed rows and mTLS outside 127.0.0.1
         TlsConfig tls;
         bool entry_rows=false; // negotiated; unsupported peers fail without weighted fallback
         std::function<bool(int64_t,int64_t,uint8_t*,uint32_t)> fetch;

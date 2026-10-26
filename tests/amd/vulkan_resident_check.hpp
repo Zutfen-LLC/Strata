@@ -32,7 +32,7 @@ void resident_check(const std::string& backend, int device, const std::filesyste
     if(loopback) {
         std::vector<float> expected=second_direct.out;
         expected.insert(expected.end(),first_direct.out.begin(),first_direct.out.end());
-        loopback_check(backend,device,output,plan,first,second,x,expected); return;
+        loopback_check(backend,device,selected,output,plan,first,second,x,expected); return;
     }
     const auto root=output/"resident-cache";
     require(std::filesystem::create_directory(root),"new resident cache required");

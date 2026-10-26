@@ -81,12 +81,14 @@ public:
             require(binding == binding_,"Vulkan adapter plan changed after prepare");
             require(r.model_id == p.model_id && r.partition_id == p.placement_id.a && r.session && r.sequence,
                     "Vulkan adapter request binding mismatch");
-            require(r.T == 1 && r.K > 0 && r.K <= kMaxK && !r.packed && r.mask.size() == r.K &&
-                    r.ids.size() == r.K && r.weights.size() == r.K && r.activations.size() == H,
-                    "Vulkan adapter requires T1, bounded F32 input and indexed entries");
-            // Validate the entire requested set before any compute; slots follow the frozen plan.
+            require(r.T >= 1 && r.T <= kMaxT && r.K > 0 && r.K <= kMaxK && !r.packed && r.mask.size() == size_t(r.T)*r.K &&
+                    r.ids.size() == r.mask.size() && r.weights.size() == r.mask.size() && r.activations.size() == size_t(r.T)*H,
+                    "Vulkan adapter requires bounded T1..8 F32 input and indexed entries");
+            // Validate the entire window before compute; one resident single-row graph per entry.
+            finite(r.activations);
+            // Slots follow the frozen plan; returned indices stay in the original T*K space.
             std::vector<std::pair<uint16_t,size_t>> entries;
-            for(size_t i=0;i<r.K;++i) {
+            for(size_t i=0;i<r.mask.size();++i) {
                 require(r.mask[i] <= 1 && std::isfinite(r.weights[i]),"invalid Vulkan routing field");
                 if(r.mask[i]) {
                     const auto* asset=plan_.find(r.layer,r.ids[i]);
@@ -101,7 +103,9 @@ public:
             result.session=r.session; result.sequence=r.sequence;
             result.rows.reserve(entries.size()*H);
             for(const auto& entry:entries) {
-                auto rows=graphs_[entry.second]->run(r.activations);
+                const auto begin=r.activations.begin()+(entry.first/r.K)*H;
+                std::vector<float> token(begin,begin+H);
+                auto rows=graphs_[entry.second]->run(token);
                 result.indices.push_back(entry.first);
                 result.rows.insert(result.rows.end(),rows.out.begin(),rows.out.end());
             }

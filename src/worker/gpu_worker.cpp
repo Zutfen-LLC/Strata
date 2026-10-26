@@ -40,6 +40,9 @@ bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
         err="Vulkan worker requires Q8_0 H2560/FF640"; return false;
     }
     if (!options_.tls.validate(err)) return false;
+    if(options_.vulkan && options_.bind_ip!="127.0.0.1" && !options_.tls.enabled()) {
+        err="private Vulkan listener requires mTLS";return false;
+    }
     if (!cache_.open(options_.cache_root, options_.cache_budget, err)) return false;
     sock_fd fd = kBadFd;
     const bool listening = options_.bind_ip == "127.0.0.1" && allowed_peers_.empty()
@@ -206,7 +209,7 @@ bool GpuWorkerService::dispatch(const WireFrame& in, WireFrame& out, std::string
         InferRequest r;
         if (!decode_request(options_.plan,in.payload,r) || r.session != session_ || r.sequence != sequence_+1)
             return refuse(ST_STALE_SESSION,"inference binding/sequence/shape");
-        if(options_.vulkan && r.T != 1) return refuse(ST_BAD_REQUEST,"Vulkan worker requires T1");
+        // The wire codec bounds T to kMaxT; Vulkan evaluates each token through its resident T1 graph.
         uint64_t entries = 0;
         for (size_t i=0;i<r.mask.size();++i) {
             if (r.mask[i]>1 || (r.mask[i] && !options_.plan.owns(r.layer,r.ids[i])))

@@ -2,6 +2,10 @@
 #include "../../src/worker/vulkan_expert_graph.hpp"
 #include "strata/worker/vulkan_executor.hpp"
 #include "strata/worker/gpu_client.hpp"
+#include "strata/worker/cpu_capture.hpp"
+#ifdef STRATA_TEST_TLS
+#include "../worker/tls_fixture.hpp"
+#endif
 #include <thread>
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -121,10 +125,11 @@ void save_rows(const std::filesystem::path& dir, const std::string& name, const 
 #include "vulkan_executor_check.hpp"
 #include "vulkan_loopback_check.hpp"
 #include "vulkan_resident_check.hpp"
+#include "vulkan_capture_check.hpp"
 int run(int argc, char** argv) {
     const uint16_t endian = 1;
     require(*reinterpret_cast<const uint8_t*>(&endian) == 1,"fixture requires little-endian Q8/F32 storage");
-    std::string backend,output; int device = -1; bool native_boundaries = false, check_executor = false, check_residents = false, check_loopback = false;
+    std::string backend,output,capture,plan,source,blobs; int device = -1; bool native_boundaries = false, check_executor = false, check_residents = false, check_loopback = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--loopback-worker-check") { require(!check_loopback,"duplicate loopback check"); check_loopback=true; continue; }
@@ -134,6 +139,10 @@ int run(int argc, char** argv) {
         require(i+1 < argc,"missing option value"); const std::string value = argv[++i];
         if (arg == "--backend") backend = value;
         else if (arg == "--out-dir") output = value;
+        else if (arg == "--capture") capture=value;
+        else if (arg == "--plan") plan=value;
+        else if (arg == "--local-manifest") source=value;
+        else if (arg == "--blob-dir") blobs=value;
         else if (arg == "--device") {
             require(!value.empty() && value.find_first_not_of("0123456789") == std::string::npos,"invalid device");
             const auto n = std::stoull(value); require(n < 16,"device out of range"); device = int(n);
@@ -150,7 +159,10 @@ int run(int argc, char** argv) {
     cpu::NativeFmt fmt; std::string why;
     require(cpu::native_fmt(8,8,H,F,fmt,why),why);
     require(fmt.gu_act == 8 && fmt.d_act == 8,"CPU reference activation type is not Q8_0");
-    auto blob = fixture(fmt); save(std::filesystem::path(output)/"expert.q8_0",blob.data(),blob.size());
+    const bool captured=!capture.empty() || !plan.empty() || !source.empty() || !blobs.empty();
+    require(!captured || (!capture.empty() && !plan.empty() && !source.empty() && !blobs.empty() && native_boundaries &&
+            !check_executor && !check_residents && !check_loopback),"capture requires all four source paths and native boundaries, no synthetic acceptance mode");
+    auto blob = captured ? std::vector<uint8_t>{} : fixture(fmt); if(!captured)save(std::filesystem::path(output)/"expert.q8_0",blob.data(),blob.size());
     Backend cpu_backend(ggml_backend_cpu_init(),ggml_backend_free);
     require(bool(cpu_backend),"CPU backend unavailable"); ggml_backend_cpu_set_n_threads(cpu_backend.get(),1);
     Backend vk_backend(nullptr,ggml_backend_free);
@@ -161,6 +173,7 @@ int run(int argc, char** argv) {
     }
 #endif
     ggml_backend_t selected = backend == "cpu" ? cpu_backend.get() : vk_backend.get();
+    if(captured) {capture_check(backend,device,selected,output,capture,plan,source,blobs);return 0;}
     ExpertGraph cpu_graph(cpu_backend.get(),fmt,blob);
     std::unique_ptr<ExpertGraph> controlled_graph;
     if (vk_backend || native_boundaries) controlled_graph = std::make_unique<ExpertGraph>(selected,fmt,blob,native_boundaries);
@@ -193,6 +206,7 @@ int run(int argc, char** argv) {
         if (check_executor && !zero) executor_check(backend,device,output,blob,x,selected_rows.out);
         if ((check_residents || check_loopback) && !zero)
             resident_check(backend,device,output,selected,fmt,blob,x,selected_rows,metrics,check_loopback);
+        if(check_loopback && backend=="cpu" && !zero)capture_fixture_check(selected,output,blob,x);
         if (zero) for (float v : selected_rows.out) require(v == 0,"zero expert produced nonzero output");
         else require(std::any_of(native.out.begin(),native.out.end(),[](float v){return v != 0;}),"degenerate signal fixture");
         compare(metrics,name+".cpu_graph_vs_native",cpu_rows,native);

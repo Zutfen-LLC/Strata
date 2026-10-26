@@ -1,5 +1,8 @@
 // Real SGW1 clients/services/cache; controlled executor only. No CUDA or model.
 #include "local_fixture.hpp"
+#ifdef STRATA_TEST_TLS
+#include "tls_fixture.hpp"
+#endif
 #include "strata/worker/gpu_group.hpp"
 #include "strata/worker/gpu_worker.hpp"
 #include "strata/worker/expert_worker.hpp"
@@ -98,7 +101,22 @@ void configuration(const Network& n) {
     check(!GpuWorkerGroup::validate(bad,err),"different trusted model/layout rejected");
     bad.assign(kMaxGpuWorkers+1,n.options[0]);
     check(!GpuWorkerGroup::validate(bad,err)&&!GpuWorkerGroup::validate({},err),"bounded nonempty endpoint collection");
+    bad=n.options;for(auto& o:bad)o.entry_rows=false;bad[0].vulkan=true;
+    check(!GpuWorkerGroup::validate(bad,err),"Vulkan weighted mode rejected before connection");
+    for(auto& o:bad)o.entry_rows=true;
+    check(GpuWorkerGroup::validate(bad,err),"mixed CUDA/Vulkan indexed endpoint plans accepted");
+    bad[0].host="10.0.0.5";
+    check(!GpuWorkerGroup::validate(bad,err),"private Vulkan plaintext rejected before connection");
+#ifdef STRATA_TEST_TLS
+    TlsFixture tls_fixture;
+    bad[0].tls=tls_fixture.config("coordinator","worker.test");
+    check(GpuWorkerGroup::validate(bad,err),"private Vulkan explicit mTLS configuration accepted");
+#endif
+    bad[0].tls.key_file.clear();
+    check(!GpuWorkerGroup::validate(bad,err),"partial Vulkan mTLS configuration rejected");
     GpuEndpoint parsed;
+    check(parse_gpu_endpoint("vulkan@10.0.0.5:7432",parsed)&&parsed.vulkan,"Vulkan endpoint parser");
+    check(parse_gpu_endpoint("cuda@10.0.0.5:7432",parsed)&&!parsed.vulkan,"explicit CUDA endpoint parser");
     check(parse_gpu_endpoint("127.0.0.1:7432",parsed)&&parsed.port==7432,"numeric endpoint parser");
     check(!parse_gpu_endpoint("localhost:7432",parsed)&&!parse_gpu_endpoint("127.0.0.1:0",parsed)&&
           !parse_gpu_endpoint("127.0.0.1:65536",parsed)&&!parse_gpu_endpoint("127.0.0.1:12x",parsed),"bad endpoint syntax refused");

@@ -1,3 +1,12 @@
+# Historical Vulkan loopback acceptance
+
+This records the PR #30 handoff at `5d4e44f6`, where T2 was intentionally refused.
+The current integration accepts bounded T1..8 windows and compares each saved
+reply against its own same-token direct reference. Use
+[MODEL_OFFLOAD_HANDOFF.md](MODEL_OFFLOAD_HANDOFF.md) for current commands, six host
+tests, real captured weights/activations and the one-request CPU trace/logit gate.
+The commands below are historical and must not be used as current acceptance.
+
 # Vulkan loopback service/client acceptance
 
 Stack on [PR #29](https://github.com/Zutfen-LLC/Strata/pull/29), exact base

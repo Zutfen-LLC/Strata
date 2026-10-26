@@ -38,8 +38,8 @@ bool GpuWorkerTier::open(const Open& in,std::string& err){
     using namespace gpu_codec;
     if(dead_) {err="CUDA tier is dead; create a new engine session: "+why_;return false;}
     if(ready_){err="CUDA tier placement is already frozen";return false;}
-    if(in.vulkan && (!in.entry_rows || in.host != "127.0.0.1")) {
-        err="Vulkan hybrid client requires indexed rows on 127.0.0.1"; return false;
+    if(in.vulkan && (!in.entry_rows || (in.host != "127.0.0.1" && !in.tls.enabled()))) {
+        err="Vulkan hybrid client requires indexed rows and mTLS outside 127.0.0.1"; return false;
     }
     if(in.deadline_ms<1 || in.setup_ms<1 || !validate_gpu_plan(in.plan,err))return false;
     close();stats_={};remote_={};plan_=in.plan;rows_=in.entry_rows;vulkan_=in.vulkan;cancelled_=in.cancelled;deadline_ms_=in.deadline_ms;
