@@ -3,12 +3,14 @@
 
 namespace strata::worker {
 // Explicit in-process experiment only; not wired into any worker/listener/default.
-// One trusted Q8_0 expert, H2560/FF640, one token and one active indexed entry.
+// Trusted resident Q8_0 experts, H2560/FF640, one token and indexed entries.
 // Hybrid host activation boundaries; Vulkan owns weights and all three matvecs.
 // Single caller, no concurrent prepare/infer/release. reserve must be zero.
-std::unique_ptr<GpuExecutor> create_vulkan_gpu_executor(int device);
+// Budget bounds aggregate owned tensor buffers, including alignment/work tensors.
+// It excludes host storage and backend/driver allocations; it is not total VRAM.
+std::unique_ptr<GpuExecutor> create_vulkan_gpu_executor(int device, uint64_t tensor_budget = 16ull << 20);
 #ifdef STRATA_AMD_EXECUTOR_HOST_TEST
 // CPU graph substitution for host lifecycle tests only; never a Vulkan fallback.
-std::unique_ptr<GpuExecutor> create_vulkan_executor_cpu_test();
+std::unique_ptr<GpuExecutor> create_vulkan_executor_cpu_test(uint64_t tensor_budget = 16ull << 20);
 #endif
 } // namespace strata::worker

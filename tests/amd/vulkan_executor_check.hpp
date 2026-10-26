@@ -41,8 +41,8 @@ void executor_check(const std::string& backend, int device, const std::filesyste
     require(!executor->infer(plan,r,weighted,err),"weighted inference accepted");
     auto bad=r; bad.T=2;
     require(!executor->infer_rows(plan,bad,reply,err),"T2 accepted");
-    bad=r; bad.mask={1,0,1};
-    require(!executor->infer_rows(plan,bad,reply,err),"multiple active entries accepted");
+    bad=r; bad.mask={0,0,2};
+    require(!executor->infer_rows(plan,bad,reply,err),"invalid entry mask accepted");
     bad=r; bad.ids[2]=1;
     require(!executor->infer_rows(plan,bad,reply,err),"unassigned expert accepted");
     bad=r; bad.activations.pop_back();

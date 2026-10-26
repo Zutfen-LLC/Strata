@@ -3,6 +3,7 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "ggml-alloc.h"
 #include <cmath>
 #include <memory>
 #include <stdexcept>
@@ -44,7 +45,7 @@ class ExpertGraph {
     }
 public:
     ExpertGraph(ggml_backend_t backend, const cpu::NativeFmt& fmt, const std::vector<uint8_t>& blob,
-                bool native_boundaries = false):backend_(backend),fmt_(fmt),native_boundaries_(native_boundaries) {
+                bool native_boundaries = false, size_t tensor_budget = 16u<<20):backend_(backend),fmt_(fmt),native_boundaries_(native_boundaries) {
         require(blob.size() == fmt.bytes && fmt.bytes == 5222400 && fmt.up_off == 1740800 &&
                 fmt.down_off == 3481600 && fmt.gu_act == 8 && fmt.d_act == 8,
                 "unsupported fixed Q8 expert layout");
@@ -67,9 +68,15 @@ public:
         for (auto* graph : {graph_,down_graph_}) if (graph)
             for (int i = 0; i < ggml_graph_n_nodes(graph); ++i)
                 require(ggml_backend_supports_op(backend_,ggml_graph_node(graph,i)), "backend declines expert operation");
+        // Pinned ggml dry-run API accounts for backend tensor padding/alignment before allocation.
+        const size_t needed = ggml_backend_alloc_ctx_tensors_from_buft_size(
+            ctx_.get(),ggml_backend_get_default_buffer_type(backend_));
+        require(needed > 0 && needed < (16u<<20),"unexpected backend tensor size above 16 MiB");
+        require(needed <= tensor_budget,"Vulkan resident tensor budget exceeded");
         buf_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),backend_));
         require(bool(buf_), "backend expert allocation failed");
-        require(ggml_backend_buffer_get_size(buf_.get()) < (16u<<20), "unexpected backend tensor allocation above 16 MiB");
+        require(ggml_backend_buffer_get_size(buf_.get()) == needed,
+                "backend allocation differs from budgeted tensor size");
         ggml_backend_tensor_set(gate,blob.data(),0,fmt.up_off);
         ggml_backend_tensor_set(up,blob.data()+fmt.up_off,0,fmt.up_off);
         ggml_backend_tensor_set(down,blob.data()+fmt.down_off,0,fmt.bytes-fmt.down_off);
