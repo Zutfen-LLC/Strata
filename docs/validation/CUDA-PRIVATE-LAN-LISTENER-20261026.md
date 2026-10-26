@@ -90,3 +90,71 @@ socket creation was blocked; the same tests passed with local socket permission.
 Not run: CUDA compilation/link/execution (`nvcc` unavailable), physical private
 LAN binding, SSH forwarding, hardware inference or the A/B/A experiment. The PR
 remains draft pending the targeted CUDA build and parent-run qualification.
+
+## Python harness follow-up
+
+Hermes supplied a successful CUDA worker build on role03 (311 seconds), ELF
+SHA256 `38cd6b15a161f74a3145fb02c81b895a489fdf805e93bc112dc7893ca68a53e8`,
+and direct LAN reachability without firewall changes. These are supplied results,
+not local hardware reproduction. **Preserve that ELF and the existing coordinator;
+no CUDA or coordinator rebuild is needed for this Python-only follow-up.**
+
+The changed Python files are exactly:
+
+- `tools/validation-harness/harness/bundle.py` (runtime/staging helper)
+- `tools/validation-harness/tests/test_harness.py` (synthetic regressions only)
+
+`validate_network_gpu()` now admits explicit numeric RFC1918 IPv4 endpoints as
+well as the existing `127.0.0.1` forwards. Uniqueness uses `(address, numeric port)`:
+four distinct worker hosts may all use port 27432, while duplicate pairs (even
+with different decimal port spellings) fail. Hostnames, IPv6, CIDRs, wildcards,
+public/link-local/multicast addresses and malformed/out-of-range ports fail.
+All existing external-row, retained CPU, peer-count and fallback guards remain.
+
+Staging/run-path audit: `stage()` calls `validate()` before creating output and
+`verify()` after copying. `run.py` calls `verify()` at startup and before each arm;
+`owner.py` calls the same `validate_network_gpu()` before its engine Popen. These
+all consume the updated staged `bundle.py`; no edit to `run.py` or `owner.py` is
+needed. Remaining loopback enforcement in `validate()` is for the retained CPU
+worker/control endpoint, which stays unchanged. GPU argv and plans pass through
+asset resolution and `arm_config()` unchanged. Read-only inspection confirms the
+existing coordinator parser accepts numeric IPv4 and GPU-group duplicate checking
+already uses `(host, port)`; no additional GPU loopback gate was found there.
+
+Stage from the patched source helper into a **new unique run root**, using the
+existing direct-arm private config with only its GPU endpoint/required output-path
+bindings adjusted. Keep all binary asset paths/hashes, plans, cache roots, retained
+CPU attachment, requests, numerical references and lifecycle policies as qualified:
+
+```sh
+python3 -B "$PATCH_SOURCE/tools/validation-harness/harness/bundle.py" --config "$DIRECT_CONFIG"
+```
+
+This stages all pinned helpers and unchanged configured assets, then verifies the
+bundle. Use that new bundle's `run.py` for the already authorized experiment;
+staging alone launches no owners. Do not overwrite `bundle.py` or alter `pins.json`
+in an existing staged run: its hashes must continue to protect the old bundle.
+Only `bundle.py` needs updating in the source helper set; the test file need not
+be staged on fleet hosts. Use the same already-built patched CUDA ELF in SSH and
+direct arms. This follow-up performed no hardware experiment or fleet staging.
+
+Focused synthetic command:
+
+```sh
+python3 -m unittest discover -s tools/validation-harness/tests -p test_harness.py -k external_gpu -v
+```
+
+All 3 focused tests passed, including four private hosts sharing port 27432 through
+real staging, actual staged helper validation, repeated `run.py` preflight and arm
+configuration (owners/hardware mocked), plus staged-byte tamper rejection.
+
+Broader validation: all **41/41** tests in `test_harness.py` passed (14.873 s).
+The full synthetic suite passed 51/52 (24.970 s); the existing CPU peer test
+`test_remote_role_stages_no_engine_and_binds_lan_style_readiness` failed with
+`peer guardian EOF`, also in isolation. Its captured transport receipt showed
+`campaign.ident()` rejecting an argv identity mismatch. The untouched prior
+revision's peer suite also failed 1/8 with guardian EOF in a different existing
+peer test (`test_fast_stop_is_reconciled_after_worker_exit_without_second_stop`).
+This establishes a prior peer-suite instability, not a fully green overall suite;
+no identity/lifecycle check was bypassed or changed. No CUDA rebuild, hardware run
+or performance claim is part of these Python results.
