@@ -158,6 +158,51 @@ void write_bytes(const char* path, const Bytes& b) {
     need(!fs::exists(path) && b.size() <= MaxArtifact, "fresh bounded output required");
     std::ofstream out(path,std::ios::binary); out.write(reinterpret_cast<const char*>(b.data()),b.size()); out.close(); need(bool(out),"write artifact");
 }
+double median(diagnostic::CaptureSplitProfile::Times values) {
+    std::sort(values.begin(),values.end()); return values[values.size()/2];
+}
+void split_probe(const CpuCaptureFile& f, const LocalManifest& local, LocalSource& source) {
+    const auto samples=diagnostic::capture_row_samples(f,"SPLIT_STRATUM");
+    need(samples.size()==16,"split probe requires the retained 16-record sample");
+    diagnostic::CaptureSplitProfile total;
+    total.displacement.clear(); total.displacement.shrink_to_fit();
+    for (size_t record:samples) {
+        guard(); const auto& r=f.records[record]; const auto& q=r.request;
+        NativeFmt fmt; std::string err; require(native_fmt(8,8,ProofEmbDim,640,fmt,err),err); geometry(fmt);
+        diagnostic::CaptureSplitProfile p; std::vector<float> baseline, replayed;
+        const auto act=native(fmt,q);
+        diagnostic::compute_capture_rows(f,local,source,q,act,baseline,guard);
+        diagnostic::compute_capture_rows(f,local,source,q,act,replayed,guard,&p);
+        need(bits(baseline,replayed) && bits(partial(q,replayed),r.partials),"split rows/ordered capture bytes");
+        std::printf("SPLIT_RECORD record=%zu layer=%u T=%u entries=%zu groups=%zu paired=%zu hidden_bytes=%zu reply_bytes=%zu "
+            "selected_down_bytes=%zu source_read_ns=%.0f down_copy_ns=%.0f gu_median_sum_ns=%.0f quant_median_sum_ns=%.0f "
+            "down_median_sum_ns=%.0f grouped_replay_median_sum_ns=%.0f displaced_replay_sum_ns=%.0f "
+            "hidden_bits=1 row_bits=1 ordered_capture_bits=1\n",record,q.layer,q.T,p.entries,p.groups,p.paired,
+            p.entries*fmt.h_bytes,p.entries*ProofEmbDim*4,p.weight_bytes,p.read_ns,p.copy_ns,
+            median(p.gu),median(p.quant),median(p.down),median(p.replay),p.displaced_ns);
+        total.entries+=p.entries; total.groups+=p.groups; total.paired+=p.paired;
+        total.weight_bytes+=p.weight_bytes; total.displaced_ns+=p.displaced_ns;
+        for (size_t rep=0; rep<p.repeats; ++rep) {
+            total.gu[rep]+=p.gu[rep]; total.quant[rep]+=p.quant[rep];
+            total.down[rep]+=p.down[rep]; total.replay[rep]+=p.replay[rep];
+        }
+    }
+    need(total.entries>0,"split active sample");
+    for (size_t rep=0; rep<total.repeats; ++rep)
+        std::printf("SPLIT_REPEAT repeat=%zu gu_sum_ns=%.0f quant_sum_ns=%.0f singleton_down_sum_ns=%.0f grouped_replay_sum_ns=%.0f\n",
+            rep,total.gu[rep],total.quant[rep],total.down[rep],total.replay[rep]);
+    const double ideal_ns=total.entries*(10240.-680.)*8.;
+    // Serial no-overlap proxy: remote GU/quant cancel; credit removed remote down.
+    // Same-machine credit is a proxy only; coordinator/worker contention is not measured.
+    std::printf("SPLIT_DONE records=%zu entries=%zu groups=%zu paired=%zu repeats=7 displacement_bytes=67108864 "
+        "gu_median_sum_ns=%.0f quant_median_sum_ns=%.0f singleton_down_median_sum_ns=%.0f "
+        "warm_local_down_median_sum_ns=%.0f displaced_local_down_sum_ns=%.0f ideal_1g_saved_ns=%.0f "
+        "serial_warm_proxy_ns=%.0f serial_displaced_proxy_ns=%.0f "
+        "sockets=0 children=0 worker_loads=0 model_GEN=0 live_TPS=NOT_MEASURED\n",
+        samples.size(),total.entries,total.groups,total.paired,median(total.gu),median(total.quant),median(total.down),
+        median(total.replay),total.displaced_ns,ideal_ns,
+        ideal_ns+median(total.down)-median(total.replay),ideal_ns+median(total.down)-total.displaced_ns);
+}
 void check_only() {
     Fixture fixture; geometry(fixture.fmt); Bytes edges; edge_checks(fixture.fmt,edges);
     CpuCaptureFile f; f.setup=fixture.setup(); InferRequest q; q.layer=0; q.T=2; q.K=2;
@@ -166,7 +211,12 @@ void check_only() {
     auto a=native(fixture.fmt,q); auto b=roundtrip(fixture.fmt,q,a); std::vector<float> left,right;
     diagnostic::compute_capture_rows(f,fixture.m,source,q,a,left,guard);
     diagnostic::compute_capture_rows(f,fixture.m,source,q,b,right,guard);
-    need(bits(left,right),"synthetic native row bits"); auto p=partial(q,left);
+    need(bits(left,right),"synthetic native row bits");
+    diagnostic::CaptureSplitProfile split;
+    diagnostic::compute_capture_rows(f,fixture.m,source,q,a,right,guard,&split);
+    need(bits(left,right) && split.entries==3 && split.groups==2 && split.paired==1 &&
+        split.retained.size()==4*680,"synthetic split singleton/grouped/down-only rows");
+    auto p=partial(q,left);
     std::vector<const uint8_t*> blobs={fixture.blobs[0].data(),fixture.blobs[1].data(),nullptr,fixture.blobs[1].data()}; std::vector<float> direct;
     require(ExpertWorkerService::direct_native_partial(fixture.fmt,2,2,q.mask.data(),q.weights.data(),q.activations.data(),blobs.data(),direct,err),err);
     need(bits(p,direct) && bits(p,partial(q,right)),"independent ordered partial bits");
@@ -184,7 +234,8 @@ int main(int argc,char** argv) {
     const bool check=argc==2 && std::string(argv[1])=="--check";
     const bool pack=argc==4 && std::string(argv[1])=="--pack";
     const bool rows=argc==7 && std::string(argv[1])=="--rows";
-    if (!check && !pack && !rows) { std::fprintf(stderr,"usage: --check | --pack CAPTURE OUT | --rows CAPTURE MANIFEST ROOT PACKED_REFERENCE ROW_OUT\n"); return 2; }
+    const bool split=argc==5 && std::string(argv[1])=="--split";
+    if (!check && !pack && !rows && !split) { std::fprintf(stderr,"usage: --check | --pack CAPTURE OUT | --rows CAPTURE MANIFEST ROOT PACKED_REFERENCE ROW_OUT | --split CAPTURE MANIFEST ROOT\n"); return 2; }
     std::signal(SIGALRM,SIG_DFL); ::alarm(180);
     try {
         guard(); need(native_experts_available(),"UNSUPPORTED native CPU build");
@@ -195,6 +246,12 @@ int main(int argc,char** argv) {
         CpuCaptureFile f; std::string err; require(read_cpu_capture(argv[2],f,err),err);
         need(f.setup.gu_type==8 && f.setup.d_type==8 && f.setup.n_embd==ProofEmbDim && f.setup.n_ff==640,"UNSUPPORTED capture format");
         NativeFmt fmt; require(native_fmt(8,8,ProofEmbDim,640,fmt,err),err); geometry(fmt);
+        if (split) {
+            LocalManifest local; require(read_local_manifest(argv[3],local,err),err);
+            need(local.matches(f.setup) && local.identity==f.identity && local.index_digest==f.index,"capture/manifest binding");
+            LocalSource source; require(source.open(argv[4],local,err),err);
+            split_probe(f,local,source); source.close_files(); guard(); return 0;
+        }
         Bytes packed={'S','P','A','1'}, output={'S','R','A','1'}; edge_checks(fmt,packed);
         const auto samples=diagnostic::capture_row_samples(f,"PACKED_STRATUM");
         // Include the original production request bytes' digest to bind IDs, weights, masks and F32 bits.
