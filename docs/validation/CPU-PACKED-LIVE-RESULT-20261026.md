@@ -12,7 +12,14 @@ Keep #14: the bounded comparison showed a useful improvement. The completed comp
 
 Both arms matched the original reference: 213 tokens, 102724 entries, and bitwise-equal first logits. Request wall fell 5.236 seconds, about 12.1%. Request bytes fell 72.6%; this is not total-wire reduction. Replies were unchanged at 509.9 MB and 543.0 MB for the two peers.
 
-Packed traffic was active, with zero reported fallbacks or failures. The supplied result reports 11088 packed requests; it does not provide a separate per-peer packed-count breakdown. Group packing took 120.18 ms across 11136 calls and 12000 quantized rows, included in wall time; row reduction took 219.2 ms.
+Both active peers demonstrably used packed requests, with zero fallbacks or failures:
+
+| Peer | Packed requests | Raw request bytes | Packed request bytes | Reply bytes, unchanged |
+| --- | ---: | ---: | ---: | ---: |
+| Local | 11083 | 123729266 | 33918090 | 509897520 |
+| Remote | 11088 | 123801696 | 33981440 | 542999844 |
+
+Group packing took 120.18 ms across 11136 calls and 12000 quantized rows, included in wall time; row reduction took 219.2 ms. These are coordinator/group-dispatch counters, not worker compute time.
 
 Restoration completed: the full raw-capable resident was restored, complete and forever idle, with one allocation and zero owned swap. The remote subset stopped cleanly and its owned processes were reaped. Recovery was staged but unused.
 
