@@ -176,4 +176,158 @@ class V2Tests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'frozen v2'): V.score(tok, *roots, root / 'bad-source')
 
 
+class MultiEndpointTests(unittest.TestCase):
+    """Synthetic complete retained arms; no hardware or model execution."""
+    @staticmethod
+    def plan(path, expert, model=1):
+        import struct
+        data = struct.pack('<8sQ6HQQI', b'SGPUPLN1', model, 48, 512, 2560, 640, 8, 8, 2, 3, 1)
+        data += struct.pack('<HHQQQ', 0, expert, 5222400, 7, 8)
+        identities = []
+        for seed, values in ((0xcbf29ce484222325, data), (0x9e3779b97f4a7c15, data[::-1])):
+            for byte in values: seed = ((seed ^ byte) * 1099511628211) % 2**64
+            identities.append(seed)
+        path.write_bytes(data + struct.pack('<QQ', *identities))
+        return path
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root = pathlib.Path(self.temp.name); self.tok = ByteTokenizer()
+        self.plans = [self.plan(self.root / f'plan{i}', i) for i in range(2)]
+        self.binding = V.plan_binding(self.plans)
+        frozen = self.root / 'frozen'; V.prepare(self.tok, frozen, self.plans)
+        self.configs = []; self.roots = []
+        for side in ('cpu', 'vk'):
+            run = self.root / side; run.mkdir(); self.roots.append(run)
+            for helper in V.Q.bundle.HELPERS: (run / helper).write_text('synthetic helper')
+            assets = {name: str(frozen / name) for name in ('requests', 'quality_manifest')}
+            for key in ('engine', 'worker', 'manifest'):
+                path = self.root / key; path.write_text(key); assets[key] = str(path)
+            argv = [assets['engine'], '--greedy']
+            if side == 'vk':
+                for i, plan in enumerate(self.plans):
+                    argv += ['--remote-gpu-worker', f'vulkan@127.0.0.1:{1234+i}', str(plan)]
+            arm = dict(name='warm', requests=list(range(100)), workers=1, loader_threads=1,
+                       caller_mask=[0], pool_masks=[[0]], engine_main_mask=[0])
+            self.configs.append(dict(evaluation_mode='quality', quality_suite='v2-100', assets=assets,
+                argv=argv, worker_argv=[assets['worker']], env={}, worker_env={}, model_paths=[],
+                worker_bytes=1, request_seconds=1, arms=[arm]))
+            rows = []
+            for i, case in enumerate(V.inventory()):
+                text = json.dumps(case['expected']) if case['semantic_rule'] == 'json' else case['expected']
+                ids = self.tok.encode(text)
+                rows.append(dict(index=i+1, tokens=ids, output_count=len(ids), finish='stop', prompt_s=1, decode_s=1))
+                (run / f'warm-first-logits.{i}').write_bytes(array.array('f', [1]*256).tobytes())
+            (run / 'summary.json').write_text(json.dumps({'arms': [{'arm':'warm','requests':rows}]}))
+            (run / 'warm').mkdir()
+        self.log = self.roots[1] / 'warm' / 'stderr.log'
+        self.log.write_text(self.reports())
+
+    def reports(self, inactive=False):
+        lines = []
+        for snapshot in range(101):
+            for index, plan in enumerate(self.binding['plans']):
+                value = 0 if inactive and index == 1 else snapshot
+                lines.append(f'worker[{index}] Vulkan/native-Q8-host-boundaries approximate READY transport=mTLS '
+                    f'model={plan["model"]} layout={plan["layout"]} placement={plan["placement"]} '
+                    f'session={index+1} assigned={plan["assigned_bytes"]} requests={value} entries={value} failures=0')
+        return '\n'.join(lines)
+
+    def score(self, name='report'):
+        with patch.object(V.Q.bundle, 'verify', side_effect=self.configs):
+            result = V.score(self.tok, *self.roots, self.root / name)
+        return result, json.loads((self.root / name).read_text())
+
+    def test_two_disjoint_plans_and_report(self):
+        result, report = self.score()
+        self.assertEqual(result, 0)
+        self.assertEqual(report['placement_plans'], self.binding['plans'])
+        self.assertTrue(report['endpoint_coverage_complete'])
+        self.assertNotIn('placement_plan_sha256', report)
+        self.assertEqual(report['cases'][97]['id'], 'code-14')
+        self.assertEqual(report['cases'][97]['vulkan_entries_by_endpoint'], [1, 1])
+        self.assertEqual(report['cases'][97]['vulkan_entries'], 2)
+        for index, endpoint in enumerate(report['endpoint_participation']):
+            self.assertEqual(endpoint['worker_index'], index)
+            self.assertEqual(endpoint['total_entries'], 100)
+            self.assertEqual(endpoint['exercised_cases'], 100)
+            self.assertEqual(endpoint['assigned_experts'], 1)
+        frozen = json.loads((self.root / 'frozen' / 'quality_manifest').read_text())
+        self.assertEqual(frozen['plans'], self.binding['plans'])
+        self.assertNotIn('plan_sha256', frozen)
+
+    def test_plan_order_content_overlap_and_runtime_identity_refused(self):
+        original = self.log.read_text()
+        for field, replacement in [('model=1', 'model=9'), ('layout=2:3', 'layout=3:2'),
+                                   ('session=2', 'session=0'), ('assigned=5222400', 'assigned=1'),
+                                   ('transport=mTLS', 'transport=plaintext-test'), ('failures=0', 'failures=1')]:
+            self.log.write_text(original.replace(field, replacement, 1))
+            with self.subTest(field=field), self.assertRaises(ValueError): self.score('bad')
+        placement = self.binding['plans'][1]['placement']
+        self.log.write_text(original.replace('placement='+placement, 'placement=1:2', 1))
+        with self.assertRaisesRegex(ValueError, 'identity/plan'): self.score('bad-placement')
+        self.log.write_text(original)
+        self.configs[1]['argv'][-1], self.configs[1]['argv'][-4] = self.configs[1]['argv'][-4], self.configs[1]['argv'][-1]
+        with self.assertRaisesRegex(ValueError, 'frozen v2'): self.score('bad-order')
+        with self.assertRaisesRegex(ValueError, 'overlap'): V.plan_binding([self.plans[0], self.plans[0]])
+        data = self.plans[0].read_bytes(); self.plans[0].write_bytes(data[:-1]+bytes([data[-1]^1]))
+        with self.assertRaisesRegex(ValueError, 'identity mismatch'): V.plan_binding(self.plans)
+
+    def test_inactive_endpoint_is_coverage_limited(self):
+        self.log.write_text(self.reports(inactive=True))
+        result, report = self.score()
+        self.assertEqual((result, report['result']), (1, 'screen-coverage-limited'))
+        self.assertFalse(report['endpoint_coverage_complete'])
+        self.assertEqual(report['offload_evidence']['semantic']['total'], 100)
+        self.assertEqual(report['endpoint_participation'][1]['exercised_case_ids'], [])
+        self.assertEqual(len(report['endpoint_participation'][1]['nonparticipating_case_ids']), 100)
+        self.assertEqual(report['cases'][0]['vulkan_entries_by_endpoint'], [1, 0])
+
+    def test_counter_reset_missing_duplicate_and_reordered_coverage_refused(self):
+        original = self.reports(); lines = original.splitlines()
+        variants = [original.replace('requests=100 entries=100', 'requests=0 entries=0', 1),
+                    original.replace('requests=100 entries=100', 'requests=99 entries=100', 1),
+                    original.replace('requests=100 entries=100', 'requests=100 entries=0', 1),
+                    original.replace('session=2 assigned=5222400 requests=100', 'session=3 assigned=5222400 requests=100'),
+                    '\n'.join(lines[:-1]), original+'\n'+lines[-1],
+                    '\n'.join([lines[1], lines[0]]+lines[2:]),
+                    original.replace('worker[1]', 'worker[0]')]
+        for text in variants:
+            with self.subTest(last=text[-120:]), self.assertRaises(ValueError):
+                V.endpoint_participation(text, 100, self.binding['plans'])
+
+    def test_each_case_need_not_exercise_each_endpoint(self):
+        text = self.reports(inactive=True)
+        lines = text.splitlines()
+        # Only the last case exercises endpoint 1; no per-case all-endpoint requirement.
+        lines[-1] = lines[-1].replace('requests=0 entries=0', 'requests=1 entries=1')
+        self.log.write_text('\n'.join(lines))
+        result, report = self.score()
+        self.assertEqual(result, 0)
+        self.assertTrue(report['endpoint_coverage_complete'])
+        self.assertEqual(report['endpoint_participation'][1]['exercised_cases'], 1)
+
+    def test_valid_changed_plan_and_different_model_refused(self):
+        self.plan(self.plans[1], 2)
+        with self.assertRaisesRegex(ValueError, 'frozen v2'): self.score('changed-plan')
+        self.plan(self.plans[1], 1, model=9)
+        with self.assertRaisesRegex(ValueError, 'model/layout/geometry'): V.plan_binding(self.plans)
+
+    def test_regression_precedes_inactive_endpoint_coverage(self):
+        self.log.write_text(self.reports(inactive=True))
+        path = self.roots[1] / 'summary.json'
+        summary = json.loads(path.read_text())
+        summary['arms'][0]['requests'][0]['tokens'] = self.tok.encode('999')
+        summary['arms'][0]['requests'][0]['output_count'] = 3
+        path.write_text(json.dumps(summary))
+        result, report = self.score()
+        self.assertEqual((result, report['result']), (1, 'screen-semantic-regression'))
+        self.assertFalse(report['endpoint_coverage_complete'])
+
+    def test_single_plan_schema_and_default_comparator_stay_single(self):
+        self.assertEqual(V.plan_binding(self.plans[0]), dict(plan_sha256=V.Q.bundle.sha(self.plans[0])))
+        with self.assertRaises(ValueError): V.Q.comparable(*self.configs)
+        V.Q.comparable(*self.configs, gpu_workers=2)
+
+
 if __name__ == '__main__': unittest.main()
