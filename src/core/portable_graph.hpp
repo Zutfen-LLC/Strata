@@ -25,8 +25,10 @@ inline Scheduler schedule(ggml_cgraph *graph, const char *phase, const PortableF
     require(bool(sched), "portable graph: scheduler creation failed");
     const size_t begin = placement.size();
     std::vector<ggml_backend_t> assignments;
+    std::vector<ggml_tensor *> original_nodes;
     for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
         auto *node = ggml_graph_node(graph, i);
+        original_nodes.push_back(node);
         const bool alias = metadata_only(node);
         ggml_backend_t chosen = cpu.get();
         std::string reason;
@@ -102,9 +104,12 @@ inline Scheduler schedule(ggml_cgraph *graph, const char *phase, const PortableF
     // pins, and no earlier split can leave temporary copy sources in this
     // owning graph before the scheduler rebuilds its context.
     require(ggml_backend_sched_alloc_graph(sched.get(), graph), "portable graph: graph allocation failed");
+    // Backend graph optimization may reorder graph->nodes (Vulkan does so
+    // for PLE norm/multiply fusion). Match each admission record to its tensor
+    // identity, not the possibly reordered graph index.
     // Report the scheduler's actual assignment as well as any support rejection.
     for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
-        auto *actual = ggml_backend_sched_get_tensor_backend(sched.get(), ggml_graph_node(graph, i));
+        auto *actual = ggml_backend_sched_get_tensor_backend(sched.get(), original_nodes[size_t(i)]);
         auto &record = placement[begin + size_t(i)];
         require(actual || record.metadata_only, "portable graph: computation has no actual backend assignment");
         if (actual) {
@@ -112,7 +117,8 @@ inline Scheduler schedule(ggml_cgraph *graph, const char *phase, const PortableF
             if (options.request_accelerator && !record.metadata_only && actual != options.accelerator &&
                 record.fallback_reason.empty()) {
                 record.fallback_reason = "scheduler placed operation on CPU";
-                require(options.allow_cpu_fallback, "portable graph: scheduler fallback forbidden");
+                require(options.allow_cpu_fallback, "portable graph: scheduler fallback forbidden for " +
+                            record.operation + " tensor " + record.tensor);
             }
         }
     }
