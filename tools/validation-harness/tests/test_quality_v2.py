@@ -161,6 +161,9 @@ class V2Tests(unittest.TestCase):
             self.assertEqual(report['offload_evidence']['semantic']['baseline_correct'], 99)
             self.assertEqual(report['offload_evidence']['semantic']['shared_failures'], 1)
             self.assertEqual(len(report['cases']), 100)
+            self.assertEqual(report['placement_plan_sha256'], V.Q.bundle.sha(plan))
+            self.assertIn('one Vulkan endpoint', report['scope'])
+            self.assertNotIn('expert302', report['scope'])
             self.assertFalse(report['cases'][0]['fixed_numeric_diagnostic']['numeric_pass'])
             plan.write_bytes(b'changed plan')
             with patch.object(V.Q.bundle, 'verify', side_effect=configs):

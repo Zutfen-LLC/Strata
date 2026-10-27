@@ -196,8 +196,8 @@ def score(tok, baseline, candidate, output):
              runtime=[{k: r[k] for k in ('prompt_s', 'decode_s', 'finish')} for r in pair]))
     report = summarize(rows)
     Q.write(output, dict(mode='exploratory-backend-quality', suite=SUITE, sources=sources(),
-            **report, cases=rows, numeric_limits=Q.compare_logits.LIMITS,
-            scope='One fixed expert302 plan, one V340 die, full CPU backing; one run per arm. '
+            **report, cases=rows, numeric_limits=Q.compare_logits.LIMITS, placement_plan_sha256=plan_sha256,
+            scope='One fixed SHA-256-bound placement plan on one Vulkan endpoint, full CPU backing; one run per arm. '
                   'Descriptive paired screen, not statistical noninferiority or broad quality equivalence.'))
     return 0 if report['result'] == 'screen-no-observed-regression' else 1
 
@@ -207,7 +207,7 @@ def main():
     parser.add_argument('--gguf', required=True, help='existing same model GGUF, metadata only')
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('prepare'); p.add_argument('--out', required=True)
-    p.add_argument('--placement-plan', required=True, help='existing admitted expert302 plan; freezes its bytes')
+    p.add_argument('--placement-plan', required=True, help='existing admitted placement plan; freezes its bytes')
     p = sub.add_parser('score'); p.add_argument('--baseline', required=True)
     p.add_argument('--candidate', required=True); p.add_argument('--out', required=True)
     args = parser.parse_args()
