@@ -242,4 +242,24 @@ const std::vector<PortablePlacement>& PortableFfn::placements() const { return i
 size_t PortableFfn::weight_bytes() const { return impl_->weights_size; }
 size_t PortableFfn::graph_bytes() const { return impl_->graphs_size; }
 
+PortableMemoryUsage PortableFfn::memory_usage() const {
+    const auto &s = *impl_;
+    PortableMemoryUsage m;
+    m.host_weights = s.weights_size;
+    for (auto *sched : {s.pre_sched.get(), s.post_sched.get()}) {
+        m.host_graph += ggml_backend_sched_get_buffer_size(sched, s.cpu.get());
+        if (s.options.accelerator && s.options.request_accelerator)
+            m.device_graph += ggml_backend_sched_get_buffer_size(sched, s.options.accelerator);
+    }
+    m.host_extra_bound = 6u << 20; // three owning metadata contexts, plus token staging below
+    m.host_extra_bound += size_t(s.g.hidden * s.g.streams * 8 + s.g.selected * s.g.hidden) * sizeof(float);
+    m.host_extra_bound += ggml_graph_plan(s.pre, s.options.threads, nullptr).work_size +
+                          ggml_graph_plan(s.post, s.options.threads, nullptr).work_size;
+    if (s.options.request_accelerator && s.options.accelerator) {
+        const size_t largest = std::max({s.g.hidden * s.g.streams * s.g.rank,
+            s.g.hidden * s.g.shared_ff, s.g.hidden * s.g.experts});
+        m.device_extra_bound = largest * sizeof(float) + (8u << 20);
+    }
+    return m;
+}
 } // namespace strata::core

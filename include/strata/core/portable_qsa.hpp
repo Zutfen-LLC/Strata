@@ -45,6 +45,7 @@ class PortableQsaLayer {
     size_t weight_bytes() const;
     // Scheduler allocations plus admitted workspace allowances, not total RSS/VRAM.
     size_t graph_bytes() const;
+    PortableMemoryUsage memory_usage() const;
     size_t state_bytes() const;
 
   private:

@@ -534,4 +534,22 @@ const std::vector<PortablePlacement> &PortableQsaLayer::placements() const { ret
 size_t PortableQsaLayer::weight_bytes() const { return impl_->weights_size; }
 size_t PortableQsaLayer::graph_bytes() const { return impl_->graphs_size; }
 size_t PortableQsaLayer::state_bytes() const { return impl_->states_size; }
+PortableMemoryUsage PortableQsaLayer::memory_usage() const {
+    const auto &s = *impl_;
+    auto m = s.ffn->memory_usage();
+    m.host_weights = s.weights_size;
+    for (auto *phase : {s.project.get(), s.pool.get(), s.combine.get()}) {
+        m.host_graph += ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.cpu.get());
+        if (s.options.execution.accelerator && s.options.execution.request_accelerator)
+            m.device_graph += ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.options.execution.accelerator);
+    }
+    // Attention has a fresh temporary scheduler per token. Reserve the unspent
+    // aggregate layer graph cap on each backend, including workspaces; fixed
+    // scheduler buffers above are actual per-backend allocations.
+    const size_t buffers = m.host_graph + m.device_graph;
+    const size_t allowance = s.options.execution.graph_budget > buffers ? s.options.execution.graph_budget - buffers : 0;
+    m.host_extra_bound += state_bytes() + (16u << 20) + allowance;
+    if (s.options.execution.request_accelerator) m.device_extra_bound += allowance;
+    return m;
+}
 } // namespace strata::core

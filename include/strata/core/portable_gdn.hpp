@@ -43,6 +43,7 @@ class PortableGdnLayer {
     const std::vector<PortablePlacement> &placements() const;
     size_t weight_bytes() const;
     size_t graph_bytes() const;
+    PortableMemoryUsage memory_usage() const;
     size_t state_bytes() const;
 
   private:

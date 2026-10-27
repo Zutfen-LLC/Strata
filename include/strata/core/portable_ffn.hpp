@@ -45,6 +45,12 @@ struct PortablePlacement {
     bool metadata_only = false; // reshape/view/permute/transpose alias storage
 };
 
+struct PortableMemoryUsage {
+    size_t host_weights = 0, host_graph = 0, device_graph = 0;
+    // Conservative admission for backend workspaces, metadata and host state.
+    size_t host_extra_bound = 0, device_extra_bound = 0;
+};
+
 struct PortableRoute {
     std::vector<float> activation;
     std::vector<int32_t> ids;
@@ -76,6 +82,7 @@ public:
     const std::vector<PortablePlacement>& placements() const;
     size_t weight_bytes() const;
     size_t graph_bytes() const;
+    PortableMemoryUsage memory_usage() const;
 
 private:
     struct Impl;

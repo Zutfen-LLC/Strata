@@ -187,6 +187,7 @@ struct PortableGdnLayer::Impl {
             }
             ple_conv = ggml_reshape_3d(c, ggml_silu(c, sum), H, HC, 1);
             ple_result = ggml_add(c, input, ggml_add(c, gated_value, ple_conv));
+            ggml_set_name(ple_result, "ple_residual");
             hidden = ple_result;
         }
         auto *norm =
@@ -429,4 +430,19 @@ const std::vector<PortablePlacement> &PortableGdnLayer::placements() const { ret
 size_t PortableGdnLayer::weight_bytes() const { return impl_->weights_size; }
 size_t PortableGdnLayer::graph_bytes() const { return impl_->graphs_size; }
 size_t PortableGdnLayer::state_bytes() const { return HOST_STATE_BYTES + (impl_->options.ple_table ? PLE_STATE_BYTES : 0); }
+PortableMemoryUsage PortableGdnLayer::memory_usage() const {
+    const auto &s = *impl_;
+    auto m = s.ffn->memory_usage();
+    m.host_weights = s.weights_size;
+    m.host_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
+    if (s.options.execution.accelerator && s.options.execution.request_accelerator)
+        m.device_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.options.execution.accelerator);
+    const size_t buffers = m.host_graph + m.device_graph;
+    const size_t allowance = s.graphs_size > buffers ? s.graphs_size - buffers : 0;
+    m.host_extra_bound += state_bytes() + (8u << 20) + allowance +
+                          ggml_graph_plan(s.graph, s.options.execution.threads, nullptr).work_size;
+    if (s.options.execution.request_accelerator)
+        m.device_extra_bound += allowance + size_t(H * CHANNELS) * sizeof(float) + (8u << 20);
+    return m;
+}
 } // namespace strata::core
