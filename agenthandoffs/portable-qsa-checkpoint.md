@@ -1,7 +1,8 @@
 # Portable QSA layer 3 — implementation checkpoint v1
 
-This is unfinished local implementation work, not a physical qualification or a
-published PR. Base: PR40 head `c3625a290066a50e397a32cdab8040038acc0b62`,
+Historical implementation checkpoint. Superseded by
+`portable-qsa-local-results-v1.md` and `portable-qsa-layer3-v1.md`.
+The notes below describe the original checkpoint, before Vulkan corrections. Base: PR40 head `c3625a290066a50e397a32cdab8040038acc0b62`,
 branch discovered from PR40: `codex/portable-ple-layer`. New branch:
 `codex/portable-qsa-layer3`. No prior commits rewritten. No fleet operations.
 
