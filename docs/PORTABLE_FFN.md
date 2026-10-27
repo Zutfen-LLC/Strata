@@ -51,17 +51,38 @@ must not be used concurrently without caller synchronization. The library does
 not choose a device, start a worker or alter a listener.
 
 `allow_cpu_fallback=false` rejects unavailable/declined or scheduler-selected CPU
-operations when an accelerator was requested. With explicit fallback enabled,
+operations when an accelerator was requested. Supported graph nodes are explicitly
+assigned to the requested backend, including T=1 operations with host weights;
+this does not rely on the backend's automatic batch-size offload threshold.
+The runner allocates on a fresh scheduler in one pass. It avoids the size-only
+reservation API that resets assignments, and avoids a separate split pass that
+could leave temporary copy sources in the owning graph. With explicit fallback enabled,
 `placements()` reports phase, operation, tensor type/shape, actual scheduled
 backend and fallback reason. Routing/weighted merge are intentionally host work,
-reported separately. A scheduler may place supported operations on CPU because
-of buffer placement; capability support alone does not establish GPU execution.
+reported separately. Reports use the scheduler's actual assignments; strict mode
+still rejects any CPU computation in requested accelerator graph work. Metadata-only
+views/reshapes retain their source storage and are flagged `metadata_only`; their
+consumers receive explicit scheduler copies when crossing devices. They perform
+no arithmetic and must not be pinned independently of their backing buffer.
 
 `weight_bytes()` counts aligned owned weights; `graph_bytes()` counts both
-schedulers' buffer reservations, including their tensor copies. Budgets check
-those allocations before evaluation. They do not cap driver/pipeline/backend
+schedulers' buffer reservations, including their tensor copies. Before reservation,
+a conservative bound prices every node and a full source copy per consumer with
+backend padding/alignment and no reuse credit. This can reject a budget that a
+tighter liveness plan would fit. The automatic-only size API is unsuitable here
+because it resets explicit device assignments. Actual reserved bytes must stay
+within the admitted bound. These budgets do not cap driver/pipeline/backend
 internal workspace or total process memory. Full-model admission must count
 those separately. No throughput or bitwise CUDA equivalence is claimed.
+
+When configured with `GGML_VULKAN=ON`, `portable_ffn_vulkan_test` is an explicit
+device test (not an automatically skipped CPU CTest). It requires a real Vulkan
+backend with a buffer type incompatible with ggml CPU buffers, asserts actual
+MUL_MAT and HC post assignments, executes the graphs, compares scalar parity,
+and checks strict mode, reset, callback rollback and budget rejection. A software
+Vulkan pass is labeled as such and does not qualify AMD hardware. Use
+`--device INDEX --expect-device SUBSTRING` to bind a hardware check to the retained
+device mapping; see `agenthandoffs/portable-ffn-vulkan.md` for the bounded 05 run.
 
 ## Direct end-to-end follow-on
 

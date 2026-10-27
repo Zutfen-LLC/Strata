@@ -1673,6 +1673,11 @@ if(STRATA_NATIVE_EXPERTS)
       # Test-only declining backend; production code uses public ggml APIs only.
       target_include_directories(portable_ffn_test PRIVATE "$<TARGET_PROPERTY:ggml-base,SOURCE_DIR>")
       add_test(NAME portable_ffn_test COMMAND portable_ffn_test)
+      if(TARGET ggml-vulkan)
+        add_executable(portable_ffn_vulkan_test tests/core/portable_ffn_vulkan_test.cpp)
+        target_link_libraries(portable_ffn_vulkan_test PRIVATE strata_portable_ffn ggml-vulkan)
+        # Device execution is explicit; a CPU-only CI run must not claim this passed.
+      endif()
     endif()
   endif()
   if(STRATA_BUILD_TESTS)
