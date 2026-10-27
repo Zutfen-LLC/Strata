@@ -34,7 +34,8 @@ class PortableQsaLayer {
     // Token-major [cell,kv_head,256]. Only committed cells are exposed.
     const std::vector<uint16_t> &keys() const;
     const std::vector<uint16_t> &values() const;
-    // [complete_block,128], followed by one zero spare/dead key.
+    // [complete_block,128], followed by the moving spare/dead key:
+    // weighted RMS of raw cell0, RoPE at position0. Zero only before first step.
     const std::vector<float> &pooled_keys() const;
     // Four raw keys; unused entries are zero, including the whole tail at
     // completion.

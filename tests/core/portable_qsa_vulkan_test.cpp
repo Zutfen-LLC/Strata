@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
         Oracle oracle;
         size_t peak_graph_bytes = 0;
         for (size_t t = 0; t < 9; ++t) {
-            if (t == 3 || t == 4) {
+            if (t == 0 || t == 3 || t == 4) {
                 const auto keys = layer->keys(), values = layer->values();
                 const auto pooled = layer->pooled_keys(), tail = layer->indexer_tail(),
                            last = layer->last_residual();
@@ -99,6 +99,7 @@ int main(int argc, char **argv) {
         check(layer->step(0, f.input(0), experts(), route, error, &trace), error);
         Oracle reset;
         reset.check_step(f, 0, f.input(0), trace, *layer);
+        spare_high_score_test(options.execution);
         selection_tests(options.execution);
         std::printf("PASS strict Vulkan selection width2051 boundaries/ties device=%s\n", description);
         std::printf("PASS strict Vulkan QSA H2560 layer3 positions0-8 projection_MUL_MAT=%zu ROPE=%zu, scalar "

@@ -145,7 +145,10 @@ struct Oracle {
             pooled.insert(pooled.end(), mean.begin(), mean.end());
         }
         std::vector<float> expected_pool = pooled;
-        expected_pool.resize(pooled.size() + 128, 0);
+        std::vector<float> spare(raw.begin(), raw.begin() + 128);
+        normalize(spare, 128, f, 13);
+        rotate(spare, 128, 0);
+        expected_pool.insert(expected_pool.end(), spare.begin(), spare.end());
         close(layer.pooled_keys(), expected_pool, 3e-5f, "completed and spare keys");
         std::vector<float> tail(512, 0);
         for (size_t b = (t + 1) / 4 * 4; b <= t; ++b)
@@ -161,7 +164,14 @@ struct Oracle {
             check(ggml_fp16_to_fp32(layer.keys()[j]) == keys[j] &&
                       ggml_fp16_to_fp32(layer.values()[j]) == values[j],
                   "FP16 KV policy");
-        std::vector<float> scores(t + 1, 1e9f);
+        float spare_score = 0;
+        for (size_t h = 0; h < 4; ++h) {
+            float dot = 0;
+            for (size_t j = 0; j < 128; ++j)
+                dot += trace.index_query[h * 128 + j] * spare[j];
+            spare_score += std::max(0.0f, dot);
+        }
+        std::vector<float> scores(t + 1, 1e9f + spare_score);
         for (size_t b = 0; b < (t + 1) / 4; ++b) {
             float sum = 0;
             for (size_t h = 0; h < 4; ++h) {
@@ -174,6 +184,9 @@ struct Oracle {
                 scores[b * 4 + j] = sum;
         }
         close(trace.cell_scores, scores, 1e-4f, "sum ReLU heads and tail priority");
+        for (size_t cell = (t + 1) / 4 * 4; cell <= t; ++cell)
+            check(std::fabs(trace.cell_scores[cell] - (1e9f + spare_score)) <= 64.0f,
+                  "ordinary tail is spare dot plus finite bias, within one F32 ULP");
         close(trace.selected, std::vector<float>(t + 1, 1), 0, "identity selection");
         std::vector<float> attn(6144), gated(6144);
         for (size_t h = 0; h < 24; ++h) {

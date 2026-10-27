@@ -27,6 +27,18 @@ inline ggml_tensor *qsa_dense_attention(ggml_context *c, ggml_tensor *ki, ggml_t
     }
     return ggml_reshape_1d(c, out, 6144);
 }
+// Expand complete-block and moving spare scores to cells, then add the
+// finite incomplete-tail bias. The spare participates in the dot product.
+inline ggml_tensor *qsa_cell_scores(ggml_context *c, ggml_tensor *pooled, ggml_tensor *query, ggml_tensor *mapping,
+                                    ggml_tensor *bias) {
+    const int64_t blocks = pooled->ne[1], cells = mapping->ne[0];
+    auto *perhead = ggml_relu(c, ggml_mul_mat(c, pooled, query));
+    auto *sum = ggml_cont(c, ggml_view_1d(c, perhead, blocks, 0));
+    for (int64_t h = 1; h < query->ne[1]; ++h)
+        sum = ggml_add(c, sum, ggml_view_1d(c, perhead, blocks, size_t(h * blocks) * sizeof(float)));
+    return ggml_add(c, ggml_reshape_1d(c, ggml_get_rows(c, ggml_reshape_2d(c, sum, 1, blocks), mapping), cells),
+                    bias);
+}
 // TOP_K supplies only the cutoff VALUE. Its arbitrary tie membership/order is
 // discarded. CUMSUM resolves equal-cutoff cells by ascending cell ID exactly,
 // without perturbing floating scores or assuming a backend sort is stable.

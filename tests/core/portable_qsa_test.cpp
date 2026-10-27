@@ -3,6 +3,7 @@
 using namespace qsa_fixture;
 int main() {
     try {
+        spare_high_score_test({});
         selection_tests({});
         Fixture f;
         std::string error;
@@ -29,7 +30,7 @@ int main() {
                           layer->placements().size() == placements,
                       "transaction rollback");
             };
-            if (t == 3 || t == 4)
+            if (t == 0 || t == 3 || t == 4)
                 for (int failure = 0; failure < 4; ++failure) {
                     check(!layer->step(
                               t, f.input(int(t)),

@@ -5,6 +5,89 @@
 #include "portable_qsa_fixture.hpp"
 #include <numeric>
 namespace qsa_fixture {
+// Uses the real coordinator's retained spare, then the production score and
+// selection builders at a long-cache boundary without long-cache projections.
+inline void spare_high_score_test(PortableFfnOptions options) {
+    Fixture f;
+    std::fill(f.data[11].begin(), f.data[11].end(), 0);
+    const auto scale = ggml_fp32_to_fp16(0.25f);
+    std::memcpy(f.data[11].data() + 64 * 2720, &scale, 2);
+    f.data[11][64 * 2720 + 2] = 1; // first raw key is strictly positive e64
+    for (size_t j = 0; j < 128; ++j) {
+        const float norm = 1e5f / std::sqrt(128.0f);
+        std::memcpy(f.data[13].data() + j * 4, &norm, 4);
+    }
+    PortableQsaOptions opts;
+    opts.capacity = 1;
+    opts.execution = options;
+    std::string error;
+    auto layer = PortableQsaLayer::create(3, f.views, opts, error);
+    check(bool(layer), error);
+    PortableRoute route;
+    PortableQsaTrace trace;
+    check(layer->step(0, std::vector<float>(10240, 1), experts(), route, error, &trace), error);
+    auto expected_spare = trace.index_raw_key;
+    normalize(expected_spare, 128, f, 13);
+    rotate(expected_spare, 128, 0);
+    check(expected_spare[64] > 9e4f, "high-score first-key magnitude");
+    constexpr int64_t cells = 2055, complete = 513, blocks = 514;
+    std::vector<float> pooled(size_t(blocks) * 128, 0), query(512, 0), bias(size_t(cells), 0);
+    std::vector<int32_t> mapping(size_t(cells), 0);
+    for (size_t b = 0; b < size_t(complete); ++b) {
+        pooled[b * 128 + 64] = 2e4f;
+        pooled[b * 128 + 65] = std::sqrt(1e10f - 4e8f);
+    }
+    std::copy(layer->pooled_keys().begin(), layer->pooled_keys().end(), pooled.begin() + complete * 128);
+    query[64] = 1e5f;
+    for (size_t cell = 0; cell < size_t(cells); ++cell) {
+        mapping[cell] = int32_t(cell / 4);
+        if (cell >= size_t(complete) * 4)
+            bias[cell] = 1e9f;
+    }
+    portable_detail::Backend cpu(ggml_backend_cpu_init(), ggml_backend_free);
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init({2u << 20, nullptr, true}), ggml_free);
+    auto *c = ctx.get();
+    auto *pk = ggml_new_tensor_2d(c, GGML_TYPE_F32, 128, blocks);
+    auto *q = ggml_new_tensor_2d(c, GGML_TYPE_F32, 128, 4);
+    auto *map = ggml_new_tensor_1d(c, GGML_TYPE_I32, cells);
+    auto *tail_bias = ggml_new_tensor_1d(c, GGML_TYPE_F32, cells);
+    for (auto *t : {pk, q, map, tail_bias})
+        ggml_set_input(t);
+    auto *scores = portable_detail::qsa_cell_scores(c, pk, q, map, tail_bias);
+    auto *selected = portable_detail::qsa_selection(c, scores);
+    ggml_set_output(scores);
+    ggml_set_output(selected);
+    auto *graph = ggml_new_graph(c);
+    ggml_build_forward_expand(graph, scores);
+    ggml_build_forward_expand(graph, selected);
+    size_t bytes = 0;
+    std::vector<PortablePlacement> placement;
+    auto sched = portable_detail::schedule(graph, "qsa-spare-regression", options, cpu, placement, bytes);
+    ggml_backend_tensor_set(pk, pooled.data(), 0, pooled.size() * 4);
+    ggml_backend_tensor_set(q, query.data(), 0, query.size() * 4);
+    ggml_backend_tensor_set(map, mapping.data(), 0, mapping.size() * 4);
+    ggml_backend_tensor_set(tail_bias, bias.data(), 0, bias.size() * 4);
+    check(ggml_backend_sched_graph_compute(sched.get(), graph) == GGML_STATUS_SUCCESS, "high-score graph");
+    std::vector<float> actual(size_t(cells), 0), actual_scores(size_t(cells), 0), expected(size_t(cells), 0);
+    ggml_backend_tensor_get(selected, actual.data(), 0, actual.size() * 4);
+    ggml_backend_tensor_get(scores, actual_scores.data(), 0, actual_scores.size() * 4);
+    for (size_t cell = 0; cell < 2048; ++cell)
+        expected[cell] = 1;
+    for (size_t cell = 2052; cell < 2055; ++cell)
+        expected[cell] = 1;
+    close(actual, expected, 0, "high-score spare retains tails2052-2054 and complete0-2047");
+    close(layer->pooled_keys(), expected_spare, 3e-5f, "first normalized raw key is spare");
+    const float expected_tail = 1e9f + 1e5f * expected_spare[64];
+    check(expected_tail > 1e10f, "true tail exceeds completed block scores");
+    for (size_t cell = 2052; cell < 2055; ++cell)
+        check(std::fabs(actual_scores[cell] - expected_tail) < 1e-5f * expected_tail,
+              "spare dot plus finite tail bias");
+    for (const auto &p : placement)
+        if (options.request_accelerator && !options.allow_cpu_fallback && !p.metadata_only)
+            check(p.backend == ggml_backend_name(options.accelerator) && p.fallback_reason.empty(),
+                  "strict high-score placement");
+    std::printf("PASS high-score spare cached_cells=2055 width=2051 tails2052-2054 complete0-2047\n");
+}
 inline void selection_tests(PortableFfnOptions options) {
     // The shared scheduler prices a full backing root per view consumer.
     // Explicitly admit this conservative bound for the 24-head boundary fixture;

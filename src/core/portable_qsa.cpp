@@ -390,6 +390,19 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
         auto hk = half(k), hv = half(v);
         auto next_tail = s.tail;
         std::copy(ik.begin(), ik.end(), next_tail.begin() + size_t(position % 4) * ID);
+        // The spare is normalized raw cell0 at RoPE position0, not a zero
+        // vector. Keep it in the final pooled row and move it on completion.
+        // Everything here is candidate-only until the existing FFN commit.
+        std::vector<float> spare(s.pooled.end() - ID, s.pooled.end());
+        if (position == 0) {
+            std::vector<float> first_block(4 * ID);
+            for (size_t member = 0; member < 4; ++member)
+                std::copy(ik.begin(), ik.end(), first_block.begin() + member * ID);
+            write(s.pool_input, first_block);
+            ggml_backend_tensor_set(s.pool_pos, positions.data(), 0, sizeof(positions));
+            s.pool->run();
+            spare = read(s.pool_output);
+        }
         std::vector<float> new_pool;
         const size_t n = size_t(position) + 1, complete = n / 4;
         if (n % 4 == 0) {
@@ -408,6 +421,7 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
             next_pool.resize((complete + 1) * ID, 0);
             std::copy(new_pool.begin(), new_pool.end(), next_pool.begin() + (complete - 1) * ID);
         }
+        std::copy(spare.begin(), spare.end(), next_pool.begin() + complete * ID);
         std::vector<uint16_t> next_keys(n * KV), next_values(n * KV);
         std::copy(s.keys.begin(), s.keys.end(), next_keys.begin());
         std::copy(s.values.begin(), s.values.end(), next_values.begin());
@@ -421,12 +435,7 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
         auto *qi = attention.input({D, 12, KH}), *idxq = attention.input({ID, IH});
         auto *pk = attention.input({ID, blocks});
         auto *mapping = attention.input({cells}, GGML_TYPE_I32), *bias = attention.input({cells});
-        auto *perhead = ggml_relu(c, ggml_mul_mat(c, pk, idxq));
-        auto *sum = ggml_cont(c, ggml_view_1d(c, perhead, blocks, 0));
-        for (int h = 1; h < IH; ++h)
-            sum = ggml_add(c, sum, ggml_view_1d(c, perhead, blocks, size_t(h * blocks) * sizeof(float)));
-        auto *scores = ggml_add(
-            c, ggml_reshape_1d(c, ggml_get_rows(c, ggml_reshape_2d(c, sum, 1, blocks), mapping), cells), bias);
+        auto *scores = portable_detail::qsa_cell_scores(c, pk, idxq, mapping, bias);
         auto *selected = portable_detail::qsa_selection(c, scores);
         auto *out = portable_detail::qsa_dense_attention(c, ki, vi, qi, selected);
         attention.output(scores, "qsa-cell-scores");
