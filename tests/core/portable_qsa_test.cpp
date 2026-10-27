@@ -77,6 +77,26 @@ int main() {
               "reset");
         check(layer->step(0, f.input(0), experts(), route, error, &trace), error);
         check(layer->last_residual() == first_residual, "reset equals fresh control");
+        auto late_views = f.views;
+        for (auto &v : late_views)
+            v.name = "blk.47." + v.name.substr(6);
+        {
+            auto late = PortableQsaLayer::create(47, late_views, opts, error);
+            check(bool(late), error);
+            check(late->step(0, f.input(0),
+                [&](int64_t id, const PortableRoute &r, std::vector<float> &rows, std::string &e) {
+                    check(id == 47, "late QSA dispatch ID");
+                    return experts()(3, r, rows, e);
+                }, route, error), error);
+            close(late->last_residual(), first_residual, 0, "late QSA equivalence");
+            check(late->keys() == layer->keys(), "late QSA cache equivalence");
+        }
+        for (int id = 3; id < 48; id += 4)
+            check(!PortableQsaLayer::create(id, {}, opts, error) &&
+                  error.find("missing/extra") != std::string::npos, "all QSA IDs admitted");
+        for (int id : {-1, 0, 2, 46, 48, 51})
+            check(!PortableQsaLayer::create(id, {}, opts, error) &&
+                  error.find("expected a QSA layer") != std::string::npos, "QSA layer family guard");
         Oracle control;
         control.check_step(f, 0, f.input(0), trace, *layer);
         for (auto field : {0, 1, 2}) {

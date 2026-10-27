@@ -115,7 +115,9 @@ struct PortableQsaLayer::Impl {
     uint64_t count = 0;
 
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableQsaOptions opts) : options(opts) {
-        require(layer == 3, "portable QSA: only layer 3 supported");
+        require(layer >= 0 && layer < 48 && layer % 4 == 3,
+                "portable QSA: expected a QSA layer 3/7/.../47");
+        const std::string prefix = "blk." + std::to_string(layer) + ".";
         require(options.capacity > 0 && options.capacity <= 262144,
                 "portable QSA: capacity must be in [1,262144]");
         // Capacity bound also keeps float prefix counts exact. Price committed
@@ -127,8 +129,8 @@ struct PortableQsaLayer::Impl {
         require(states_size <= options.state_budget, "portable QSA: host state budget exceeded");
         std::vector<PortableTensorView> aw, fw;
         for (const auto &t : tensors) {
-            require(t.name.rfind("blk.3.", 0) == 0, "portable QSA: tensor belongs to another layer");
-            (shapes().count(t.name.substr(6)) ? aw : fw).push_back(t);
+            require(t.name.rfind(prefix, 0) == 0, "portable QSA: tensor belongs to another layer");
+            (shapes().count(t.name.substr(prefix.size())) ? aw : fw).push_back(t);
         }
         require(aw.size() == shapes().size() && fw.size() == 9,
                 "portable QSA: missing/extra attention or FFN tensors");
@@ -156,7 +158,7 @@ struct PortableQsaLayer::Impl {
         ggml_backend_cpu_set_n_threads(cpu.get(), options.execution.threads);
         weights_ctx = context();
         for (const auto &view : aw) {
-            const auto key = view.name.substr(6);
+            const auto key = view.name.substr(prefix.size());
             const auto &shape = shapes().at(key);
             require(!w.count(key) && view.shape == shape,
                     "portable QSA: bad/duplicate tensor shape: " + view.name);
@@ -177,7 +179,7 @@ struct PortableQsaLayer::Impl {
         require(bool(weights_buffer), "portable QSA: weight allocation failed");
         ggml_backend_buffer_set_usage(weights_buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
         for (const auto &view : aw)
-            ggml_backend_tensor_set(w.at(view.name.substr(6)), view.data, 0, view.bytes);
+            ggml_backend_tensor_set(w.at(view.name.substr(prefix.size())), view.data, 0, view.bytes);
         weights_size = ffn->weight_bytes() + ggml_backend_buffer_get_size(weights_buffer.get());
         project = std::make_unique<Phase>();
         auto *c = project->ctx.get();
@@ -268,7 +270,9 @@ std::unique_ptr<PortableQsaLayer> PortableQsaLayer::from_gguf(const GgufModel &m
                                                               PortableQsaOptions opts, std::string &error) {
     error.clear();
     try {
-        require(layer == 3, "portable QSA: only layer 3 supported");
+        require(layer >= 0 && layer < 48 && layer % 4 == 3,
+                "portable QSA: expected a QSA layer 3/7/.../47");
+        const std::string prefix = "blk." + std::to_string(layer) + ".";
         const auto &meta = model.meta();
         const auto *arch = meta.get("general.architecture");
         require(arch && arch->s == "qwen4exp", "portable QSA: requires qwen4exp");
@@ -338,14 +342,14 @@ std::unique_ptr<PortableQsaLayer> PortableQsaLayer::from_gguf(const GgufModel &m
         if (ple) {
             require(ple->type == MetaType::ARRAY, "portable QSA: malformed PLE layers");
             for (const auto &v : ple->items)
-                require(v.is_num() && v.u != 3, "portable QSA: PLE at layer 3 unsupported");
+                require(v.is_num() && v.u != uint64_t(layer), "portable QSA: PLE at a QSA layer unsupported");
         }
         std::vector<PortableTensorView> views;
         for (size_t s = 0; s < model.size(); ++s)
             for (const auto &t : model.shard(s).tensors()) {
-                if (t.name.rfind("blk.3.", 0) != 0)
+                if (t.name.rfind(prefix, 0) != 0)
                     continue;
-                const auto suffix = t.name.substr(6);
+                const auto suffix = t.name.substr(prefix.size());
                 // Routed expert payloads are owned by the existing callback. Reject
                 // any other unrecognized layer tensor instead of ignoring biases or
                 // extension weights that would change the layer's semantics.

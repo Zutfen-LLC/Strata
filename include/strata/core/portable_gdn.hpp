@@ -5,7 +5,7 @@ namespace strata::core {
 struct PortableGdnOptions {
     PortableFfnOptions execution;
     size_t state_budget = 16ull << 20;           // host committed/candidate state and residuals
-    std::shared_ptr<PortablePleTable> ple_table; // required for create(layer=1); host only
+    std::shared_ptr<PortablePleTable> ple_table; // enables configured layer-1 PLE; host only
 };
 struct PortableGdnTrace {
     std::vector<float> qkv, convolution, query, key, value, decay, beta, attention;
@@ -13,8 +13,8 @@ struct PortableGdnTrace {
     std::vector<float> ple_embedding, ple_key, ple_value, ple_gate, ple_normalized, ple_convolution, ple_residual;
 };
 
-// Complete qwen4exp layers 0/1, T=1: optional configured PLE, HC/GDN,
-// PortableFfn. Exact fleet geometry only. QSA and other layers are rejected.
+// Complete qwen4exp non-QSA layers 0..47, T=1: configured PLE, HC/GDN,
+// PortableFfn. Exact fleet geometry only. QSA layers are rejected.
 class PortableGdnLayer {
   public:
     static std::unique_ptr<PortableGdnLayer> create(int64_t layer, const std::vector<PortableTensorView> &tensors,
@@ -29,7 +29,7 @@ class PortableGdnLayer {
     // persistent state and last_residual commit together only after FFN success.
     bool step(const std::vector<float> &residual, const PortableExpertRows &dispatch, PortableRoute &route,
               std::string &error, PortableGdnTrace *trace = nullptr);
-    // Token-aware entry for layer 1. Supply the configured image token ID for
+    // Token-aware entry for configured PLE. Supply the configured image token ID for
     // image positions. EOS cuts hash predecessors on subsequent tokens; it
     // does not clear recurrent/convolution state. reset() starts a new sequence.
     bool step(int32_t token, const std::vector<float> &residual, const PortableExpertRows &dispatch,
