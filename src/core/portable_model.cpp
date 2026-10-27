@@ -278,7 +278,7 @@ struct PortableModelSession::Impl {
                 require(bool(layer.gdn), "portable model: layer " + std::to_string(l) + ": " + error);
             }
             account(layer.memory(), device(l));
-            placement.insert(placement.end(), layer.placements().begin(), layer.placements().end());
+            append_placements(layer.placements(), int64_t(l));
             layers.push_back(std::move(layer));
         }
         std::vector<PortableTensorView> hw;
@@ -291,8 +291,15 @@ struct PortableModelSession::Impl {
         head = PortableHead::create({H, HC, 320, int64_t(vocabulary), 1e-6f}, hw, execution(L - 1, true), error);
         require(bool(head), error);
         account(head->memory_usage(), device(L - 1));
-        placement.insert(placement.end(), head->placements().begin(), head->placements().end());
+        append_placements(head->placements(), int64_t(L));
         require(reset(error), error);
+    }
+    void append_placements(const std::vector<PortablePlacement> &source, int64_t layer) {
+        for (const auto &record : source) {
+            auto p = record;
+            p.layer = layer;
+            placement.push_back(std::move(p));
+        }
     }
     size_t device(size_t layer) const { return opts.accelerators.size() == 2 && layer >= opts.split ? 1 : 0; }
     void preflight(size_t die, size_t weight, size_t graph, size_t state) const {
@@ -369,9 +376,9 @@ struct PortableModelSession::Impl {
             const bool head_ok = head->run(residual, logits, error);
             require(head_ok, "portable model: output head: " + error);
             placement.clear();
-            for (const auto &layer : layers)
-                placement.insert(placement.end(), layer.placements().begin(), layer.placements().end());
-            placement.insert(placement.end(), head->placements().begin(), head->placements().end());
+            for (size_t l = 0; l < layers.size(); ++l)
+                append_placements(layers[l].placements(), int64_t(l));
+            append_placements(head->placements(), int64_t(L));
             ++pos;
             eos_seen = token == eos_id;
             return true;

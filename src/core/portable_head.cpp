@@ -2,6 +2,7 @@
 #include "ggml-cpu.h"
 #include "portable_graph.hpp"
 #include "strata/core/portable_model.hpp"
+#include <algorithm>
 #include <cmath>
 #include <map>
 
@@ -85,10 +86,10 @@ struct PortableHead::Impl {
         require(workspace <= opts.graph_budget, "portable head: CPU workspace budget");
         graph_size = workspace;
         if (opts.request_accelerator && opts.accelerator) {
-            // Pinned Vulkan tensor workspace: a full F32 output matrix plus
+            // Pinned Vulkan tensor workspace: a full F32 image of the largest head matrix plus
             // input/output conversion and split-K temporary rows (<=8 splits).
             device_workspace =
-                size_t(g.hidden * g.vocabulary) * sizeof(float) + size_t(g.vocabulary * 16 + width * 4) * sizeof(float);
+                std::max(size_t(g.hidden * g.vocabulary), size_t(width * g.rank)) * sizeof(float) + size_t(g.vocabulary * 16 + width * 4) * sizeof(float);
             require(device_workspace <= opts.graph_budget - graph_size, "portable head: device workspace budget");
             graph_size += device_workspace;
         }

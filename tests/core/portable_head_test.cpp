@@ -1,9 +1,13 @@
+#include "ggml-backend.h"
 #include "strata/artifact/dequant.hpp"
 #include "strata/core/portable_model.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#ifdef STRATA_PORTABLE_MODEL_VULKAN
+#include "ggml-vulkan.h"
+#endif
 using namespace strata::core;
 namespace {
 void check(bool ok, const std::string &e) {
@@ -11,9 +15,26 @@ void check(bool ok, const std::string &e) {
         throw std::runtime_error(e);
 }
 } // namespace
-int main() {
+int main(int argc, char **argv) {
     try {
-        constexpr size_t H = 32, HC = 4, R = 32, V = 9;
+        std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> backend(nullptr, ggml_backend_free);
+        PortableFfnOptions options;
+        if (argc != 1) {
+            check(argc == 3 && std::string(argv[1]) == "--vulkan", "usage: portable_head_test [--vulkan INDEX]");
+#ifdef STRATA_PORTABLE_MODEL_VULKAN
+            size_t used = 0;
+            const auto index = std::stoul(argv[2], &used);
+            check(used == std::strlen(argv[2]) && index < size_t(ggml_backend_vk_get_device_count()),
+                  "invalid Vulkan device");
+            backend.reset(ggml_backend_vk_init(index));
+            check(bool(backend), "requested Vulkan unavailable");
+            options.accelerator = backend.get();
+            options.request_accelerator = true;
+#else
+            throw std::runtime_error("this build has no Vulkan backend");
+#endif
+        }
+        constexpr size_t H = 2560, HC = 4, R = 320, V = 64;
         std::vector<float> norm(H * HC);
         for (size_t i = 0; i < norm.size(); ++i)
             norm[i] = 0.7f + float(i % 7) * 0.1f;
@@ -39,7 +60,7 @@ int main() {
             {"output_hc_up.weight", {R, H * HC}, 8, data[1].data(), data[1].size()},
             {"output.weight", {H, V}, 8, data[2].data(), data[2].size()}};
         std::string error;
-        auto head = PortableHead::create({H, HC, R, V, 1e-6f}, weights, {}, error);
+        auto head = PortableHead::create({H, HC, R, V, 1e-6f}, weights, options, error);
         check(bool(head), error);
         auto mm = [&](size_t w, const std::vector<float> &x) {
             std::vector<float> result(outputs[w]);
@@ -90,8 +111,16 @@ int main() {
         small.graph_budget = 1;
         check(!PortableHead::create({H, HC, R, V, 1e-6f}, weights, small, error), "head graph cap");
         const auto memory = head->memory_usage();
-        check(memory.host_weights == head->weight_bytes() && memory.device_graph == 0 && memory.host_graph > 0,
+        check(memory.host_weights == head->weight_bytes() &&
+                  (backend ? memory.device_graph > 0 : memory.device_graph == 0 && memory.host_graph > 0),
               "head allocation report");
+        if (backend) {
+            for (const auto &p : head->placements())
+                check(p.metadata_only || (p.backend == ggml_backend_name(backend.get()) && p.fallback_reason.empty()),
+                      "head tensor work must execute on requested Vulkan device");
+            std::printf("PASS strict Vulkan portable head backend=%s actual_device_scheduler=%zu workspace_bound=%zu\n",
+                        ggml_backend_name(backend.get()), memory.device_graph, memory.device_extra_bound);
+        }
         std::puts("portable_head_test: independent Q8 HC/global head scalar reference, input/cap checks passed");
         return 0;
     } catch (const std::exception &e) {

@@ -126,12 +126,32 @@ int main(int argc, char **argv) {
             throw std::runtime_error("this build has no Vulkan backend");
 #endif
         }
+        auto device_memory = [&](const char *stage, uint64_t position) {
+#ifdef STRATA_PORTABLE_MODEL_VULKAN
+            for (size_t i = 0; i < devices.size(); ++i) {
+                size_t available = 0, total = 0;
+                char description[256]{};
+                ggml_backend_vk_get_device_memory(int(devices[i]), &available, &total);
+                ggml_backend_vk_get_device_description(int(devices[i]), description, sizeof(description));
+                std::cerr << "device_memory stage=" << stage << " position=" << position << " device=" << devices[i]
+                          << " total_bytes=" << total << " available_bytes=" << available;
+                if (available <= total)
+                    std::cerr << " heap_used_bytes=" << total - available;
+                std::cerr << " description=" << description << '\n';
+            }
+#else
+            (void)stage;
+            (void)position;
+#endif
+        };
+        device_memory("before-model", 0);
         if (!dump.empty() && !std::filesystem::is_directory(dump))
             throw std::runtime_error("--dump-logits directory must already exist");
         std::string error;
         auto session = strata::core::PortableModelSession::open(strata::gguf_split_paths(model), manifest, opts, error);
         if (!session)
             throw std::runtime_error(error);
+        device_memory("model-loaded", 0);
         const auto &report = session->report();
         std::cerr << "mapped_bytes=" << report.mapped_bytes << " host_weight_bytes=" << report.host_weights
                   << " host_scheduler=" << report.host_scheduler << " host_state_bound=" << report.host_state_bound
@@ -150,6 +170,7 @@ int main(int argc, char **argv) {
             const uint64_t pos = session->position();
             if (!session->step(token, logits, error))
                 throw std::runtime_error(error);
+            device_memory("token-complete", pos);
             if (!dump.empty()) {
                 // compare_logits.py consumes little-endian raw F32. This CLI is
                 // for the existing little-endian x86 CPU/Vulkan execution path.
@@ -182,10 +203,10 @@ int main(int argc, char **argv) {
         std::cout << "{\"stop\":\"" << stop << "\",\"position\":" << session->position() << "}\n";
         if (!placement_path.empty()) {
             std::ofstream file(placement_path);
-            file << "phase\top\ttensor\ttype\tbackend\tmetadata\tfallback\n";
+            file << "layer\tphase\top\ttensor\ttype\tbackend\tmetadata\tfallback\n";
             for (const auto &p : session->placements())
-                file << p.phase << '\t' << p.operation << '\t' << p.tensor << '\t' << p.type << '\t' << p.backend
-                     << '\t' << p.metadata_only << '\t' << p.fallback_reason << '\n';
+                file << p.layer << '\t' << p.phase << '\t' << p.operation << '\t' << p.tensor << '\t' << p.type << '\t'
+                     << p.backend << '\t' << p.metadata_only << '\t' << p.fallback_reason << '\n';
             if (!file)
                 throw std::runtime_error("placement report write failed");
         }

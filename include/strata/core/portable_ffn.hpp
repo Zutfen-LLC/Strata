@@ -43,6 +43,7 @@ struct PortablePlacement {
     std::string phase, operation, tensor, type, backend, fallback_reason;
     std::vector<int64_t> shape;
     bool metadata_only = false; // reshape/view/permute/transpose alias storage
+    int64_t layer = -1; // model report: 0..47, 48 for global head
 };
 
 struct PortableMemoryUsage {

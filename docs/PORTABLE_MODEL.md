@@ -41,7 +41,11 @@ directory must already exist. Without `--vulkan`, execution is CPU-only.
 Accelerator fallback is forbidden unless `--allow-cpu-fallback` is explicitly
 supplied; the placement report records fallback reasons. Choose device caps
 from the actual free memory and leave measured headroom for the driver and
-other users. Each V340 die has its own 8 GiB; caps are never pooled.
+other users. Each V340 die has its own 8 GiB; caps are never pooled. The CLI records
+Vulkan memory snapshots before model loading and after every token; placement
+TSV rows carry layer IDs. For the exact parent-dispatched real-model stages,
+use [the versioned Hermes recipe](../agenthandoffs/portable-model-hermes-v1.md),
+which also samples aggregate VRAM for both PCI devices during the run.
 
 The split is contiguous: layers [0,32) on the first device, [32,48) on the
 second, then the global output head on the second. `--split` can select another
@@ -125,7 +129,9 @@ vocabulary dimensions. It executes all 48 layers, configured layer-1 PLE,
 a real nonzero CPU expert, full-vocabulary scalar checks, different token
 embeddings, a layer-10 digest failure, poison/reset/replay, greedy generation,
 EOS and context stops. It takes several GiB of RAM and about 22 seconds in
-the initial local CPU run. Separate existing tests check nonzero attention,
+the initial local CPU run. The standalone head test also accepts `--vulkan INDEX` and checks actual
+H2560/HC4/rank320 with64 output rows and strict device placement. Separate
+existing tests check nonzero attention,
 recurrent and PLE histories against independent references. This synthetic
 result does not establish real-weight numerical quality or physical AMD
 execution of the assembled model.
