@@ -3,7 +3,7 @@
 Corrects independent review findings against
 `ba4c426739777b28004e784e90caefe767026fd1`. Work is confined to the existing
 isolated task-8/strata branch. The deployed ba4c426 source/build and running
-Hermes stages1/2 were not touched. No fleet command or real-model run occurred.
+operator stages1/2 were not touched. No fleet command or real-model run occurred.
 
 ## Physical device identity
 
@@ -62,9 +62,9 @@ fixture; explicit CMake regeneration and rebuild succeeded. The fixture was
 not reported as passed until it existed and ran. No validation failure remains.
 
 Logs:
-- `/tmp/portable-model-admission-guards-{config,build2,ctest,python}.log`
-- `/tmp/portable-model-device-admission-vulkan-final.log`
-- `/tmp/portable-model-admission-cpu-{config,build,only-test}.log`
+- `${BUILD_ARTIFACT_F855586D},build2,ctest,python}.log`
+- `${BUILD_ARTIFACT_23A7E173}`
+- `${BUILD_ARTIFACT_87FA1BC9},build,only-test}.log`
 
 Updated operational stages: `portable-model-hermes-v2.md` supersedes v1 for
 the corrected source. Parent must use the new exact PR head in fresh isolated

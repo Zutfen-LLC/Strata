@@ -26,7 +26,7 @@ Returned indices remain in the original T*K space. The resident tensor budget,
 source digests, plan identities and original reducer remain enforced. Larger
 windows fail; they are never truncated. No new batched shader is involved.
 
-Only parent-dispatched Hermes execution after review/admission may run the steps
+Only parent-dispatched operator execution after review/admission may run the steps
 below. Host-specific 05 certificate/network approval is pending. Do not create
 credentials, alter trust stores, listeners, SSH/forwards/firewalls or resident
 services to make a step work. Reuse approved resources after their separate
