@@ -103,6 +103,7 @@ class PortableModelSession {
     bool poisoned() const;
     bool ended() const;
     int32_t eos() const;
+    size_t vocabulary() const;
     // Cumulative across reset; digest_bytes counts input bytes, two FNV passes.
     PortableExpertWork expert_work() const;
     const PortableModelReport &report() const;

@@ -64,6 +64,17 @@ int main() {
         check(session->expert_work().hits == 480, "all-layer second token hits");
         check(session->reset(error) && session->step(5, logits, error), error);
         check(session->position() == 1, "successful position commit");
+        // Reset retains immutable providers and verified rows; A/B/A must replay
+        // identically without re-verifying the same selected expert views.
+        const auto weights=session->report().host_weights;
+        const auto verified=session->expert_work().verifications;
+        for(int32_t token : {6, 5, 5}) {
+            check(session->reset(error) && session->step(token, logits, error), error);
+            const auto& expected=reference[token==6 ? 1 : 0];
+            check(logits==expected, "A/B/A reset rows differ from explicit same-backend reference");
+            check(session->expert_work().verifications==verified, "reset discarded verified CPU views");
+            check(session->report().host_weights==weights, "weights changed across reset");
+        }
         // Corrupt a selected expert in layer 10 after construction: layers
         // 0..9 commit before the digest error. The same token cannot retry.
         const size_t shard = 3;

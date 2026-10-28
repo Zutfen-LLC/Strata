@@ -208,3 +208,77 @@ existing tests check nonzero attention,
 recurrent and PLE histories against independent references. This synthetic
 result does not establish real-weight numerical quality or physical AMD
 execution of the assembled model.
+
+## Sequential resident stdio (POSIX, opt-in)
+
+Replace `--tokens` and `--max-new` with `--stdio --max-requests 4`. Model,
+backends, CPU worker pool, GPU plans and immutable expert verification views
+are constructed once. The existing one-shot output and arithmetic are unchanged.
+There is no network listener or concurrent execution.
+
+After loading, stdout emits one flushed JSON line:
+
+```json
+{"ready":true,"schema":1,"load_ms":123.0,"context":256,"max_requests":4}
+```
+
+Send ASCII `GEN <max_new> <id,id,...>\n`, for example `GEN 2 123,456\n`.
+This uses the native GEN/QUIT control words with the portable CLI's comma-separated
+IDs; native optional generation parameters are unsupported. Each request is
+independent. Unsigned decimals only, no spaces within the list, no CRLF, at most
+4096 bytes before LF, nonempty prompt, IDs below the loaded vocabulary, prompt
+length and max_new each at most context (1–256). Generation stops at context if
+the combined work would exceed it. The entire request is validated before reset
+or mutation. A malformed, oversized or incomplete-at-EOF request exits nonzero.
+
+Every accepted GEN resets GDN recurrent/convolution state, QSA KV/pool/tail state,
+PLE history, previous tokens, position and generation EOS. It retains immutable
+weights, expert executors, plans, verified CPU views and lifetime counters.
+Monotone local executor request sequence numbers persist. Only a generated
+metadata EOS ends generation; input EOS separators remain ordinary prompt input.
+
+Each request emits the existing per-token JSON rows and stop row, followed by a
+flushed `{"done":N,...}` line (N starts at 1). It includes setup_reset_ms,
+prompt_ms, decode_ms, selection_prompt_ms, selection_decode_ms, terminal_feed_ms,
+actual prompt_count/output_count and selection step counts. As in one-shot timing,
+the selection decode interval starts before the last prompt forward step; terminal
+feed records the final selected token's forward step. These wall intervals include
+the CLI's synchronous reporting overhead. load_ms is emitted only at readiness;
+first-request lazy CPU verification remains in prompt/decode work.
+
+Request deltas subtract lifetime counters: cpu_hits_delta,
+cpu_verifications_delta, cpu_copied_bytes_delta, cpu_digest_bytes_delta,
+source_invalidations_delta, gpu_entries_delta, cpu_entries_delta and the ordered
+gpu_entries_per_device_delta array. CPU entry counts are the existing hybrid
+adapter's cold entries (zero without plans). Device memory peaks and row-error
+maxima in stderr remain cumulative observations, not subtractable request metrics.
+No success/done receipt is emitted for a failed request. Partial token rows are
+not a completed result. `--placements` describes the last successful request when
+the process exits normally; it is not emitted on an execution failure.
+
+`QUIT\n`, clean EOF between requests, or the configured request limit (1–64,
+default 4) exits normally. SIGINT/SIGTERM requests cooperative cleanup: idle stdin
+polls at 100 ms; loading and a running token finish their current blocking backend
+operation before the signal is checked and ownership unwinds. An outer process
+supervisor must enforce a hard deadline if a backend stalls. EOF mid-frame fails.
+Execution, identity, allocation or output failure exits without reset/retry;
+poisoned state is never reused by this mode. RAII releases model/providers before
+borrowed backends. No request logits/buffers accumulate. Logit dumping and the
+one-shot `--timings` file are incompatible with stdio; request metrics use stdout.
+
+The resident CLI checks opening shard/manifest/plan sizes and modification times
+before readiness, before reset, around token work and before a successful receipt.
+An observed change requires exit/reopen, including CPU-only operation. This
+preserves the existing immutable-file contract and first-use expert digests; it
+is not a whole-file hash or a defense against writers deliberately restoring
+metadata. Do not edit source files while the process is open.
+
+`portable_resident_v1.py` supervises one loaded process for one excluded warmup
+and three identical measured requests. It retains all four receipts and requires
+same-backend token/row repeatability, no later CPU re-verification/copy and GPU
+entries on both dies for every request. See the
+[Hermes recipe](../agenthandoffs/portable-resident-hermes-v1.md). Local sparse and
+fake-process tests establish lifecycle behavior, not real-model quality, AMD
+performance, or cross-backend bit identity. The existing strict numerical parity
+failure remains unchanged. Unequal process lifecycles are an unmeasured confounder;
+this capability alone does not explain the full native/portable latency gap.

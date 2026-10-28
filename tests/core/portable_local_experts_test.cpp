@@ -67,6 +67,11 @@ int main(){
             for(size_t slot=0;slot<10;++slot)for(size_t h=0;h<2560;++h)
                 check(rows[slot*2560+h]==((route.ids[slot]==1||route.ids[slot]==3||route.ids[slot]==5)?float(route.ids[slot]+1):ref[slot*2560+h]),"original-slot hot/cold rows");
             check(local.gpu_entries()==3 && local.cpu_entries()==7 && local.report()[0].entries==2 && local.report()[1].entries==1,"offload counters");
+            const auto cold=cpu.work();
+            check(local.run(0,route,rows,error),error);
+            check(state.prepares==2 && cpu.work().verifications==cold.verifications && cpu.work().hits==cold.hits+7,
+                  "serial request reuse retains GPU plans and CPU verification");
+            check(local.gpu_entries()==6 && local.cpu_entries()==14,"cumulative request entries persist");
             auto bad=route;bad.ids.pop_back();check(!local.run(0,bad,rows,error)&&rows.empty(),"shape refusal");
             state.bad=true;check(!local.run(0,route,rows,error)&&rows.empty(),"duplicate reply slot refusal");state.bad=false;
             state.nonfinite=true;check(!local.run(0,route,rows,error)&&rows.empty(),"nonfinite reply refusal");state.nonfinite=false;
