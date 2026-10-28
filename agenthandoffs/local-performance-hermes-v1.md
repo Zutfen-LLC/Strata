@@ -10,7 +10,8 @@ Original logit-parity gates remain FAILED. Performance cannot waive them.
 ## Workload and limits
 
 Use the **existing** frozen twelve-case suite from the completed v2 screen:
-`/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2/suite` on both hosts.
+`/home/hermes/portable-quality-ac85ff3-v2/suite` on02 and
+`/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2/suite` on05.
 The adapter revalidates all request, manifest, scorer and vocabulary bindings
 before selecting **case 1 only**: `Return only the integer: 17 * 23.`, with the
 unchanged template. It issues exactly four identical GEN32 requests per engine,
@@ -103,7 +104,7 @@ existing suite files on both hosts and confirm the same hashes before either arm
 ```sh
 # 02: existing native engine and driver, no clock changes here
 export GGUF02=/srv/models/qwen38-q8/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf
-export SUITE02=/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2/suite
+export SUITE02=/home/hermes/portable-quality-ac85ff3-v2/suite
 sha256sum "$SUITE02/requests" "$SUITE02/quality_manifest"
 timeout --signal=TERM --kill-after=450s 1800s \
   "$PYTHON02" -B "$SOURCE02/tools/validation-harness/portable_quality_v1.py" \
