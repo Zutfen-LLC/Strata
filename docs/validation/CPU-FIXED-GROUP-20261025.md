@@ -1,8 +1,8 @@
-# Fixed two-host CPU group: Hermes handoff
+# Fixed two-host CPU group: operator handoff
 
 Base source: `c9cef19a35369d5a3721d11515d524ebd6476da1`. Candidate is the full published PR head
 containing this file; bind `CANDIDATE` to that exact SHA, never a moving branch. Source, fixtures and
-commands are authored. **Builds, executable tests and inference: NOT RUN on Geekom/Valinor.**
+commands are authored. **Builds, executable tests and inference: NOT RUN on Geekom/validation host.**
 No two-host numerical acceptance or speedup is established. No fleet work was dispatched by this coding task.
 
 The change adds only the opt-in fixed CPU endpoint group, necessary per-host use of the existing
@@ -22,14 +22,14 @@ commands in this historical file are no longer authorization to repeat prior wor
 
 ### Completed reply codec checks (historical commands)
 
-Supplied Hermes update at `e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb`: all3 focused CTests
+Supplied operator update at `e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb`: all3 focused CTests
 passed in20.83s and benchmark-source comparison passed. The verbose healthy test log was23710870B;
 the handoff's erroneous post-hoc1MiB limit aborted before the benchmark, which had NOT RUN then.
 The parent authorized only the unchanged benchmark suffix at that SAME e145df6e source/binary pin.
 Do not rebuild or repeat the passed tests. This documentation correction changes future test logging
 only; the pending benchmark remains pinned to e145df6e. Preserve the original verbose log.
 
-Supplied Hermes model-free benchmark at `b9ab00c64dc283b57c62da047ccb355100d6762a`: focused
+Supplied operator model-free benchmark at `b9ab00c64dc283b57c62da047ccb355100d6762a`: focused
 check and all20 metrics/guards passed; no resident contact. Row means in nanoseconds:
 
 | Shape | Encode | Frame copy | Decode | Central prepare/reduce | Block copy |
@@ -51,7 +51,7 @@ Preserve its retained baseline binary/logs. Only focused CPU fixtures and the sa
 authorized here: no new production worker build, reload, engine build or model test. The complete
 current candidate resident stays untouched; never request shutdown timing.
 
-Supplied Hermes results at `e56a837bc75ff1076e8d4bff6a01c306d4b302b2`: after correcting an old-worker
+Supplied operator results at `e56a837bc75ff1076e8d4bff6a01c306d4b302b2`: after correcting an old-worker
 binding (which correctly refused row capability), LEGACY2 and ROWS2 both matched A0 FIRST logits
 (993280B bitwise),213 tokens and102724 entries. Each made11136 calls with0 failures. One local loopback
 sample measured prompt1.899/2.486s, decode14.663/18.393s and reported14.5/11.5TPS, weighted/rows.
@@ -180,7 +180,7 @@ decode delta. No latency pass threshold is introduced. Authored checks: NOT RUN 
 
 ### Completed batched entry rows, one candidate full resident (historical commands)
 
-Supplied Hermes evidence at `abdf92e3270c38e327f8c2ce265a0a36ba21bfaf`: EO0 matched A0 first
+Supplied operator evidence at `abdf92e3270c38e327f8c2ce265a0a36ba21bfaf`: EO0 matched A0 first
 logits/213 tokens/102724 entries,28s overall. EO1 ordered matched A0 FIRST logits (993280B, all
 metrics0),213 tokens and102724 entries;11136 shadow windows passed,108577 wire frames,
 max11 exchanges/window, peak row storage204800B. EO1 overall49s, prompt4.73s/decode33.06s.
@@ -259,7 +259,7 @@ python3 -B "$SRC/tests/worker/worker_family_cli_test.py" --engine "$OFF_ENGINE" 
 ```
 
 Stop/report any failure, keeping bounded log tails and pins. Other backend links/runtime remain
-NOT RUN. Coding task performs no builds, fleet operations or replacement; parent dispatches Hermes.
+NOT RUN. Coding task performs no builds, fleet operations or replacement; parent dispatches operator.
 
 #### One managed replacement, then weighted/rows on the SAME candidate resident
 
@@ -357,7 +357,7 @@ probability max.00249 and KL.00039 failed the frozen screen, with equal top1. RG
 both A0/B. DONE, final tier report and arm summary all agree RG0 entries102724/RG1 entries102720;
 original B also102720. Reported routed columns6263/6259 and virtual frames11081/11088 are aggregate
 evidence, not a retained per-entry routing explanation. No reload, allocation1, swap/OOM0, engines
-reaped. These are supplied Hermes results, not local execution/private-receipt inspection.
+reaped. These are supplied operator results, not local execution/private-receipt inspection.
 Regrouping is sufficient to reproduce prompt0 divergence; this does not clear other inputs, physical
 peer correctness or performance. No further off/on regrouping run is requested.
 
@@ -660,7 +660,7 @@ first-logit file was bit-identical to A0; all reported error metrics were0. READ
 member, cache hit/reused116135731200B and zero setup local/network bytes. The original full arena
 remained allocation1 with zero unload/expiry/swap, and engine owners were reaped. Staging was fixed
 through four existing `@asset` tokens, without source change. A post-summary wrapper KeyError was
-corrected read-only, without rerun. These are supplied Hermes results, not execution or private
+corrected read-only, without rerun. These are supplied operator results, not execution or private
 receipt inspection by this coding thread. They do not clear the original failed split comparison.
 
 The remaining unconfirmed seam is actual subset loading/lookup or two-peer integration. Source
@@ -703,7 +703,7 @@ and single-active-peer refusals, digest/full-reference failure before children, 
 when the second executable exits before listening, and successful peer/group bits. Its success case
 delays second setup11s, beyond the first peer's10s idle deadline. Fixture payload files are larger
 than tiny stdout limits: bound test output through the retained drain/timeout guard rather than a
-small inherited file-size limit. All executable checks are **NOT RUN on Geekom/Valinor**.
+small inherited file-size limit. All executable checks are **NOT RUN on Geekom/validation host**.
 
 After that test passes, parent selects runtime on the CPU fixture host, preserving the separate
 full resident host. Bind these existing inputs; do not copy a full model:
@@ -769,7 +769,7 @@ owner startup. The selected route survives `arm_config`, including existing sing
 The omitted-field legacy argv and existing two-peer sequencing remain unchanged. No new sequencer,
 worker guard, engine feature or C++ build is introduced.
 
-Hermes runs these focused Python tests once on its controller, with exact candidate source and
+operator runs these focused Python tests once on its controller, with exact candidate source and
 the retained Python. No model, GPU, native binary or package installation is needed:
 
 ```sh
@@ -784,7 +784,7 @@ timeout --signal=TERM --kill-after=5s 120s python3 -B -m unittest -v \
   test_harness.HarnessTests.test_worker_controls_never_queue_behind_engine_session
 ```
 
-These tests are authored, **NOT RUN on Geekom/Valinor**. After they pass, copy the existing private
+These tests are authored, **NOT RUN on Geekom/validation host**. After they pass, copy the existing private
 warm-attach config and change only the following fields. Use the new source pin for harness helpers,
 but keep the retained `9ed478e` engine and full worker binaries; verify their complete recorded
 hashes rather than relying on the supplied prefixes `66750645` and `e9f25fa5`.
@@ -812,7 +812,7 @@ CPU endpoint flags. `requests:[0]` sends the exact first GEN256 line from the re
 then waits for its complete DONE and QUIT/reaping. Its A0 output is213 tokens;256 is a cap, not an
 expected token count. The existing reference gate compares the complete token array and entries.
 
-Before launch, Hermes must verify the current original guardian/worker/monitor identities, owned
+Before launch, operator must verify the current original guardian/worker/monitor identities, owned
 listener, complete idle forever-resident116135731200B arena, VmSwap0 and healthy unchanged resource
 guard. Preserve the fixed prelaunch swap ceiling, MemAvailable>=8GiB and unchanged OOM counters.
 The retained engine has normal resident negotiation, **not a reuse-only switch**: an empty arena
@@ -864,7 +864,7 @@ does not clear two-peer/subset/remote behavior or the original failed split comp
 
 The parent reports normal full residency restored with the retained worker binary, four loaders and
 twelve inference workers. That is a supplied snapshot, not a live check by this coding thread.
-Hermes must reverify the owned receipt, listener identity, complete forever-resident116135731200B
+operator must reverify the owned receipt, listener identity, complete forever-resident116135731200B
 arena, exclusive idle session, current swap and original monitor health immediately before replay.
 No worker replacement, second worker, additional arena, engine, GEN or settings change is requested.
 Duplicate-arena procedures remain withdrawn.
@@ -903,7 +903,7 @@ error, valid reconnect after failure and final owned-child reaping. It reuses ex
 helpers and needs no model or external endpoint. The unchanged `cpu_capture_test` covers corrupt,
 truncated, oversize and malformed capture refusals. Avoid a tiny inherited file-size cap that would
 kill fixture creation; bound stdout/stderr using the retained validation policy. **These checks are
-authored, NOT RUN on Geekom/Valinor.** No CUDA/engine rebuild is needed for this diagnostic-only change.
+authored, NOT RUN on Geekom/validation host.** No CUDA/engine rebuild is needed for this diagnostic-only change.
 
 After those focused gates pass, mechanically stage/hash only the replay executable using the retained
 transfer procedure. Preserve all worker/engine binaries and private assets. The six positional input
@@ -956,7 +956,7 @@ Replay returned0 in3s: windows20, records/full/grouped960, maxabs9.53674316e-7, 
 relativeL2 6.112e-8, entry_bits1, peer_bits1, detail_envelope1. First regrouping bit difference was
 record0, prefill position0/T2/slice0/layer0/K10; the largest was record47/layer47. The complete full
 arena remained unchanged: one allocation, zero failures/unloads/expirations. These are supplied
-Hermes results; neither execution nor private receipt inspection occurred in this coding thread.
+operator results; neither execution nor private receipt inspection occurred in this coding thread.
 
 Those results hold baseline activations/IDs/weights fixed. They do not establish closed-loop error
 propagation, subset slot-map correctness, real concurrent group behavior or remote peer state.
@@ -1156,7 +1156,7 @@ separate decision after these results. **This diagnostic is authored and NOT RUN
 
 ### Historical original validation procedure — do not repeat
 
-Parent/Hermes owns execution and source/binary pins. Keep the healthy existing full worker on02
+Parent/operator owns execution and source/binary pins. Keep the healthy existing full worker on02
 resident until all build/fixture gates pass. Do not probe, unload, stop or replace it for preflight.
 Use retained caches/assets and existing build directories. Do not reconfigure policies or install
 anything. On each selected checkout establish clean exact source first:
@@ -1166,7 +1166,7 @@ test "$(git -C "$SRC" rev-parse HEAD)" = "$CANDIDATE"
 test -z "$(git -C "$SRC" status --porcelain)"
 ```
 
-On the existing Hermes Python controller, run the synthetic suite once under its retained bounded
+On the existing operator Python controller, run the synthetic suite once under its retained bounded
 output guard. It needs Linux /proc and ordinary loopback sockets, no model, GPU or native binary:
 
 ```sh
