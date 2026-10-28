@@ -1,0 +1,946 @@
+[
+  {
+    "id": "arithmetic-01",
+    "category": "arithmetic",
+    "prompt": "Compute 46 + 78. Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "124",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "46+78=124."
+  },
+  {
+    "id": "arithmetic-02",
+    "category": "arithmetic",
+    "prompt": "Compute 203 - 87. Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "116",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "203-87=116."
+  },
+  {
+    "id": "arithmetic-03",
+    "category": "arithmetic",
+    "prompt": "Compute 14 * 16. Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "224",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "14*(10+6)=140+84."
+  },
+  {
+    "id": "arithmetic-04",
+    "category": "arithmetic",
+    "prompt": "Compute 144 / 12. Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "12",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "12*12=144."
+  },
+  {
+    "id": "arithmetic-05",
+    "category": "arithmetic",
+    "prompt": "Compute -8 + 3 * 7. Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "13",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "Multiplication first: -8+21=13."
+  },
+  {
+    "id": "arithmetic-06",
+    "category": "arithmetic",
+    "prompt": "Compute (9 + 5) * (8 - 3). Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "70",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "14*5=70."
+  },
+  {
+    "id": "arithmetic-07",
+    "category": "arithmetic",
+    "prompt": "Compute 2 ** 6, where ** means exponentiation. Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "64",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "Six factors of two give 64."
+  },
+  {
+    "id": "arithmetic-08",
+    "category": "arithmetic",
+    "prompt": "What is 15 percent of 240? Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "36",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "240*15/100=36."
+  },
+  {
+    "id": "arithmetic-09",
+    "category": "arithmetic",
+    "prompt": "Compute 3/4 + 1/8. Return only a reduced fraction a/b.",
+    "semantic_rule": "number",
+    "expected": "7/8",
+    "format_rule": "reduced-fraction",
+    "rationale": "6/8+1/8=7/8."
+  },
+  {
+    "id": "arithmetic-10",
+    "category": "arithmetic",
+    "prompt": "Compute 2.5 + 0.75. Return only a decimal number.",
+    "semantic_rule": "number",
+    "expected": "3.25",
+    "format_rule": "-?(?:0|[1-9]\\d*)\\.\\d+",
+    "rationale": "2.50+0.75=3.25."
+  },
+  {
+    "id": "arithmetic-11",
+    "category": "arithmetic",
+    "prompt": "A rectangle is 7 cm by 11 cm. Return only its area in square cm as an integer.",
+    "semantic_rule": "number",
+    "expected": "77",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "Area is 7*11."
+  },
+  {
+    "id": "arithmetic-12",
+    "category": "arithmetic",
+    "prompt": "Five identical notebooks cost 35 dollars total. What do eight cost? Return only the integer number of dollars.",
+    "semantic_rule": "number",
+    "expected": "56",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "Unit cost 7; 8*7=56."
+  },
+  {
+    "id": "arithmetic-13",
+    "category": "arithmetic",
+    "prompt": "What is the remainder when 97 is divided by 6? Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "1",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "97=6*16+1."
+  },
+  {
+    "id": "arithmetic-14",
+    "category": "arithmetic",
+    "prompt": "What is the median of 4, 19, 7, 12, 8? Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "8",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "Sorted: 4,7,8,12,19."
+  },
+  {
+    "id": "arithmetic-15",
+    "category": "arithmetic",
+    "prompt": "A bag has 3 red and 5 blue balls. What fraction are red? Return only a reduced fraction a/b.",
+    "semantic_rule": "number",
+    "expected": "3/8",
+    "format_rule": "reduced-fraction",
+    "rationale": "3 of 8 total balls are red."
+  },
+  {
+    "id": "arithmetic-16",
+    "category": "arithmetic",
+    "prompt": "How many minutes are there in 2 hours 35 minutes? Return only the integer.",
+    "semantic_rule": "number",
+    "expected": "155",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "2*60+35=155."
+  },
+  {
+    "id": "arithmetic-17",
+    "category": "arithmetic",
+    "prompt": "A price of 80 dollars is reduced by 25 percent. Return only the final integer price.",
+    "semantic_rule": "number",
+    "expected": "60",
+    "format_rule": "-?(?:0|[1-9]\\d*)",
+    "rationale": "80*(1-25/100)=60."
+  },
+  {
+    "id": "extraction-01",
+    "category": "extraction",
+    "prompt": "Record: owner=Leah; status=queued; zone=east. Return only the status value.",
+    "semantic_rule": "exact",
+    "expected": "queued",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The status field is queued."
+  },
+  {
+    "id": "extraction-02",
+    "category": "extraction",
+    "prompt": "Rows: A: 5; B: 9; C: 2. Return only the label with the largest value.",
+    "semantic_rule": "exact",
+    "expected": "B",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "9 is the maximum, on B."
+  },
+  {
+    "id": "extraction-03",
+    "category": "extraction",
+    "prompt": "Message: Ship to 42 Pine Road, Dover. Return only the city.",
+    "semantic_rule": "exact",
+    "expected": "Dover",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The final location is Dover."
+  },
+  {
+    "id": "extraction-04",
+    "category": "extraction",
+    "prompt": "Log: start 08:10; finish 08:47. Return only the finish time in HH:MM format.",
+    "semantic_rule": "exact",
+    "expected": "08:47",
+    "format_rule": "\\d{2}:\\d{2}",
+    "rationale": "The finish field is 08:47."
+  },
+  {
+    "id": "extraction-05",
+    "category": "extraction",
+    "prompt": "Catalog: kite SKU K-81, drum SKU D-62, lamp SKU L-93. Return only the drum SKU.",
+    "semantic_rule": "exact",
+    "expected": "D-62",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "drum maps to D-62."
+  },
+  {
+    "id": "extraction-06",
+    "category": "extraction",
+    "prompt": "Text: The parcel weighs 750 grams and costs 18 dollars. Return only the weight integer.",
+    "semantic_rule": "exact",
+    "expected": "750",
+    "format_rule": "-?\\d+",
+    "rationale": "Weight is 750 grams."
+  },
+  {
+    "id": "extraction-07",
+    "category": "extraction",
+    "prompt": "Names in order: Inez, Omar, Ruth, Sven. Return only the third name.",
+    "semantic_rule": "exact",
+    "expected": "Ruth",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Ruth is third."
+  },
+  {
+    "id": "extraction-08",
+    "category": "extraction",
+    "prompt": "Record: url=https://example.test/a; contact=ops@example.test. Return only the contact email.",
+    "semantic_rule": "exact",
+    "expected": "ops@example.test",
+    "format_rule": "[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+",
+    "rationale": "The contact field gives that email."
+  },
+  {
+    "id": "extraction-09",
+    "category": "extraction",
+    "prompt": "Inventory: pears=6; apples=0; plums=8. Return only the fruit with zero stock.",
+    "semantic_rule": "exact",
+    "expected": "apples",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Only apples has value zero."
+  },
+  {
+    "id": "extraction-10",
+    "category": "extraction",
+    "prompt": "Sentence: The meeting is on Thursday in room Cedar. Return only the room name.",
+    "semantic_rule": "exact",
+    "expected": "Cedar",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The room is Cedar."
+  },
+  {
+    "id": "extraction-11",
+    "category": "extraction",
+    "prompt": "Text: tag [silver] then tag [gold]. Return only the first bracketed value, without brackets.",
+    "semantic_rule": "exact",
+    "expected": "silver",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The first bracketed span is silver."
+  },
+  {
+    "id": "extraction-12",
+    "category": "extraction",
+    "prompt": "Table: dog -> canine; cat -> feline; horse -> equine. Return only the value mapped from cat.",
+    "semantic_rule": "exact",
+    "expected": "feline",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "cat maps to feline."
+  },
+  {
+    "id": "extraction-13",
+    "category": "extraction",
+    "prompt": "Event: date=2027-04-09; attendees=14. Return only the ISO date.",
+    "semantic_rule": "exact",
+    "expected": "2027-04-09",
+    "format_rule": "\\d{4}-\\d{2}-\\d{2}",
+    "rationale": "Copy the date field."
+  },
+  {
+    "id": "extraction-14",
+    "category": "extraction",
+    "prompt": "Record: item=bolt; size=8mm; batch=Q17. Return only the size value.",
+    "semantic_rule": "exact",
+    "expected": "8mm",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The size field is 8mm."
+  },
+  {
+    "id": "extraction-15",
+    "category": "extraction",
+    "prompt": "Orders: 501 pending, 502 shipped, 503 cancelled. Return only the shipped order number.",
+    "semantic_rule": "exact",
+    "expected": "502",
+    "format_rule": "-?\\d+",
+    "rationale": "Order 502 is shipped."
+  },
+  {
+    "id": "extraction-16",
+    "category": "extraction",
+    "prompt": "Message: Subject: Repair. Priority: high. Reference: UV-730. Return only the reference.",
+    "semantic_rule": "exact",
+    "expected": "UV-730",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The reference field is UV-730."
+  },
+  {
+    "id": "extraction-17",
+    "category": "extraction",
+    "prompt": "Read these tokens: one | two | three | four. Return only the last token.",
+    "semantic_rule": "exact",
+    "expected": "four",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The final token is four."
+  },
+  {
+    "id": "structured-01",
+    "category": "structured",
+    "prompt": "Return only JSON: an object with keys animal and legs, holding string fox and integer 4.",
+    "semantic_rule": "json",
+    "expected": {
+      "animal": "fox",
+      "legs": 4
+    },
+    "format_rule": "json-value",
+    "rationale": "Two specified typed fields."
+  },
+  {
+    "id": "structured-02",
+    "category": "structured",
+    "prompt": "Return only JSON: the array of strings north, south in that order.",
+    "semantic_rule": "json",
+    "expected": [
+      "north",
+      "south"
+    ],
+    "format_rule": "json-value",
+    "rationale": "Two ordered strings."
+  },
+  {
+    "id": "structured-03",
+    "category": "structured",
+    "prompt": "Return only JSON: an object with key enabled holding Boolean true.",
+    "semantic_rule": "json",
+    "expected": {
+      "enabled": true
+    },
+    "format_rule": "json-value",
+    "rationale": "JSON Boolean, not a string."
+  },
+  {
+    "id": "structured-04",
+    "category": "structured",
+    "prompt": "Return only JSON: an object with key missing holding null.",
+    "semantic_rule": "json",
+    "expected": {
+      "missing": null
+    },
+    "format_rule": "json-value",
+    "rationale": "JSON null is required."
+  },
+  {
+    "id": "structured-05",
+    "category": "structured",
+    "prompt": "Return only JSON: the integers 6, 1, 8 in descending order as an array.",
+    "semantic_rule": "json",
+    "expected": [
+      8,
+      6,
+      1
+    ],
+    "format_rule": "json-value",
+    "rationale": "Descending order is 8,6,1."
+  },
+  {
+    "id": "structured-06",
+    "category": "structured",
+    "prompt": "Return only JSON: an object with key ids holding the array [4,7].",
+    "semantic_rule": "json",
+    "expected": {
+      "ids": [
+        4,
+        7
+      ]
+    },
+    "format_rule": "json-value",
+    "rationale": "One array-valued field."
+  },
+  {
+    "id": "structured-07",
+    "category": "structured",
+    "prompt": "Return only JSON: an empty array.",
+    "semantic_rule": "json",
+    "expected": [],
+    "format_rule": "json-value",
+    "rationale": "An array with zero elements."
+  },
+  {
+    "id": "structured-08",
+    "category": "structured",
+    "prompt": "Return only JSON: an empty object.",
+    "semantic_rule": "json",
+    "expected": {},
+    "format_rule": "json-value",
+    "rationale": "An object with zero keys."
+  },
+  {
+    "id": "structured-09",
+    "category": "structured",
+    "prompt": "Return only JSON: an object with key label holding the string red blue.",
+    "semantic_rule": "json",
+    "expected": {
+      "label": "red blue"
+    },
+    "format_rule": "json-value",
+    "rationale": "A space inside one string value."
+  },
+  {
+    "id": "structured-10",
+    "category": "structured",
+    "prompt": "Convert this record to JSON with exactly keys name and age: name Nia, age 28 (integer). Return only the object.",
+    "semantic_rule": "json",
+    "expected": {
+      "name": "Nia",
+      "age": 28
+    },
+    "format_rule": "json-value",
+    "rationale": "String name and integer age."
+  },
+  {
+    "id": "structured-11",
+    "category": "structured",
+    "prompt": "Return only JSON: an object whose key outer holds an object whose key inner holds integer 5.",
+    "semantic_rule": "json",
+    "expected": {
+      "outer": {
+        "inner": 5
+      }
+    },
+    "format_rule": "json-value",
+    "rationale": "Specified nested object."
+  },
+  {
+    "id": "structured-12",
+    "category": "structured",
+    "prompt": "Return only JSON: an array with Boolean false followed by Boolean true.",
+    "semantic_rule": "json",
+    "expected": [
+      false,
+      true
+    ],
+    "format_rule": "json-value",
+    "rationale": "Order and Boolean types are fixed."
+  },
+  {
+    "id": "structured-13",
+    "category": "structured",
+    "prompt": "Return only JSON: an object with key temp holding integer -3.",
+    "semantic_rule": "json",
+    "expected": {
+      "temp": -3
+    },
+    "format_rule": "json-value",
+    "rationale": "One negative integer value."
+  },
+  {
+    "id": "structured-14",
+    "category": "structured",
+    "prompt": "Return only JSON: the distinct integers from [2,2,5,2,5] in first-appearance order.",
+    "semantic_rule": "json",
+    "expected": [
+      2,
+      5
+    ],
+    "format_rule": "json-value",
+    "rationale": "First unique values are 2 then 5."
+  },
+  {
+    "id": "structured-15",
+    "category": "structured",
+    "prompt": "Return only JSON: an object with key count holding the number of vowels in the word ocean as an integer.",
+    "semantic_rule": "json",
+    "expected": {
+      "count": 3
+    },
+    "format_rule": "json-value",
+    "rationale": "o,e,a are three vowels."
+  },
+  {
+    "id": "structured-16",
+    "category": "structured",
+    "prompt": "Return only JSON: an object with exactly keys x and y holding integer 0 and integer 9 respectively.",
+    "semantic_rule": "json",
+    "expected": {
+      "x": 0,
+      "y": 9
+    },
+    "format_rule": "json-value",
+    "rationale": "Two specified integer values."
+  },
+  {
+    "id": "structured-17",
+    "category": "structured",
+    "prompt": "Return only JSON: the array containing the string 7 and then the integer 7.",
+    "semantic_rule": "json",
+    "expected": [
+      "7",
+      7
+    ],
+    "format_rule": "json-value",
+    "rationale": "Preserve the distinction between string and integer."
+  },
+  {
+    "id": "instruction-01",
+    "category": "instruction",
+    "prompt": "Return only the word SILENT, in uppercase.",
+    "semantic_rule": "exact",
+    "expected": "SILENT",
+    "format_rule": "[A-Z]+",
+    "rationale": "Explicit uppercase literal."
+  },
+  {
+    "id": "instruction-02",
+    "category": "instruction",
+    "prompt": "Return only the word whisper, in lowercase.",
+    "semantic_rule": "exact",
+    "expected": "whisper",
+    "format_rule": "[a-z]+",
+    "rationale": "Explicit lowercase literal."
+  },
+  {
+    "id": "instruction-03",
+    "category": "instruction",
+    "prompt": "Return exactly these words joined by commas with no spaces: sun moon star.",
+    "semantic_rule": "exact",
+    "expected": "sun,moon,star",
+    "format_rule": "[A-Za-z0-9]+(?:,[A-Za-z0-9]+)+",
+    "rationale": "Join three words in given order."
+  },
+  {
+    "id": "instruction-04",
+    "category": "instruction",
+    "prompt": "Reverse the characters of planet. Return only the result.",
+    "semantic_rule": "exact",
+    "expected": "tenalp",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Character reversal of p,l,a,n,e,t."
+  },
+  {
+    "id": "instruction-05",
+    "category": "instruction",
+    "prompt": "Return the first letters of River Oak Maple in order, uppercase, with no separators.",
+    "semantic_rule": "exact",
+    "expected": "ROM",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Initial letters R,O,M."
+  },
+  {
+    "id": "instruction-06",
+    "category": "instruction",
+    "prompt": "From 3, 10, 7, 4 keep only even numbers in input order. Return them separated by one comma and no spaces.",
+    "semantic_rule": "exact",
+    "expected": "10,4",
+    "format_rule": "[A-Za-z0-9]+(?:,[A-Za-z0-9]+)+",
+    "rationale": "10 and 4 are even."
+  },
+  {
+    "id": "instruction-07",
+    "category": "instruction",
+    "prompt": "Replace every dash in a-b-c with an underscore. Return only the result.",
+    "semantic_rule": "exact",
+    "expected": "a_b_c",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Both dash characters are replaced."
+  },
+  {
+    "id": "instruction-08",
+    "category": "instruction",
+    "prompt": "Return exactly two lines: first line left, second line right.",
+    "semantic_rule": "exact",
+    "expected": "left\nright",
+    "format_rule": "[A-Za-z]+\\n[A-Za-z]+",
+    "rationale": "Two specified lines."
+  },
+  {
+    "id": "instruction-09",
+    "category": "instruction",
+    "prompt": "Alphabetize these lowercase words: zebra apple mango. Return them separated by single spaces.",
+    "semantic_rule": "exact",
+    "expected": "apple mango zebra",
+    "format_rule": "[A-Za-z]+(?: [A-Za-z]+)+",
+    "rationale": "Lexical order is apple,mango,zebra."
+  },
+  {
+    "id": "instruction-10",
+    "category": "instruction",
+    "prompt": "Remove all spaces from b l u e. Return only the result.",
+    "semantic_rule": "exact",
+    "expected": "blue",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Concatenating the letters gives blue."
+  },
+  {
+    "id": "instruction-11",
+    "category": "instruction",
+    "prompt": "Return only the second character of WXYZ.",
+    "semantic_rule": "exact",
+    "expected": "X",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The second character is X."
+  },
+  {
+    "id": "instruction-12",
+    "category": "instruction",
+    "prompt": "Repeat the string ha exactly three times, with no spaces or punctuation. Return only the result.",
+    "semantic_rule": "exact",
+    "expected": "hahaha",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "ha+ha+ha."
+  },
+  {
+    "id": "instruction-13",
+    "category": "instruction",
+    "prompt": "If 8 is even, return only EVEN; otherwise return only ODD.",
+    "semantic_rule": "exact",
+    "expected": "EVEN",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "8 is divisible by 2."
+  },
+  {
+    "id": "instruction-14",
+    "category": "instruction",
+    "prompt": "Return only the word between START and END here: START pebble END.",
+    "semantic_rule": "exact",
+    "expected": "pebble",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The interior word is pebble."
+  },
+  {
+    "id": "instruction-15",
+    "category": "instruction",
+    "prompt": "Count the words in small green wooden box. Return only the integer.",
+    "semantic_rule": "exact",
+    "expected": "4",
+    "format_rule": "-?\\d+",
+    "rationale": "There are four space-separated words."
+  },
+  {
+    "id": "instruction-16",
+    "category": "instruction",
+    "prompt": "Change only the first letter of river to uppercase. Return only the result.",
+    "semantic_rule": "exact",
+    "expected": "River",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Capitalize r; keep iver lowercase."
+  },
+  {
+    "id": "instruction-17",
+    "category": "instruction",
+    "prompt": "Remove the final character from lamps. Return only the remaining string.",
+    "semantic_rule": "exact",
+    "expected": "lamp",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Removing final s leaves lamp."
+  },
+  {
+    "id": "reasoning-01",
+    "category": "reasoning",
+    "prompt": "Every cedar is a tree. Every tree is a plant. Is every cedar a plant? Return only lowercase yes or no.",
+    "semantic_rule": "yes_no",
+    "expected": "yes",
+    "format_rule": "yes|no",
+    "rationale": "Universal implication is transitive."
+  },
+  {
+    "id": "reasoning-02",
+    "category": "reasoning",
+    "prompt": "No cube is flat. This object is a cube. Is it flat? Return only lowercase yes or no.",
+    "semantic_rule": "yes_no",
+    "expected": "no",
+    "format_rule": "yes|no",
+    "rationale": "The exclusion applies to the cube."
+  },
+  {
+    "id": "reasoning-03",
+    "category": "reasoning",
+    "prompt": "Luz arrived before Max. Max arrived before Noor. Who arrived first? Return only the name.",
+    "semantic_rule": "exact",
+    "expected": "Luz",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Luz precedes both others."
+  },
+  {
+    "id": "reasoning-04",
+    "category": "reasoning",
+    "prompt": "A box is either open or closed, never both. It is not open. Is it closed? Return only lowercase yes or no.",
+    "semantic_rule": "yes_no",
+    "expected": "yes",
+    "format_rule": "yes|no",
+    "rationale": "The exhaustive exclusive alternatives force closed."
+  },
+  {
+    "id": "reasoning-05",
+    "category": "reasoning",
+    "prompt": "If a lamp is on, its switch is up. The lamp is on. Is the switch up? Return only lowercase yes or no.",
+    "semantic_rule": "yes_no",
+    "expected": "yes",
+    "format_rule": "yes|no",
+    "rationale": "Modus ponens."
+  },
+  {
+    "id": "reasoning-06",
+    "category": "reasoning",
+    "prompt": "If a lamp is on, its switch is up. The switch is up. Must the lamp be on? Return only lowercase yes or no.",
+    "semantic_rule": "yes_no",
+    "expected": "no",
+    "format_rule": "yes|no",
+    "rationale": "The converse is not entailed."
+  },
+  {
+    "id": "reasoning-07",
+    "category": "reasoning",
+    "prompt": "A coin is in exactly one of boxes A, B, C. A and C are empty. Return only the box containing the coin.",
+    "semantic_rule": "exact",
+    "expected": "B",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Elimination leaves B."
+  },
+  {
+    "id": "reasoning-08",
+    "category": "reasoning",
+    "prompt": "Red is left of blue. Blue is left of yellow. Which color is farthest right? Return only the color.",
+    "semantic_rule": "exact",
+    "expected": "yellow",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The order is red,blue,yellow."
+  },
+  {
+    "id": "reasoning-09",
+    "category": "reasoning",
+    "prompt": "Today is Monday. What day is two days after tomorrow? Return only the day name.",
+    "semantic_rule": "exact",
+    "expected": "Thursday",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Tomorrow Tuesday, plus two days Thursday."
+  },
+  {
+    "id": "reasoning-10",
+    "category": "reasoning",
+    "prompt": "Some birds swim. Does this imply that all birds swim? Return only lowercase yes or no.",
+    "semantic_rule": "yes_no",
+    "expected": "no",
+    "format_rule": "yes|no",
+    "rationale": "An existential statement does not imply a universal one."
+  },
+  {
+    "id": "reasoning-11",
+    "category": "reasoning",
+    "prompt": "Exactly one of statements A and B is true. A is false. Is B true? Return only lowercase yes or no.",
+    "semantic_rule": "yes_no",
+    "expected": "yes",
+    "format_rule": "yes|no",
+    "rationale": "Exactly-one plus false A forces true B."
+  },
+  {
+    "id": "reasoning-12",
+    "category": "reasoning",
+    "prompt": "A is heavier than B. C is heavier than A. Which is heaviest? Return only A, B, or C.",
+    "semantic_rule": "exact",
+    "expected": "C",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "C>A>B."
+  },
+  {
+    "id": "reasoning-13",
+    "category": "reasoning",
+    "prompt": "A train leaves before a bus. A ferry leaves after the bus. Which leaves second? Return only train, bus, or ferry.",
+    "semantic_rule": "exact",
+    "expected": "bus",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The temporal order is train,bus,ferry."
+  },
+  {
+    "id": "reasoning-14",
+    "category": "reasoning",
+    "prompt": "All tickets in this drawer are valid. Ticket Z is in this drawer. Is ticket Z valid? Return only lowercase yes or no.",
+    "semantic_rule": "yes_no",
+    "expected": "yes",
+    "format_rule": "yes|no",
+    "rationale": "Universal instantiation."
+  },
+  {
+    "id": "reasoning-15",
+    "category": "reasoning",
+    "prompt": "A number is greater than 10 and less than 12, and is an integer. Return only the number.",
+    "semantic_rule": "exact",
+    "expected": "11",
+    "format_rule": "-?\\d+",
+    "rationale": "11 is the sole integer in the open interval."
+  },
+  {
+    "id": "reasoning-16",
+    "category": "reasoning",
+    "prompt": "A task needs both a key and a badge. Eva has a key but no badge. Can she meet both requirements? Return only lowercase yes or no.",
+    "semantic_rule": "yes_no",
+    "expected": "no",
+    "format_rule": "yes|no",
+    "rationale": "One required conjunct is absent."
+  },
+  {
+    "id": "code-01",
+    "category": "code",
+    "prompt": "Python: print(len('orchid')). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "6",
+    "format_rule": "-?\\d+",
+    "rationale": "orchid has six characters."
+  },
+  {
+    "id": "code-02",
+    "category": "code",
+    "prompt": "Python: print(23 // 5). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "4",
+    "format_rule": "-?\\d+",
+    "rationale": "Integer floor division gives 4."
+  },
+  {
+    "id": "code-03",
+    "category": "code",
+    "prompt": "Python: print(23 % 5). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "3",
+    "format_rule": "-?\\d+",
+    "rationale": "23=4*5+3."
+  },
+  {
+    "id": "code-04",
+    "category": "code",
+    "prompt": "Python: xs = [1,3]; xs.append(5); print(len(xs)). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "3",
+    "format_rule": "-?\\d+",
+    "rationale": "Appending creates three elements."
+  },
+  {
+    "id": "code-05",
+    "category": "code",
+    "prompt": "Python: print('cobalt'[2:5]). Return only the printed string, without quotes.",
+    "semantic_rule": "exact",
+    "expected": "bal",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "The slice includes indices 2,3,4: b,a,l; index 5 is excluded."
+  },
+  {
+    "id": "code-06",
+    "category": "code",
+    "prompt": "Python: print('banana'.count('a')). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "3",
+    "format_rule": "-?\\d+",
+    "rationale": "Three occurrences of a."
+  },
+  {
+    "id": "code-07",
+    "category": "code",
+    "prompt": "Python: print(sum(range(1,5))). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "10",
+    "format_rule": "-?\\d+",
+    "rationale": "range excludes 5: 1+2+3+4."
+  },
+  {
+    "id": "code-08",
+    "category": "code",
+    "prompt": "Python: print([4,8,12][-1]). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "12",
+    "format_rule": "-?\\d+",
+    "rationale": "Negative index -1 selects the last item."
+  },
+  {
+    "id": "code-09",
+    "category": "code",
+    "prompt": "Python: d = {'a':2,'b':5}; print(d.get('c',9)). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "9",
+    "format_rule": "-?\\d+",
+    "rationale": "Absent key uses default 9."
+  },
+  {
+    "id": "code-10",
+    "category": "code",
+    "prompt": "Python: print(max([3,-1,8,2])). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "8",
+    "format_rule": "-?\\d+",
+    "rationale": "The maximum element is 8."
+  },
+  {
+    "id": "code-11",
+    "category": "code",
+    "prompt": "Python: print(2 if 3 > 1 else 7). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "2",
+    "format_rule": "-?\\d+",
+    "rationale": "The condition is true."
+  },
+  {
+    "id": "code-12",
+    "category": "code",
+    "prompt": "Python: print('-'.join(['x','y'])). Return only the printed string, without quotes.",
+    "semantic_rule": "exact",
+    "expected": "x-y",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "join inserts one dash."
+  },
+  {
+    "id": "code-13",
+    "category": "code",
+    "prompt": "Python: x = 4; x += 3; x *= 2; print(x). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "14",
+    "format_rule": "-?\\d+",
+    "rationale": "4+3=7, then 7*2=14."
+  },
+  {
+    "id": "code-14",
+    "category": "code",
+    "prompt": "Python: print(len(set([1,1,2,3,3]))). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "3",
+    "format_rule": "-?\\d+",
+    "rationale": "The set has elements 1,2,3."
+  },
+  {
+    "id": "code-15",
+    "category": "code",
+    "prompt": "Python: print('spoon'.replace('o','a')). Return only the printed string, without quotes.",
+    "semantic_rule": "exact",
+    "expected": "spaan",
+    "format_rule": "[A-Za-z0-9_-]+",
+    "rationale": "Both o characters become a."
+  },
+  {
+    "id": "code-16",
+    "category": "code",
+    "prompt": "Python: print(sum(n for n in [1,2,3,4] if n % 2 == 1)). Return only the printed integer.",
+    "semantic_rule": "exact",
+    "expected": "4",
+    "format_rule": "-?\\d+",
+    "rationale": "Odd values 1 and 3 sum to 4."
+  }
+]

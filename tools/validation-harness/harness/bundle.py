@@ -144,16 +144,25 @@ def validate(cfg, source):
             raise ValueError('first-logit capture uses unique arm paths; remove the global dump prefix')
     if cfg.get('evaluation_mode', 'exact') not in ('exact', 'quality'):
         raise ValueError('unknown evaluation_mode')
+    suite = cfg.get('quality_suite', 'v1-12')
+    if suite not in ('v1-12', 'v2-100') or ('quality_suite' in cfg and cfg.get('evaluation_mode') != 'quality'):
+        raise ValueError('quality_suite requires explicit quality mode and a known suite')
+    quality_count = 100 if suite == 'v2-100' else 12
+    request_limit = 100 if suite == 'v2-100' else 64
     if cfg.get('evaluation_mode') == 'quality':
         if not cfg.get('capture_first_logits') or 'STRATA_FIRST_REQUEST_TRACE' in cfg['env']:
             raise ValueError('quality requires full generation and first-logit capture')
         if cfg['argv'].count('--greedy') != 1:
             raise ValueError('quality requires explicit greedy decoding')
-        if len(cfg['arms']) != 1 or cfg['arms'][0]['restart'] or cfg['arms'][0]['requests'] != list(range(12)):
-            raise ValueError('quality requires one warm ordered twelve-request arm')
+        if len(cfg['arms']) != 1 or cfg['arms'][0]['restart'] or cfg['arms'][0]['requests'] != list(range(quality_count)):
+            raise ValueError('quality requires one warm ordered twelve-request arm' if quality_count == 12 else
+                             'quality requires one warm ordered hundred-request arm')
         if 'quality_manifest' not in cfg['assets']:
             raise ValueError('quality requires frozen manifest asset')
         frozen = json.loads(pathlib.Path(cfg['assets']['quality_manifest']).read_text())
+        if suite == 'v2-100' and (frozen.get('version') != 2 or frozen.get('suite') != suite or
+                len(frozen.get('cases', [])) != 100 or frozen.get('max_new') != 32 or frozen.get('max_prompt') != 224):
+            raise ValueError('invalid frozen v2 suite')
         if frozen['requests_sha256'] != sha(cfg['assets']['requests']):
             raise ValueError('quality requests differ from frozen manifest')
     trace_path = cfg['env'].get('STRATA_FIRST_REQUEST_TRACE')
@@ -166,8 +175,17 @@ def validate(cfg, source):
             raise ValueError('first-request trace needs a new unique file directly inside run_root')
     allowed = os.sched_getaffinity(0)
     lines = [line for line in pathlib.Path(cfg['assets']['requests']).read_text().splitlines() if line.startswith('GEN ')]
-    if not lines or len(lines) > 64 or any(not line.startswith('GEN ') or len(line) > 16000 for line in lines):
-        raise ValueError('request file must contain 1..64 bounded retained GEN lines')
+    if not lines or len(lines) > request_limit or any(not line.startswith('GEN ') or len(line) > 16000 for line in lines):
+        raise ValueError('request file must contain 1..64 bounded retained GEN lines' if request_limit == 64 else
+                         'v2 request file must contain 1..100 bounded retained GEN lines')
+    if suite == 'v2-100':
+        if len(lines) != 100 or int(value(cfg['argv'], '--max-context')) < 256:
+            raise ValueError('v2 requires 100 requests and context at least 256')
+        for line in lines:
+            parts = line.split()
+            if parts[1] != '32' or not 1 <= len(parts[2:]) <= 224 or any(
+                    not p.isascii() or not p.isdecimal() for p in parts[2:]):
+                raise ValueError('v2 requires frozen bounded token-only GEN 32 requests')
     names = set(); running_worker = None
     for arm in cfg['arms']:
         if not NAME.fullmatch(arm['name']) or arm['name'] in names: raise ValueError('invalid/duplicate arm name')
@@ -189,7 +207,7 @@ def validate(cfg, source):
                 raise ValueError('packed_qualification must be 16 nonzero lowercase hex digits')
             if cfg.get('cpu_route') != 'group' or '--remote-cpu-packed-qualification' in cfg['argv']:
                 raise ValueError('per-arm packing requires group route and no global qualification')
-        if len(arm['requests']) > 64 or any(type(i) is not int or not 0 <= i < len(lines) for i in arm['requests']):
+        if len(arm['requests']) > request_limit or any(type(i) is not int or not 0 <= i < len(lines) for i in arm['requests']):
             raise ValueError('invalid request selection')
         for field, default in [('engine', 'engine'), ('worker', 'worker')]:
             if arm.get(field, default) not in cfg['assets']: raise ValueError('missing arm asset')
