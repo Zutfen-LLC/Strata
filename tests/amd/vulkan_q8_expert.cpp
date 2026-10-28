@@ -117,12 +117,14 @@ void save_rows(const std::filesystem::path& dir, const std::string& name, const 
     for (const auto& p : parts) save(dir/(name+"."+p.first+".f32"),p.second->data(),p.second->size()*4);
 }
 #include "vulkan_executor_check.hpp"
+#include "vulkan_resident_check.hpp"
 int run(int argc, char** argv) {
     const uint16_t endian = 1;
     require(*reinterpret_cast<const uint8_t*>(&endian) == 1,"fixture requires little-endian Q8/F32 storage");
-    std::string backend,output; int device = -1; bool native_boundaries = false, check_executor = false;
+    std::string backend,output; int device = -1; bool native_boundaries = false, check_executor = false, check_residents = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+        if (arg == "--resident-experts-check") { require(!check_residents,"duplicate resident check"); check_residents=true; continue; }
         if (arg == "--executor-check") { require(!check_executor,"duplicate executor check"); check_executor=true; continue; }
         if (arg == "--native-q8-boundaries") { require(!native_boundaries,"duplicate native-boundary control"); native_boundaries = true; continue; }
         require(i+1 < argc,"missing option value"); const std::string value = argv[++i];
@@ -138,7 +140,8 @@ int run(int argc, char** argv) {
 #ifndef STRATA_AMD_PROBE_VULKAN
     require(backend == "cpu","Vulkan not compiled; no CPU fallback");
 #endif
-    require(!check_executor || native_boundaries,"executor check requires --native-q8-boundaries");
+    require(!(check_executor && check_residents),"choose one executor acceptance mode");
+    require(!(check_executor || check_residents) || native_boundaries,"executor check requires --native-q8-boundaries");
     require(std::filesystem::create_directory(output),"output directory already exists");
     cpu::NativeFmt fmt; std::string why;
     require(cpu::native_fmt(8,8,H,F,fmt,why),why);
@@ -184,6 +187,7 @@ int run(int argc, char** argv) {
                     same(boundaries.down_f,again.down_f),"hybrid boundary bytes changed on repeat");
         }
         if (check_executor && !zero) executor_check(backend,device,output,blob,x,selected_rows.out);
+        if (check_residents && !zero) resident_check(backend,device,output,selected,fmt,blob,x,selected_rows,metrics);
         if (zero) for (float v : selected_rows.out) require(v == 0,"zero expert produced nonzero output");
         else require(std::any_of(native.out.begin(),native.out.end(),[](float v){return v != 0;}),"degenerate signal fixture");
         compare(metrics,name+".cpu_graph_vs_native",cpu_rows,native);

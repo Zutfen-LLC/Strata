@@ -183,29 +183,39 @@ these isolated diagnostic-only additions; their source/build paths are unchanged
 `GpuExecutor::prepare -> infer_rows -> release` interface. No production target,
 worker negotiation, listener, scheduler, transport or default selects it.
 
-The adapter accepts one trusted, cache-verified plain Q8_0/Q8_0 expert at
-H2560/FF640. Requests require T=1, one active entry in a bounded K-entry frame,
-F32 activations and the prepared model/placement identity. The reply preserves
-session, sequence and the original entry index. Its row is unweighted; the
-routing weight is never applied. Changed plans, other shapes, multiple active
-entries, packed input and weighted `infer` are rejected. Calls must be serial.
-The caller opens/prepares/publishes the existing `GpuCache`; the adapter rereads
-and rehashes the assigned blob before initializing a backend.
+The adapter accepts trusted, cache-verified plain Q8_0/Q8_0 experts at
+H2560/FF640. Requests require T=1, active entries in a bounded K-entry frame,
+F32 activations and the prepared model/placement identity. Replies preserve
+session, sequence and ascending original entry indices, independent of resident
+expert order. Rows are unweighted; routing weights are never applied. Changed
+plans, other shapes, packed input and weighted `infer` are rejected. Calls must
+be serial. The caller opens/prepares/publishes the existing `GpuCache`; the
+adapter rehashes each assigned blob, staging one expert at a time.
 
 The shared graph retains the hybrid computation above. Runtime code contains no
 CPU reference weight projections, evidence dumps or model access. The explicit
 CPU substitution factory is compiled only with `STRATA_AMD_EXECUTOR_HOST_TEST`
 in this standalone test project; Vulkan errors never select it.
 
-The executor owns its backend and one tensor buffer, capped below 16 MiB, plus
-bounded graph metadata and host activation storage. `gpu_allocated_bytes` counts
-that tensor buffer; `gpu_weight_bytes` counts its 5,222,400 weight bytes and
-`gpu_scratch_bytes` is the remaining tensor allocation/alignment. These counters
-exclude ggml internal compute buffers, shader pipelines and driver allocations.
-`gpu_allocation_count` is the live owned tensor-buffer count for this adapter;
-release clears all four owned counters, retaining the historical peak. A nonzero
-runtime VRAM reserve is explicitly unsupported. Use the existing external
-process/VRAM guard; counters alone cannot establish total device memory use.
+Pass `create_vulkan_gpu_executor(device, tensor_budget)` to set the aggregate
+resident tensor-buffer budget in bytes (default 16 MiB). Expert count is bounded
+by validated plan geometry and this budget, with no hardcoded two-expert limit.
+The pinned ggml dry-run API calculates each graph's tensor bytes with backend
+padding/alignment before allocation. Each allocation must fit the remaining
+budget and its reported size must equal that calculation. Budget or cache
+failure releases all partially prepared graphs and the backend. The original
+per-graph limit below 16 MiB remains in place.
+
+The executor owns one backend and one tensor-buffer handle per resident expert,
+plus bounded per-expert graph metadata and host activation storage.
+`gpu_allocated_bytes` counts all owned tensor buffers; `gpu_weight_bytes` counts
+5,222,400 weight bytes per resident and `gpu_scratch_bytes` is the remaining
+tensor allocation/alignment. `gpu_allocation_count` is the live owned
+tensor-buffer handle count. Release clears these four counters, retaining the
+historical peak. This budget and the counters exclude host storage, ggml internal
+compute buffers, shader pipelines and driver allocations. They do not bound
+total VRAM or process memory. A nonzero runtime VRAM reserve remains unsupported;
+report external resource measurements separately when available.
 
 Add `--native-q8-boundaries --executor-check` to the diagnostic. It prepares the
 same deterministic expert through the cache and adapter, submits the signal at
@@ -223,7 +233,7 @@ plan, indexed unweighted output, repeated prepare and failed reprepare cleanup.
 It never initializes Vulkan. See [EXECUTOR_HANDOFF.md](EXECUTOR_HANDOFF.md) for the
 incremental Vulkan build and one-run acceptance request.
 
-Local validation for this slice: Linux x86-64, GCC 16.2.1, Release, pinned ggml
+Local validation for the original one-expert slice: Linux x86-64, GCC 16.2.1, Release, pinned ggml
 source. Both host CTests passed. The substituted adapter returned index 2,
 10,240 byte-identical row bytes, a 5,250,560-byte owned tensor buffer and zero
 owned bytes/live allocations after release. All 34 raw and 42 hybrid evidence
@@ -232,3 +242,41 @@ Vulkan-enabled translation units passed `-Wall -Wextra -Wpedantic` syntax checks
 against the pinned API. Full Vulkan compilation and GPU execution are not run
 here; host substitution is not AMD execution evidence. CUDA/HIP/SYCL code and
 production build files are untouched.
+
+
+## Budgeted resident expert check
+
+Add `--native-q8-boundaries --resident-experts-check` instead of `--executor-check`
+for the next bounded discriminator. Two distinct experts are prepared together
+under a 16 MiB aggregate tensor budget. Expert 1 uses the original fixture;
+expert 3 negates only its up-projection Q8 codes, retaining legal scales/codes.
+The request has indices 0 and 2 active with expert IDs 3 and 1, reversing resident
+order, and routing weights 0.125 and 0.75. Both unweighted rows (20,480 bytes
+total) must match their corresponding direct hybrid rows on the same device and
+build. Release must clear owned counters. `RESIDENT_ACCEPTED`,
+`RESIDENT_COMPLETED` and the final `COMPLETED` record success.
+
+The diagnostic saves the second fixture and its direct/native stages,
+`resident.rows.f32` and `resident_manifest.txt` (fixture identities, order, budget,
+owned bytes and release counters). Existing `signal.selected_vs_native` metrics
+still describe the first expert; `signal.expert3.direct_hybrid_vs_native` adds
+separate native-reference differences for the second. No native CPU tolerance
+acceptance is introduced. Raw, hybrid and one-expert modes keep their existing
+invocations and artifacts.
+
+The same host CTest also checks invalid/unassigned experts and entry metadata,
+repeat prepare/release, payload-budget refusal and a one-byte-short tensor budget
+that includes alignment/work tensors. Failed partial prepare must release all
+owned buffers. A three-resident host prepare at its exact measured tensor budget
+checks that count is budget-driven; this does not enlarge the two-expert GPU
+acceptance run.
+
+Local Release/GCC 16.2.1 checks against pinned ggml passed both host CTests. The
+two-expert CPU substitution returned 20,480 matching bytes in reverse expert
+order, owned 10,501,120 tensor bytes within 16,777,216, and released to zero bytes
+and live handles. All 45 one-expert evidence/cache files matched retained PR #28
+CPU evidence byte for byte; all 34 raw and 42 hybrid files matched retained
+PR #25 evidence. Both Vulkan-enabled translation units passed strict syntax
+checks. No GPU execution or total-memory measurement was performed for this
+follow-on slice. See [RESIDENT_HANDOFF.md](RESIDENT_HANDOFF.md) for the minimal
+incremental build and one acceptance run per die.

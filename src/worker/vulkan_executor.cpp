@@ -14,21 +14,24 @@ using namespace vulkan_detail;
 class VulkanExecutor final : public GpuExecutor {
     int device_;
     bool cpu_test_;
+    uint64_t tensor_budget_;
     Backend backend_{nullptr,ggml_backend_free};
-    std::unique_ptr<ExpertGraph> graph_;
+    std::vector<std::unique_ptr<ExpertGraph>> graphs_;
     std::vector<uint8_t> binding_;
     GpuPlan plan_;
 public:
-    VulkanExecutor(int device, bool cpu_test):device_(device),cpu_test_(cpu_test) {}
+    VulkanExecutor(int device, bool cpu_test, uint64_t budget):device_(device),cpu_test_(cpu_test),tensor_budget_(budget) {}
     ~VulkanExecutor() override { GpuCounters ignored; release(ignored); }
     bool prepare(const GpuPlan& p,uint64_t reserve,GpuCache& cache,GpuCounters& c,std::string& err) override {
         release(c); err.clear();
         try {
             require(validate_gpu_plan(p,err),err);
-            require(p.n_embd == H && p.n_ff == F && p.gu_type == 8 && p.d_type == 8 && p.assets.size() == 1,
-                    "Vulkan adapter requires one Q8_0 expert at H2560/FF640");
+            require(p.n_embd == H && p.n_ff == F && p.gu_type == 8 && p.d_type == 8,
+                    "Vulkan adapter requires Q8_0 experts at H2560/FF640");
             // ggml's backend owns internal compute buffers. This slice cannot promise a VRAM reserve.
             require(reserve == 0,"Vulkan adapter does not support a runtime VRAM reserve");
+            require(tensor_budget_ > 0 && tensor_budget_ <= SIZE_MAX && p.assigned_bytes() <= tensor_budget_,
+                    "Vulkan resident weights exceed tensor budget");
             require(encode_gpu_plan(p,binding_,err),err);
             std::vector<uint8_t> blob;
             require(cache.read(p.assets[0],blob,err),err); // rehashes the frozen assigned blob
@@ -49,13 +52,19 @@ public:
             require(bool(backend_),"Vulkan unavailable; no CPU fallback");
             cpu::NativeFmt fmt;
             require(cpu::native_fmt(8,8,H,F,fmt,err),err);
-            graph_=std::make_unique<ExpertGraph>(backend_.get(),fmt,blob,true);
+            graphs_.reserve(p.assets.size());
+            for(size_t i=0;i<p.assets.size();++i) {
+                if(i) require(cache.read(p.assets[i],blob,err),err);
+                c.host_staging_peak=std::max(c.host_staging_peak,uint64_t(blob.capacity()));
+                graphs_.push_back(std::make_unique<ExpertGraph>(backend_.get(),fmt,blob,true,
+                    size_t(tensor_budget_-c.gpu_allocated_bytes)));
+                c.gpu_allocated_bytes+=graphs_.back()->buffer_bytes();
+                c.gpu_weight_bytes+=blob.size();
+                c.gpu_scratch_bytes=c.gpu_allocated_bytes-c.gpu_weight_bytes;
+                c.gpu_allocation_count=graphs_.size();
+                c.gpu_peak_bytes=std::max(c.gpu_peak_bytes,c.gpu_allocated_bytes);
+            }
             plan_=p;
-            c.gpu_allocated_bytes=graph_->buffer_bytes();
-            c.gpu_weight_bytes=blob.size();
-            c.gpu_scratch_bytes=c.gpu_allocated_bytes-c.gpu_weight_bytes;
-            c.gpu_allocation_count=1;
-            c.gpu_peak_bytes=std::max(c.gpu_peak_bytes,c.gpu_allocated_bytes);
             return true;
         } catch(const std::exception& e) { err=e.what(); release(c); return false; }
     }
@@ -66,7 +75,7 @@ public:
     bool infer_rows(const GpuPlan& p,const InferRequest& r,EntryRowsReply& out,std::string& err) override {
         out={}; err.clear();
         try {
-            require(bool(graph_),"Vulkan adapter is not prepared");
+            require(!graphs_.empty(),"Vulkan adapter is not prepared");
             std::vector<uint8_t> binding;
             require(encode_gpu_plan(p,binding,err),err);
             require(binding == binding_,"Vulkan adapter plan changed after prepare");
@@ -74,36 +83,44 @@ public:
                     "Vulkan adapter request binding mismatch");
             require(r.T == 1 && r.K > 0 && r.K <= kMaxK && !r.packed && r.mask.size() == r.K &&
                     r.ids.size() == r.K && r.weights.size() == r.K && r.activations.size() == H,
-                    "Vulkan adapter requires T1, bounded F32 input and one indexed entry");
-            size_t entry=r.K;
+                    "Vulkan adapter requires T1, bounded F32 input and indexed entries");
+            // Validate the entire requested set before any compute; slots follow the frozen plan.
+            std::vector<std::pair<uint16_t,size_t>> entries;
             for(size_t i=0;i<r.K;++i) {
                 require(r.mask[i] <= 1 && std::isfinite(r.weights[i]),"invalid Vulkan routing field");
                 if(r.mask[i]) {
-                    require(entry == r.K,"Vulkan adapter supports exactly one active entry");
-                    require(r.layer == plan_.assets[0].layer && r.ids[i] == plan_.assets[0].expert,
-                            "Vulkan adapter request contains unassigned expert");
-                    entry=i;
+                    const auto* asset=plan_.find(r.layer,r.ids[i]);
+                    require(asset != nullptr,"Vulkan adapter request contains unassigned expert");
+                    const size_t slot=size_t(asset-plan_.assets.data());
+                    require(slot < graphs_.size(),"Vulkan resident slot missing");
+                    entries.emplace_back(uint16_t(i),slot);
                 }
             }
-            require(entry != r.K,"Vulkan adapter requires one active entry");
-            auto rows=graph_->run(r.activations);
-            out.session=r.session; out.sequence=r.sequence;
-            out.indices={uint16_t(entry)}; out.rows=std::move(rows.out);
+            require(!entries.empty(),"Vulkan adapter requires active entries");
+            EntryRowsReply result;
+            result.session=r.session; result.sequence=r.sequence;
+            result.rows.reserve(entries.size()*H);
+            for(const auto& entry:entries) {
+                auto rows=graphs_[entry.second]->run(r.activations);
+                result.indices.push_back(entry.first);
+                result.rows.insert(result.rows.end(),rows.out.begin(),rows.out.end());
+            }
+            out=std::move(result);
             return true;
         } catch(const std::exception& e) { err=e.what(); return false; }
     }
     void release(GpuCounters& c) override {
-        graph_.reset(); backend_.reset(); binding_.clear(); plan_={};
+        graphs_.clear(); backend_.reset(); binding_.clear(); plan_={};
         c.gpu_allocated_bytes=c.gpu_weight_bytes=c.gpu_scratch_bytes=c.gpu_allocation_count=0;
     }
 };
 } // namespace
-std::unique_ptr<GpuExecutor> create_vulkan_gpu_executor(int device) {
-    return std::make_unique<VulkanExecutor>(device,false);
+std::unique_ptr<GpuExecutor> create_vulkan_gpu_executor(int device, uint64_t tensor_budget) {
+    return std::make_unique<VulkanExecutor>(device,false,tensor_budget);
 }
 #ifdef STRATA_AMD_EXECUTOR_HOST_TEST
-std::unique_ptr<GpuExecutor> create_vulkan_executor_cpu_test() {
-    return std::make_unique<VulkanExecutor>(-1,true);
+std::unique_ptr<GpuExecutor> create_vulkan_executor_cpu_test(uint64_t tensor_budget) {
+    return std::make_unique<VulkanExecutor>(-1,true,tensor_budget);
 }
 #endif
 } // namespace strata::worker
