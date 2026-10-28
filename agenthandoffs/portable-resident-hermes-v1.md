@@ -1,7 +1,9 @@
 # Portable resident requests: exact-source Hermes handoff
 
-Pending parent review. Do not run on fleet hardware before that review. This
-slice is stacked on PR47 source `fb2ea3c92093eacc8663d2b90b88813ec2bc4076` in
+The AMD checkpoint completed; see the [physical result](portable-resident-amd-results-v1.md).
+The original reviewed recipe follows as provenance, not a new run authorization.
+The [NVIDIA02 variant](portable-resident-nvidia02-v1.md) remains pending parent
+review/dispatch. This slice is stacked on PR47 source `fb2ea3c92093eacc8663d2b90b88813ec2bc4076` in
 Zutfen-LLC/Strata. The final handoff supplies the exact candidate commit SHA.
 No fleet execution, clock operation, model copy or placement retuning occurred
 in this coding task. Original strict numerical parity remains FAILED.

@@ -282,3 +282,23 @@ fake-process tests establish lifecycle behavior, not real-model quality, AMD
 performance, or cross-backend bit identity. The existing strict numerical parity
 failure remains unchanged. Unequal process lifecycles are an unmeasured confounder;
 this capability alone does not explain the full native/portable latency gap.
+
+
+### Physical resident checkpoint on05
+
+Hermes [reported a successful AMD resident checkpoint](../agenthandoffs/portable-resident-amd-results-v1.md)
+at runtime source `45513fd885babcf81d252b73804a14d2a751a74a`: one loaded process,
+four identical token/greedy-row results, four output tokens each, unchanged
+480-per-die plans. Requests2–4 had zero CPU verification/copy/digest/invalidation
+deltas, with positive GPU participation on both dies for every request. One-time
+load was18.19s; first-use prompt/decode was74.47s/10.46s, while the three later
+requests recorded prompt39.98–40.06s and decode6.39–6.48s. Selection intervals are
+separate overlapping views and must not be added to those phase times.
+
+This measures first-use versus warm behavior in that one process. It does not
+isolate verification from other warming effects or compare against a matched
+CUDA configuration. No full resident quality screen or cross-backend numerical
+parity is established. The original strict parity failure remains unchanged.
+The [NVIDIA02 recipe](../agenthandoffs/portable-resident-nvidia02-v1.md) reuses the
+same runtime source and explicit local paths/PCI selection; it remains pending
+parent review/dispatch. This documentation update authorizes no additional run.

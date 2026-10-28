@@ -1,6 +1,6 @@
 # Resident stdio local checkpoint
 
-Source is the commit containing this file, stacked directly on PR47
+Implementation tested: `45513fd885babcf81d252b73804a14d2a751a74a`, stacked directly on PR47
 `fb2ea3c92093eacc8663d2b90b88813ec2bc4076`. No complete model payload or fleet
 execution was used. The process protocol and restrictions are in
 `docs/PORTABLE_MODEL.md`; the complete-source exact-commit build and guarded
@@ -33,7 +33,8 @@ The primary logs are in the task workspace beside the resident worktree:
 These are local working receipts, not physical AMD evidence. No performance or
 quality change is claimed. Documentation impact is the explicit resident CLI
 contract and executable guarded handoff; accepted campaign/quality status is
-unchanged. Hardware execution remains pending parent review and Hermes dispatch.
+unchanged. The subsequent [AMD physical result](portable-resident-amd-results-v1.md)
+records Hermes execution separately from these local checks.
 
 Limitations: POSIX stdio only; finite serial requests, no network/concurrency.
 Signals clean up cooperatively at idle/load/token boundaries; the supervisor
