@@ -136,4 +136,58 @@ class QualityAdapter(unittest.TestCase):
         self.assertFalse(P.Q.correct('{"count":3,"count":3}','json',{'count':3}))
 
 
+
+class BenchmarkControls(unittest.TestCase):
+    def test_only_first_frozen_case_repeated_and_bound(self):
+        prompts, binding = P.benchmark_prompts([[1, 2], [3]], {'sha': 'frozen'}, True)
+        self.assertEqual(prompts, [[1, 2]] * 4)
+        self.assertEqual(binding['excluded_warmup'], 1)
+        self.assertEqual(binding['measured_trials'], 3)
+        self.assertEqual(binding['sha'], 'frozen')
+
+    def test_reject_nonfinite_and_mismatched_counts(self):
+        good = dict(setup_ms=1., prompt_ms=2., decode_ms=3., prompt_count=2, output_count=1)
+        self.assertEqual(P.timing_fields(good, [1, 2], [3]), good)
+        for key, value in [('prompt_ms', float('nan')), ('decode_ms', -1),
+                           ('setup_ms', float('inf')), ('output_count', 2), ('prompt_count', 3)]:
+            bad = dict(good); bad[key] = value
+            with self.assertRaises(ValueError): P.timing_fields(bad, [1, 2], [3])
+
+    def test_warmup_explicit_and_failure_retained(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            args = SimpleNamespace(out=Path(d), benchmark=True)
+            result = dict(status='STOP', error='pressure', requests=[dict(index=i) for i in range(1, 4)])
+            P.benchmark_receipt(args, result)
+            saved = json.loads((Path(d)/'benchmark.json').read_text())
+            self.assertEqual([r['excluded_warmup'] for r in saved['requests']], [True, False, False])
+            self.assertEqual(saved['error'], 'pressure')
+            self.assertIn('FAILED', saved['numerical_parity'])
+
+    def test_four_owned_native_trials_keep_done_timings_without_logit_dump(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d); calls=[]
+            def stage(name,cfg,argv,line,measured,peers,dump):
+                calls.append((name,line,dump))
+                if name=='load': return dict(error=None,engine_rc=0,setup_s=1.)
+                return dict(error=None,engine_rc=0,setup_s=2.,tokens=[2],
+                    done=dict(raw='DONE 1 1 3.0 4.0 stop',finish='stop',output_count=1,prompt_ms=3.,decode_ms=4.))
+            child=SimpleNamespace(pid=54321,poll=lambda:None)
+            driver=SimpleNamespace(prepare_argv=lambda n,l:('/manifest',[],[],[]),
+                set_single_value=Mock(),require_once=Mock(),port_open=Mock(side_effect=[False,True,False]),
+                subprocess=SimpleNamespace(Popen=Mock(return_value=child)),
+                stop_process_group=Mock(return_value=0),engine_stage=stage,
+                stage_ok=lambda r,measured:r.get('error') is None,WORKER_START_SECONDS=1)
+            ndc=dict(assets=dict(worker='/worker'),worker_argv=['@worker'])
+            summary={'requests':[]}
+            with patch.object(P.Q.compare_logits,'read') as read:
+                P.owned_native(driver,ndc,{},[[1]]*4,summary,root,benchmark=True)
+                read.assert_not_called()
+            self.assertEqual(len(calls),5)
+            self.assertTrue(all(not c[2] for c in calls))
+            self.assertEqual([r['timing']['decode_ms'] for r in summary['requests']],[4.]*4)
+            driver.stop_process_group.assert_called_once_with(child,'owned CPU worker')
+
 if __name__=='__main__': unittest.main()

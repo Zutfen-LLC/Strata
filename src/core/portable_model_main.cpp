@@ -5,6 +5,8 @@
 #include "ggml-vulkan.h"
 #endif
 #include <algorithm>
+#include <chrono>
+#include <iomanip>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -31,7 +33,9 @@ std::vector<int64_t> numbers(const std::string &text) {
 int main(int argc, char **argv) {
     try {
         strata::core::PortableModelOptions opts;
-        std::string model, manifest, token_text, dump, placement_path;
+        std::string model, manifest, token_text, dump, placement_path, timings_path;
+        using Clock = std::chrono::steady_clock;
+        Clock::time_point setup_start, prompt_start, decode_start, decode_end, last_prompt_start, last_selection;
         std::vector<int64_t> devices, caps;
         size_t max_new = 0;
         auto integer = [](const std::string &s) {
@@ -47,7 +51,7 @@ int main(int argc, char **argv) {
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback]\n"
-                             " [--dump-logits DIRECTORY] [--placements FILE]\n"
+                             " [--dump-logits DIRECTORY] [--placements FILE] [--timings FILE]\n"
                              "T=1 serial text; all 48 layers; fresh embedding per token; CPU experts/host PLE.\n"
                              "Every consumed prompt/generated token can dump its full vocabulary as pos-N.f32.\n";
                 return 0;
@@ -94,6 +98,8 @@ int main(int argc, char **argv) {
                 caps = numbers(value);
             else if (key == "--dump-logits")
                 dump = value;
+            else if (key == "--timings")
+                timings_path = value;
             else if (key == "--placements")
                 placement_path = value;
             else
@@ -114,6 +120,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("separate cap required for each Vulkan device");
         if (devices.size() == 2 && devices[0] == devices[1])
             throw std::runtime_error("duplicate Vulkan device index");
+        if (!timings_path.empty())
+            setup_start = Clock::now();
         std::vector<std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)>> backends;
         for (size_t i = 0; i < devices.size(); ++i) {
             if (devices[i] < 0 || caps[i] <= 0 || caps[i] > 8192)
@@ -202,16 +210,48 @@ int main(int argc, char **argv) {
                       << ",\"greedy_next\":" << std::max_element(logits.begin(), logits.end()) - logits.begin()
                       << "}\n";
         };
-        for (int32_t token : tokens)
-            consume(token, false);
+        if (!timings_path.empty())
+            prompt_start = Clock::now();
+        // Native DONE places the last prompt forward step in decode. Keep
+        // that selection boundary as well as this CLI's full-consumption phases.
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            if (!timings_path.empty() && i + 1 == tokens.size())
+                last_prompt_start = Clock::now();
+            consume(tokens[i], false);
+        }
+        if (!timings_path.empty())
+            decode_start = Clock::now();
         size_t generated = 0;
         while (!session->ended() && generated < max_new && session->position() < opts.context) {
             const int32_t next = int32_t(std::max_element(logits.begin(), logits.end()) - logits.begin());
+            if (!timings_path.empty())
+                last_selection = Clock::now();
             consume(next, true);
             ++generated;
         }
+        if (!timings_path.empty())
+            decode_end = Clock::now();
         const char *stop = session->ended() ? "eos" : session->position() == opts.context ? "context" : "max_new";
         std::cout << "{\"stop\":\"" << stop << "\",\"position\":" << session->position() << "}\n";
+        if (!timings_path.empty()) {
+            const auto ms = [](Clock::time_point a, Clock::time_point b) {
+                return std::chrono::duration<double, std::milli>(b - a).count();
+            };
+            std::ofstream file(timings_path);
+            file << std::setprecision(17)
+                 << "{\"schema\":1,\"setup_ms\":" << ms(setup_start, prompt_start)
+                 << ",\"prompt_ms\":" << ms(prompt_start, decode_start)
+                 << ",\"decode_ms\":" << ms(decode_start, decode_end)
+                 << ",\"prompt_count\":" << tokens.size() << ",\"output_count\":" << generated
+                 << ",\"selection_prompt_ms\":" << ms(prompt_start, last_prompt_start)
+                 << ",\"selection_decode_ms\":" << (generated ? ms(last_prompt_start, last_selection) : 0.0)
+                 << ",\"terminal_feed_ms\":" << (generated ? ms(last_selection, decode_end) : 0.0)
+                 << ",\"selection_prompt_steps\":" << tokens.size() - 1
+                 << ",\"selection_decode_steps\":" << generated
+                 << ",\"prompt_steps\":" << tokens.size() << ",\"decode_steps\":" << generated << "}\n";
+            if (!file)
+                throw std::runtime_error("timing report write failed");
+        }
         if (!placement_path.empty()) {
             std::ofstream file(placement_path);
             file << "layer\tphase\top\ttensor\ttype\tbackend\tmetadata\tfallback\n";

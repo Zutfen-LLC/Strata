@@ -2,6 +2,7 @@
 """Frozen quality.py adapter for the existing portable CLI; no model builds or services."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -61,14 +62,46 @@ def completion(records, prompt, vocabulary):
     return generated, stop
 
 
+def benchmark_prompts(prompts, binding, enabled):
+    # Freeze/verify all twelve as before, then predeclare only case 1 repeated.
+    if not enabled:
+        return prompts, binding
+    return [prompts[0]] * 4, dict(binding, benchmark_case=1, excluded_warmup=1, measured_trials=3)
+
+
+def timing_fields(row, prompt, ids):
+    for key in ('setup_ms', 'prompt_ms', 'decode_ms'):
+        if type(row.get(key)) not in (int, float) or not math.isfinite(row[key]) or row[key] < 0:
+            raise ValueError('invalid timing field: ' + key)
+    if row.get('prompt_count') != len(prompt) or row.get('output_count') != len(ids):
+        raise ValueError('timing token count mismatch')
+    return row
+
+
+def benchmark_receipt(args, summary):
+    if not getattr(args, 'benchmark', False):
+        return
+    rows = summary['requests']
+    for i, row in enumerate(rows):
+        row['excluded_warmup'] = i == 0
+    summary['numerical_parity'] = 'FAILED; performance does not waive logit gates'
+    summary['cache_policy'] = 'fresh engine per trial; one excluded warmup; OS/file caches not flushed; no KV reuse'
+    # Raw individual trials are authoritative; deliberately no pooled TPS.
+    Q.write(args.out / 'benchmark.json', summary)
+
+
 def run_portable(args, tok):
     prompts, binding = frozen(tok, args.suite)
+    benchmark = getattr(args, 'benchmark', False)
+    prompts, binding = benchmark_prompts(prompts, binding, benchmark)
     binary = args.binary.resolve(strict=True)
     if Q.bundle.sha(binary) != args.binary_sha256:
-        raise ValueError('qualified PR43 binary digest mismatch')
+        raise ValueError('portable binary digest mismatch')
     args.out.mkdir(mode=0o700, exist_ok=False)
     summary = dict(status='STOP', source='ac85ff3fdf0834c13437b69b1568d8704e9b0717',
                    binary_sha256=args.binary_sha256, suite=binding, requests=[])
+    if benchmark:
+        summary['source'] = 'PR43 c76d03c7 plus opt-in CLI phase timers; see source export SHA'
     baseline = S.host_memory()
     work = S.model_working_set()
     summary.update(baseline_host=baseline, host_admission=S.host_admission_terms(work['working_set_bound_bytes']))
@@ -86,6 +119,8 @@ def run_portable(args, tok):
                        '--context', '256', '--max-new', '32', '--threads', '4', '--expert-workers', '12',
                        '--host-cap-mib', '32768', '--vulkan', '0,1', '--device-cap-mib', '7680,7680',
                        '--split', '32', '--placements', str(case / 'placements.tsv')]
+            if benchmark:
+                command += ['--timings', str(case / 'timings.json')]
             Q.write(case / 'argv.json', command)
             process = None
             peak = [v['used'] for v in initial]
@@ -105,8 +140,8 @@ def run_portable(args, tok):
                                 raise ValueError('aggregate per-die VRAM growth cap')
                         if any((case / name).stat().st_size > 8 << 20 for name in ('stdout.jsonl', 'stderr.log')):
                             raise ValueError('bounded output log exceeded8MiB')
-                        if time.monotonic() - began > 600 or time.monotonic() - start > 3600:
-                            raise TimeoutError('case600s/suite3600s budget exhausted; no retry')
+                        if time.monotonic() - began > (300 if benchmark else 600) or time.monotonic() - start > (1200 if benchmark else 3600):
+                            raise TimeoutError('case/suite budget exhausted; no retry')
                         status = process.poll()
                         if status is not None:
                             break
@@ -119,6 +154,16 @@ def run_portable(args, tok):
                 summary['requests'].append(dict(index=index, tokens=ids, finish=stop, seconds=time.monotonic()-began,
                     tensor_operations_by_device=participation, sampled_peak_vram=peak,
                     minimum_effective_available=minimum))
+                if benchmark:
+                    timing = json.loads((case / 'timings.json').read_text())
+                    timing_fields(timing, prompt, ids)
+                    for key in ('selection_prompt_ms', 'selection_decode_ms', 'terminal_feed_ms'):
+                        value = timing.get(key)
+                        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                            raise ValueError('invalid selection timing: ' + key)
+                    if timing.get('selection_prompt_steps') != len(prompt)-1 or timing.get('selection_decode_steps') != len(ids):
+                        raise ValueError('selection step count mismatch')
+                    summary['requests'][-1]['timing'] = timing
             finally:
                 if process is not None and process.poll() is None:
                     os.killpg(process.pid, signal.SIGTERM)
@@ -133,6 +178,7 @@ def run_portable(args, tok):
         raise
     finally:
         Q.write(args.out / 'summary.json', summary)
+        benchmark_receipt(args, summary)
 
 
 
@@ -151,7 +197,7 @@ def retained_driver(path):
     return driver
 
 
-def owned_native(driver, ndc, loadc, prompts, summary, output):
+def owned_native(driver, ndc, loadc, prompts, summary, output, benchmark=False):
     manifest, load, local, _unused_distributed = driver.prepare_argv(ndc, loadc)
     worker_argv = [a.replace('@worker', ndc['assets']['worker']).replace('@manifest', manifest)
                    for a in ndc['worker_argv']]
@@ -179,6 +225,8 @@ def owned_native(driver, ndc, loadc, prompts, summary, output):
             time.sleep(2)
         if worker.poll() is not None:
             raise RuntimeError('owned CPU worker exited before LOAD')
+        if benchmark:
+            summary['worker_startup_s'] = time.monotonic() - started
         summary['load'] = driver.engine_stage('load', loadc, load, '', False, 0, False)
         if not driver.stage_ok(summary['load'], measured=False):
             raise RuntimeError('owned resident LOAD failed; no requests started')
@@ -190,7 +238,7 @@ def owned_native(driver, ndc, loadc, prompts, summary, output):
             driver.R = case
             (case / 'request.txt').write_text('GEN 32 ' + ' '.join(map(str, prompt)) + '\n')
             result = driver.engine_stage('local', ndc, local,
-                'GEN 32 ' + ' '.join(map(str, prompt)), True, 0, True)
+                'GEN 32 ' + ' '.join(map(str, prompt)), True, 0, not benchmark)
             Q.write(case / 'result.json', result)
             if not driver.stage_ok(result, measured=True):
                 raise RuntimeError(f'native case{index} failed; no retry')
@@ -200,9 +248,14 @@ def owned_native(driver, ndc, loadc, prompts, summary, output):
                done['output_count'] != len(ids) or any(type(t) is not int or not 0 <= t < 248320 for t in ids):
                 raise ValueError('native abnormal/nonfinite/invalid completion')
             logits = case / 'local' / 'local-first-logits.0'
-            if len(Q.compare_logits.read(logits)) != 248320:
+            if not benchmark and len(Q.compare_logits.read(logits)) != 248320:
                 raise ValueError('native finite first-logit vocabulary mismatch')
             summary['requests'].append(dict(index=index, tokens=ids, finish=done['finish']))
+            if benchmark:
+                prompt_count = int(done['raw'].split()[2])
+                timing = dict(setup_ms=result['setup_s']*1000, prompt_ms=done['prompt_ms'],
+                              decode_ms=done['decode_ms'], prompt_count=prompt_count, output_count=len(ids))
+                summary['requests'][-1]['timing'] = timing_fields(timing, prompt, ids)
     finally:
         driver.R = output
         if worker is not None:
@@ -214,6 +267,8 @@ def owned_native(driver, ndc, loadc, prompts, summary, output):
 
 def run_native(args, tok):
     prompts, binding = frozen(tok, args.suite)
+    benchmark = getattr(args, 'benchmark', False)
+    prompts, binding = benchmark_prompts(prompts, binding, benchmark)
     driver = retained_driver(args.driver)
     ndc = json.loads(driver.NDC_PATH.read_text())
     loadc = json.loads(driver.LOADC_PATH.read_text())
@@ -229,13 +284,14 @@ def run_native(args, tok):
     Q.write(args.out / 'input-pins.json', dict(ndon_config_sha256=driver.sha256(driver.NDC_PATH),
             load_config_sha256=driver.sha256(driver.LOADC_PATH), driver_sha256=DRIVER_SHA256, suite=binding))
     try:
-        owned_native(driver, ndc, loadc, prompts, summary, args.out)
+        owned_native(driver, ndc, loadc, prompts, summary, args.out, benchmark=benchmark)
         summary['status'] = 'complete'
     except BaseException as error:
         summary['error'] = str(error)
         raise
     finally:
         Q.write(args.out / 'summary.json', summary)
+        benchmark_receipt(args, summary)
 
 
 def native_rows(root, binding, prompts, expected_sha):
@@ -297,6 +353,9 @@ def main():
     p.add_argument('--driver', type=Path, required=True)
     p.add_argument('--suite', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True)
+    for name in ('portable', 'native'):
+        commands.choices[name].add_argument('--benchmark', action='store_true',
+            help='only frozen case 1: one excluded warmup, three measured fresh engines; no scoring')
     p = commands.add_parser('score')
     p.add_argument('--suite', type=Path, required=True)
     p.add_argument('--portable-root', type=Path, required=True)
