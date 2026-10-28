@@ -1,5 +1,9 @@
 # Serial Vulkan memory admission correction
 
+**Physical480-per-die admission and execution subsequently passed.** See
+[the result](portable-local-residency-480-results-v1.md). Local-only statements
+below describe the original coding checkpoint.
+
 The physical16-expert smoke revealed a real admission problem, not an allocation
 failure: the old ledger charged about5.1 GB of extra workspace per die and refused
 both retained larger plans. No larger run, plan edit or cap increase occurred.

@@ -1,12 +1,17 @@
 # Larger local Vulkan residency: conditional handoff
 
+**The480-per-die token and single-case stages completed successfully.** See
+[their physical receipt](portable-local-residency-480-results-v1.md). Historical
+commands below are not a request to repeat them. Parent separately released the
+frozen12-case screen with an explicit65-minute guard; its result is pending.
+
 Prepared for parent review/dispatch after the16-per-die physical smoke passed.
 The original source05601aba ledger rejected both retained counts. A source-grounded
 [accounting correction](portable-memory-accounting-v1.md) now separates serial
 QSA temporary capacity and verified backend-context conversion workspace from
 retained bytes. **Build the latest C++ source in a fresh directory and record its
 new binary SHA. The old05601aba binary must not be used for this larger run.**
-Caps/reserves are unchanged. No larger fleet run has occurred.
+Caps/reserves are unchanged. The480-per-die physical result is linked above.
 
 The smoke wrapper already supports larger supplied plans and caps. Its flags are
 `--plan` twice, `--tensor-mib`, `--workspace-mib`, `--free-reserve-mib`; it has no
