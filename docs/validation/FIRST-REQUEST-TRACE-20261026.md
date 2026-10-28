@@ -56,7 +56,7 @@ ends with ERR rather than a successful seal. Existing files are never replaced;
 POSIX trace permissions are 0600. The offline reader caps each input at 64 MiB.
 Keep raw activations and prompt data private.
 
-## Hermes invocation changes
+## operator invocation changes
 
 The parent must first resolve its pending access approval. This document does not
 authorize creating routes. Use the retained config-driven bundle/run lifecycle,
@@ -143,11 +143,11 @@ Passed locally on Linux x86-64, GCC 16.2.1, Python 3.14.8:
 
 ```sh
 python -m unittest discover -s tests/core -p test_first_request_trace.py -v
-cmake -S . -B /tmp/strata-first-request-trace-build \
+cmake -S . -B ${BUILD_ARTIFACT_834DA8B3} \
   -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_NATIVE_EXPERTS=OFF \
   -DSTRATA_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build /tmp/strata-first-request-trace-build --target first_request_trace_test -j 2
-ctest --test-dir /tmp/strata-first-request-trace-build -R first_request_trace --output-on-failure
+cmake --build ${BUILD_ARTIFACT_834DA8B3} --target first_request_trace_test -j 2
+ctest --test-dir ${BUILD_ARTIFACT_834DA8B3} -R first_request_trace --output-on-failure
 ```
 
 Three Python tests passed. They execute the real writer with tracing disabled and
@@ -173,7 +173,7 @@ The model-free `first_request_trace_cuda_test` compiled and linked against the
 CUDA runtime. Execution returned skip code 77: no CUDA device is available here.
 It shares the production layout/copy helper and checks T=1,3,4, two layers,
 individual token slices, scratch overwrite after every snapshot, untouched padded
-rows and two graph replays. On Hermes's existing configured CUDA build:
+rows and two graph replays. On operator's existing configured CUDA build:
 
 ```sh
 cmake --build "$CUDA_BUILD" --target strata first_request_trace_cuda_test -j "$BUILD_JOBS"
