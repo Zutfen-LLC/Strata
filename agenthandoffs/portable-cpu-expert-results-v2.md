@@ -91,10 +91,14 @@ no tool was installed. Builds emit existing GGML deprecation warnings in
 portable QSA code; there are no outstanding build/test failures. The v1
 missing-PLE manual link failure remains recorded in v1 and was not hidden.
 
-Not run: physical V340, real model, clean CUDA/HIP/SYCL builds or timing
-comparison. No fleet access, deployment, model modification or real-model inference
-launch occurred. The failed CUDA numerical screen remains failed. Local
-CTest duration is validation cost, not model-performance evidence.
+Not run by this coding task: physical V340, real model, clean CUDA/HIP/SYCL
+builds or timing comparison. This task made no fleet access, deployment, model
+modification or real-model inference launch. Parent/Hermes subsequently supplied
+PASS for the exact ac85ff3 physical pair; see the attributed
+[physical receipt](portable-cpu-expert-physical-results-v1.md), including all
+41 byte-identical logit rows, unchanged native work and timing caveats.
+The failed CUDA numerical screen remains failed. Local CTest duration is
+validation cost, not model-performance evidence.
 
 The matched parent-dispatched recipe is `portable-cpu-expert-proof-v2.md`.
 It keeps immutable sources, first-use corruption rejection, lifetime-owned

@@ -154,7 +154,12 @@ indices bound to validated role layout and the owned model; no global cache
 or F32 expert expansion exists. Cache metadata fits within the existing
 32 MiB manifest/index/state allowance. Staging and host admission caps remain
 unchanged. See `agenthandoffs/portable-cpu-expert-proof-v2.md` for the matched
-comparison recipe; removed byte work is not a measured end-to-end speedup.
+comparison recipe. Parent/Hermes reports all 41 raw logit rows and stdout
+byte-identical in the physical V340 pair at `ac85ff3`, with fewer copy/digest
+bytes and unchanged native batch counts. The fixed oracle-first timing is
+order-biased and does not establish a general speedup. See
+`agenthandoffs/portable-cpu-expert-physical-results-v1.md` for the attributed
+receipt. The failed CUDA parity screen remains failed.
 
 ## Memory and current limits
 

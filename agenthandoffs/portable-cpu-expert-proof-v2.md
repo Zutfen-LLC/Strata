@@ -5,6 +5,10 @@ Supersedes v1's publication checkpoint. Provider code is unchanged from
 `59ce0bc5aae81b8cd4f3f17924e8b1cbb16a243d`. The additive supervisor flag
 now forwards `--expert-dispatch-oracle`; all existing runtime guards remain.
 Clean local build/test receipts are in `portable-cpu-expert-results-v2.md`.
+Parent/Hermes completed this recipe at exact
+`ac85ff3fdf0834c13437b69b1568d8704e9b0717`; the attributed PASS and timing
+limitations are in `portable-cpu-expert-physical-results-v1.md`. The recipe is
+preserved for reproduction; this update requests no additional run.
 Parent supplies the reviewed full remote SHA containing this recipe.
 
 The comparison is original PORTABLE arithmetic versus optimized PORTABLE
