@@ -110,7 +110,7 @@ def participation(text, count):
     return entries
 
 
-def comparable(a, b):
+def comparable(a, b, gpu_workers=1):
     def argv(cfg):
         args = cfg['argv'][1:]
         cleaned = []
@@ -129,10 +129,11 @@ def comparable(a, b):
                 cleaned.append('@manifest' if flag == cfg['assets']['manifest'] else flag)
                 i += 1
         return cleaned
-    if '--remote-gpu-worker' in a['argv'] or b['argv'].count('--remote-gpu-worker') != 1:
-        raise ValueError('screen requires CPU-backed baseline and one Vulkan endpoint')
-    j = b['argv'].index('--remote-gpu-worker')
-    if not b['argv'][j+1].startswith('vulkan@'): raise ValueError('candidate must use Vulkan')
+    if '--remote-gpu-worker' in a['argv'] or b['argv'].count('--remote-gpu-worker') != gpu_workers or not 1 <= gpu_workers <= 8:
+        raise ValueError('screen requires CPU-backed baseline and the declared Vulkan endpoints')
+    for j, flag in enumerate(b['argv']):
+        if flag == '--remote-gpu-worker' and not b['argv'][j+1].startswith('vulkan@'):
+            raise ValueError('candidate must use Vulkan')
     for asset in ('engine', 'worker', 'manifest', 'requests', 'quality_manifest'):
         if bundle.sha(a['assets'][asset]) != bundle.sha(b['assets'][asset]):
             raise ValueError('arm asset differs: ' + asset)

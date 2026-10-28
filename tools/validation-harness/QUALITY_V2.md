@@ -1,8 +1,9 @@
 # Frozen v2: 100-case paired backend screen
 
-This is a separate prospective version, stacked on PR #34. It does not change
-`quality.py`, its twelve cases, scoring or retained **inconclusive-baseline**
-verdict. It does not rescore or publish old private answers. All v2 prompts,
+This is a separate prospective version, originally stacked on PR #34. It preserves
+the original twelve cases, scoring and retained **inconclusive-baseline** verdict.
+The shared comparison helper defaults to its original single-endpoint contract.
+It does not rescore or publish old private answers. All v2 prompts,
 golds, derivations, semantic rules, format rules and criteria below are frozen
 before v2 CPU or candidate outputs. There is no hardware result at this revision.
 
@@ -181,3 +182,85 @@ exclusion, independent format failures and changed plan/source refusal.
 Not run: real-tokenizer preparation, hardware generation, multi-host transport,
 new engine builds or phase 2. Only Python validation and documentation changed;
 no absolute quality, arithmetic parity or runtime performance result is claimed.
+
+
+## Multiple Vulkan endpoints — parent dispatch only
+
+The same frozen 100 cases and scoring rules can screen 1..8 ordered Vulkan
+endpoints. Repeat `--placement-plan` in the same order as the candidate's
+`--remote-gpu-worker` arguments. A single plan still uses manifest `plan_sha256`
+and report `placement_plan_sha256`. Multiple plans use manifest `plans` and report
+`placement_plans`: ordered SHA-256, model/layout/placement identities, geometry,
+assigned counts and bytes. Preparation reads bounded SGPUPLN1 metadata, checks its
+runtime digest, common model/layout/geometry and disjoint assignments. These are
+integrity/admission bindings, not authentication of binaries or physical devices.
+The coordinator still validates the plans against its trusted source manifest.
+
+The scorer verifies every endpoint's startup and post-request snapshots in
+coordinator index order: mTLS/READY, model/layout/placement against its frozen
+plan, stable nonzero session, assigned bytes, zero failures, and monotonic entry
+and request counters starting at zero. Missing, duplicate, reordered, reset or
+mismatched evidence invalidates the trial. No response is generated again.
+
+Each case retains aggregate `vulkan_entries`; multi-endpoint reports add
+`vulkan_entries_by_endpoint` in frozen order. `endpoint_participation` reports
+each endpoint's identity, total entries, exercised case IDs, nonparticipating IDs
+and paired semantic/format counts on that endpoint's exercised cases. One case
+can exercise multiple endpoints; those subsets must not be added as independent
+samples. Endpoint counters **cannot prove every assigned expert executed**.
+Aggregate case participation drives the original paired criterion. Additionally,
+a multi-endpoint trial with an entirely unused endpoint cannot receive
+`screen-no-observed-regression`: it is `screen-coverage-limited`. Existing semantic
+and format regression precedence is preserved. Every case need not use every
+endpoint. Numeric limits and CPU answer identity requirements are unchanged.
+
+Old single-plan schema fields remain supported. Source pins remain strict:
+preserve old frozen manifests/results and use their original pinned scorer when
+inspecting historical runs. Prepare a fresh manifest before a new paired run;
+never rewrite an old manifest's source hashes to pass a newer scorer.
+
+### Minimal two-die handoff
+
+No hardware dispatch, second listener/access change or credential work is performed
+by this change. The parent admits and dispatches the bounded run using existing
+receipts, resource guards, CPU resident ownership and finite deadlines.
+
+1. Split the **same previously admitted 960-expert union**, without selecting from
+   answers, into two disjoint sets of 480: ten experts per layer in each set across
+   48 layers. Verify their disjoint union equals the original assignments. Use
+   `strata-gpu-manifest plan LOCAL_MANIFEST ASSIGNMENTS OUTPUT` separately for each.
+   Each contains 2,506,752,000 weight bytes (2.3346 GiB); both total 5,013,504,000.
+   Tensor caps must include padded graph allocations. Backend compute/pipelines,
+   driver allocations and host/cache storage need separate existing headroom
+   checks; neither capacity nor speedup follows from these weight totals.
+2. Reuse the accepted worker binary twice, on independently verified Vulkan
+   device indices for the two physical dies, with distinct approved ports and
+   **separate cache roots** (the cache is exclusively locked). Use each worker's
+   corresponding `--plan`, `--device`, admitted tensor/cache budgets and retained
+   listener/source-IP/TCP settings. Record actual executed binary hashes and
+   device mappings; a staged asset hash is not an executed-process identity.
+3. Keep the existing coordinator and full CPU backing/settings unchanged. Supply
+   two `--remote-gpu-worker vulkan@HOST:PORT PLAN` pairs and one exact expected
+   `--remote-gpu-tls-peer SAN_DNS` per endpoint, in matching order. Each worker
+   verifies the coordinator SAN through existing mTLS. Reuse only already
+   authorized, valid certificates; check the retained expiry before dispatch.
+   Missing/expired certificates or second-listener approval stop dispatch for the
+   parent to resolve; do not mint credentials or weaken verification here.
+4. Prepare in a new private root using the existing tokenizer/model metadata:
+
+   ```bash
+   python3 -B "$STRATA_SRC/tools/validation-harness/quality_v2.py" --gguf "$MODEL_GGUF" prepare \
+     --placement-plan "$DIE0_PLAN" --placement-plan "$DIE1_PLAN" --out "$NEW_FROZEN_ROOT"
+   ```
+
+   Stage fresh CPU/candidate configs using that manifest and its unchanged 100
+   requests. Use the existing bundle/run/score commands above, once per arm.
+   Keep the two plan files as separately named staged assets and bind candidate
+   argv to those staged paths in order. The existing scorer verifies their bytes
+   against the frozen identities. Preserve old private trial roots/results.
+5. Retain both endpoints' complete startup/post-request reports and physical-die,
+   executable, certificate and resource receipts privately. Return endpoint
+   participation plus the unchanged paired semantic/format verdict and numeric
+   diagnostics. This small authored screen cannot establish systematic quality
+   equivalence, CPU bit parity or readiness. No private addresses, keys, model
+   answers or fleet results belong in the PR.
