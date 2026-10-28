@@ -469,6 +469,12 @@ int main(int argc, char **argv) {
                 const double gp=model_after.gdn_provider_ms-model_before.gdn_provider_ms;
                 std::cout << ",\"gdn_attention_exchange_ms_delta\":" << attention
                     << ",\"gdn_attention_compute_ms_delta\":" << compute
+                    << ",\"gdn_candidate_readback_ms_delta\":" << ga.candidate_readback_ms-gb.candidate_readback_ms
+                    << ",\"gdn_candidate_finite_ms_delta\":" << ga.candidate_finite_ms-gb.candidate_finite_ms
+                    << ",\"gdn_state_commit_ms_delta\":" << ga.state_commit_ms-gb.state_commit_ms
+                    << ",\"gdn_candidate_readback_calls_delta\":" << ga.candidate_readback_calls-gb.candidate_readback_calls
+                    << ",\"gdn_candidate_finite_calls_delta\":" << ga.candidate_finite_calls-gb.candidate_finite_calls
+                    << ",\"gdn_state_commit_calls_delta\":" << ga.state_commit_calls-gb.state_commit_calls
                     << ",\"gdn_ffn_ms_delta\":" << ffn
                     << ",\"gdn_attention_surrounding_ms_delta\":" << attention-compute
                     << ",\"gdn_ffn_non_provider_ms_delta\":" << ffn-gp

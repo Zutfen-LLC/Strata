@@ -161,4 +161,16 @@ inline void reference(const Fixture &f, const std::vector<float> &previous, cons
     close(layer.recurrent_state(), next, 3e-6f, "independent recurrent state");
     close(trace.attention, out, 3e-6f, "independent attention output");
 }
+// The three candidate read/scan pairs exclude optional trace readbacks.
+inline void candidate_work(const strata::core::PortableGdnWork &w, uint64_t attempts, uint64_t commits, bool ple) {
+    const uint64_t reads = attempts * (ple ? 4 : 3);
+    check(w.candidate_readback_calls == reads && w.candidate_finite_calls == reads,
+          "candidate read/finite call coverage (trace excluded)");
+    check(w.state_commit_calls == commits, "commit scope only after successful resident FFN");
+    for (double ms : {w.candidate_readback_ms, w.candidate_finite_ms, w.state_commit_ms})
+        check(std::isfinite(ms) && ms >= 0, "candidate/commit timers finite and nonnegative");
+    check(w.attention_compute_ms + w.candidate_readback_ms + w.candidate_finite_ms <=
+              w.attention_exchange_ms + 1e-6, "candidate scopes disjoint and nested in exchange");
+    if (!commits) check(w.state_commit_ms == 0, "no commit work has no commit time");
+}
 } // namespace gdn_fixture

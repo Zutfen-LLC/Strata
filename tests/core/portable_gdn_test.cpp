@@ -90,15 +90,18 @@ int main() {
               error.find("resident state budget") != std::string::npos, "state allocation admission refusal");
         PortableRoute route;
         PortableGdnTrace trace;
+        PortableGdnWork host_work, resident_work;
         for (int t = 0; t < 3; ++t) {
             auto previous = layer->recurrent_state(), history = layer->convolution_history();
-            check(layer->step(f.input(t), experts(), route, error, &trace), error);
+            check(layer->step(f.input(t), experts(), route, error, &trace, &host_work), error);
             reference(f, previous, history, trace, *layer);
             PortableRoute trial_route, allocated_route, fallback_route;
             check(fallback->step(f.input(t), experts(), fallback_route, error), error);
             check(trial->step(f.input(t), experts(), trial_route, error), error);
             PortableGdnTrace resident_trace;
-            check(allocated->step(f.input(t), experts(), allocated_route, error, &resident_trace), error);
+            check(allocated->step(f.input(t), experts(), allocated_route, error, &resident_trace, &resident_work), error);
+            candidate_work(host_work, t + 1, 0, false);
+            candidate_work(resident_work, t + 1, t + 1, false);
             for (auto member : {&PortableGdnTrace::qkv, &PortableGdnTrace::convolution, &PortableGdnTrace::query,
                                 &PortableGdnTrace::key, &PortableGdnTrace::value, &PortableGdnTrace::decay,
                                 &PortableGdnTrace::beta, &PortableGdnTrace::attention})
@@ -351,6 +354,20 @@ int main() {
             auto model = strata::GgufModel::open((root / "bad-ple.gguf").string());
             check(!PortableGdnLayer::from_gguf(model, 0, {}, error), "configured PLE0 rejection");
         }
+        // Completed read/scan scopes survive a downstream rejection; no
+        // device commit may run until the existing FFN validation succeeds.
+        PortableGdnWork rejected;
+        const auto committed_state = allocated->recurrent_state();
+        check(!allocated->step(f.input(0),
+            [](int64_t, const PortableRoute &, std::vector<float> &, std::string &) { return false; },
+            route, error, nullptr, &rejected), "timed callback rejection");
+        candidate_work(rejected, 1, 0, false);
+        check(allocated->recurrent_state() == committed_state, "timed rejection changed committed state");
+        const auto saved = rejected;
+        check(allocated->reset(error), error);
+        check(rejected.candidate_readback_ms == saved.candidate_readback_ms &&
+              rejected.candidate_finite_ms == saved.candidate_finite_ms &&
+              rejected.state_commit_calls == saved.state_commit_calls, "reset preserves caller timing totals");
         candidate_reuse(*layer,f);
         candidate_reuse(*allocated,f);
         std::printf("portable_gdn_test: actual H2560/FF640/S128/Hk16/Hv48; independent multi-token state/convolution, "

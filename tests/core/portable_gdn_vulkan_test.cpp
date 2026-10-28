@@ -68,11 +68,13 @@ int main(int argc, char **argv) {
             PortableGdnTrace trace;
             const auto *state0=layer->recurrent_state().data(), *history0=layer->convolution_history().data();
             const float *state1=nullptr, *history1=nullptr;
+            PortableGdnWork work;
             for (int t = 0; t < 2; ++t) {
                 auto state = layer->recurrent_state(), history = layer->convolution_history();
                 PortableRoute cpu_route;
                 check(cpu->step(f.input(t), experts(), cpu_route, error), error);
-                check(layer->step(f.input(t), experts(), route, error, &trace), error);
+                check(layer->step(f.input(t), experts(), route, error, &trace, &work), error);
+                candidate_work(work, t + 1, state_resident ? t + 1 : 0, false);
                 if(t==0) {
                     state1=layer->recurrent_state().data();history1=layer->convolution_history().data();
                     check(state1!=state0 && history1!=history0,"Vulkan candidate banks do not alias committed mirrors");

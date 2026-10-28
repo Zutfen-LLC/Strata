@@ -53,15 +53,26 @@ void finite(const std::vector<float> &x) {
         if (!std::isfinite(f))
             require(false, "portable GDN: nonfinite input/result");
 }
-void read_into(ggml_tensor *t, std::vector<float> &out) {
+void read_into(ggml_tensor *t, std::vector<float> &out, PortableGdnWork *work = nullptr) {
     if (size_t(ggml_nelements(t)) != out.size())
         require(false, "portable GDN: candidate readback size mismatch");
-    ggml_backend_tensor_get(t, out.data(), 0, out.size() * sizeof(float));
-    finite(out);
+    if (!work) {
+        ggml_backend_tensor_get(t, out.data(), 0, out.size() * sizeof(float));
+        finite(out);
+        return;
+    }
+    {
+        portable_detail::ScopedExpertTimer<> timer(true, work->candidate_readback_ms, work->candidate_readback_calls);
+        ggml_backend_tensor_get(t, out.data(), 0, out.size() * sizeof(float));
+    }
+    {
+        portable_detail::ScopedExpertTimer<> timer(true, work->candidate_finite_ms, work->candidate_finite_calls);
+        finite(out);
+    }
 }
-std::vector<float> read(ggml_tensor *t) {
+std::vector<float> read(ggml_tensor *t, PortableGdnWork *work = nullptr) {
     std::vector<float> out(size_t(ggml_nelements(t)));
-    read_into(t, out);
+    read_into(t, out, work);
     return out;
 }
 void write(ggml_tensor *t, const std::vector<float> &x) {
@@ -455,11 +466,11 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
                 status = ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph);
             }
             require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
-            read_into(s.state_output, s.candidate_state);
-            read_into(s.history_output, s.candidate_history);
-            next_residual = read(s.attn_residual);
+            read_into(s.state_output, s.candidate_state, work);
+            read_into(s.history_output, s.candidate_history, work);
+            next_residual = read(s.attn_residual, work);
             if (s.options.ple_table)
-                read_into(s.ple_hist_out, s.candidate_ple_history);
+                read_into(s.ple_hist_out, s.candidate_ple_history, work);
             if (trace) {
                 next_trace.qkv = read(s.qkv);
                 next_trace.convolution = read(s.conv);
@@ -492,6 +503,8 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
             // finite check, callback and potentially throwing host allocation.
             // A recoverable copy exception poisons device state until reset;
             // public mirrors still describe the last successful token.
+            portable_detail::ScopedExpertTimer<> commit_timer(work != nullptr,
+                timing.state_commit_ms, timing.state_commit_calls);
             s.state_healthy = false;
             ggml_backend_tensor_copy(s.state_output, s.state_input);
             ggml_backend_tensor_copy(s.history_output, s.history_input);

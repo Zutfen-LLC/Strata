@@ -68,3 +68,70 @@ state sums, per-device separation and transactional cap refusal. GDN and PLE
 Vulkan fixtures exercise state OFF/ON with default, GDN-only and dense weight
 placement, retaining their independent references and placement checks.
 Compilation and CPU execution do not qualify Vulkan hardware or model parity.
+
+## Candidate readback diagnostics
+
+The existing `--expert-timings` option adds these cumulative host-call scopes to
+`PortableGdnWork`, emitted as per-request deltas by the resident stdio CLI:
+
+| Fields (each has `_ms_delta` and `_calls_delta`) | Scope |
+| --- | --- |
+| `gdn_candidate_readback` | Existing tensor-get calls for candidate recurrent state, convolution history, attention residual, and configured PLE history |
+| `gdn_candidate_finite` | The existing finite scan immediately after each of those reads |
+| `gdn_state_commit` | Existing post-FFN device candidate copies and synchronization; one scope per resident GDN layer |
+
+Readback and finite scopes are disjoint and nested in attention/exchange.
+Trace-only reads, tensor-size checks and host buffer allocation are excluded.
+The commit scope is outside attention/exchange and FFN, inside total GDN layer
+time. It does not include the later host mirror swaps. A readback interval may
+include an existing backend wait; it is not a GPU event or pure PCIe bandwidth
+measurement. No synchronization, transfer, scan or numerical operation is added
+or removed. With timing disabled, no new clock reads or counter increments occur.
+
+For each complete consumed model row, expect 109 candidate reads and 109 scans:
+three per each of 36 GDN layers, plus one configured layer-1 PLE history read.
+With state residency active on all GDN backends, expect 36 commit scopes; without
+resident state expect zero commit scopes and zero commit time. Failed steps can
+retain completed or attempted scopes and must not be interpreted as complete
+rows. Trace capture does not increase these candidate counters. Reset preserves
+caller-owned cumulative totals.
+
+The resident validation adapter accepts older binaries that omit the entire new
+diagnostic group. When present, all six fields must be valid and complete. It
+checks candidate counts, readback-plus-scan containment in attention surrounding
+time, and commit containment in the outer GDN residual. Enclosing and nested
+timers must never be added together.
+
+### Bounded comparison recipe
+
+Build the reviewed diagnostic source using the retained dependencies and build
+settings. Before model execution, run the existing GDN, PLE, model, stdio and
+timing tests, plus the existing GDN/PLE Vulkan fixtures on each selected physical
+device. This diagnostic requires a rebuilt binary; it does not change placements
+or model data. The exact binary SHA256 is obtained after that build.
+
+Use the existing frozen case-1 input and old 480-expert plans. The adapter command
+below sends four identical GENs in one resident child, excludes the first from
+warm timing means, then sends QUIT. All paths and hashes are retained operator
+inputs; do not copy private inputs or output artifacts into a public PR.
+
+```sh
+python -B tools/validation-harness/portable_resident_v1.py \
+  --binary "$BINARY" --binary-sha256 "$BINARY_SHA256" \
+  --tokens-file "$CASE1_TOKENS" --max-new 32 \
+  --plan "$PLAN0" --plan "$PLAN1" --expert-tensor-mib 2404,2404 \
+  --dense-resident-weights --gdn-resident-state --expert-timings \
+  --model-root "$MODEL_ROOT" --manifest "$MANIFEST" \
+  --devices 0,1 --split 32 --device-cap-mib 7680 --out "$NEW_OUTPUT_ROOT"
+```
+
+Keep context 256, threads 4, CPU workers 12, host cap 32768 MiB, workspace
+128 MiB and free reserve 512 MiB per die (the adapter fixes these). Keep the
+qualified temperature/sensor stops, finite 1800-second clock guard, outer bound
+1000 seconds, and adapter load/request/child bounds 180/180/960 seconds, with
+verified owned cleanup. Do not add GENs, retries, warmups or resize plans/caps.
+
+Compare every recorded row and stop against the retained same-backend baseline;
+retain individual requests and report warm means for the three new scopes and
+the existing enclosing phases. Confirm 109 read/scan and 36 commit calls per
+consumed row. A timing change alone is not an output or numerical-parity result.

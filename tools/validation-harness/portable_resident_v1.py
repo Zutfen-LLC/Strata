@@ -161,6 +161,22 @@ def model_phase_fields(metrics, consumed):
        attention+ffn>gdn+epsilon or abs(gdn-attention-ffn-outer)>epsilon or \
        abs(attention-compute-surrounding)>epsilon or abs(ffn-gp-nonprovider)>epsilon:
         raise ValueError('GDN phase containment/reconciliation failed')
+    # Additive diagnostics: old qualified binaries may omit the whole group.
+    keys = ['gdn_'+scope+'_'+unit+'_delta' for scope in ('candidate_readback','candidate_finite','state_commit')
+            for unit in ('ms','calls')]
+    if any(key in metrics for key in keys):
+        if not all(key in metrics for key in keys): raise ValueError('incomplete GDN candidate diagnostics')
+        for key in keys:
+            value = metrics[key]
+            if type(value) not in ((int,float) if '_ms_' in key else (int,)) or not math.isfinite(value) or value < 0:
+                raise ValueError('invalid GDN candidate diagnostic: '+key)
+        readback, scan, commit = [metrics['gdn_'+scope+'_ms_delta']
+                                  for scope in ('candidate_readback','candidate_finite','state_commit')]
+        commits = metrics['gdn_state_commit_calls_delta']
+        if metrics['gdn_candidate_readback_calls_delta'] != 109*consumed or \
+           metrics['gdn_candidate_finite_calls_delta'] != 109*consumed or commits not in (0,36*consumed) or \
+           readback+scan > surrounding+epsilon or commit > outer+epsilon or (commits == 0 and commit != 0):
+            raise ValueError('GDN candidate diagnostic containment/counts failed')
 
 
 def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor_mib, expected_argv=None, residency=None):
