@@ -258,7 +258,8 @@ PortableMemoryUsage PortableFfn::memory_usage() const {
     if (s.options.request_accelerator && s.options.accelerator) {
         const size_t largest = std::max({s.g.hidden * s.g.streams * s.g.rank,
             s.g.hidden * s.g.shared_ff, s.g.hidden * s.g.experts});
-        m.device_extra_bound = largest * sizeof(float) + (8u << 20);
+        m.device_extra_bound = 8u << 20;
+        portable_detail::account_matrix_conversion(m,s.options.accelerator,largest*sizeof(float));
     }
     return m;
 }

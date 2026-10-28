@@ -1,6 +1,11 @@
 #include "strata/core/portable_model.hpp"
 #include "portable_graph.hpp"
+#include "portable_memory.hpp"
 #include "portable_cpu_experts.hpp"
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+#include "portable_local_experts.hpp"
+#include "strata/worker/vulkan_executor.hpp"
+#endif
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -10,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <iostream>
 #include <set>
 
 namespace strata::core {
@@ -96,6 +102,9 @@ struct PortableModelSession::Impl {
     PortableModelOptions opts;
     GgufModel model; // before all consumers; destroyed last
     std::unique_ptr<portable_detail::CpuExperts> experts;
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+    std::unique_ptr<portable_detail::LocalExperts> local_experts;
+#endif
     PortableTensorView embedding;
     std::vector<Layer> layers;
     std::unique_ptr<PortableHead> head;
@@ -165,6 +174,8 @@ struct PortableModelSession::Impl {
         report.device_admission.assign(opts.accelerators.size(), 0);
         report.device_scheduler.assign(opts.accelerators.size(), 0);
         report.device_workspace_bound.assign(opts.accelerators.size(), 0);
+        report.device_token_temporary_bound.assign(opts.accelerators.size(), 0);
+        report.device_shared_conversion_bound.assign(opts.accelerators.size(), 0);
         auto execution = [&](size_t index, bool output) {
             PortableFfnOptions o;
             o.threads = opts.threads;
@@ -213,6 +224,46 @@ struct PortableModelSession::Impl {
         require(bool(head), error);
         account(head->memory_usage(), device(L - 1));
         append_placements(head->placements(), int64_t(L));
+        // Dense/head ledgers are final before expert allocation on the same physical dies.
+        if (!opts.expert_devices.empty()) {
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+            require(!opts.expert_dispatch_oracle, "resident experts exclude staging oracle");
+            std::set<size_t> assigned;
+            size_t host_extra = 0;
+            for (const auto& d:opts.expert_devices) {
+                require(d.accelerator<opts.accelerators.size() && assigned.insert(d.accelerator).second,
+                        "resident expert device missing or duplicated");
+                require(d.tensor_cap>0 && d.workspace_cap>0 && d.tensor_cap<=SIZE_MAX-d.workspace_cap,
+                        "invalid resident expert budgets");
+                const size_t budget=d.tensor_cap+d.workspace_cap;
+                require(report.device_admission[d.accelerator]<=opts.device_caps[d.accelerator] &&
+                        budget<=opts.device_caps[d.accelerator]-report.device_admission[d.accelerator],
+                        "dense plus resident expert tensors/runtime exceed per-device cap");
+                worker::GpuPlan plan;
+                require(worker::read_gpu_plan(d.plan_path,plan,error),error);
+                const size_t per_expert=(2u<<20)+(32u<<10); // ggml metadata + persistent host boundaries
+                require(plan.assets.size()<=(SIZE_MAX-(16u<<20))/per_expert,"resident host metadata overflow");
+                const size_t h=plan.assets.size()*per_expert+(16u<<20); // load blob, plan/rows/request slack
+                require(host_extra<=SIZE_MAX-h,"resident host budget overflow");
+                host_extra+=h;
+                report.device_admission[d.accelerator]+=budget;
+            }
+            require(report.host_weights+report.host_state_bound+host_graph+report.expert_staging<=opts.host_cap &&
+                    host_extra<=opts.host_cap-report.host_weights-report.host_state_bound-host_graph-report.expert_staging,
+                    "resident expert host metadata/staging exceeds cap");
+            report.host_state_bound+=host_extra;
+            auto memory=[](ggml_backend_t backend) {
+                size_t free=0,total=0;
+                ggml_backend_dev_memory(ggml_backend_get_device(backend),&free,&total);
+                return std::make_pair(free,total);
+            };
+            local_experts=std::make_unique<portable_detail::LocalExperts>(model,*experts,opts,
+                worker::create_vulkan_executor_on_backend,memory);
+            report.expert_devices=local_experts->report();
+#else
+            throw std::runtime_error("local resident experts unavailable in this build");
+#endif
+        }
         require(reset(error), error);
     }
     void append_placements(const std::vector<PortablePlacement> &source, int64_t layer) {
@@ -249,13 +300,11 @@ struct PortableModelSession::Impl {
                     report.expert_staging <= opts.host_cap - report.host_weights - report.host_state_bound - host_graph,
                 "portable model: host anonymous admission cap exceeded");
         if (!opts.accelerators.empty()) {
-            const size_t required = m.device_graph + m.device_extra_bound;
-            require(report.device_admission[die] <= opts.device_caps[die] &&
-                        required <= opts.device_caps[die] - report.device_admission[die],
-                    "portable model: separate die " + std::to_string(die) + " admission cap exceeded");
-            report.device_admission[die] += required;
-            report.device_scheduler[die] += m.device_graph;
-            report.device_workspace_bound[die] += m.device_extra_bound;
+            const size_t previous_conversion=report.device_shared_conversion_bound[die];
+            const size_t previous_temporary=report.device_token_temporary_bound[die];
+            portable_detail::account_device_memory(report,die,opts.device_caps[die],m);
+            report.graph_admission_bound+=report.device_token_temporary_bound[die]-previous_temporary+
+                report.device_shared_conversion_bound[die]-previous_conversion;
         }
     }
     size_t host_graph = 0;
@@ -288,7 +337,17 @@ struct PortableModelSession::Impl {
             for (size_t stream = 1; stream < HC; ++stream)
                 std::copy_n(residual.begin(), H, residual.begin() + stream * H);
             const PortableExpertRows dispatch = [&](int64_t l, const PortableRoute &r, std::vector<float> &rows,
-                                                    std::string &e) { return experts->run(l, r, rows, e); };
+                                                    std::string &e) {
+                if (opts.expert_record_routes) {
+                    std::cerr << "expert_route position=" << pos << " layer=" << l << " ids=";
+                    for(size_t i=0;i<r.ids.size();++i) std::cerr << (i ? "," : "") << r.ids[i];
+                    std::cerr << '\n';
+                }
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+                if (local_experts) return local_experts->run(l,r,rows,e);
+#endif
+                return experts->run(l, r, rows, e);
+            };
             for (size_t l = 0; l < layers.size(); ++l) {
                 const bool ok = layers[l].step(token, pos, residual, dispatch, error);
                 require(ok, "portable model: token position " + std::to_string(pos) + " layer " + std::to_string(l) +
@@ -300,6 +359,9 @@ struct PortableModelSession::Impl {
             for (size_t l = 0; l < layers.size(); ++l)
                 append_placements(layers[l].placements(), int64_t(l));
             append_placements(head->placements(), int64_t(L));
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+            if (local_experts) report.expert_devices=local_experts->report();
+#endif
             ++pos;
             eos_seen = kind == PortableTokenKind::generated && token == eos_id;
             return true;
@@ -342,7 +404,16 @@ uint64_t PortableModelSession::position() const { return impl_->pos; }
 bool PortableModelSession::poisoned() const { return impl_->poison; }
 bool PortableModelSession::ended() const { return impl_->eos_seen; }
 int32_t PortableModelSession::eos() const { return impl_->eos_id; }
-PortableExpertWork PortableModelSession::expert_work() const { return impl_->experts->work(); }
+PortableExpertWork PortableModelSession::expert_work() const {
+    auto work=impl_->experts->work();
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+    if (impl_->local_experts) {
+        work.gpu_entries=impl_->local_experts->gpu_entries();
+        work.cpu_entries=impl_->local_experts->cpu_entries();
+    }
+#endif
+    return work;
+}
 const PortableModelReport &PortableModelSession::report() const { return impl_->report; }
 const std::vector<PortablePlacement> &PortableModelSession::placements() const { return impl_->placement; }
 bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result,

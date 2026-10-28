@@ -3,6 +3,10 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "strata/core/portable_ffn.hpp"
+#ifdef STRATA_PORTABLE_VULKAN_WORKSPACE
+#include "ggml-vulkan.h"
+#endif
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 namespace strata::core::portable_detail {
@@ -11,6 +15,19 @@ using Scheduler = std::unique_ptr<ggml_backend_sched, decltype(&ggml_backend_sch
 inline void require(bool ok, const std::string &error) {
     if (!ok)
         throw std::runtime_error(error);
+}
+inline void account_matrix_conversion(PortableMemoryUsage& m, ggml_backend_t backend, size_t bytes) {
+#ifdef STRATA_PORTABLE_VULKAN_WORKSPACE
+    if (backend && ggml_backend_is_vk(backend)) {
+        // Pinned GGML Vulkan owns one growing prealloc_x buffer per backend
+        // context. Serial graphs reuse it; metadata/tensors are not shared.
+        m.device_shared_conversion_bound = std::max(m.device_shared_conversion_bound,bytes);
+        return;
+    }
+#else
+    (void)backend;
+#endif
+    m.device_extra_bound += bytes; // unverified backend: preserve additive bound
 }
 inline bool metadata_only(ggml_tensor *t) {
     return t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;

@@ -36,7 +36,7 @@ int main(int argc, char **argv) {
         std::string model, manifest, token_text, dump, placement_path, timings_path;
         using Clock = std::chrono::steady_clock;
         Clock::time_point setup_start, prompt_start, decode_start, decode_end, last_prompt_start, last_selection;
-        std::vector<int64_t> devices, caps;
+        std::vector<int64_t> devices, caps, expert_tensors, expert_workspaces, expert_reserves;
         size_t max_new = 0;
         auto integer = [](const std::string &s) {
             const auto v = numbers(s);
@@ -51,10 +51,17 @@ int main(int argc, char **argv) {
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback]\n"
+                             " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
+                             " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
                              " [--dump-logits DIRECTORY] [--placements FILE] [--timings FILE]\n"
                              "T=1 serial text; all 48 layers; fresh embedding per token; CPU experts/host PLE.\n"
                              "Every consumed prompt/generated token can dump its full vocabulary as pos-N.f32.\n";
                 return 0;
+            }
+            if (key == "--expert-check-rows" || key == "--expert-record-routes") {
+                if(key == "--expert-check-rows") opts.expert_check_rows=true;
+                else opts.expert_record_routes=true;
+                continue;
             }
             if (key == "--expert-dispatch-oracle") {
                 opts.expert_dispatch_oracle = true;
@@ -98,6 +105,15 @@ int main(int argc, char **argv) {
                 caps = numbers(value);
             else if (key == "--dump-logits")
                 dump = value;
+            else if (key == "--expert-plan") {
+                const auto colon=value.find(':');
+                if(colon==std::string::npos || colon+1==value.size()) throw std::runtime_error("expert plan requires SLOT:FILE");
+                strata::core::PortableExpertDevice d;
+                d.accelerator=integer(value.substr(0,colon)); d.plan_path=value.substr(colon+1);
+                opts.expert_devices.push_back(std::move(d));
+            } else if (key == "--expert-tensor-mib") expert_tensors=numbers(value);
+            else if (key == "--expert-workspace-mib") expert_workspaces=numbers(value);
+            else if (key == "--expert-free-reserve-mib") expert_reserves=numbers(value);
             else if (key == "--timings")
                 timings_path = value;
             else if (key == "--placements")
@@ -122,6 +138,20 @@ int main(int argc, char **argv) {
             throw std::runtime_error("duplicate Vulkan device index");
         if (!timings_path.empty())
             setup_start = Clock::now();
+        const auto budget=[&](const std::vector<int64_t>& values,size_t slot,size_t fallback) {
+            if(values.empty()) return fallback;
+            if(values.size()!=devices.size() || values[slot]<=0 || uint64_t(values[slot])>(SIZE_MAX>>20))
+                throw std::runtime_error("separate valid expert budgets required for all device slots");
+            return size_t(values[slot])<<20;
+        };
+        if(opts.expert_devices.empty() && (!expert_tensors.empty() || !expert_workspaces.empty() || !expert_reserves.empty() || opts.expert_check_rows))
+            throw std::runtime_error("expert budgets/check require an expert plan");
+        for(auto& d:opts.expert_devices) {
+            if(d.accelerator>=devices.size()) throw std::runtime_error("expert plan slot outside Vulkan devices");
+            d.tensor_cap=budget(expert_tensors,d.accelerator,d.tensor_cap);
+            d.workspace_cap=budget(expert_workspaces,d.accelerator,d.workspace_cap);
+            d.free_reserve=budget(expert_reserves,d.accelerator,d.free_reserve);
+        }
         std::vector<std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)>> backends;
         for (size_t i = 0; i < devices.size(); ++i) {
             if (devices[i] < 0 || caps[i] <= 0 || caps[i] > 8192)
@@ -174,12 +204,31 @@ int main(int argc, char **argv) {
                   << '\n';
         for (size_t i = 0; i < report.device_admission.size(); ++i)
             std::cerr << "die=" << i << " actual_scheduler_bytes=" << report.device_scheduler[i]
-                      << " workspace_and_transient_bound=" << report.device_workspace_bound[i]
+                      << " workspace_and_transient_bound=" << report.device_workspace_bound[i]+report.device_token_temporary_bound[i]+report.device_shared_conversion_bound[i]
+                      << " backend_private_bound=" << report.device_workspace_bound[i]
+                      << " token_temporary_bound=" << report.device_token_temporary_bound[i]
+                      << " shared_conversion_bound=" << report.device_shared_conversion_bound[i]
                       << " admitted_bytes=" << report.device_admission[i] << " cap_bytes=" << opts.device_caps[i]
                       << " headroom_bytes=" << opts.device_caps[i] - report.device_admission[i] << '\n';
-        std::cerr << report.identity_evidence << '\n'
-                  << "T=1; CPU experts; host PLE; recurrent state and inter-layer residuals use host/device transfers. "
-                     "No performance claim.\n";
+        std::cerr << report.identity_evidence << '\n';
+        if(opts.expert_devices.empty())
+            std::cerr << "T=1; CPU experts; host PLE; recurrent state and inter-layer residuals use host/device transfers. No performance claim.\n";
+        else
+            std::cerr << "T=1; resident Vulkan/CPU expert rows; host PLE; original-order host merge. Vulkan hybrid Q8 is not CPU bit parity.\n";
+        const auto expert_report=[&](const char* stage,uint64_t position) {
+            if(opts.expert_devices.empty()) return;
+            std::cerr << std::setprecision(17);
+            for(const auto& d:session->report().expert_devices)
+                std::cerr << "expert_device stage=" << stage << " position=" << position << " slot=" << d.accelerator
+                    << " backend=" << ggml_backend_name(opts.accelerators[d.accelerator])
+                    << " numerics=VULKAN_HYBRID_Q8 assigned=" << d.assigned << " weight_bytes=" << d.weight_bytes << " tensor_bytes=" << d.tensor_bytes
+                    << " tensor_scratch_bytes=" << d.tensor_scratch_bytes << " tensor_cap=" << d.tensor_cap << " workspace_cap=" << d.workspace_cap
+                    << " metadata_bound=" << d.metadata_bound << " staging_peak=" << d.staging_peak
+                    << " free_before=" << d.free_before << " free_after=" << d.free_after << " peak_growth=" << d.peak_growth
+                    << " requests=" << d.requests << " entries=" << d.entries << " row_checks=" << d.row_checks
+                    << " row_max_abs=" << d.row_max_abs << " row_relative_l2=" << d.row_relative_l2 << '\n';
+        };
+        expert_report("loaded",0);
         std::vector<float> logits;
         auto consume = [&](int32_t token, bool generated) {
             const uint64_t pos = session->position();
@@ -193,6 +242,11 @@ int main(int argc, char **argv) {
                       << " verifications=" << work.verifications << " copied_bytes=" << work.copied_bytes
                       << " digest_bytes=" << work.digest_bytes << " native_batches=" << work.native_batches
                       << " source_invalidations=" << work.source_invalidations << '\n';
+            if (!opts.expert_devices.empty()) {
+                std::cerr << "expert_dispatch position=" << pos << " gpu_entries=" << work.gpu_entries
+                          << " cpu_entries=" << work.cpu_entries << '\n';
+                expert_report("token-complete",pos);
+            }
             if (!dump.empty()) {
                 // compare_logits.py consumes little-endian raw F32. This CLI is
                 // for the existing little-endian x86 CPU/Vulkan execution path.

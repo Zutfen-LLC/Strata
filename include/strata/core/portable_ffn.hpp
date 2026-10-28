@@ -51,6 +51,13 @@ struct PortableMemoryUsage {
     size_t host_weights = 0, host_graph = 0, device_graph = 0;
     // Conservative admission for backend workspaces, metadata and host state.
     size_t host_extra_bound = 0, device_extra_bound = 0;
+    // One token-local scheduler, destroyed on layer return. It may overlap
+    // expert work inside that layer, but never another layer's temporary.
+    // Backend-private allocations are excluded: they remain device_extra_bound.
+    size_t device_token_temporary_bound = 0;
+    // Only the verified Vulkan backend-context X conversion buffer. Other
+    // backend/private buffers remain additive in device_extra_bound.
+    size_t device_shared_conversion_bound = 0;
 };
 
 struct PortableRoute {

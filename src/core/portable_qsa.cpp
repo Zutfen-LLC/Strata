@@ -572,8 +572,20 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
     const size_t allowance =
         s.options.execution.graph_budget > buffers ? s.options.execution.graph_budget - buffers : 0;
     m.host_extra_bound += state_bytes() + (16u << 20) + allowance + s.conversion_scratch;
-    if (s.options.execution.request_accelerator)
-        m.device_extra_bound += allowance;
+    if (s.options.execution.request_accelerator && s.options.execution.accelerator) {
+        // fixed_graphs includes fixed scheduler buffers AND private workspace.
+        // Only the remaining graph budget belongs to the token-local Phase
+        // attention. It lives through FFN/expert dispatch, then dies on return.
+        const size_t fixed_private = s.fixed_graphs > buffers ? s.fixed_graphs - buffers : 0;
+        const size_t matrix_conversion=size_t(H*2*D*QH)*sizeof(float);
+        require(fixed_private>=matrix_conversion,"portable QSA: fixed workspace accounting mismatch");
+        m.device_extra_bound += fixed_private-matrix_conversion;
+        portable_detail::account_matrix_conversion(m,s.options.execution.accelerator,matrix_conversion);
+        m.device_token_temporary_bound = s.options.execution.graph_budget > s.fixed_graphs
+                                            ? s.options.execution.graph_budget - s.fixed_graphs : 0;
+    } else if(s.options.execution.request_accelerator) {
+        m.device_extra_bound += allowance; // preserve missing-backend fallback accounting
+    }
     return m;
 }
 } // namespace strata::core

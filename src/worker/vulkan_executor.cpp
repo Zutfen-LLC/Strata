@@ -15,14 +15,24 @@ class VulkanExecutor final : public GpuExecutor {
     int device_;
     bool cpu_test_;
     uint64_t tensor_budget_;
-    Backend backend_{nullptr,ggml_backend_free};
+    Backend owned_backend_{nullptr,ggml_backend_free};
+    ggml_backend_t borrowed_ = nullptr, backend_ = nullptr;
     std::vector<std::unique_ptr<ExpertGraph>> graphs_;
     std::vector<uint8_t> binding_;
     GpuPlan plan_;
 public:
     VulkanExecutor(int device, bool cpu_test, uint64_t budget):device_(device),cpu_test_(cpu_test),tensor_budget_(budget) {}
+    VulkanExecutor(ggml_backend_t backend, uint64_t budget):device_(-1),cpu_test_(false),tensor_budget_(budget),borrowed_(backend) {}
     ~VulkanExecutor() override { GpuCounters ignored; release(ignored); }
     bool prepare(const GpuPlan& p,uint64_t reserve,GpuCache& cache,GpuCounters& c,std::string& err) override {
+        return prepare_impl(p,reserve, [&](const GpuAsset& a, std::vector<uint8_t>& blob, std::string& error) {
+            return cache.read(a, blob, error);
+        }, c, err);
+    }
+    bool prepare_source(const GpuPlan& p,const GpuAssetReader& read,GpuCounters& c,std::string& err) override {
+        return prepare_impl(p,0,read,c,err);
+    }
+    bool prepare_impl(const GpuPlan& p,uint64_t reserve,const GpuAssetReader& read,GpuCounters& c,std::string& err) {
         release(c); err.clear();
         try {
             require(validate_gpu_plan(p,err),err);
@@ -34,29 +44,41 @@ public:
                     "Vulkan resident weights exceed tensor budget");
             require(encode_gpu_plan(p,binding_,err),err);
             std::vector<uint8_t> blob;
-            require(cache.read(p.assets[0],blob,err),err); // rehashes the frozen assigned blob
+            require(read(p.assets[0],blob,err),err); // rehashes the frozen assigned blob
             c.host_staging_peak=std::max(c.host_staging_peak,uint64_t(blob.capacity()));
 #ifdef STRATA_AMD_EXECUTOR_HOST_TEST
             if(cpu_test_) {
-                backend_.reset(ggml_backend_cpu_init());
-                require(bool(backend_),"CPU test backend unavailable");
-                ggml_backend_cpu_set_n_threads(backend_.get(),1);
+                owned_backend_.reset(ggml_backend_cpu_init());
+                require(bool(owned_backend_),"CPU test backend unavailable");
+                backend_ = owned_backend_.get();
+                ggml_backend_cpu_set_n_threads(backend_,1);
             }
 #endif
 #ifdef STRATA_AMD_PROBE_VULKAN
-            if(!cpu_test_) {
+            if(!cpu_test_ && !borrowed_) {
                 require(device_ >= 0 && device_ < ggml_backend_vk_get_device_count(),"requested Vulkan device absent");
-                backend_.reset(ggml_backend_vk_init(size_t(device_)));
+                owned_backend_.reset(ggml_backend_vk_init(size_t(device_)));
+                backend_ = owned_backend_.get();
             }
 #endif
+            if (borrowed_) {
+#ifdef STRATA_AMD_PROBE_VULKAN
+                require(ggml_backend_is_vk(borrowed_), "local expert backend must be Vulkan");
+                backend_ = borrowed_;
+#else
+                throw std::runtime_error("Vulkan unavailable; no CPU fallback");
+#endif
+            }
             require(bool(backend_),"Vulkan unavailable; no CPU fallback");
             cpu::NativeFmt fmt;
             require(cpu::native_fmt(8,8,H,F,fmt,err),err);
             graphs_.reserve(p.assets.size());
             for(size_t i=0;i<p.assets.size();++i) {
-                if(i) require(cache.read(p.assets[i],blob,err),err);
+                if(i) require(read(p.assets[i],blob,err),err);
                 c.host_staging_peak=std::max(c.host_staging_peak,uint64_t(blob.capacity()));
-                graphs_.push_back(std::make_unique<ExpertGraph>(backend_.get(),fmt,blob,true,
+                require(blob.size() == p.assets[i].bytes && blob_digest(blob) == p.assets[i].digest,
+                        "Vulkan local asset size/digest mismatch");
+                graphs_.push_back(std::make_unique<ExpertGraph>(backend_,fmt,blob,true,
                     size_t(tensor_budget_-c.gpu_allocated_bytes)));
                 c.gpu_allocated_bytes+=graphs_.back()->buffer_bytes();
                 c.gpu_weight_bytes+=blob.size();
@@ -114,11 +136,14 @@ public:
         } catch(const std::exception& e) { err=e.what(); return false; }
     }
     void release(GpuCounters& c) override {
-        graphs_.clear(); backend_.reset(); binding_.clear(); plan_={};
+        graphs_.clear(); owned_backend_.reset(); backend_ = nullptr; binding_.clear(); plan_={};
         c.gpu_allocated_bytes=c.gpu_weight_bytes=c.gpu_scratch_bytes=c.gpu_allocation_count=0;
     }
 };
 } // namespace
+std::unique_ptr<GpuExecutor> create_vulkan_executor_on_backend(ggml_backend_t backend, uint64_t budget) {
+    return std::make_unique<VulkanExecutor>(backend,budget);
+}
 std::unique_ptr<GpuExecutor> create_vulkan_gpu_executor(int device, uint64_t tensor_budget) {
     return std::make_unique<VulkanExecutor>(device,false,tensor_budget);
 }

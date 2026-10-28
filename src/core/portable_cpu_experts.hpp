@@ -113,7 +113,21 @@ class CpuExperts {
     PortableExpertWork work() const { return counters; }
     size_t bytes() const { return staging.size(); }
     const worker::LocalManifest &identity() const { return manifest; }
-    bool run(int64_t layer, const PortableRoute &route, std::vector<float> &rows, std::string &error) {
+    bool load_blob(int64_t layer, int32_t expert, std::vector<uint8_t>& blob, std::string& error) {
+        try {
+            require(layer >= 0 && layer < int64_t(L) && expert >= 0 && expert < int32_t(NE), "invalid local asset");
+            check_sources();
+            blob.resize(fmt.bytes);
+            const size_t offsets[]{0, fmt.up_off, fmt.down_off};
+            const size_t sizes[]{fmt.up_off, fmt.up_off, fmt.bytes-fmt.down_off};
+            for (size_t r=0;r<3;++r)
+                std::memcpy(blob.data()+offsets[r], static_cast<const uint8_t*>(weights[size_t(layer)][r].data)+size_t(expert)*sizes[r], sizes[r]);
+            require(worker::blob_digest(blob) == manifest.digests[size_t(layer)*NE+size_t(expert)], "local expert digest mismatch");
+            return true;
+        } catch (const std::exception& e) { blob.clear(); error=e.what(); return false; }
+    }
+    bool run(int64_t layer, const PortableRoute &route, std::vector<float> &rows, std::string &error,
+             const std::array<bool, K>* active = nullptr) {
         error.clear();
         rows.clear();
         try {
@@ -128,10 +142,12 @@ class CpuExperts {
             const size_t offsets[]{0, fmt.up_off, fmt.down_off};
             const size_t sizes[]{fmt.up_off, fmt.up_off, fmt.bytes - fmt.down_off};
             std::set<int32_t> seen;
+            size_t job_count = 0;
             for (size_t slot = 0; slot < K; ++slot) {
                 const int32_t id = route.ids[slot];
                 require(id >= 0 && id < int32_t(NE) && seen.insert(id).second,
                         "portable model: expert ID duplicate/out of range");
+                if (active && !(*active)[slot]) continue;
                 auto *blob = staging.data() + slot * fmt.bytes;
                 const size_t l = size_t(layer), e = size_t(id);
                 if (compare_staging || !verified[l][e]) {
@@ -152,15 +168,18 @@ class CpuExperts {
                 } else {
                     ++counters.hits;
                 }
-                jobs[slot].blob =
+                jobs[job_count].blob =
                     compare_staging ? blob : static_cast<const uint8_t *>(weights[l][0].data) + e * sizes[0];
-                jobs[slot].fmt = compare_staging ? nullptr : &mapped_fmt[l];
-                jobs[slot].nt = 1;
-                jobs[slot].nact[0] = activation.data();
-                jobs[slot].out[0] = rows.data() + slot * H;
+                jobs[job_count].fmt = compare_staging ? nullptr : &mapped_fmt[l];
+                jobs[job_count].nt = 1;
+                jobs[job_count].nact[0] = activation.data();
+                jobs[job_count].out[0] = rows.data() + slot * H;
+                ++job_count;
             }
-            ++counters.native_batches;
-            pool->run_split_multi_native(fmt, jobs.data(), int(K));
+            if (job_count) {
+                ++counters.native_batches;
+                pool->run_split_multi_native(fmt, jobs.data(), int(job_count));
+            }
             finite(rows, "expert rows"); // deliberately unweighted, in route order
             return true;
         } catch (const std::exception &e) {
