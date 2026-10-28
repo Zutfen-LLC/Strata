@@ -13,6 +13,18 @@ import quality as Q
 import portable_model_smoke_v1 as S
 
 
+RESIDENCY_FLAGS = ('--gdn-resident-weights', '--gdn-resident-state', '--dense-resident-weights')
+
+
+def residency_arguments(parser):
+    for flag in RESIDENCY_FLAGS:
+        parser.add_argument(flag, action='store_true', help='forward opt-in model residency policy')
+
+
+def residency_flags(args):
+    return [flag for flag in RESIDENCY_FLAGS if getattr(args, flag[2:].replace('-', '_'), False)]
+
+
 def frozen(tok, root):
     root = Path(root)
     manifest = json.loads((root / 'quality_manifest').read_text())
@@ -111,7 +123,7 @@ def run_portable(args, tok):
     elif benchmark:
         summary['source'] = 'PR43 c76d03c7 plus opt-in CLI phase timers; see source export SHA'
     baseline = S.host_memory()
-    work = S.model_working_set()
+    work = S.model_working_set() if not getattr(args, 'model_root', None) else S.model_working_set(args.model_root)
     summary.update(baseline_host=baseline, host_admission=S.host_admission_terms(work['working_set_bound_bytes']))
     start = time.monotonic()
     try:
@@ -122,8 +134,8 @@ def run_portable(args, tok):
             initial = [S.vram(pci) for pci in S.PCI]
             if any(v['total'] - v['used'] < 7680 << 20 for v in initial):
                 raise ValueError('insufficient per-die cap headroom')
-            command = [str(binary), '--model', str(S.MODEL_ROOT / 'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
-                       '--manifest', S.MANIFEST, '--tokens', ','.join(map(str, prompt)),
+            command = [str(binary), '--model', str((getattr(args, 'model_root', None) or S.MODEL_ROOT) / 'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
+                       '--manifest', getattr(args, 'manifest', S.MANIFEST), '--tokens', ','.join(map(str, prompt)),
                        '--context', '256', '--max-new', '32', '--threads', '4', '--expert-workers', '12',
                        '--host-cap-mib', '32768', '--vulkan', '0,1', '--device-cap-mib', '7680,7680',
                        '--split', '32', '--placements', str(case / 'placements.tsv')]
@@ -135,6 +147,7 @@ def run_portable(args, tok):
                 if getattr(args,'expert_check_rows',False): command += ['--expert-check-rows']
             if benchmark:
                 command += ['--timings', str(case / 'timings.json')]
+            command += residency_flags(args)
             Q.write(case / 'argv.json', command)
             process = None
             peak = [v['used'] for v in initial]
@@ -366,6 +379,9 @@ def main():
     p.add_argument('--expert-workspace-mib', default='128,128')
     p.add_argument('--expert-free-reserve-mib', default='512,512')
     p.add_argument('--expert-check-rows', action='store_true')
+    p.add_argument('--model-root', type=Path)
+    p.add_argument('--manifest', default=S.MANIFEST)
+    residency_arguments(p)
     p.add_argument('--single-case', action='store_true', help='only frozen case 1 once, timed; no warmup or scoring')
     p.add_argument('--suite', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True)

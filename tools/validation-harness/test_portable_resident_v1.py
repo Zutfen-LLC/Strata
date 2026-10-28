@@ -1,3 +1,4 @@
+import copy
 import json
 from pathlib import Path
 import sys
@@ -148,4 +149,201 @@ class HarnessTest(unittest.TestCase):
                 child.assert_not_called()
                 self.assertFalse(out.exists())
     def test_main_both_weight_flags(self): self.main_run(False,True,True,True)
+
+class SuiteControls(unittest.TestCase):
+    def fixtures(self, root):
+        from test_portable_quality_v1 import Tokenizer
+        tok=Tokenizer()
+        tok.tokens=tok.tokens+['']*(248320-len(tok.tokens))
+        suite=root/'suite'; M.Q.prepare(tok,suite)
+        prompts,binding=M.P.frozen(tok,suite)
+        reference=root/'reference'; reference.mkdir()
+        checks=root/'checks'; checks.mkdir()
+        binary=root/'binary'; binary.write_bytes(b'qualified fixture only')
+        plans=[root/'die0.plan',root/'die1.plan']
+        for i,p in enumerate(plans): p.write_text(str(i))
+        pins={str(p):M.Q.bundle.sha(p) for p in [binary]+plans}
+        (checks/'input-identities.sha256').write_text(''.join(f'{v}  {k}\n' for k,v in pins.items()))
+        summary=dict(status='complete',suite=binding,binary_sha256=pins[str(binary)],
+                     expert_plans=[f'{i}:{p}' for i,p in enumerate(plans)],requests=[])
+        records=[]
+        for index,prompt in enumerate(prompts,1):
+            # Case 9 deliberately differs from all others, like a changed fresh
+            # backend answer: the resident must follow its own per-case target.
+            generated=[9,248046] if index==9 else [248046]
+            ids=prompt+generated
+            rows=[dict(position=i,token=t,generated=i>=len(prompt),greedy_next=ids[i+1] if i+1<len(ids) else 0)
+                  for i,t in enumerate(ids)]
+            stop=dict(stop='eos',position=len(rows))
+            records.append(dict(rows=rows,stop=stop))
+            case=reference/f'case-{index:02d}';case.mkdir()
+            argv=[str(binary),'--model',str(binary),'--manifest',M.S.MANIFEST,'--vulkan','0,1',
+                  '--split','32','--device-cap-mib','7680,7680','--threads','4','--expert-workers','12',
+                  '--host-cap-mib','32768','--tokens',','.join(map(str,prompt)),'--max-new','32','--context','256',
+                  '--expert-tensor-mib','5529,5529','--expert-workspace-mib','128,128',
+                  '--expert-free-reserve-mib','512,512']
+            for spec in summary['expert_plans']: argv+=['--expert-plan',spec]
+            M.Q.write(case/'argv.json',argv)
+            (case/'stdout.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows+[stop]))
+            summary['requests'].append(dict(index=index,tokens=generated,finish='eos'))
+        M.Q.write(reference/'summary.json',summary)
+        return tok,suite,prompts,binding,reference,binary,plans,records
+
+    def metrics(self,prompt,record,index):
+        n=len(record['rows']); outputs=n-len(prompt)
+        m=dict(done=index,prompt_count=len(prompt),output_count=outputs,
+               setup_reset_ms=0.,prompt_ms=1.,decode_ms=0.,selection_prompt_ms=0.,
+               selection_decode_ms=0.,terminal_feed_ms=0.,selection_prompt_steps=len(prompt)-1,
+               selection_decode_steps=outputs,cpu_hits_delta=1,cpu_verifications_delta=0,
+               cpu_copied_bytes_delta=0,cpu_digest_bytes_delta=0,source_invalidations_delta=0,
+               cpu_pool_gu_ms_delta=1.,cpu_pool_quant_ms_delta=1.,cpu_pool_down_ms_delta=1.,cpu_pool_elapsed_ms_delta=3.,
+               model_step_calls_delta=n,gdn_layer_calls_delta=36*n,qsa_layer_calls_delta=12*n,
+               output_head_calls_delta=n,gdn_attention_exchange_calls_delta=36*n,
+               gdn_attention_compute_calls_delta=36*n,gdn_ffn_calls_delta=36*n,
+               model_step_ms_delta=18.,gdn_layer_ms_delta=10.,qsa_layer_ms_delta=5.,output_head_ms_delta=2.,
+               gdn_attention_exchange_ms_delta=3.,gdn_attention_compute_ms_delta=2.,gdn_ffn_ms_delta=6.,
+               gdn_outer_residual_ms_delta=1.,gdn_attention_surrounding_ms_delta=1.,gdn_ffn_non_provider_ms_delta=1.,
+               model_residual_ms_delta=1.,gdn_provider_ms_delta=5.,qsa_provider_ms_delta=2.5,
+               expert_provider_ms_delta=7.5,expert_provider_calls_delta=48*n,
+               gpu_infer_rows_ms_delta=[1.,2.],gpu_infer_rows_calls_delta=[1,1],gpu_entries_per_device_delta=[1,1])
+        return m
+
+    def test_main_suite_one_child_and_owned_failure_cleanup(self):
+        child_code=r"""
+import json,sys
+samples=json.load(open(sys.argv[1]))
+print(json.dumps(dict(ready=True,schema=1,load_ms=1.)),flush=True)
+for index,line in enumerate(sys.stdin,1):
+    if line=='QUIT\n': break
+    sample=samples[index-1]
+    assert line==sample['command']
+    for row in sample['rows']+[sample['stop'],sample['metrics']]: print(json.dumps(row))
+    sys.stdout.flush()
+"""
+        for failure in (False,True):
+            with self.subTest(failure=failure),tempfile.TemporaryDirectory() as d:
+                root=Path(d)
+                tok,suite,prompts,binding,ref,binary,plans,records=self.fixtures(root)
+                for case in ref.glob('case-*'):
+                    path=case/'argv.json'
+                    path.write_text(json.dumps(json.loads(path.read_text())+['--dense-resident-weights','--gdn-resident-state']))
+                out=root/'out';samples=[]
+                for index in range(1,25):
+                    prompt=prompts[(index-1)%12];record=copy.deepcopy(records[(index-1)%12])
+                    record['metrics']=self.metrics(prompt,record,index)
+                    if index<=12: record['metrics']['cpu_verifications_delta']=index
+                    if failure and index==13: record['metrics']['cpu_copied_bytes_delta']=1
+                    record['command']='GEN 32 '+','.join(map(str,prompt))+'\n'
+                    samples.append(record)
+                payload=root/'samples.json';payload.write_text(json.dumps(samples))
+                real=M.Resident;children=[];commands=[];deadlines=[]
+                def runner(command,out,tick,**bounds):
+                    commands.append(command);deadlines.append(bounds)
+                    child=real([sys.executable,'-c',child_code,str(payload)],out,tick,**bounds)
+                    children.append(child)
+                    return child
+                host=dict(effective_available=1<<40,pswpout=0)
+                args=['resident','--binary',str(binary),'--binary-sha256',M.Q.bundle.sha(binary),
+                      '--out',str(out),'--suite',str(suite),'--gguf',str(binary),'--reference-root',str(ref),
+                      '--expert-tensor-mib','5529,5529','--plan',str(plans[0]),'--plan',str(plans[1]),
+                      '--dense-resident-weights','--gdn-resident-state']
+                with mock.patch.object(sys,'argv',args),mock.patch.object(M,'Resident',side_effect=runner), \
+                     mock.patch.object(M.Q,'tokenizer',return_value=tok), \
+                     mock.patch.object(M.S,'host_memory',return_value=host), \
+                     mock.patch.object(M.S,'model_working_set',return_value=dict(working_set_bound_bytes=0)), \
+                     mock.patch.object(M.S,'verified_devices',return_value=[dict(total=8<<30)]*2), \
+                     mock.patch.object(M.S,'sample_vram',return_value=[dict(used=0,total=8<<30)]*2), \
+                     mock.patch.object(M.S,'rss',return_value=dict(VmRSS=1,VmHWM=1,VmSwap=0)), \
+                     mock.patch.object(M.S,'guard_host'),mock.patch.object(M.S,'placements'), \
+                     mock.patch.object(M.L,'devices',return_value={0:dict(entries=4),1:dict(entries=4)}):
+                    if failure:
+                        with self.assertRaisesRegex(ValueError,'warm request'): M.main()
+                    else: M.main()
+                self.assertEqual(len(children),1)
+                self.assertIsNotNone(children[0].child.returncode)
+                self.assertEqual(deadlines,[dict(load_seconds=180,request_seconds=600,total_seconds=3600)])
+                argv=commands[0]
+                self.assertEqual(argv[argv.index('--max-requests')+1],'25')
+                self.assertEqual(argv[argv.index('--expert-tensor-mib')+1],'5529,5529')
+                self.assertIn('--expert-timings',argv)
+                self.assertEqual(argv.count('--dense-resident-weights'),1)
+                self.assertEqual(argv.count('--gdn-resident-state'),1)
+                self.assertNotIn('--gdn-resident-weights',argv)
+                receipt=json.loads((out/'summary.json').read_text())
+                self.assertTrue(receipt['child_reaped'])
+                self.assertEqual(receipt['status'],'STOP' if failure else 'complete')
+                self.assertEqual(len(list(out.glob('request-*.json'))),13 if failure else 24)
+                if failure: self.assertFalse((out/'request-14.json').exists())
+
+    def test_reference_binding_and_mutations(self):
+        for mutation in ('none','suite','binary','order','plan','argv','rows','summary'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as d:
+                tok,suite,prompts,binding,ref,binary,plans,records=self.fixtures(Path(d))
+                summary=json.loads((ref/'summary.json').read_text())
+                if mutation=='suite': summary['suite']={}
+                if mutation=='binary': summary['binary_sha256']='0'*64
+                if mutation=='order': summary['requests'].reverse()
+                if mutation=='plan': plans[1].write_text('mutated')
+                if mutation=='summary': summary['requests'][8]['tokens']=[248046]
+                if mutation=='argv':
+                    path=ref/'case-09/argv.json';argv=json.loads(path.read_text());argv[argv.index('--max-new')+1]='31';path.write_text(json.dumps(argv))
+                if mutation=='rows':
+                    path=ref/'case-09/stdout.jsonl';path.write_text(path.read_text().replace('"token": 9,','"token": 10,',1))
+                (ref/'summary.json').write_text(json.dumps(summary))
+                args=(ref,binding,prompts,len(tok.tokens),M.Q.bundle.sha(binary),plans,'5529,5529')
+                if mutation=='none': self.assertEqual(M.reference_rows(*args),records)
+                else:
+                    with self.assertRaises(ValueError): M.reference_rows(*args)
+                # frozen() remains the authority, including mutation rejection.
+                (suite/'requests').write_text('GEN 32 1\n')
+                with self.assertRaises(ValueError): M.P.frozen(tok,suite)
+
+    def test_reference_residency_policy_mismatch_and_duplicates(self):
+        for flag in M.P.RESIDENCY_FLAGS:
+            for recorded, expected in ((0, True), (1, False), (2, True), (1, True)):
+                with self.subTest(flag=flag,recorded=recorded,expected=expected), tempfile.TemporaryDirectory() as d:
+                    tok,suite,prompts,binding,ref,binary,plans,records=self.fixtures(Path(d))
+                    for case in ref.glob('case-*'):
+                        path=case/'argv.json'
+                        path.write_text(json.dumps(json.loads(path.read_text())+[flag]*recorded))
+                    args=(ref,binding,prompts,len(tok.tokens),M.Q.bundle.sha(binary),plans,'5529,5529')
+                    if recorded == int(expected):
+                        self.assertEqual(M.reference_rows(*args,residency={flag:expected}),records)
+                    else:
+                        with self.assertRaisesRegex(ValueError,'residency policy mismatch'):
+                            M.reference_rows(*args,residency={flag:expected})
+
+    def test_two_pass_order_warm_policy_and_fail_stop(self):
+        for failure in ('none','warm','invalidate','reference9','count','timer','done','child'):
+            with self.subTest(failure=failure),tempfile.TemporaryDirectory() as d:
+                tok,suite,prompts,binding,ref,binary,plans,records=self.fixtures(Path(d))
+                out=Path(d)/'out';out.mkdir();calls=[]
+                def request(prompt,max_new,index):
+                    calls.append((prompt,max_new,index))
+                    if failure=='child' and index==3: raise RuntimeError('child failure')
+                    record=copy.deepcopy(records[(index-1)%12])
+                    record['metrics']=self.metrics(prompt,record,index)
+                    m=record['metrics']
+                    if index<=12: m.update(cpu_verifications_delta=index,cpu_copied_bytes_delta=10,cpu_digest_bytes_delta=20)
+                    if failure=='warm' and index==13: m['cpu_verifications_delta']=1
+                    if failure=='invalidate' and index==2: m['source_invalidations_delta']=1
+                    if failure=='reference9' and index==9: record['rows'][0]['greedy_next']+=1
+                    if failure=='count' and index==2: m['model_step_calls_delta']-=1
+                    if failure=='timer' and index==2: m['cpu_pool_elapsed_ms_delta']=float('nan')
+                    if failure=='done' and index==2: m['done']=1
+                    return record
+                runner=mock.Mock(request=mock.Mock(side_effect=request));receipt={}
+                if failure=='none': M.run_suite(runner,out,prompts,records,binding,len(tok.tokens),'binary',receipt)
+                else:
+                    with self.assertRaises((ValueError,RuntimeError)):
+                        M.run_suite(runner,out,prompts,records,binding,len(tok.tokens),'binary',receipt)
+                limit=dict(none=24,warm=13,invalidate=2,reference9=9,count=2,timer=2,done=2,child=3)[failure]
+                self.assertEqual(calls,[(prompts[(i-1)%12],32,i) for i in range(1,limit+1)])
+                saved=json.loads((out/f"pass-{2 if failure in ('none','warm') else 1}"/'summary.json').read_text())
+                self.assertEqual(saved['status'],'complete' if failure=='none' else 'STOP')
+                if failure=='none':
+                    self.assertEqual([r['index'] for r in saved['requests']],list(range(1,13)))
+                    self.assertEqual(saved['requests'][8]['tokens'],[9,248046])
+                    self.assertEqual(saved['consumed_rows'],sum(map(len,prompts))+13)
+
 if __name__=='__main__': unittest.main()

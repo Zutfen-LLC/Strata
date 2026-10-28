@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Four identical sequential requests, one excluded warmup. No network or retries."""
+"""Finite resident requests: legacy repeats or two frozen-suite passes. No retries."""
 import argparse
 import json
 import math
@@ -12,6 +12,7 @@ import time
 import portable_model_smoke_v1 as S
 import portable_local_expert_smoke_v1 as L
 import quality as Q
+import portable_quality_v1 as P
 
 
 class Resident:
@@ -115,11 +116,19 @@ class Resident:
             if self.child.poll() is None:
                 try: os.killpg(self.child.pid, signal.SIGTERM)
                 except ProcessLookupError: pass
-                try: self.child.wait(timeout=5)
-                except subprocess.TimeoutExpired:
+                def cleanup_wait(seconds):
+                    end=time.monotonic()+seconds
+                    while self.child.poll() is None and time.monotonic()<end:
+                        try: self.tick(self.child.pid)
+                        except BaseException as error:
+                            self.cleanup_guard_error=str(error)
+                        time.sleep(.1)
+                    return self.child.poll() is not None
+                if not cleanup_wait(5):
                     try: os.killpg(self.child.pid, signal.SIGKILL)
                     except ProcessLookupError: pass
-                    self.child.wait(timeout=5)
+                    if not cleanup_wait(5): raise TimeoutError('owned cleanup deadline')
+                self.child.wait()
             else: self.child.wait()
             if self.child.stdin and not self.child.stdin.closed:
                 try: self.child.stdin.close()
@@ -154,13 +163,131 @@ def model_phase_fields(metrics, consumed):
         raise ValueError('GDN phase containment/reconciliation failed')
 
 
+def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor_mib, expected_argv=None, residency=None):
+    """Read completed same-backend evidence; never launch or reconstruct a case."""
+    root = Path(root)
+    summary = json.loads((root/'summary.json').read_text())
+    if summary.get('status') != 'complete' or summary.get('suite') != binding or summary.get('binary_sha256') != binary_sha:
+        raise ValueError('incomplete/foreign fresh reference')
+    if [r['index'] for r in summary['requests']] != list(range(1,13)):
+        raise ValueError('reference case order')
+    # The original input receipt independently binds plans, rather than trusting
+    # the current plan names or the summary's unhashed expert-plan arguments.
+    pins = {}
+    for line in (root.parent/'checks/input-identities.sha256').read_text().splitlines():
+        digest, name = line.split(maxsplit=1)
+        name = name.lstrip('*')
+        if name in pins or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+            raise ValueError('invalid reference input identity')
+        pins[name] = digest
+    expected_residency = residency or {flag: False for flag in P.RESIDENCY_FLAGS}
+    rows = []
+    for index, prompt in enumerate(prompts,1):
+        case = root/f'case-{index:02d}'
+        argv = json.loads((case/'argv.json').read_text())
+        for flag in P.RESIDENCY_FLAGS:
+            if argv.count(flag) != int(expected_residency.get(flag, False)):
+                raise ValueError('reference residency policy mismatch: '+flag)
+        def one(flag):
+            if argv.count(flag) != 1: raise ValueError('reference argv flag: '+flag)
+            return argv[argv.index(flag)+1]
+        for flag, value in (('--tokens',','.join(map(str,prompt))),('--max-new','32'),('--context','256'),
+                            ('--expert-tensor-mib',tensor_mib),('--expert-workspace-mib','128,128'),
+                            ('--expert-free-reserve-mib','512,512')):
+            if one(flag) != value: raise ValueError('reference argv mismatch: '+flag)
+        for flag,value in (expected_argv or {}).items():
+            if one(flag) != value: raise ValueError('reference argv mismatch: '+flag)
+        if pins.get(argv[0]) != binary_sha or '--stdio' in argv or '--expert-check-rows' in argv:
+            raise ValueError('reference binary/policy mismatch')
+        recorded = [argv[i+1] for i,a in enumerate(argv) if a == '--expert-plan']
+        if recorded != summary.get('expert_plans') or len(recorded) != 2:
+            raise ValueError('reference expert plans mismatch')
+        for die,(record,plan) in enumerate(zip(recorded,plans)):
+            slot, name = record.split(':',1)
+            if slot != str(die) or pins.get(name) != Q.bundle.sha(plan):
+                raise ValueError('reference plan hash mismatch')
+        records = [json.loads(line) for line in (case/'stdout.jsonl').read_text().splitlines()]
+        ids, stop = P.completion(records,prompt,vocabulary)
+        saved = summary['requests'][index-1]
+        if saved['tokens'] != ids or saved['finish'] != stop:
+            raise ValueError('reference summary/rows mismatch')
+        rows.append(dict(rows=records[:-1],stop=records[-1]))
+    return rows
+
+
+def suite_metrics(m, prompt, ids, consumed, warm):
+    # Validate every nested counter even if a mock/alternate caller bypasses
+    # Resident.request. Timer scopes are retained separately, never added.
+    for key,value in m.items():
+        if key.endswith(('_ms','_ms_delta','_delta','_steps','_count')) or key == 'done':
+            values = value if isinstance(value,list) else [value]
+            timer = key.endswith(('_ms','_ms_delta'))
+            if any(type(v) not in ((int,float) if timer else (int,)) or not math.isfinite(v) or v < 0 for v in values):
+                raise ValueError('invalid suite timer/counter: '+key)
+    for key in ('cpu_hits_delta','cpu_verifications_delta','cpu_copied_bytes_delta','cpu_digest_bytes_delta','source_invalidations_delta',
+                'cpu_pool_gu_ms_delta','cpu_pool_quant_ms_delta','cpu_pool_down_ms_delta','cpu_pool_elapsed_ms_delta'):
+        if key not in m: raise ValueError('missing suite counter: '+key)
+    for key in ('setup_reset_ms','prompt_ms','decode_ms','selection_prompt_ms','selection_decode_ms','terminal_feed_ms'):
+        value=m[key]
+        if type(value) not in (int,float) or not math.isfinite(value) or value<0:
+            raise ValueError('invalid suite timer: '+key)
+    if m['prompt_count'] != len(prompt) or m['output_count'] != len(ids) or \
+       m['selection_prompt_steps'] != len(prompt)-1 or m['selection_decode_steps'] != len(ids):
+        raise ValueError('suite counts mismatch')
+    model_phase_fields(m,consumed)
+    if m['expert_provider_calls_delta'] != 48*consumed or m['expert_provider_ms_delta'] <= 0:
+        raise ValueError('provider timing/call capture incomplete')
+    for key in ('gpu_entries_per_device_delta','gpu_infer_rows_calls_delta','gpu_infer_rows_ms_delta'):
+        if len(m[key]) != 2 or min(m[key]) <= 0:
+            raise ValueError('per-device participation/timing incomplete')
+    if m['source_invalidations_delta']:
+        raise ValueError('source invalidation')
+    if warm and any(m[key] for key in ('cpu_verifications_delta','cpu_copied_bytes_delta','cpu_digest_bytes_delta')):
+        raise ValueError('warm request unexpectedly reverified/copied experts')
+
+
+def run_suite(runner, out, prompts, references, binding, vocabulary, binary_sha, receipt):
+    receipt['passes'] = []
+    for pass_id in (1,2):
+        pass_out = out/f'pass-{pass_id}'; pass_out.mkdir()
+        summary = dict(status='STOP',suite=binding,binary_sha256=binary_sha,requests=[],
+                       pass_id=pass_id,cache_populating=pass_id==1)
+        receipt['passes'].append(summary)
+        began=time.monotonic()
+        try:
+            for case_id,prompt in enumerate(prompts,1):
+                request_id=(pass_id-1)*12+case_id
+                result=runner.request(prompt,Q.MAX_NEW,request_id)
+                result.update(pass_id=pass_id,case_id=case_id,request_id=request_id)
+                Q.write(out/f'request-{request_id}.json',result)
+                if result['metrics']['done'] != request_id:
+                    raise ValueError('suite done ID mismatch')
+                ids,stop=P.completion(result['rows']+[result['stop']],prompt,vocabulary)
+                expected=references[case_id-1]
+                if result['rows'] != expected['rows'] or result['stop'] != expected['stop']:
+                    raise ValueError(f'fresh reference mismatch: pass {pass_id} case {case_id}')
+                suite_metrics(result['metrics'],prompt,ids,len(result['rows']),pass_id==2)
+                summary['requests'].append(dict(index=case_id,request_id=request_id,tokens=ids,finish=stop,
+                    consumed_rows=len(result['rows']),timing=result['metrics']))
+            summary['status']='complete'
+        finally:
+            summary['request_loop_seconds']=time.monotonic()-began
+            summary['consumed_rows']=sum(r['consumed_rows'] for r in summary['requests'])
+            summary['generated_tokens']=sum(len(r['tokens']) for r in summary['requests'])
+            Q.write(pass_out/'summary.json',summary)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--binary', type=Path, required=True)
     p.add_argument('--binary-sha256', required=True)
     p.add_argument('--out', type=Path, required=True)
-    p.add_argument('--tokens-file', type=Path, required=True, help='frozen JSON array of token IDs')
-    p.add_argument('--max-new', type=int, required=True)
+    mode=p.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--tokens-file', type=Path, help='frozen JSON array of token IDs')
+    mode.add_argument('--suite', type=Path, help='frozen twelve-case suite; two ordered resident passes')
+    p.add_argument('--gguf', type=Path, help='existing vocabulary/model for suite mode')
+    p.add_argument('--reference-root', type=Path, help='completed fresh portable results, with sibling checks/input-identities.sha256')
+    p.add_argument('--max-new', type=int)
     p.add_argument('--expert-tensor-mib', default='2404,2404')
     p.add_argument('--expert-timings', action='store_true', help='coarse provider and per-device executor call timing')
     p.add_argument('--gdn-resident-weights', action='store_true', help='forward the opt-in GDN attention weight placement trial')
@@ -170,18 +297,45 @@ def main():
     S.device_arguments(p)
     args=p.parse_args()
     selected,physical=S.device_selection(p,args)
-    if len(args.plan)!=2 or args.max_new not in range(257): p.error('two plans and bounded max-new required')
+    if len(args.plan)!=2: p.error('two plans required')
     caps=args.expert_tensor_mib.split(',')
     if len(caps)!=2 or any(not c.isdecimal() or not 0<int(c)<=8192 for c in caps):
         p.error('two positive bounded expert tensor caps required')
-    tokens=json.loads(args.tokens_file.read_text())
-    if not isinstance(tokens,list) or not 1<=len(tokens)<=256 or any(type(t)!=int or t<0 or t>2147483647 for t in tokens):
-        p.error('bounded nonempty token IDs required')
+    tokens=None
+    if args.suite:
+        if not args.gguf or not args.reference_root or args.max_new is not None:
+            p.error('suite requires --gguf and --reference-root; excludes --max-new')
+        args.gguf=args.gguf.resolve(strict=True)
+        if args.model_root and args.model_root.resolve()!=args.gguf.parent:
+            p.error('--model-root must match --gguf parent')
+        args.model_root=args.gguf.parent
+        tok=Q.tokenizer(str(args.gguf))
+        prompts,binding=P.frozen(tok,args.suite)
+        references=reference_rows(args.reference_root,binding,prompts,len(tok.tokens),
+                                  args.binary_sha256,args.plan,args.expert_tensor_mib,
+                                  {'--model':str(args.gguf),'--manifest':args.manifest,'--vulkan':args.devices,
+                                   '--split':str(args.split),'--device-cap-mib':','.join([str(args.device_cap_mib)]*2),
+                                   '--threads':'4','--expert-workers':'12','--host-cap-mib':'32768'},
+                                  {flag: flag in P.residency_flags(args) for flag in P.RESIDENCY_FLAGS})
+        args.max_new=Q.MAX_NEW
+        args.expert_timings=True
+    else:
+        if args.gguf or args.reference_root: p.error('--gguf/--reference-root require --suite')
+        if args.max_new is None or args.max_new not in range(257): p.error('bounded --max-new required')
+        tokens=json.loads(args.tokens_file.read_text())
+        if not isinstance(tokens,list) or not 1<=len(tokens)<=256 or any(type(t)!=int or t<0 or t>2147483647 for t in tokens):
+            p.error('bounded nonempty token IDs required')
     binary=args.binary.resolve(strict=True)
     if Q.bundle.sha(binary)!=args.binary_sha256: raise ValueError('binary hash mismatch')
     args.out.mkdir(mode=0o700,exist_ok=False)
     receipt=dict(status='STOP',binary_sha256=args.binary_sha256,prompt=tokens,max_new=args.max_new,
                  excluded_warmups=1,measured_requests=3)
+    if args.suite:
+        receipt.update(mode='suite',suite=binding,reference_root=str(args.reference_root),
+                       excluded_warmups=12,measured_requests=12,passes=[],
+                       reference_summary_sha256=Q.bundle.sha(args.reference_root/'summary.json'),
+                       reference_inputs_sha256=Q.bundle.sha(args.reference_root.parent/'checks/input-identities.sha256'))
+        del receipt['prompt']
     runner=None
     try:
         baseline=S.host_memory()
@@ -218,8 +372,8 @@ def main():
             S.guard_host(host,baseline,process)
             if any(v['used']-initial[i]['used']>cap or v['total']-v['used']<512<<20 for i,v in enumerate(sample)):
                 raise ValueError('per-die cap/free reserve')
-        command=[str(binary),'--model',str((args.model_root or S.MODEL_ROOT)/'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
-                 '--manifest',args.manifest,'--stdio','--max-requests','5','--context','256','--threads','4',
+        command=[str(binary),'--model',str(args.gguf if args.suite else (args.model_root or S.MODEL_ROOT)/'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
+                 '--manifest',args.manifest,'--stdio','--max-requests','25' if args.suite else '5','--context','256','--threads','4',
                  '--expert-workers','12','--host-cap-mib','32768','--vulkan',args.devices,
                  '--device-cap-mib',','.join([str(args.device_cap_mib)]*2),'--split',str(args.split),
                  '--expert-tensor-mib',args.expert_tensor_mib,'--expert-workspace-mib','128,128',
@@ -231,26 +385,31 @@ def main():
         if args.dense_resident_weights: command += ['--dense-resident-weights']
         receipt['plan_sha256']=[Q.bundle.sha(plan) for plan in args.plan]
         Q.write(args.out/'argv.json',command)
-        runner=Resident(command,args.out,tick)
+        runner=Resident(command,args.out,tick,load_seconds=180,request_seconds=600,total_seconds=3600) if args.suite else Resident(command,args.out,tick)
         receipt['ready']=runner.ready()
         results=[]
-        for index in range(1,5):
-            result=runner.request(tokens,args.max_new,index)
-            if args.expert_timings:
-                m=result['metrics']
-                model_phase_fields(m,len(result['rows']))
-                if m['expert_provider_calls_delta']!=len(result['rows'])*48 or m['expert_provider_ms_delta']<=0:
-                    raise ValueError('provider timing/call capture incomplete')
-                if len(m['gpu_infer_rows_ms_delta'])!=2 or len(m['gpu_infer_rows_calls_delta'])!=2 or \
-                   min(m['gpu_infer_rows_ms_delta'])<=0 or min(m['gpu_infer_rows_calls_delta'])<=0:
-                    raise ValueError('GPU timing/call capture incomplete')
-            results.append(result)
-            Q.write(args.out/f'request-{index}.json',result)
-            if index>1:
-                if result['rows']!=results[0]['rows'] or result['stop']!=results[0]['stop']:
-                    raise ValueError('same-backend repeat changed tokens/rows')
-                if any(result['metrics'][key] for key in ('cpu_verifications_delta','cpu_copied_bytes_delta','cpu_digest_bytes_delta','source_invalidations_delta')):
-                    raise ValueError('warm request unexpectedly reverified/copied experts')
+        if args.suite:
+            load=receipt['ready']['load_ms']
+            if type(load) not in (int,float) or not math.isfinite(load) or load<0: raise ValueError('invalid load timer')
+            run_suite(runner,args.out,prompts,references,binding,len(tok.tokens),args.binary_sha256,receipt)
+        else:
+            for index in range(1,5):
+                result=runner.request(tokens,args.max_new,index)
+                if args.expert_timings:
+                    m=result['metrics']
+                    model_phase_fields(m,len(result['rows']))
+                    if m['expert_provider_calls_delta']!=len(result['rows'])*48 or m['expert_provider_ms_delta']<=0:
+                        raise ValueError('provider timing/call capture incomplete')
+                    if len(m['gpu_infer_rows_ms_delta'])!=2 or len(m['gpu_infer_rows_calls_delta'])!=2 or \
+                       min(m['gpu_infer_rows_ms_delta'])<=0 or min(m['gpu_infer_rows_calls_delta'])<=0:
+                        raise ValueError('GPU timing/call capture incomplete')
+                results.append(result)
+                Q.write(args.out/f'request-{index}.json',result)
+                if index>1:
+                    if result['rows']!=results[0]['rows'] or result['stop']!=results[0]['stop']:
+                        raise ValueError('same-backend repeat changed tokens/rows')
+                    if any(result['metrics'][key] for key in ('cpu_verifications_delta','cpu_copied_bytes_delta','cpu_digest_bytes_delta','source_invalidations_delta')):
+                        raise ValueError('warm request unexpectedly reverified/copied experts')
         runner.finish()
         if any(len(r['metrics']['gpu_entries_per_device_delta'])!=2 or min(r['metrics']['gpu_entries_per_device_delta'])<=0 for r in results):
             raise ValueError('each request must participate on both dies')
@@ -259,7 +418,7 @@ def main():
         report=L.devices(log,'token-complete',selected)
         if set(report)!={0,1} or any(int(d['entries'])<=0 for d in report.values()): raise ValueError('GPU participation required on both dies')
         receipt['expert_devices_cumulative']=report
-        receipt['requests']=[r['metrics'] for r in results]
+        if not args.suite: receipt['requests']=[r['metrics'] for r in results]
         receipt['status']='complete'
     except BaseException as error:
         receipt['error']=str(error)
@@ -268,11 +427,16 @@ def main():
         if runner:
             try: runner.close()
             except BaseException as error: receipt['cleanup_error']=str(error)
+            if hasattr(runner,'cleanup_guard_error'):
+                receipt['cleanup_guard_error']=runner.cleanup_guard_error
+                receipt['status']='STOP'
             receipt.update(exit_code=runner.child.returncode,child_reaped=runner.child.returncode is not None)
             if not receipt['child_reaped'] or 'cleanup_error' in receipt: receipt['status']='STOP'
         Q.write(args.out/'summary.json',receipt)
         if runner and (not receipt['child_reaped'] or 'cleanup_error' in receipt):
             raise RuntimeError('owned cleanup uncertain; see summary.json')
+        if 'cleanup_guard_error' in receipt:
+            raise RuntimeError('resource guard failed during owned cleanup; see summary.json')
 
 
 if __name__=='__main__':

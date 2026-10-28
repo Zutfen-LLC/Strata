@@ -89,7 +89,8 @@ class QualityAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); suite=root/'suite'; P.Q.prepare(Tokenizer(),suite)
             binary=root/'binary';binary.write_bytes(b'not an executable: mock launch only')
-            args=SimpleNamespace(suite=suite,binary=binary,binary_sha256=P.Q.bundle.sha(binary),out=root/'run')
+            args=SimpleNamespace(suite=suite,binary=binary,binary_sha256=P.Q.bundle.sha(binary),out=root/'run',
+                                 dense_resident_weights=True,gdn_resident_state=True)
             child=SimpleNamespace(pid=123456789,poll=lambda:None,wait=lambda timeout:0)
             with patch.object(P.S,'host_memory',return_value={'effective_available':1<<40}), \
                  patch.object(P.S,'model_working_set',return_value={'working_set_bound_bytes':0}), \
@@ -100,6 +101,10 @@ class QualityAdapter(unittest.TestCase):
                  patch.object(P.os,'killpg') as kill:
                 with self.assertRaisesRegex(ValueError,'pressure'): P.run_portable(args,Tokenizer())
                 launch.assert_called_once()
+                argv=launch.call_args.args[0]
+                self.assertEqual(argv.count('--dense-resident-weights'),1)
+                self.assertEqual(argv.count('--gdn-resident-state'),1)
+                self.assertNotIn('--gdn-resident-weights',argv)
                 kill.assert_called_once_with(child.pid,P.signal.SIGTERM)
             receipt=json.loads((args.out/'summary.json').read_text())
             self.assertEqual(receipt['status'],'STOP')
@@ -129,6 +134,13 @@ class QualityAdapter(unittest.TestCase):
                 self.assertEqual(report['result'],expected)
                 self.assertEqual(code,int(label!='pass'))
                 self.assertIn('FAILED',report['numerical_parity'])
+
+    def test_residency_flags_default_off_and_independently_forwarded(self):
+        from types import SimpleNamespace
+        self.assertEqual(P.residency_flags(SimpleNamespace()),[])
+        for flag in P.RESIDENCY_FLAGS:
+            args=SimpleNamespace(**{flag[2:].replace('-','_'):True})
+            self.assertEqual(P.residency_flags(args),[flag])
 
     def test_strict_scorer_reused(self):
         self.assertTrue(P.Q.correct('391<|im_end|>','exact','391'))
