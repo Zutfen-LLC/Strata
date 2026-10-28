@@ -1,10 +1,12 @@
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
 #include "portable_graph.hpp"
+#include "portable_head_admission.hpp"
 #include "strata/core/portable_model.hpp"
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <iostream>
 
 namespace strata::core {
 using portable_detail::require;
@@ -26,7 +28,7 @@ struct PortableHead::Impl {
     ggml_cgraph *graph = nullptr;
     ggml_tensor *input = nullptr, *output = nullptr;
     std::vector<PortablePlacement> placement;
-    size_t weight_size = 0, graph_size = 0, device_bytes = 0, device_workspace = 0;
+    size_t weight_size = 0, graph_size = 0, device_bytes = 0, device_workspace = 0, device_conversion = 0;
     ggml_backend_t accelerator = nullptr;
     Impl(PortableHeadGeometry geometry, const std::vector<PortableTensorView> &views, PortableFfnOptions opts)
         : g(geometry) {
@@ -87,11 +89,26 @@ struct PortableHead::Impl {
         require(workspace <= opts.graph_budget, "portable head: CPU workspace budget");
         graph_size = workspace;
         if (opts.request_accelerator && opts.accelerator) {
-            // Pinned Vulkan tensor workspace: a full F32 image of the largest head matrix plus
-            // input/output conversion and split-K temporary rows (<=8 splits).
+            // Only discount the full output-matrix conversion when the exact
+            // pinned T=1 matvec path and physical storage range are proven.
             accelerator=opts.accelerator;
-            device_workspace =
-                std::max(size_t(g.hidden * g.vocabulary), size_t(width * g.rank)) * sizeof(float) + size_t(g.vocabulary * 16 + width * 4) * sizeof(float);
+            const auto limit=portable_detail::head_storage_limit(accelerator);
+            const bool direct=portable_detail::direct_head_q8_matvec(output,limit);
+            const size_t output_f32=size_t(g.hidden*g.vocabulary)*sizeof(float);
+            const size_t hc_f32=size_t(width*g.rank)*sizeof(float);
+            const size_t conservative=portable_detail::head_conversion_bound(output_f32,hc_f32,false);
+            device_conversion=portable_detail::head_conversion_bound(output_f32,hc_f32,direct);
+            const size_t other=size_t(g.vocabulary*16+width*4)*sizeof(float);
+            device_workspace=device_conversion+other;
+            std::clog << "head_admission pci=" << (limit.pci.empty()?"unknown":limit.pci)
+                      << " max_storage_buffer_range=" << limit.max_storage_buffer_range
+                      << " weight_type=" << ggml_type_name(output->src[0]->type)
+                      << " weight_ne0=" << output->src[0]->ne[0] << " weight_ne1=" << output->src[0]->ne[1]
+                      << " weight_bytes=" << ggml_nbytes(output->src[0])
+                      << " weight_contiguous=" << ggml_is_contiguous(output->src[0])
+                      << " rhs_type=" << ggml_type_name(output->src[1]->type) << " tokens=" << output->ne[1]
+                      << " direct_q8_matvec=" << direct << " conservative_conversion_bytes=" << conservative
+                      << " retained_conversion_bytes=" << device_conversion << " other_workspace_bytes=" << other << '\n';
             require(device_workspace <= opts.graph_budget - graph_size, "portable head: device workspace budget");
             graph_size += device_workspace;
         }
@@ -149,7 +166,7 @@ PortableMemoryUsage PortableHead::memory_usage() const {
     if (s.graph_size > buffers)
         m.host_extra_bound += s.graph_size - buffers;
     if(s.device_workspace) {
-        const size_t conversion=std::max(size_t(s.g.hidden*s.g.vocabulary),size_t(s.g.hidden*s.g.streams*s.g.rank))*sizeof(float);
+        const size_t conversion=s.device_conversion;
         m.device_extra_bound=s.device_workspace-conversion;
         portable_detail::account_matrix_conversion(m,s.accelerator,conversion);
     }
