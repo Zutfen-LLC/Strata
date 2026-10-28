@@ -1,5 +1,9 @@
 # Frozen twelve-case answer screen — corrected owned lifecycle, v2
 
+**Completed; historical dispatch instructions below are not a request to rerun.**
+See [portable-quality-results-v1.md](portable-quality-results-v1.md): both10/12,
+identical tokens on all12, runtime success, scorer inconclusive-baseline.
+
 Supersedes v1. No staged bundle, pins.json, attached resident, compiler build or
 new service framework is needed. Reuse the retained driver's actual owned local
 lifecycle: start one loopback CPU worker, LOAD once, run twelve local requests,

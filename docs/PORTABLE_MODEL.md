@@ -73,6 +73,12 @@ KL `0.0001161040`). This is execution evidence, not a quality pass. See the
 for all metrics, resource observations, conditional native policies and the proposed
 retained-output diagnostic. No rerun or optimization was performed for that audit.
 
+The completed frozen twelve-case answer screen scored native CUDA **10/12**
+and portable AMD/Vulkan **10/12**, with identical output-token sequences on all
+twelve cases and the same two misses. Both runtime arms exited successfully;
+the unchanged scorer returned **inconclusive-baseline** because native missed.
+Numerical parity remains failed. See the [completed screen receipt and limits](../agenthandoffs/portable-quality-results-v1.md).
+
 ## Ownership and token semantics
 
 `PortableModelSession` owns the six-shard `GgufModel` for the session's lifetime.
