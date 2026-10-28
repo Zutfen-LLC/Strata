@@ -47,12 +47,29 @@ experts: all 48 layers' selected expert evaluations run on CPU, while only dense
 and coordinator work runs on the two GPUs. Native uses the retained local CUDA
 configuration plus the owned CPU worker at127.0.0.1:17431, CPU resident entry-row
 mode and original-order reduction; the driver strips remote-GPU options and
-retains prefill64 and the existing speculative/greedy settings. The native arm includes GPU expert offload, as established in parent context;
-its exact GPU expert residency/cache count and per-device plan are not exposed in the
-supplied report or locally available retained driver definitions. Read the
-existing native case engine-argv.json and stderr/READY receipts to establish
-those values before interpreting the gap as a backend comparison. Do not assume
-equal CPU expert loads or invent the native residency count.
+retains prefill64 and the existing speculative/greedy settings. Native startup receipts now confirm CUDA0 held 960 experts (20 per layer,
+4.67 GiB reported), CUDA1 held 1,378 additional experts (6.70 GiB), for 2,338
+GPU-resident experts total. READY INFO reports expert_cache_mib=11644 and
+expert_cache_primary_mib=4781. The CPU worker held the remaining 22,238 of
+24,576 experts, 116,135,731,200 bytes resident and verified. The measured case
+reused that resident CPU cache.
+
+The exact expert-placement argv included `--expert-cache 960
+--expert-cache-per-layer --expert-cache-device1 1378 --vram-reserve-mib 1152`,
+`--expert-profile /home/hermes/strata-local-q8-20261023T152939Z/expert-profile.bin`,
+`--adapt-every 0 --adapt-swaps 0 --pcie-frac 0 --remote-expert-opt`, and the
+retained CPU resident entry-row worker configuration. Worker settings included
+memory-budget-mib110756, workers12 and local-load-threads4.
+
+For measured case02, CPU receipts show 768 successful requests and 11,294 routed
+expert entries; CUDA1 shows 1,221 entries across 498 active-layer launches. A
+decode counter reports 124 GPU cache hits /124 lookups plus154 GPU entries over
+PCIe or another GPU, out of278 routed entries in that counter's scope. These
+scopes differ and must not be summed into a total CPU/GPU work fraction. Total
+primary-GPU expert dispatch is not established by these excerpts. Configured
+environment values are not process readbacks after exit. Source:
+[Hermes native placement receipts](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793161378436649).
+The timing difference remains a comparison of unequal expert placements.
 
 Both dies recorded 1500 MHz GPU / 945 MHz HBM in all 189 retained two-second
 telemetry samples within the guarded high window. Sensor peaks were 49 C and
@@ -119,30 +136,22 @@ work. The supplied report/thread exposes no values from those lines and no
 stage timing log. They must not be treated as observed here. Read these existing
 receipts before new inference; no aggregate benchmark repeat is needed.
 
-## Smallest practical matched-placement next step
+## Product-relevant next step
 
-Before attributing a supposed backend deficit, read the existing native argv,
-READY/cache and dispatch receipts to record the exact GPU expert count, helper
-cache/device plan and GPU-vs-CPU expert work. Those numerical residency details
-remain unavailable to this coding task; they are a specific evidence gap, not
-permission to infer them from timing. No new inference is required for this read.
+The native residency evidence above closes the startup-placement gap. Parent
+has selected portable local GPU expert residency as the next product slice,
+reusing the existing Vulkan executor, rather than adding a native all-CPU
+control solely to construct another baseline. No new control or campaign is
+proposed here. A later backend inference still requires matched expert work.
 
-Then establish whether the retained native engine supports zero GPU-resident
-**and zero GPU-executed** experts while keeping dense CUDA work and the same
-model, prompt/output bound, CPU expert policy and numerics. If supported, the
-smallest practical placement control is a bounded native all-CPU-expert arm
-against the portable all-CPU-expert configuration, with matching actual token
-counts and reported lifecycle/prefill/kernel differences. Parent should decide
-whether retained portable measurements suffice or a matched-time pair is needed;
-this checkpoint does not authorize another aggregate campaign.
-
-Do not simply prescribe `--expert-cache 0`: static inspection of fd35f803
-src/program/generate.cpp shows a nonempty expert profile converts zero to auto.
-Helper caches, profile-triggered auto sizing and other GPU expert execution paths
-also need verification against the retained argv and actual dispatch receipts.
-Removing only one cache flag would not establish all-CPU execution. No validated
-all-CPU native command is claimed here. If no supported control exists, report
-that limitation and keep the two existing configurations labeled unequal.
+The existing `PortableExpertRows` seam and Vulkan `infer_rows` indexed unweighted
+reply allow a fixed hot-expert plan with CPU cold rows and the unchanged
+original-order F32 merge. A tiny explicit per-die budget must include dense
+allocations, executor tensor buffers, metadata/staging, backend-private runtime
+allowance and free reserve; the executor's tensor cap alone is not total VRAM.
+Vulkan hybrid Q8 is explicitly not the CPU bit-parity contract, so unchanged
+weight precision/quantization boundaries and merge order do not establish row
+or logit parity. Numerical gates remain mandatory. This is feasibility only.
 
 ## Single cheapest useful stage split, after placement is explicit
 
