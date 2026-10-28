@@ -23,6 +23,6 @@ Group packing took 120.18 ms across 11136 calls and 12000 quantized rows, includ
 
 Restoration completed: the full raw-capable resident was restored, complete and forever idle, with one allocation and zero owned swap. The remote subset stopped cleanly and its owned processes were reaped. Recovery was staged but unused.
 
-These are supplied Hermes execution results, not new execution or an independent raw-log audit by the documentation author. One raw-then-packed sample has no noise band; it establishes no broad performance guarantee or production qualification.
+These are supplied operator execution results, not new execution or an independent raw-log audit by the documentation author. One raw-then-packed sample has no noise band; it establishes no broad performance guarantee or production qualification.
 
 Preparation and harness overhead were disproportionate. Future research should use the cheapest decisive experiment and existing tools. The user has requested automatic packed selection for qualified compatible peers, with raw fallback and an explicit opt-out. That default-selection change belongs to a fresh focused task; it is not implemented by this result update. Current code remains unchanged. This result session is complete: no new tests, code, experiment, merge or deployment.

@@ -44,7 +44,7 @@ from the actual free memory and leave measured headroom for the driver and
 other users. Each V340 die has its own 8 GiB; caps are never pooled. The CLI records
 Vulkan memory snapshots before model loading and after every token; placement
 TSV rows carry layer IDs. For the exact parent-dispatched real-model stages,
-use [the versioned Hermes recipe](../agenthandoffs/portable-model-hermes-v4.md),
+use [the versioned operator recipe](../agenthandoffs/portable-model-hermes-v4.md),
 which also samples aggregate VRAM for both PCI devices during the run.
 
 Repeated Vulkan indices are rejected before initialization. Session admission
@@ -154,7 +154,7 @@ indices bound to validated role layout and the owned model; no global cache
 or F32 expert expansion exists. Cache metadata fits within the existing
 32 MiB manifest/index/state allowance. Staging and host admission caps remain
 unchanged. See `agenthandoffs/portable-cpu-expert-proof-v2.md` for the matched
-comparison recipe. Parent/Hermes reports all 41 raw logit rows and stdout
+comparison recipe. Parent/operator reports all 41 raw logit rows and stdout
 byte-identical in the physical V340 pair at `ac85ff3`, with fewer copy/digest
 bytes and unchanged native batch counts. The fixed oracle-first timing is
 order-biased and does not establish a general speedup. See

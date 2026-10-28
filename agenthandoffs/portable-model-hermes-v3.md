@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Parent-dispatched local portable model retry — v3
 
 **Stage 3 is held:** the saved real header also identifies BF16 (type 30)
@@ -8,7 +10,7 @@ type checks or attempt another real-model launch with this known mismatch.
 
 Supersedes v2 for one newly dispatched bounded smoke after the EOS admission
 and remaining BF16 indexer binding corrections. Keep the failed 602e3fdf evidence at
-`/home/hermes/portable-model-pr42-602e3fd-real/` untouched. That process exited 1
+`${PRIVATE_ARTIFACT_F5058E02}` untouched. That process exited 1
 before layer execution or a token/logit because of the incorrect tokenizer/PLE
 EOS equality guard. No automatic retry occurred. The new run uses a fresh
 corrected exact source head, fresh build and fresh evidence path after review.
@@ -23,7 +25,7 @@ separate predecessor-history boundary, including when feeding prompt tokens.
 All host/device guards and stop conditions from v2 remain in force.
 
 This is the Strata product's full local CPU/Vulkan model path, stacked on
-corrected PR41 `1d8eae1c3906962932b77e366f324c51aa89819d`. Parent/Hermes
+corrected PR41 `1d8eae1c3906962932b77e366f324c51aa89819d`. Parent/operator
 executes the stages separately. This task does not access the fleet.
 Use the exact full source SHA reported with the draft PR as
 `EXPECTED_PORTABLE_MODEL_HEAD`; do not derive that expected value from the
@@ -39,10 +41,10 @@ that exact source at a fresh path; suggested deterministic path names are:
 ```sh
 : "${EXPECTED_PORTABLE_MODEL_HEAD:?new full reviewed PR42 head}"
 MODEL_TAG05=$(printf '%.7s' "$EXPECTED_PORTABLE_MODEL_HEAD")
-MODEL_SRC05=/home/hermes/portable-model-pr42-${MODEL_TAG05}-src
-MODEL_BUILD05=/home/hermes/portable-model-pr42-${MODEL_TAG05}-build
-MODEL_CHECKS05=/home/hermes/portable-model-pr42-${MODEL_TAG05}-checks
-MODEL_RUN05=/home/hermes/portable-model-pr42-${MODEL_TAG05}-real
+MODEL_SRC05=${PRIVATE_ARTIFACT_34F3F6F4}
+MODEL_BUILD05=${PRIVATE_ARTIFACT_BD75CC36}
+MODEL_CHECKS05=${PRIVATE_ARTIFACT_4094BD40}
+MODEL_RUN05=${PRIVATE_ARTIFACT_6D714E01}
 ```
 
 The failed old source/build/results are never overwritten. The parent must
@@ -51,7 +53,7 @@ choose the new head and dispatch this single retry explicitly.
 
 Use fresh source/build/evidence paths; preserve earlier work and resident
 models. The retained ggml dependency on05 is
-`/home/hermes/vulkan-q8-screen-20261026/src`, commit
+`${PRIVATE_ARTIFACT_9CA76AB8}`, commit
 `3cf03257f219afbe7334045ff7c6a06ac68c627d`. Reuse existing compilers, Vulkan
 headers and the same previously working SPIR-V include configuration.
 
@@ -62,7 +64,7 @@ set -eu
 : "${MODEL_CHECKS05:?fresh synthetic evidence directory}"
 : "${EXPECTED_PORTABLE_MODEL_HEAD:?full draft PR head supplied by parent}"
 : "${MODEL_CMAKE05:?absolute existing cmake executable, version3.24 or newer}"
-GGML_SRC05=/home/hermes/vulkan-q8-screen-20261026/src
+GGML_SRC05=${PRIVATE_ARTIFACT_9CA76AB8}
 test "$(git -C "$MODEL_SRC05" rev-parse HEAD)" = "$EXPECTED_PORTABLE_MODEL_HEAD"
 test -z "$(git -C "$MODEL_SRC05" status --porcelain --untracked-files=no)"
 test "$(git -C "$GGML_SRC05" rev-parse HEAD)" = 3cf03257f219afbe7334045ff7c6a06ac68c627d
@@ -162,13 +164,13 @@ not a six-shard checksum manifest.
 set -eu
 : "${MODEL_RUN05:?fresh real-model evidence directory}"
 : "${MODEL_TIMEOUT05:?parent-selected single-run seconds, at most1800; suggested1200}"
-MANIFEST05=/home/hermes/strata-pr10-9ed478e-20261025-05-peer/assets/manifest
+MANIFEST05=${PRIVATE_ARTIFACT_32CC92CE}
 printf '%s  %s\n' \
   8cc9a1ca01ded6b747628522f3fc896c6ca315583461e9c3826edda8b8f62318 \
   "$MANIFEST05" | sha256sum -c -
 python3 - <<'PY'
 from pathlib import Path
-root=Path('/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66')
+root=Path('${PRIVATE_ARTIFACT_9AA3D2B0}')
 sizes=[10946624,682434912,54400261312,49446841216,49668930400,34015618784]
 for n,size in enumerate(sizes,1):
     path=root/f'Qwen3.8-Flash-Next-Q8_0-0000{n}-of-00006.gguf'
@@ -243,9 +245,9 @@ status and sampled memory. A prefix match is not a quality verdict.
 
 The first-generation logit row follows the last prompt token at position37:
 `$MODEL_RUN05/logits/pos-37.f32`, expected993280B (248320F32). The retained02
-reference is `/home/hermes/strata-nd-repeat-20261027-run5/local/local-first-logits.0`,
+reference is `${PRIVATE_ARTIFACT_91D2F803}`,
 SHA256 `4143957a612227b67ed3c47ce930365e5e8249d03ef77ee1442ca4722c33fa96`.
-Parent/Hermes compares where both rows are already available through approved
+Parent/operator compares where both rows are already available through approved
 local access; this recipe does not transfer files or upload logits to Git.
 
 The existing comparison utility expects three rows on its command line. For
@@ -276,5 +278,5 @@ teacher-forced positions require their corresponding reference rows; the
 single retained row cannot establish them. Parent owns numerical and quality
 interpretation. The retained02 engine is our existing product baseline, not
 an external engine. Its actual local argv is
-`/home/hermes/strata-nd-repeat-20261027-run5/local/engine-argv.json`; NDon input
+`${PRIVATE_ARTIFACT_8D7D2A05}`; NDon input
 configuration is not evidence of that local process's actual arguments.

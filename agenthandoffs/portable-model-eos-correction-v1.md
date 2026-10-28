@@ -1,10 +1,12 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # PR42 independent EOS semantics correction — v1
 
 Additive correction after the first real-model launch at
 `602e3fdf8f3f9981ee361e060b97f0746f8a0ee9` stopped during admission with
-`portable model: tokenizer and PLE EOS metadata disagree`. Parent/Hermes
+`portable model: tokenizer and PLE EOS metadata disagree`. Parent/operator
 reported no layer execution or token/logit. The failed evidence at
-`/home/hermes/portable-model-pr42-602e3fd-real/` remains untouched; this task
+`${PRIVATE_ARTIFACT_F5058E02}` remains untouched; this task
 performed no fleet operation and launched no real-model retry.
 
 ## Root cause and source verification
@@ -72,11 +74,11 @@ No tokenizer implementation, settings or CUDA production path was changed.
   real-weight numerical success is claimed from these software tests.
 
 Logs:
-- `/tmp/portable-model-eos-{red,green}.log`
-- `/tmp/portable-model-eos-focused-ctest.log`
-- `/tmp/portable-model-eos-{cpu,vulkan}-build.log`
-- `/tmp/portable-model-eos-cpu-metadata.log`
-- `/tmp/portable-model-eos-{ple,gdn,qsa,head}-vulkan.log`
+- `${BUILD_ARTIFACT_C6CDA29C},green}.log`
+- `${BUILD_ARTIFACT_3E74EA60}`
+- `${BUILD_ARTIFACT_3B7C7733},vulkan}-build.log`
+- `${BUILD_ARTIFACT_1FFA1D48}`
+- `${BUILD_ARTIFACT_F5D4B927},gdn,qsa,head}-vulkan.log`
 
 ## Additional lightweight saved-header check and remaining blocker
 

@@ -54,11 +54,11 @@ All1224 tensor roles/shapes/types and active metadata match after this fix;
 no further static real-binding gap was found. This is not a claim that actual
 payloads, physical memory or full-model numerical quality have passed.
 
-Logs: `/tmp/portable-model-bf16-{cpu,vulkan,focused-ctest,supervisor}.log`.
+Logs: `${BUILD_ARTIFACT_AAB04762},vulkan,focused-ctest,supervisor}.log`.
 The rebuilt current QSA Vulkan regression passed, including the high-score
 spare and width2051 cases. The CPU-only CLI and BF16 fixture rebuilt, and the
 CPU-only fixture passed. Logs:
-`/tmp/portable-model-bf16-qsa-vulkan-regression.log` and
-`/tmp/portable-model-bf16-cpu-only.log`.
+`${BUILD_ARTIFACT_FDC1A7C7}` and
+`${BUILD_ARTIFACT_915F892F}`.
 The single-retry stages are `portable-model-hermes-v4.md`. No physical run
 was dispatched from this task.
