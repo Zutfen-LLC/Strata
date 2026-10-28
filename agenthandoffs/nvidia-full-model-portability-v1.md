@@ -1,4 +1,4 @@
-# Bounded NVIDIA full-model staging (not executed)
+# Bounded NVIDIA full-model staging and validation host mechanism receipt
 
 This validation note belongs to experimental PR #47. Machine-specific instructions and exact operator receipts are preserved privately with original source commits, paths and SHA-256 hashes.
 

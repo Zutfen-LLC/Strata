@@ -73,6 +73,12 @@ KL `0.0001161040`). This is execution evidence, not a quality pass. See the
 for all metrics, resource observations, conditional native policies and the proposed
 retained-output diagnostic. No rerun or optimization was performed for that audit.
 
+The completed frozen twelve-case answer screen scored native CUDA **10/12**
+and portable AMD/Vulkan **10/12**, with identical output-token sequences on all
+twelve cases and the same two misses. Both runtime arms exited successfully;
+the unchanged scorer returned **inconclusive-baseline** because native missed.
+Numerical parity remains failed. See the [completed screen receipt and limits](../agenthandoffs/portable-quality-results-v1.md).
+
 ## Ownership and token semantics
 
 `PortableModelSession` owns the six-shard `GgufModel` for the session's lifetime.
@@ -299,9 +305,18 @@ This measures first-use versus warm behavior in that one process. It does not
 isolate verification from other warming effects or compare against a matched
 CUDA configuration. No full resident quality screen or cross-backend numerical
 parity is established. The original strict parity failure remains unchanged.
-The [validation host recipe](../agenthandoffs/portable-resident-validation host-v1.md) reuses the
-same runtime source and explicit local paths/PCI selection; it remains pending
-parent review/dispatch. This documentation update authorizes no additional run.
+The [validation host recipe](../agenthandoffs/portable-resident-nvidia02-v1.md) reuses the
+same runtime source and explicit local paths/PCI selection. operator subsequently
+[reported validation host PASS](../agenthandoffs/portable-resident-nvidia02-results-v1.md):
+one process completed all four matching token/greedy-row results, GPU entries
+173/239 per request, and zero verification/copy/digest/invalidation deltas on
+requests2–4. All six focused CTests and six harness tests passed; exit0/reaped,
+no child swap/new swap-out, baseline9MiB/1MiB VRAM and no owned process remained.
+This is same-backend lifecycle success, not cross-backend parity or performance
+evidence. No clocks, models or network services were changed. This documentation
+update authorizes no additional run and leaves PR49 runtime/pinned AMD execution
+unchanged.
+
 
 ### Existing CPU expert pool phase deltas
 
