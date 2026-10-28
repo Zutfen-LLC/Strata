@@ -1,5 +1,11 @@
 # Two local Vulkan plans from a pinned source ranking
 
+**The ranked token and single frozen-case checkpoint completed.** See the
+[physical result](#physical-ranked-placement-result) below. Preparation and
+execution commands are retained for provenance, not a request to repeat them.
+The ranked placement has not run the full 12-case suite. No further fleet test
+is dispatched by this document.
+
 Parent review and Hermes dispatch only. This metadata utility stacks on PR45
 `3d7e20e1f9c7e173b468191251826a5e49ab4a47`. No fleet execution occurred here.
 Do not touch the running 12-case quality suite or its plans. Wait for its final
@@ -188,3 +194,65 @@ hit rate. One unmatched sample, fresh engines and unflushed OS/file caches do
 not establish steady-state TPS or speedup. Prior full-model numerical parity
 gates remain failed. This is neither broad quality equivalence nor an AMD versus
 CUDA verdict. Parent handles independent review and release; no merge here.
+
+## Physical ranked-placement result
+
+Hermes's [checkpoint report](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793167556883949),
+relayed by parent, records one resident-token run and one frozen case1 run,
+each exactly once, using the source export at `4c5afefb49a57eea69d034ea0a8f4a1980957515`.
+This coding task recorded the supplied report; it did not run fleet inference.
+Evidence remains on05 under
+`/srv/models/inferswarm-artifacts/portable-local-ranked-v1-4c5afef`, including
+`checkpoint-control/closeout.json`, `token/` and `case1/`. Preserve those receipts
+and all old-plan evidence. The original profile generation trace remains unknown.
+
+Case1 passed unchanged gold and generated four tokens identical to the retained
+old-placement case. Both plans assigned 480 experts; all caps/reserves stayed
+unchanged. Actual GPU expert entries increased on both dies, while the total
+number of expert entries stayed 13920:
+
+| Case1 expert entries | Old portable placement | Ranked portable placement |
+| --- | ---: | ---: |
+| Die0 GPU | 170 | 468 |
+| Die1 GPU | 235 | 441 |
+| Total GPU | 405 (2.91%) | 909 (6.53%) |
+| Cold CPU | 13515 | 13011 |
+
+This establishes more actual resident execution for this case. It does not
+establish that source rank measures workload heat or transfers to other prompts.
+
+| Case1 timing, seconds | Old portable placement | Ranked portable placement |
+| --- | ---: | ---: |
+| Wall | 104.007 | 104.259 |
+| Setup | 18.086 | 18.124 |
+| Full-consumption prompt | 74.720 | 74.696 |
+| Full-consumption decode | 10.223 | 10.439 |
+
+There is **no demonstrated speedup** from this single unmatched sample. The
+comparison is within the same portable placement experiment; it is not a
+steady-state result or a Vulkan-versus-CUDA verdict. The four-token answer check
+does not waive the previously failed full-model numerical parity gates.
+
+The resident-token diagnostic recorded 2 actual entries / 2 row checks on die0
+and 6 / 6 on die1. Reported row maximum absolute errors were 5.96e-8 and 3.73e-8,
+respectively. These are observed diagnostics, not a newly accepted tolerance or
+whole-model parity result.
+
+Sampled peak VRAM was 3794284544 / 3839131648 bytes; maximum temperature was
+58 C and swap remained zero. Both dies had nonzero-busy 1500/945 MHz samples.
+Both controls returned to auto, no owned process remained, and per-die VRAM
+returned to the 8339456-byte baseline. The closeout receipt is the retained
+cleanup evidence. No cap expansion, retries or additional fleet tests follow
+from this checkpoint; 1152 per die remains blocked by the conservative bound.
+
+The earlier **12-case 10/12 result compares native with the old local plans**.
+It is not a ranked-plan quality result. **Ranked full quality was not run.**
+This checkpoint supports only the token execution and single frozen-case facts
+above, without broader qualification.
+
+For future diagnosis, the current portable fresh process resets its lazy
+expert-verification cache for every request; native performs the full CPU worker
+LOAD before timing. First-use verification/loading work must be measured before
+attributing a remaining gap to GPU or CPU computation. This is a diagnostic
+priority, not a measured explanation of these timings, and requests no code
+change or further run here.
