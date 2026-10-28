@@ -1,10 +1,28 @@
 #include "../../src/core/portable_cpu_experts.hpp"
 #include "portable_model_fixture.hpp"
 #include <cstdio>
+#include <limits>
 using namespace strata::core;
 using namespace model_fixture;
 int main() {
     try {
+        const std::vector<float> finite_values{0.f, -0.f, std::numeric_limits<float>::min(),
+                                               std::numeric_limits<float>::denorm_min(),
+                                               std::numeric_limits<float>::max()};
+        portable_detail::finite({}, "expert rows");
+        portable_detail::finite(finite_values, "expert rows");
+        for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                              std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()})
+            for (size_t at : {size_t(0), finite_values.size()/2, finite_values.size()-1}) {
+                auto values=finite_values;values[at]=invalid;
+                bool refused=false;
+                try { portable_detail::finite(values,"expert rows"); }
+                catch (const std::runtime_error& e) {
+                    refused=true;
+                    check(std::string(e.what())=="portable model: nonfinite expert rows", "exact finite diagnostic");
+                }
+                check(refused,"every nonfinite position rejected");
+            }
         SparseModel fixture;
         strata::GgufModel model(fixture.paths); // owns every borrowed native view
         PortableModelOptions opts;
@@ -63,6 +81,29 @@ int main() {
         portable_detail::CpuExperts isolated(second_model, (fixture.root / "manifest").string(), opts);
         check(isolated.run(0, route, got, error) && isolated.work().verifications == 10,
               "distinct model owner verifies independently");
+        const auto good_activation=route.activation;
+        const auto before_failure=candidate.work();
+        for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                              std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()})
+            for (size_t at : {size_t(0), route.activation.size()/2, route.activation.size()-1}) {
+                route.activation=good_activation;route.activation[at]=invalid;got={123.f};
+                check(!candidate.run(0,route,got,error) && got.empty() &&
+                      error=="portable model: nonfinite expert activation", "CPU provider finite failure clears rows");
+                const auto failed=candidate.work();
+                check(failed.native_batches==before_failure.native_batches &&
+                      failed.verifications==before_failure.verifications && failed.hits==before_failure.hits,
+                      "invalid activation stops before expert verification or pool dispatch");
+            }
+        route.activation=good_activation;
+        for (int32_t invalid_id : {-1, 512})
+            for (size_t at : {size_t(0), route.ids.size()/2, route.ids.size()-1}) {
+                auto invalid_route=route;invalid_route.ids[at]=invalid_id;got={123.f};
+                check(!candidate.run(0,invalid_route,got,error) && got.empty() &&
+                      error=="portable model: expert ID duplicate/out of range", "CPU provider ID diagnostic");
+                check(candidate.work().native_batches==before_failure.native_batches,
+                      "invalid ID stops before pool dispatch");
+            }
+        compare(0); // failed validation cannot leave stale provider rows or poison later valid dispatch
         const auto path = fixture.paths[3];
         const auto time = std::filesystem::last_write_time(path);
         const uint8_t corrupt = 1, restored = 0;
@@ -80,7 +121,8 @@ int main() {
         std::filesystem::last_write_time(path, time + std::chrono::seconds(4));
         compare(1);
         route.ids[1] = route.ids[0];
-        check(!candidate.run(0, route, got, error) && got.empty(), "invalid request clears rows");
+        check(!candidate.run(0, route, got, error) && got.empty() &&
+              error=="portable model: expert ID duplicate/out of range", "invalid request clears rows and retains diagnostic");
         // Models retain mappings independently of caller-owned path strings.
         fixture.paths.clear();
         route.ids[1] = 1;

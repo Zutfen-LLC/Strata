@@ -111,12 +111,15 @@ public:
             // Slots follow the frozen plan; returned indices stay in the original T*K space.
             std::vector<std::pair<uint16_t,size_t>> entries;
             for(size_t i=0;i<r.mask.size();++i) {
-                require(r.mask[i] <= 1 && std::isfinite(r.weights[i]),"invalid Vulkan routing field");
+                if (!(r.mask[i] <= 1 && std::isfinite(r.weights[i])))
+                    require(false,"invalid Vulkan routing field");
                 if(r.mask[i]) {
                     const auto* asset=plan_.find(r.layer,r.ids[i]);
-                    require(asset != nullptr,"Vulkan adapter request contains unassigned expert");
+                    if (!asset)
+                        require(false,"Vulkan adapter request contains unassigned expert");
                     const size_t slot=size_t(asset-plan_.assets.data());
-                    require(slot < graphs_.size(),"Vulkan resident slot missing");
+                    if (!(slot < graphs_.size()))
+                        require(false,"Vulkan resident slot missing");
                     entries.emplace_back(uint16_t(i),slot);
                 }
             }

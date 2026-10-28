@@ -134,6 +134,13 @@ engine's packed weight layout, expands experts to F32, or creates another
 unbounded arena. Rows are unweighted and follow route order. `PortableFfn`
 alone applies router weights and reduces them.
 
+Provider finite-value and per-slot validation keeps diagnostic construction on
+failure paths. Every element is still checked in the same order, including
+masked routing slots, with the same error text and output-clearing behavior.
+This also applies to the existing Vulkan expert boundary validator. Source
+identity, digest, ownership and memory checks remain active. No switch is needed;
+valid numerical results and execution order are unchanged.
+
 Model files must remain immutable from open through session destruction,
 including during each dispatch. The provider checks every source's size and
 modification time before dispatch; a time change invalidates all verified

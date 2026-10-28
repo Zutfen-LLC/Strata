@@ -1,11 +1,13 @@
 #include "../../src/core/portable_local_experts.hpp"
 #include "strata/worker/vulkan_executor.hpp"
+#include "../../src/worker/vulkan_expert_graph.hpp"
 #include "portable_model_fixture.hpp"
 #include <cstdio>
+#include <limits>
 using namespace strata::core;
 using namespace model_fixture;
 namespace {
-struct State { int prepares=0,releases=0,inferences=0; bool fail=false,bad=false,nonfinite=false; };
+struct State { int prepares=0,releases=0,inferences=0; bool fail=false,bad=false,nonfinite=false; float bad_value=NAN; size_t bad_offset=0; };
 class Fake final:public strata::worker::GpuExecutor {
     State& s;
 public:
@@ -37,7 +39,7 @@ public:
             out.rows.insert(out.rows.end(),2560,float(r.ids[i]+1));
         }
         if(s.bad)out.indices.back()=out.indices.front();
-        if(s.nonfinite)out.rows[0]=NAN;
+        if(s.nonfinite)out.rows.at(s.bad_offset)=s.bad_value;
         return true;
     }
     void release(strata::worker::GpuCounters&)override {if(live){++s.releases;live=false;}}
@@ -45,6 +47,17 @@ public:
 }
 int main(){
     try {
+        const std::vector<float> finite_values{0.f,-0.f,std::numeric_limits<float>::min(),
+                                               std::numeric_limits<float>::denorm_min(),std::numeric_limits<float>::max()};
+        strata::worker::vulkan_detail::finite({});
+        strata::worker::vulkan_detail::finite(finite_values);
+        for(float invalid:{NAN,INFINITY,-INFINITY})
+            for(size_t at:{size_t(0),finite_values.size()/2,finite_values.size()-1}) {
+                auto values=finite_values;values[at]=invalid;bool refused=false;
+                try{strata::worker::vulkan_detail::finite(values);}
+                catch(const std::runtime_error& e){refused=true;check(std::string(e.what())=="nonfinite expert value","exact executor finite diagnostic");}
+                check(refused,"executor finite validator checks every position");
+            }
         SparseModel f;strata::GgufModel model(f.paths);PortableModelOptions opts;
         portable_detail::CpuExperts cpu(model,(f.root/"manifest").string(),opts);
         auto plan=[&](const std::string& name,std::vector<std::pair<uint16_t,uint16_t>> ids){
@@ -75,9 +88,40 @@ int main(){
             check(local.gpu_entries()==6 && local.cpu_entries()==14,"cumulative request entries persist");
             for(const auto& d:local.report()) check(d.infer_rows_calls==2 && std::isfinite(d.infer_rows_ms) && d.infer_rows_ms>0,
                   "one finite executor-call capture per participating device");
+            const auto good_rows=rows;
             auto bad=route;bad.ids.pop_back();check(!local.run(0,bad,rows,error)&&rows.empty(),"shape refusal");
-            state.bad=true;check(!local.run(0,route,rows,error)&&rows.empty(),"duplicate reply slot refusal");state.bad=false;
-            state.nonfinite=true;check(!local.run(0,route,rows,error)&&rows.empty(),"nonfinite reply refusal");state.nonfinite=false;
+            const auto before_inferences=state.inferences;
+            for(float invalid:{NAN,INFINITY,-INFINITY}) {
+                for(size_t at:{size_t(0),route.activation.size()/2,route.activation.size()-1}) {
+                    auto invalid_route=route;invalid_route.activation[at]=invalid;rows={123.f};
+                    check(!local.run(0,invalid_route,rows,error)&&rows.empty()&&
+                          error=="portable model: nonfinite resident activation","resident activation diagnostic");
+                }
+                for(size_t at:{size_t(0),route.weights.size()/2,route.weights.size()-1}) {
+                    auto invalid_route=route;invalid_route.weights[at]=invalid;rows={123.f};
+                    check(!local.run(0,invalid_route,rows,error)&&rows.empty()&&
+                          error=="portable model: nonfinite resident routing weights","resident routing diagnostic");
+                }
+            }
+            for(int invalid_id:{-1,512,route.ids[1]}) {
+                auto invalid_route=route;invalid_route.ids[0]=invalid_id;
+                check(!local.run(0,invalid_route,rows,error)&&rows.empty()&&error=="invalid resident expert IDs",
+                      "resident ID diagnostic");
+            }
+            check(state.inferences==before_inferences,"invalid route stops before GPU dispatch");
+            state.bad=true;check(!local.run(0,route,rows,error)&&rows.empty()&&
+                error=="resident reply duplicate/unowned slot","duplicate reply slot diagnostic");state.bad=false;
+            const auto cpu_before=local.cpu_entries();
+            state.nonfinite=true;
+            for(float invalid:{NAN,INFINITY,-INFINITY})
+                for(size_t at:{size_t(0),size_t(2560),size_t(5119)}) {
+                    state.bad_value=invalid;state.bad_offset=at;rows={123.f};
+                    check(!local.run(0,route,rows,error)&&rows.empty()&&
+                          error=="portable model: nonfinite resident expert output","nonfinite reply diagnostic");
+                    check(local.cpu_entries()==cpu_before,"nonfinite reply cannot dispatch CPU fallback");
+                }
+            state.nonfinite=false;
+            check(local.run(0,route,rows,error)&&rows==good_rows,"valid provider replay after finite failures");
             const auto calls_before_failure=local.report()[0].infer_rows_calls;
             state.fail=true;check(!local.run(0,route,rows,error)&&rows.empty(),"failure no CPU replay");state.fail=false;
             check(local.report()[0].infer_rows_calls==calls_before_failure+1,"failed executor attempt captured once");
@@ -122,6 +166,30 @@ int main(){
         strata::worker::EntryRowsReply first,second;
         check(executor->infer_rows(p,request,first,error) && executor->infer_rows(p,request,second,error),error);
         check(first.indices==std::vector<uint16_t>({0,2}) && first.rows==second.rows,"same-backend indexed row repeat");
+        for(float invalid:{NAN,INFINITY,-INFINITY}) {
+            for(size_t at:{size_t(0),request.activations.size()/2,request.activations.size()-1}) {
+                auto bad_request=request;bad_request.activations[at]=invalid;
+                check(!executor->infer_rows(p,bad_request,second,error)&&second.rows.empty()&&
+                      error=="nonfinite expert value","executor activation failure diagnostic");
+            }
+            for(size_t at:{size_t(0),size_t(1),size_t(2)}) {
+                auto bad_request=request;bad_request.weights[at]=invalid;
+                check(!executor->infer_rows(p,bad_request,second,error)&&second.rows.empty()&&
+                      error=="invalid Vulkan routing field","all routing slots validated including masked slot");
+            }
+        }
+        for(size_t at:{size_t(0),size_t(1),size_t(2)}) {
+            auto bad_request=request;bad_request.mask[at]=2;
+            check(!executor->infer_rows(p,bad_request,second,error)&&second.rows.empty()&&
+                  error=="invalid Vulkan routing field","mask diagnostic");
+        }
+        for(size_t at:{size_t(0),size_t(2)}) {
+            auto bad_request=request;bad_request.ids[at]=8;
+            check(!executor->infer_rows(p,bad_request,second,error)&&second.rows.empty()&&
+                  error=="Vulkan adapter request contains unassigned expert","unowned expert diagnostic");
+        }
+        check(executor->infer_rows(p,request,second,error)&&second.rows==first.rows,
+              "valid executor replay after finite/routing failures");
         request.activations.pop_back();check(!executor->infer_rows(p,request,second,error) && second.rows.empty(),"executor input shape refusal");
         executor->release(counters);
         auto corrupt=[&](const strata::worker::GpuAsset& asset,std::vector<uint8_t>& blob,std::string& e){if(!reader(asset,blob,e))return false;if(asset.expert==3)blob[0]^=1;return true;};
