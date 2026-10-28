@@ -73,7 +73,7 @@ or activation-quantizer equality, full-model equality or a throughput gain.
 
 ## Supplied CUDA result for the first slice
 
-The parent supplied Hermes's result at `01539e99b0b5a4b83f4270605b4bda0ab0cf6da0`:
+The parent supplied operator's result at `01539e99b0b5a4b83f4270605b4bda0ab0cf6da0`:
 CUDA 13.1.115, architecture 86, Release build passed. All five requested tests passed:
 `gpu_frame_test` 0.08 s, `gpu_worker_test` 1.92 s, `gpu_worker_group_test` 7.90 s,
 `gpu_worker_cuda_test` 1.03 s and `gpu_worker_dispatch_test` 1.81 s. No requested
