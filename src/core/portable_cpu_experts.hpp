@@ -110,7 +110,15 @@ class CpuExperts {
         // Explicit count, no affinity changes to unrelated processes/services.
         pool = std::make_unique<kernels::cpu::ExpertPool>(opts.expert_workers, false);
     }
-    PortableExpertWork work() const { return counters; }
+    PortableExpertWork work() const {
+        auto work = counters;
+        work.pool_gu_ms = pool->ms_multi_gu;
+        work.pool_quant_ms = pool->ms_multi_q;
+        work.pool_down_ms = pool->ms_multi_down;
+        double wait_park = 0, repark = 0;
+        pool->phase_ms(wait_park, work.pool_elapsed_ms, repark);
+        return work;
+    }
     size_t bytes() const { return staging.size(); }
     const worker::LocalManifest &identity() const { return manifest; }
     bool load_blob(int64_t layer, int32_t expert, std::vector<uint8_t>& blob, std::string& error) {

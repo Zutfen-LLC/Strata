@@ -80,8 +80,8 @@ class Resident:
                 if any(rows[i]['token']!=rows[i-1]['greedy_next'] for i in range(len(tokens),len(rows))):
                     raise ValueError('non-greedy completion')
                 for key, value in row.items():
-                    if key.endswith('_ms') and (not math.isfinite(value) or value<0): raise ValueError('invalid timer')
-                    if key.endswith('_delta') and key!='gpu_entries_per_device_delta' and (not isinstance(value,int) or value<0): raise ValueError('invalid delta')
+                    if (key.endswith('_ms') or key.endswith('_ms_delta')) and (not math.isfinite(value) or value<0): raise ValueError('invalid timer')
+                    if key.endswith('_delta') and not key.endswith('_ms_delta') and key!='gpu_entries_per_device_delta' and (not isinstance(value,int) or value<0): raise ValueError('invalid delta')
                 return dict(rows=rows, stop=stop, metrics=row)
             if 'stop' in row:
                 if stop is not None: raise ValueError('duplicate stop')

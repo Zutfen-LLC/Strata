@@ -412,6 +412,10 @@ int main(int argc, char **argv) {
                 << ",\"cpu_copied_bytes_delta\":" << after.copied_bytes-before.copied_bytes
                 << ",\"cpu_digest_bytes_delta\":" << after.digest_bytes-before.digest_bytes
                 << ",\"source_invalidations_delta\":" << after.source_invalidations-before.source_invalidations
+                << ",\"cpu_pool_gu_ms_delta\":" << after.pool_gu_ms-before.pool_gu_ms
+                << ",\"cpu_pool_quant_ms_delta\":" << after.pool_quant_ms-before.pool_quant_ms
+                << ",\"cpu_pool_down_ms_delta\":" << after.pool_down_ms-before.pool_down_ms
+                << ",\"cpu_pool_elapsed_ms_delta\":" << after.pool_elapsed_ms-before.pool_elapsed_ms
                 << ",\"gpu_entries_delta\":" << after.gpu_entries-before.gpu_entries
                 << ",\"cpu_entries_delta\":" << after.cpu_entries-before.cpu_entries
                 << ",\"gpu_entries_per_device_delta\":[";

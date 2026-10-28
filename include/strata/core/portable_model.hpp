@@ -63,6 +63,9 @@ struct PortableExpertWork {
     uint64_t hits = 0, verifications = 0, copied_bytes = 0, digest_bytes = 0;
     uint64_t native_batches = 0, source_invalidations = 0;
     uint64_t gpu_entries = 0, cpu_entries = 0;
+    // Existing ExpertPool host-wall accumulators; phases include synchronization.
+    // elapsed encloses the three native phases: never add it to their sum.
+    double pool_gu_ms = 0, pool_quant_ms = 0, pool_down_ms = 0, pool_elapsed_ms = 0;
 };
 struct PortableModelReport {
     // Unique mapped shard file bytes; PLE may alias the same backing file.

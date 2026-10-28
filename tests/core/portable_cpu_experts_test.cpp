@@ -26,12 +26,30 @@ int main() {
                       std::memcmp(got.data(), expected.data(), got.size() * sizeof(float)) == 0,
                   "native unweighted rows byte identical in route order");
         };
+        const double PortableExpertWork::*timers[] = {
+            &PortableExpertWork::pool_gu_ms, &PortableExpertWork::pool_quant_ms,
+            &PortableExpertWork::pool_down_ms, &PortableExpertWork::pool_elapsed_ms};
+        const auto fresh = candidate.work();
+        for (auto timer : timers) check(fresh.*timer == 0, "fresh pool timer");
         compare(0);
         const auto cold = candidate.work();
         compare(0);
         check(candidate.work().hits == 10 && candidate.work().copied_bytes == cold.copied_bytes &&
                   candidate.work().digest_bytes == cold.digest_bytes,
               "repeat removes all copy/digest work");
+        const auto warm = candidate.work();
+        for (auto timer : timers) {
+            check(std::isfinite(warm.*timer) && warm.*timer >= cold.*timer && cold.*timer >= 0,
+                  "finite monotone pool timers");
+            check(candidate.work().*timer == warm.*timer, "snapshot must not accumulate timers twice");
+            const double delta1 = cold.*timer - fresh.*timer, delta2 = warm.*timer - cold.*timer;
+            check(std::fabs((delta1 + delta2) - (warm.*timer - fresh.*timer)) < 1e-8,
+                  "successive request deltas partition lifetime timer");
+        }
+        check(warm.pool_elapsed_ms > 0 && warm.pool_gu_ms > 0 && warm.pool_down_ms > 0,
+              "native calls expose existing wall intervals");
+        check(warm.pool_gu_ms + warm.pool_quant_ms + warm.pool_down_ms <= warm.pool_elapsed_ms + 1e-6,
+              "native elapsed encloses phases; not an additional phase");
         std::reverse(route.ids.begin(), route.ids.end());
         route.ids[0] = 11;
         compare(0);
