@@ -36,7 +36,7 @@ root and a complete copy of the original small profile. Reuse the existing
 manifest and manifest-tool executable with their independently retained hashes;
 do not invent a tool identity, rebuild C++ or copy model/cache payloads.
 
-The following is for later parent/Hermes metadata preparation, not execution by
+The following is for later parent/operator metadata preparation, not execution by
 this coding task. ROOT is a fresh directory below the established artifact root;
 SOURCE is the verified complete source export. Run outside a hardware clock
 window. All outputs are fresh and previous plans/profiles/results remain intact.

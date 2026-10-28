@@ -42,9 +42,9 @@ budgets, unavailable-backend strict rejection and fallback records passed.
 Focused selection cases 2050/2051/2052/2055/2056, three score patterns each,
 passed exact membership checks against scalar lexicographic selection.
 
-Build directory: `/tmp/strata-portable-qsa-build`.
-Configure log: `/tmp/portable-qsa-config.log`.
-Latest build log: `/tmp/portable-qsa-checkpoint-build.log`.
+Build directory: `${BUILD_ARTIFACT_FF6747B2}`.
+Configure log: `${BUILD_ARTIFACT_E6BF5131}`.
+Latest build log: `${BUILD_ARTIFACT_6A7A0739}`.
 The build and executable passed again after clang-format.
 
 Configure used the settings from `portable-ple-local-results.md`, adding
@@ -69,7 +69,7 @@ Configure used the settings from `portable-ple-local-results.md`, adding
   builds, verify default-OFF target gating and unchanged production sources.
 - Inspect budgets carefully, particularly scheduler/metadata/active scratch
   accounting and backend workspace. No all-capacity preallocation copy.
-- Read full diff, add a versioned small Hermes recipe and source manifest,
+- Read full diff, add a versioned small operator recipe and source manifest,
   commit, push, and publish a draft stacked on `codex/portable-ple-layer`.
   Attach its URL. Keep in draft pending independent review and parent-owned
   physical tests. No merge, deployment or fleet access.

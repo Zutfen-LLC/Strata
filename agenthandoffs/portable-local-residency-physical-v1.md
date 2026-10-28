@@ -1,7 +1,9 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Physical local expert-residency smoke result
 
-Hermes completed the bounded discovery and resident one-token runs on 05.
-[Primary receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793163427752129).
+operator completed the bounded discovery and resident one-token runs on 05.
+[Primary receipt](PRIVATE_RECEIPT).
 C++ source 05601aba4960da84b8556df57844c4bd3dce1f6b, Python source
 0ff4923fb9dd53aec0ad247c6492c4e47cb3c90a, binary SHA256
 `7d8718ac7dfa9897b248fb208f72117f3c731c765ed10697e0c70e2bc0d59ae4`.
@@ -28,7 +30,7 @@ Both model children were reaped; no owned model/guard remained. Prior qualified
 binary identity remained unchanged.
 
 Evidence remains at
-`/srv/models/inferswarm-artifacts/portable-local-residency-v1/evidence`, including
+`${PRIVATE_ARTIFACT_E375CE52}`, including
 plan hashes, full row metrics, compact resource receipts and clock logs. This
 coding task read the linked report; it did not SSH hosts or independently fetch
 private raw files. No runtime throughput conclusion follows from this one-token

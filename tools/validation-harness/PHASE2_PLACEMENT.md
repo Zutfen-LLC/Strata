@@ -54,7 +54,7 @@ The 256 MiB cache cap counts retained/unrelated files and pending blobs. Use a
 fresh owned cache or verify its complete existing inventory; no automatic eviction
 or deletion is requested. The RAM upgrade does not change this GPU accounting.
 
-## Smallest read-only inventory request to Hermes, for parent dispatch
+## Smallest read-only inventory request to operator, for parent dispatch
 
 Return only these existing private receipt/metadata facts:
 

@@ -1,6 +1,6 @@
 # Actual full-model binding audit — v1
 
-Source evidence: saved Slack file `F0CCSCBS0H2` (`amd05-metadata.txt`, about
+Source evidence: saved Slack file `F0CCSCBS0H2` (`validation host-metadata.txt`, about
 215 KB), already captured on05. Only the six root
 `Qwen3.8-Flash-Next-Q8_0-0000N-of-00006.gguf` header/directory records were
 selected. No fleet access, payload read, new model hashing or general audit
@@ -118,6 +118,6 @@ complete saved-header comparison. They are now handled explicitly and
 losslessly. Actual payload digests, runtime resource admission, physical
 execution and numerical comparison remain the parent's bounded smoke work.
 
-Local audit receipt: `/tmp/portable-model-bf16-header-audit.log`; one-off
-comparison script: `/tmp/portable-model-bf16-header-audit.py`. No audit command
+Local audit receipt: `${BUILD_ARTIFACT_8A09CD78}`; one-off
+comparison script: `${BUILD_ARTIFACT_BA4DA801}`. No audit command
 is a new runtime prerequisite.
