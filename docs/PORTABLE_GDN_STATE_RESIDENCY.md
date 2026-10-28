@@ -85,8 +85,17 @@ Trace-only reads, tensor-size checks and host buffer allocation are excluded.
 The commit scope is outside attention/exchange and FFN, inside total GDN layer
 time. It does not include the later host mirror swaps. A readback interval may
 include an existing backend wait; it is not a GPU event or pure PCIe bandwidth
-measurement. No synchronization, transfer, scan or numerical operation is added
-or removed. With timing disabled, no new clock reads or counter increments occur.
+measurement. Timing instrumentation adds no synchronization, transfer or
+validation pass. With timing disabled, no new clock reads or counter increments occur.
+
+GDN's finite check first reduces the IEEE binary32 exponent-bit predicate over
+its existing host buffer. The existing C++20 standard supplies alias-safe
+`std::bit_cast`; no floating-point arithmetic, clamping or fast-math is used.
+All-finite buffers return from this predicate. If any value is nonfinite, the
+original ordered scalar check produces the same first-failure diagnostic.
+Tensor validation order, readbacks, timing boundaries and commit rules do not
+change. This local GDN helper does not change other validation paths. Generated
+vector code is compiler/target dependent; it is not evidence of a hardware speedup.
 
 For each complete consumed model row, expect 109 candidate reads and 109 scans:
 three per each of 36 GDN layers, plus one configured layer-1 PLE history read.

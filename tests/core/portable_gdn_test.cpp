@@ -1,11 +1,74 @@
 #include "gguf_fixture.hpp"
 #include "ggml-cpu.h"
 #include "portable_gdn_fixture.hpp"
+#include "../../src/core/portable_gdn_finite.hpp"
 #include <chrono>
 #include <limits>
 using namespace strata::core;
 using namespace gdn_fixture;
 namespace {
+void finite_predicate() {
+    const uint32_t valid[] = {0u, 0x80000000u, 1u, 0x80000001u, 0x007fffffu, 0x807fffffu,
+                              0x00800000u, 0x80800000u, 0x3f800000u, 0xbf800000u, 0x7f7fffffu, 0xff7fffffu};
+    const uint32_t invalid[] = {0x7f800000u, 0xff800000u, 0x7fc00000u, 0xffc00000u,
+                                0x7f800001u, 0xff800001u, 0x7fffffffu, 0xffffffffu};
+    const auto equivalent = [](const std::vector<float> &x) {
+        const bool scalar = std::all_of(x.begin(), x.end(), [](float f) { return std::isfinite(f); });
+        check(portable_detail::gdn_all_finite(x) == scalar, "bulk/scalar finite predicate differs");
+    };
+    // Every short tail and failure position, including either side of SIMD
+    // widths. No padding or vector-capacity values may be read as elements.
+    for (size_t n = 0; n <= 65; ++n) {
+        std::vector<float> x(n);
+        for (size_t i = 0; i < n; ++i) x[i] = std::bit_cast<float>(valid[i % std::size(valid)]);
+        equivalent(x);
+        for (size_t i = 0; i < n; ++i) {
+            const float saved = x[i];
+            for (uint32_t bits : invalid) { x[i] = std::bit_cast<float>(bits); equivalent(x); }
+            if (i + 1 < n) {
+                const float next = x[i + 1];
+                x[i + 1] = std::bit_cast<float>(0x7f800001u);
+                equivalent(x); // multiple failures, in vector body and tail
+                x[i + 1] = next;
+            }
+            x[i] = saved;
+        }
+    }
+    // All exponent values, both signs and representative mantissas, followed
+    // by deterministic raw patterns. This includes quiet/signaling NaN payloads.
+    std::vector<float> x;
+    for (uint32_t exponent = 0; exponent < 256; ++exponent)
+        for (uint32_t sign : {0u, 0x80000000u})
+            for (uint32_t mantissa : {0u, 1u, 0x3fffffu, 0x400000u, 0x7fffffu}) {
+                x.assign(17, std::bit_cast<float>(sign | (exponent << 23) | mantissa));
+                equivalent(x);
+            }
+    uint32_t bits = 1;
+    x.resize(4097);
+    for (float &f : x) { bits = bits * 1664525u + 1013904223u; f = std::bit_cast<float>(bits); }
+    equivalent(x);
+}
+void finite_diagnostics(PortableGdnLayer &layer, const Fixture &f) {
+    const auto state = layer.recurrent_state(), history = layer.convolution_history(), last = layer.last_residual();
+    const auto count = layer.tokens();
+    for (uint32_t bad : {0x7f800000u, 0xff800000u, 0x7fc00001u, 0xffc00001u, 0x7f800001u, 0xff800001u}) {
+        auto input = f.input(0);
+        input[3] = std::bit_cast<float>(bad);
+        input.back() = std::bit_cast<float>(0x7f800000u);
+        PortableRoute route;
+        PortableGdnWork work;
+        std::string error;
+        bool dispatched = false;
+        check(!layer.step(input, [&](int64_t, const PortableRoute &, std::vector<float> &, std::string &) {
+            dispatched = true; return false;
+        }, route, error, nullptr, &work), "bulk accepted nonfinite input");
+        check(error == "portable GDN: nonfinite input/result" && !dispatched, "scalar failure diagnostic/order changed");
+        check(layer.recurrent_state() == state && layer.convolution_history() == history &&
+              layer.last_residual() == last && layer.tokens() == count, "nonfinite preflight changed committed state");
+        check(work.candidate_readback_calls == 0 && work.candidate_finite_calls == 0 && work.state_commit_calls == 0,
+              "nonfinite preflight entered candidate timing scopes");
+    }
+}
 void candidate_reuse(PortableGdnLayer &layer, const Fixture &f) {
     std::string error;
     PortableRoute route;
@@ -55,6 +118,7 @@ void candidate_reuse(PortableGdnLayer &layer, const Fixture &f) {
 }
 int main() {
     try {
+        finite_predicate();
         Fixture f;
         std::string error;
         PortableGdnOptions options;
@@ -368,6 +432,8 @@ int main() {
         check(rejected.candidate_readback_ms == saved.candidate_readback_ms &&
               rejected.candidate_finite_ms == saved.candidate_finite_ms &&
               rejected.state_commit_calls == saved.state_commit_calls, "reset preserves caller timing totals");
+        finite_diagnostics(*layer, f);
+        finite_diagnostics(*allocated, f);
         candidate_reuse(*layer,f);
         candidate_reuse(*allocated,f);
         std::printf("portable_gdn_test: actual H2560/FF640/S128/Hk16/Hv48; independent multi-token state/convolution, "

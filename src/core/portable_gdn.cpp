@@ -1,5 +1,6 @@
 #include "strata/core/portable_gdn.hpp"
 #include "portable_expert_timer.hpp"
+#include "portable_gdn_finite.hpp"
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
 #include "portable_graph.hpp"
@@ -49,6 +50,8 @@ Context context() {
     return c;
 }
 void finite(const std::vector<float> &x) {
+    if (portable_detail::gdn_all_finite(x))
+        return;
     for (float f : x)
         if (!std::isfinite(f))
             require(false, "portable GDN: nonfinite input/result");
