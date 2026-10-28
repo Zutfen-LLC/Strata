@@ -177,6 +177,7 @@ struct PortableModelSession::Impl {
         report.host_state_bound = (32u << 20) + size_t(opts.expert_workers + 1) * (9u << 20);
         report.device_admission.assign(opts.accelerators.size(), 0);
         report.device_scheduler.assign(opts.accelerators.size(), 0);
+        report.device_weights.assign(opts.accelerators.size(), 0);
         report.device_workspace_bound.assign(opts.accelerators.size(), 0);
         report.device_token_temporary_bound.assign(opts.accelerators.size(), 0);
         report.device_shared_conversion_bound.assign(opts.accelerators.size(), 0);
@@ -184,6 +185,7 @@ struct PortableModelSession::Impl {
             PortableFfnOptions o;
             o.threads = opts.threads;
             o.allow_cpu_fallback = opts.allow_cpu_fallback;
+            o.resident_dense_weights = opts.dense_resident_weights;
             o.weight_budget = output ? opts.head_weight_cap : opts.layer_weight_cap;
             o.graph_budget = output ? opts.head_graph_cap : opts.layer_graph_cap;
             if (!opts.accelerators.empty()) {
@@ -199,7 +201,13 @@ struct PortableModelSession::Impl {
             // workspaces are admitted separately from those scheduler buffers.
             const size_t private_workspace = l % 4 == 3 ? (24u << 20) : (136u << 20);
             require(opts.layer_graph_cap <= SIZE_MAX - private_workspace, "portable model: graph cap overflow");
-            preflight(device(l), opts.layer_weight_cap, opts.layer_graph_cap + private_workspace, 128u << 20);
+            const bool resident = !opts.accelerators.empty() &&
+                                  (opts.dense_resident_weights || (opts.gdn_resident_weights && l % 4 != 3));
+            const size_t resident_bound = resident ? opts.layer_weight_cap : 0;
+            require(resident_bound <= SIZE_MAX - opts.layer_graph_cap - private_workspace,
+                    "portable model: resident weight preflight overflow");
+            preflight(device(l), opts.layer_weight_cap,
+                      opts.layer_graph_cap + private_workspace + resident_bound, 128u << 20);
             Layer layer;
             if (l % 4 == 3) {
                 PortableQsaOptions o;
@@ -209,6 +217,7 @@ struct PortableModelSession::Impl {
                 require(bool(layer.qsa), "portable model: layer " + std::to_string(l) + ": " + error);
             } else {
                 PortableGdnOptions o;
+                o.resident_attention_weights = opts.gdn_resident_weights;
                 o.execution = execution(l, false);
                 layer.gdn = PortableGdnLayer::from_gguf(model, int64_t(l), o, error);
                 require(bool(layer.gdn), "portable model: layer " + std::to_string(l) + ": " + error);
@@ -223,7 +232,11 @@ struct PortableModelSession::Impl {
             hw.push_back(view(model, name));
         require(hw[1].type == 8 && hw[2].type == 8 && hw[3].type == 8,
                 "portable model: fleet output HC/head must be Q8_0");
-        preflight(device(L - 1), opts.head_weight_cap, opts.head_graph_cap, 64u << 20);
+        const size_t head_resident_bound = opts.dense_resident_weights && !opts.accelerators.empty()
+                                               ? opts.head_weight_cap : 0;
+        require(head_resident_bound <= SIZE_MAX - opts.head_graph_cap,
+                "portable model: resident head preflight overflow");
+        preflight(device(L - 1), opts.head_weight_cap, opts.head_graph_cap + head_resident_bound, 64u << 20);
         head = PortableHead::create({H, HC, 320, int64_t(vocabulary), 1e-6f}, hw, execution(L - 1, true), error);
         require(bool(head), error);
         account(head->memory_usage(), device(L - 1));

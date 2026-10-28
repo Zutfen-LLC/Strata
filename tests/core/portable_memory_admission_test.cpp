@@ -5,7 +5,7 @@ using namespace strata::core;
 namespace {
 void check(bool b,const char* e){if(!b)throw std::runtime_error(e);}
 PortableModelReport fresh(){
-    PortableModelReport r;r.device_admission={0,0};r.device_scheduler={0,0};
+    PortableModelReport r;r.device_admission={0,0};r.device_scheduler={0,0};r.device_weights={0,0};
     r.device_workspace_bound={0,0};r.device_shared_conversion_bound={0,0};r.device_token_temporary_bound={0,0};return r;
 }
 }
@@ -44,6 +44,18 @@ int main(){
         portable_detail::account_device_memory(shared,0,512*M,q);
         check(shared.device_shared_conversion_bound[0]==120*M && shared.device_admission[0]==257*M,
               "later conversion growth, not max of total scratch");
+        auto weights=fresh();PortableMemoryUsage resident;
+        resident.device_weights=65*M;resident.device_graph=20*M;resident.device_extra_bound=8*M;
+        portable_detail::account_device_memory(weights,0,93*M,resident);
+        check(weights.device_admission[0]==93*M && weights.device_weights[0]==65*M &&
+              weights.device_scheduler[0]==20*M,"exact-cap resident weights separate from scheduler");
+        const auto saved=weights;bool weight_refused=false;
+        try{portable_detail::account_device_memory(weights,0,185*M,resident);}
+        catch(const std::exception&){weight_refused=true;}
+        check(weight_refused && weights.device_admission==saved.device_admission &&
+              weights.device_weights==saved.device_weights && weights.device_scheduler==saved.device_scheduler &&
+              weights.device_workspace_bound==saved.device_workspace_bound,"resident refusal preserves every ledger");
+        check(weights.device_weights[1]==0,"resident weights remain per-die");
         auto overflow=fresh();overflow.device_admission[0]=std::numeric_limits<size_t>::max()-1;
         overflow.device_scheduler[0]=overflow.device_admission[0];
         q={};q.device_graph=2;refused=false;

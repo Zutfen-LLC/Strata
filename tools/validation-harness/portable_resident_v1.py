@@ -162,6 +162,8 @@ def main():
     p.add_argument('--tokens-file', type=Path, required=True, help='frozen JSON array of token IDs')
     p.add_argument('--max-new', type=int, required=True)
     p.add_argument('--expert-timings', action='store_true', help='coarse provider and per-device executor call timing')
+    p.add_argument('--gdn-resident-weights', action='store_true', help='forward the opt-in GDN attention weight placement trial')
+    p.add_argument('--dense-resident-weights', action='store_true', help='forward model-lifetime dense weight placement')
     p.add_argument('--plan', type=Path, action='append', required=True)
     S.device_arguments(p)
     args=p.parse_args()
@@ -219,6 +221,8 @@ def main():
                  '--expert-free-reserve-mib','512,512','--placements',str(args.out/'placements.tsv')]
         for i,plan in enumerate(args.plan): command+=['--expert-plan',f'{i}:{plan.resolve(strict=True)}']
         if args.expert_timings: command += ['--expert-timings']
+        if args.gdn_resident_weights: command += ['--gdn-resident-weights']
+        if args.dense_resident_weights: command += ['--dense-resident-weights']
         receipt['plan_sha256']=[Q.bundle.sha(plan) for plan in args.plan]
         Q.write(args.out/'argv.json',command)
         runner=Resident(command,args.out,tick)

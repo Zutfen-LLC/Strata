@@ -38,6 +38,7 @@ struct PortableFfnOptions {
     bool allow_cpu_fallback = false;
     size_t weight_budget = 256ull << 20;
     size_t graph_budget = 256ull << 20; // aggregate scheduler buffers, both phases
+    bool resident_dense_weights = false; // model-lifetime weights on requested backend; default off
 };
 
 struct PortablePlacement {
@@ -58,6 +59,7 @@ struct PortableMemoryUsage {
     // Only the verified Vulkan backend-context X conversion buffer. Other
     // backend/private buffers remain additive in device_extra_bound.
     size_t device_shared_conversion_bound = 0;
+    size_t device_weights = 0; // actual aligned persistent weights, separate from scheduler storage
 };
 
 struct PortableRoute {

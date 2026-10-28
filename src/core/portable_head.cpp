@@ -28,6 +28,7 @@ struct PortableHead::Impl {
     ggml_cgraph *graph = nullptr;
     ggml_tensor *input = nullptr, *output = nullptr;
     std::vector<PortablePlacement> placement;
+    size_t device_weights = 0;
     size_t weight_size = 0, graph_size = 0, device_bytes = 0, device_workspace = 0, device_conversion = 0;
     ggml_backend_t accelerator = nullptr;
     Impl(PortableHeadGeometry geometry, const std::vector<PortableTensorView> &views, PortableFfnOptions opts)
@@ -60,15 +61,18 @@ struct PortableHead::Impl {
             weight_size += v.bytes;
             w[v.name] = t;
         }
+        auto *weight_backend = portable_detail::weight_backend(opts, cpu.get());
         require(ggml_backend_alloc_ctx_tensors_from_buft_size(
-                    weights.get(), ggml_backend_get_default_buffer_type(cpu.get())) <= opts.weight_budget,
+                    weights.get(), ggml_backend_get_default_buffer_type(weight_backend)) <= opts.weight_budget,
                 "portable head: aligned weight budget");
-        buffer.reset(ggml_backend_alloc_ctx_tensors(weights.get(), cpu.get()));
+        buffer.reset(ggml_backend_alloc_ctx_tensors(weights.get(), weight_backend));
         require(bool(buffer), "portable head: weight allocation failed");
         ggml_backend_buffer_set_usage(buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
         for (const auto &v : views)
             ggml_backend_tensor_set(w.at(v.name), v.data, 0, v.bytes);
         weight_size = ggml_backend_buffer_get_size(buffer.get());
+        require(weight_size <= opts.weight_budget, "portable head: actual aligned weight budget exceeded");
+        device_weights = weight_backend != cpu.get() ? weight_size : 0;
         auto *c = ctx.get();
         input = ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, 1);
         ggml_set_input(input);
@@ -159,7 +163,8 @@ const std::vector<PortablePlacement> &PortableHead::placements() const { return 
 PortableMemoryUsage PortableHead::memory_usage() const {
     const auto &s = *impl_;
     PortableMemoryUsage m;
-    m.host_weights = s.weight_size;
+    m.host_weights = s.weight_size - s.device_weights;
+    m.device_weights = s.device_weights;
     m.host_graph = ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
     // A head borrows at most one accelerator; its actual reservation is retained.
     m.device_graph = s.device_bytes;

@@ -106,6 +106,7 @@ int main(int argc, char **argv) {
                              "portable_model --model ANY_SHARD --manifest SWLOCAL1 --tokens ID,ID,...\n"
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
+                             " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
@@ -122,6 +123,14 @@ int main(int argc, char **argv) {
             }
             if (key == "--expert-dispatch-oracle") {
                 opts.expert_dispatch_oracle = true;
+                continue;
+            }
+            if (key == "--dense-resident-weights") {
+                opts.dense_resident_weights = true;
+                continue;
+            }
+            if (key == "--gdn-resident-weights") {
+                opts.gdn_resident_weights = true;
                 continue;
             }
             if (key == "--allow-cpu-fallback") {
@@ -279,7 +288,8 @@ int main(int argc, char **argv) {
                   << " expert_staging=" << report.expert_staging << " graph_admission=" << report.graph_admission_bound
                   << '\n';
         for (size_t i = 0; i < report.device_admission.size(); ++i)
-            std::cerr << "die=" << i << " actual_scheduler_bytes=" << report.device_scheduler[i]
+            std::cerr << "die=" << i << " actual_weight_bytes=" << report.device_weights[i]
+                      << " actual_scheduler_bytes=" << report.device_scheduler[i]
                       << " workspace_and_transient_bound=" << report.device_workspace_bound[i]+report.device_token_temporary_bound[i]+report.device_shared_conversion_bound[i]
                       << " backend_private_bound=" << report.device_workspace_bound[i]
                       << " token_temporary_bound=" << report.device_token_temporary_bound[i]

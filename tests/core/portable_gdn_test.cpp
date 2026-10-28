@@ -1,4 +1,5 @@
 #include "gguf_fixture.hpp"
+#include "ggml-cpu.h"
 #include "portable_gdn_fixture.hpp"
 #include <chrono>
 #include <limits>
@@ -11,16 +12,54 @@ int main() {
         PortableGdnOptions options;
         auto layer = PortableGdnLayer::create(0, f.views, options, error);
         check(bool(layer), error);
+        // The trial flag alone preserves CPU allocation and CPU results.
+        auto trial_options = options;
+        trial_options.resident_attention_weights = true;
+        auto trial = PortableGdnLayer::create(0, f.views, trial_options, error);
+        check(bool(trial) && trial->memory_usage().device_weights == 0, "CPU trial keeps host weights");
+        auto fallback_options = trial_options;
+        fallback_options.execution.request_accelerator = true;
+        fallback_options.execution.allow_cpu_fallback = true;
+        auto fallback = PortableGdnLayer::create(0, f.views, fallback_options, error);
+        check(bool(fallback) && fallback->memory_usage().device_weights == 0,
+              "missing requested backend preserves permitted CPU fallback");
+        trial_options.execution.resident_dense_weights = true;
+        // A borrowed CPU backend exercises the selected-backend allocation branch
+        // without initializing GPU hardware; physical Vulkan tests are separate.
+        std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> selected(ggml_backend_cpu_init(), ggml_backend_free);
+        trial_options.execution.accelerator = selected.get();
+        trial_options.execution.request_accelerator = true;
+        auto allocated = PortableGdnLayer::create(0, f.views, trial_options, error);
+        check(bool(allocated) && allocated->memory_usage().device_weights > 0, "selected backend owns weights");
+        check(allocated->memory_usage().host_weights + allocated->memory_usage().device_weights == allocated->weight_bytes(),
+              "actual aligned weight ledger reconciliation");
         PortableRoute route;
         PortableGdnTrace trace;
         for (int t = 0; t < 3; ++t) {
             auto previous = layer->recurrent_state(), history = layer->convolution_history();
             check(layer->step(f.input(t), experts(), route, error, &trace), error);
             reference(f, previous, history, trace, *layer);
+            PortableRoute trial_route, allocated_route, fallback_route;
+            check(fallback->step(f.input(t), experts(), fallback_route, error), error);
+            check(trial->step(f.input(t), experts(), trial_route, error), error);
+            check(allocated->step(f.input(t), experts(), allocated_route, error), error);
+            close(fallback->last_residual(), layer->last_residual(), 0, "CPU fallback output unchanged");
+            close(allocated_route.weights, route.weights, 0, "trial route weights unchanged");
+            close(trial->last_residual(), layer->last_residual(), 0, "CPU trial output unchanged");
+            close(allocated->last_residual(), layer->last_residual(), 0, "selected CPU allocation output unchanged");
+            close(allocated->recurrent_state(), layer->recurrent_state(), 0, "selected allocation recurrence");
+            check(allocated_route.ids == route.ids && trial_route.ids == route.ids, "trial route IDs unchanged");
+
             check(layer->tokens() == uint64_t(t + 1), "token count");
         }
         auto state = layer->recurrent_state(), history = layer->convolution_history(),
              residual = layer->last_residual();
+        const auto allocated_state = allocated->recurrent_state();
+        check(!allocated->step(f.input(3),
+              [](int64_t, const PortableRoute &, std::vector<float> &, std::string &) { return false; },
+              route, error), "resident allocation rejects callback");
+        close(allocated->recurrent_state(), allocated_state, 0, "resident allocation rollback");
+        check(allocated->reset(error) && allocated->tokens() == 0, "resident allocation reset");
         auto reject = [](int64_t, const PortableRoute &, std::vector<float> &, std::string &e) {
             e = "deliberate callback rejection";
             return false;
