@@ -140,7 +140,9 @@ This differs from the former provider's digest on every dispatch. Metadata
 checks detect ordinary writes, not adversarial mutation during execution,
 restored timestamps, same-size replacements preserving modification time, or
 filesystems that hide changes within their timestamp resolution. Read-only
-mapping permissions do not make backing files immutable. No file lock or new
+mapping permissions do not make backing files immutable. Native execution
+reads the mappings, not the staging snapshot whose digest was checked, so
+source stability must cover copy, digest and native execution even on first use. No file lock or new
 security setting is added. The explicit `--expert-dispatch-oracle` comparison
 mode retains the former copy/digest-per-dispatch path and executes copied
 bytes. Neither mode is a cryptographic or concurrent-mutation guarantee.
@@ -151,7 +153,7 @@ batches and source invalidations. Verification keys are local layer/expert
 indices bound to validated role layout and the owned model; no global cache
 or F32 expert expansion exists. Cache metadata fits within the existing
 32 MiB manifest/index/state allowance. Staging and host admission caps remain
-unchanged. See `agenthandoffs/portable-cpu-expert-proof-v1.md` for the matched
+unchanged. See `agenthandoffs/portable-cpu-expert-proof-v2.md` for the matched
 comparison recipe; removed byte work is not a measured end-to-end speedup.
 
 ## Memory and current limits
