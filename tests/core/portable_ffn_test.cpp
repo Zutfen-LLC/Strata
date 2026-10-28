@@ -4,6 +4,7 @@
 #include "gguf_fixture.hpp"
 #include <chrono>
 #include <limits>
+#include <cstring>
 
 int main() {
     try {
@@ -42,6 +43,57 @@ int main() {
         close(runner->residual(), saved, 0);
         check(!runner->step([](int64_t, const PortableRoute&, std::vector<float>& rows, std::string&) { rows.assign(64, std::numeric_limits<float>::quiet_NaN()); return true; }, route, error), "nonfinite rejection");
         close(runner->residual(), saved, 0);
+        for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                              std::numeric_limits<float>::infinity(),
+                              -std::numeric_limits<float>::infinity()}) {
+            for (size_t at : {size_t(0), initial.size() / 2, initial.size() - 1}) {
+                auto bad = initial;
+                bad[at] = invalid;
+                check(!runner->reset(bad, error) && error == "portable FFN: nonfinite activation/result",
+                      "FFN residual finite diagnostic");
+                close(runner->residual(), saved, 0);
+            }
+            for (size_t at : {size_t(0), size_t(32), size_t(63)}) {
+                check(!runner->step([&](int64_t, const PortableRoute&, std::vector<float>& rows, std::string&) {
+                    rows.assign(64, 1);
+                    rows[at] = invalid;
+                    return true;
+                }, route, error) && error == "portable FFN: nonfinite activation/result" && route.ids.empty(),
+                      "FFN row finite diagnostic/route rollback");
+                close(runner->residual(), saved, 0);
+            }
+        }
+        {
+            auto bad_views = f.views;
+            auto bad_norm = f.data[0];
+            bad_norm.back() = std::numeric_limits<float>::quiet_NaN();
+            bad_views[0].data = bad_norm.data();
+            auto bad = PortableFfn::create(f.g, 0, bad_views, {}, error);
+            check(bool(bad) && bad->reset(initial, error), error);
+            bool dispatched = false;
+            check(!bad->step([&](int64_t, const PortableRoute&, std::vector<float>&, std::string&) {
+                dispatched = true;
+                return true;
+            }, route, error) && error == "portable FFN: nonfinite activation/result" && !dispatched,
+                  "FFN read-side finite diagnostic");
+            close(bad->residual(), initial, 0);
+        }
+        auto finite_edges = initial;
+        finite_edges[0] = 0.0f;
+        finite_edges[1] = -0.0f;
+        finite_edges[finite_edges.size() / 2] = std::numeric_limits<float>::min();
+        finite_edges.back() = std::numeric_limits<float>::denorm_min();
+        check(runner->reset(finite_edges, error) && runner->step(experts, route, error), error);
+        const auto edge_residual = runner->residual();
+        const auto edge_route = route;
+        check(runner->reset(finite_edges, error) && runner->step(experts, route, error), error);
+        const auto bytes_equal = [](const std::vector<float>& a, const std::vector<float>& b) {
+            return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+        };
+        check(bytes_equal(edge_residual, runner->residual()) && route.ids == edge_route.ids &&
+              bytes_equal(route.activation, edge_route.activation) && bytes_equal(route.weights, edge_route.weights),
+              "FFN finite edge replay bytes");
+        check(runner->reset(saved, error), error);
         check(runner->step(experts, route, error), error); // recovery after rejected callbacks
         check(runner->weight_bytes() > 0 && runner->graph_bytes() > 0, "allocation accounting");
 

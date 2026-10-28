@@ -136,14 +136,16 @@ bool PortableHead::run(const std::vector<float> &streams, std::vector<float> &lo
         auto &s = *impl_;
         require(streams.size() == size_t(s.g.hidden * s.g.streams), "portable head: residual size");
         for (float v : streams)
-            require(std::isfinite(v), "portable head: nonfinite residual");
+            if (!std::isfinite(v))
+                require(false, "portable head: nonfinite residual");
         ggml_backend_tensor_set(s.input, streams.data(), 0, streams.size() * sizeof(float));
         require(ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph) == GGML_STATUS_SUCCESS,
                 "portable head: compute failed");
         std::vector<float> next(size_t(s.g.vocabulary));
         ggml_backend_tensor_get(s.output, next.data(), 0, next.size() * sizeof(float));
         for (float v : next)
-            require(std::isfinite(v), "portable head: nonfinite logits");
+            if (!std::isfinite(v))
+                require(false, "portable head: nonfinite logits");
         logits.swap(next);
         return true;
     } catch (const std::exception &e) {

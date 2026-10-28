@@ -41,7 +41,8 @@ Context context() {
 }
 void finite(const std::vector<float> &x) {
     for (auto v : x)
-        require(std::isfinite(v), "portable QSA: nonfinite input/result");
+        if (!std::isfinite(v))
+            require(false, "portable QSA: nonfinite input/result");
 }
 std::vector<float> read(ggml_tensor *t) {
     std::vector<float> x(size_t(ggml_nelements(t)));
@@ -57,7 +58,8 @@ std::vector<uint16_t> half(const std::vector<float> &x) {
     std::vector<uint16_t> h(x.size());
     for (size_t i = 0; i < x.size(); ++i) {
         h[i] = ggml_fp32_to_fp16(x[i]);
-        require(std::isfinite(ggml_fp16_to_fp32(h[i])), "portable QSA: FP16 cache overflow");
+        if (!std::isfinite(ggml_fp16_to_fp32(h[i])))
+            require(false, "portable QSA: FP16 cache overflow");
     }
     return h;
 }

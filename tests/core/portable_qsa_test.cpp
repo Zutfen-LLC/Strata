@@ -1,5 +1,6 @@
 #include "portable_qsa_fixture.hpp"
 #include "portable_qsa_selection.hpp"
+#include <limits>
 using namespace qsa_fixture;
 int main() {
     try {
@@ -46,10 +47,21 @@ int main() {
                           "failed callback");
                     unchanged();
                 }
-            auto bad_input = f.input(int(t));
-            bad_input[0] = NAN;
-            check(!layer->step(t, bad_input, experts(), route, error), "nonfinite input rejection");
-            unchanged();
+            for (float invalid : {NAN, INFINITY, -INFINITY})
+                for (size_t at : {size_t(0), size_t(5120), size_t(10239)}) {
+                    auto bad_input = f.input(int(t));
+                    bad_input[at] = invalid;
+                    bool dispatched = false;
+                    trace.query = {1};
+                    check(!layer->step(t, bad_input,
+                        [&](int64_t, const PortableRoute &, std::vector<float> &, std::string &) {
+                            dispatched = true;
+                            return true;
+                        }, route, error, &trace), "nonfinite input rejection");
+                    check(error == "portable QSA: nonfinite input/result" && !dispatched &&
+                          trace.query.empty() && route.ids.empty(), "QSA finite diagnostic/trace");
+                    unchanged();
+                }
             check(!layer->step(t, {}, experts(), route, error), "malformed input rejection");
             unchanged();
             check(!layer->step(t, f.input(int(t)), {}, route, error), "missing callback rejection");
@@ -119,9 +131,30 @@ int main() {
                 view.data = huge.data();
         auto overflow = PortableQsaLayer::create(3, overflow_views, opts, error);
         check(bool(overflow), error);
-        check(!overflow->step(0, f.input(0), experts(), route, error) && overflow->tokens() == 0 &&
-                  overflow->keys().empty() && overflow->values().empty() && overflow->last_residual().empty(),
-              "FP16 overflow rollback");
+        trace.query = {1};
+        check(!overflow->step(0, f.input(0), experts(), route, error, &trace) && overflow->tokens() == 0 &&
+                  overflow->keys().empty() && overflow->values().empty() && overflow->last_residual().empty() &&
+                  error == "portable QSA: FP16 cache overflow" && trace.query.empty() && route.ids.empty(),
+              "FP16 overflow diagnostic/rollback/trace");
+        {
+            auto bad_views = f.views;
+            std::vector<float> bad_norm(256, 1);
+            bad_norm.back() = NAN;
+            for (auto &v : bad_views)
+                if (v.name == "blk.3.attn_q_norm.weight")
+                    v.data = bad_norm.data();
+            auto bad = PortableQsaLayer::create(3, bad_views, opts, error);
+            check(bool(bad), error);
+            bool dispatched = false;
+            check(!bad->step(0, f.input(0),
+                [&](int64_t, const PortableRoute &, std::vector<float> &, std::string &) {
+                    dispatched = true;
+                    return true;
+                }, route, error, &trace) && error == "portable QSA: nonfinite input/result" && !dispatched,
+                  "QSA read-side finite diagnostic: " + error);
+            check(bad->tokens() == 0 && bad->keys().empty() && bad->values().empty() &&
+                  bad->last_residual().empty() && trace.query.empty(), "QSA read-side rollback/trace");
+        }
         auto unavailable = opts;
         unavailable.execution.request_accelerator = true;
         check(!PortableQsaLayer::create(3, f.views, unavailable, error), "strict unavailable backend");
@@ -135,6 +168,27 @@ int main() {
                 recorded = true;
         check(recorded, "explicit fallback record");
         check(!PortableQsaLayer::create(7, f.views, opts, error), "other layer rejection");
+        auto finite_edges = f.input(0);
+        finite_edges[0] = 0.0f;
+        finite_edges[1] = -0.0f;
+        finite_edges[5120] = std::numeric_limits<float>::min();
+        finite_edges.back() = std::numeric_limits<float>::denorm_min();
+        check(layer->reset(error) && layer->step(0, finite_edges, experts(), route, error, &trace), error);
+        const auto edge_trace = trace;
+        const auto edge_keys = layer->keys(), edge_values = layer->values();
+        const auto edge_residual = layer->last_residual();
+        check(layer->reset(error) && layer->step(0, finite_edges, experts(), route, error, &trace), error);
+        check(edge_keys == layer->keys() && edge_values == layer->values() &&
+              std::memcmp(edge_residual.data(), layer->last_residual().data(), edge_residual.size() * sizeof(float)) == 0,
+              "QSA finite edge cache/residual bytes");
+        for (auto member : {&PortableQsaTrace::query, &PortableQsaTrace::key, &PortableQsaTrace::value,
+                            &PortableQsaTrace::gate, &PortableQsaTrace::index_query, &PortableQsaTrace::index_raw_key,
+                            &PortableQsaTrace::pooled_key, &PortableQsaTrace::cell_scores, &PortableQsaTrace::selected,
+                            &PortableQsaTrace::attention, &PortableQsaTrace::gated_attention, &PortableQsaTrace::attention_residual}) {
+            const auto &a = trace.*member, &b = edge_trace.*member;
+            check(a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0),
+                  "QSA finite edge trace replay bytes");
+        }
         std::printf("PASS portable QSA H2560 layer3 positions0-8, scalar "
                     "attention/indexer, rollback/reset/budgets/fallback\n");
     } catch (const std::exception &e) {
