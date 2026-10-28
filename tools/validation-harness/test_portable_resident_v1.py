@@ -18,7 +18,7 @@ for i,line in enumerate(sys.stdin,1):
     tokens=list(map(int,t.split(',')))
     for p,t in enumerate(tokens): print(json.dumps(dict(position=p,token=t,generated=False,greedy_next=7)))
     print(json.dumps(dict(stop='max_new',position=len(tokens))))
-    print(json.dumps(dict(done=i,prompt_count=len(tokens),output_count=0,prompt_ms=0,cpu_hits_delta=10,cpu_pool_gu_ms_delta=(float('nan') if sys.argv[1]=='nan' else -1.25 if sys.argv[1]=='negative' else 1.25),cpu_pool_quant_ms_delta=.25,cpu_pool_down_ms_delta=2.5,cpu_pool_elapsed_ms_delta=4.1,cpu_verifications_delta=0,cpu_copied_bytes_delta=0,cpu_digest_bytes_delta=0,source_invalidations_delta=0,gpu_entries_per_device_delta=[1,1])))
+    print(json.dumps(dict(done=i,prompt_count=len(tokens),output_count=0,prompt_ms=0,cpu_hits_delta=10,cpu_pool_gu_ms_delta=(float('nan') if sys.argv[1]=='nan' else -1.25 if sys.argv[1]=='negative' else 1.25),cpu_pool_quant_ms_delta=.25,cpu_pool_down_ms_delta=2.5,cpu_pool_elapsed_ms_delta=4.1,cpu_verifications_delta=0,cpu_copied_bytes_delta=0,cpu_digest_bytes_delta=0,source_invalidations_delta=0,expert_provider_ms_delta=7.5,expert_provider_calls_delta=len(tokens)*48,gpu_infer_rows_ms_delta=[1.0,float('nan') if sys.argv[1]=='nan_gpu' else -1.0 if sys.argv[1]=='negative_gpu' else 2.0],gpu_infer_rows_calls_delta=[1,1],gpu_entries_per_device_delta=[1,1])))
     sys.stdout.flush()
 '''
 class HarnessTest(unittest.TestCase):
@@ -42,6 +42,11 @@ class HarnessTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'invalid timer'): r.request([5],0,1)
         for mode in ('nan','negative'):
             with self.subTest(mode=mode): self.run_fake(mode,action)
+    def test_invalid_executor_delta_reaps(self):
+        def action(r):
+            with self.assertRaisesRegex(ValueError,'invalid GPU timing'): r.request([5],0,1)
+        for mode in ('nan_gpu','negative_gpu'):
+            with self.subTest(mode=mode): self.run_fake(mode,action)
     def test_timeout_reaps(self):
         def action(r):
             with self.assertRaises(TimeoutError): r.request([5],0,1)
@@ -56,7 +61,7 @@ class HarnessTest(unittest.TestCase):
             r.tick=stop
             with self.assertRaisesRegex(ValueError,'guard STOP'): r.request([5],0,1)
         self.run_fake('ok',action)
-    def main_run(self,pressure):
+    def main_run(self,pressure,timings=False):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); out=root/'out'; tokens=root/'tokens.json';tokens.write_text('[5,7]')
             plans=[root/'p0',root/'p1']
@@ -70,6 +75,7 @@ class HarnessTest(unittest.TestCase):
             args=['resident','--binary',sys.executable,'--binary-sha256',M.Q.bundle.sha(sys.executable),
                   '--out',str(out),'--tokens-file',str(tokens),'--max-new','0',
                   '--plan',str(plans[0]),'--plan',str(plans[1])]
+            if timings: args+=['--expert-timings']
             with mock.patch.object(sys,'argv',args), mock.patch.object(M,'Resident',side_effect=runner), \
                  mock.patch.object(M.S,'host_memory',return_value=host), \
                  mock.patch.object(M.S,'model_working_set',return_value=dict(working_set_bound_bytes=0)), \
@@ -88,6 +94,7 @@ class HarnessTest(unittest.TestCase):
             self.assertEqual(receipt['last_process']['VmRSS'],1)
             self.assertEqual(len(commands),1)
             self.assertIn('--stdio',commands[0])
+            self.assertEqual('--expert-timings' in commands[0],timings)
             self.assertEqual(commands[0][commands[0].index('--expert-tensor-mib')+1],'2404,2404')
             if not pressure:
                 self.assertEqual(len(receipt['requests']),4)
@@ -95,4 +102,5 @@ class HarnessTest(unittest.TestCase):
                 self.assertEqual(receipt['exit_code'],0)
     def test_main_four_receipts(self): self.main_run(False)
     def test_main_pressure_receipt(self): self.main_run(True)
+    def test_main_timing_forwarding(self): self.main_run(False,True)
 if __name__=='__main__': unittest.main()

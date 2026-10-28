@@ -2,6 +2,7 @@
 #include "portable_graph.hpp"
 #include "portable_memory.hpp"
 #include "portable_cpu_experts.hpp"
+#include "portable_expert_timer.hpp"
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
 #include "portable_local_experts.hpp"
 #include "strata/worker/vulkan_executor.hpp"
@@ -113,6 +114,8 @@ struct PortableModelSession::Impl {
     uint64_t pos = 0;
     int32_t eos_id = -1;
     bool poison = false, eos_seen = false;
+    double provider_ms = 0;
+    uint64_t provider_calls = 0;
     size_t vocabulary = 0;
     Impl(const std::vector<std::string> &shards, const std::string &manifest, PortableModelOptions options)
         : opts(std::move(options)), model(shards) {
@@ -338,6 +341,7 @@ struct PortableModelSession::Impl {
                 std::copy_n(residual.begin(), H, residual.begin() + stream * H);
             const PortableExpertRows dispatch = [&](int64_t l, const PortableRoute &r, std::vector<float> &rows,
                                                     std::string &e) {
+                portable_detail::ScopedExpertTimer<> timer(opts.expert_timings, provider_ms, provider_calls);
                 if (opts.expert_record_routes) {
                     std::cerr << "expert_route position=" << pos << " layer=" << l << " ids=";
                     for(size_t i=0;i<r.ids.size();++i) std::cerr << (i ? "," : "") << r.ids[i];
@@ -407,6 +411,8 @@ int32_t PortableModelSession::eos() const { return impl_->eos_id; }
 size_t PortableModelSession::vocabulary() const { return impl_->vocabulary; }
 PortableExpertWork PortableModelSession::expert_work() const {
     auto work=impl_->experts->work();
+    work.provider_ms=impl_->provider_ms;
+    work.provider_calls=impl_->provider_calls;
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
     if (impl_->local_experts) {
         work.gpu_entries=impl_->local_experts->gpu_entries();

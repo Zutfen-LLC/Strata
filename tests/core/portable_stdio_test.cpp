@@ -1,8 +1,31 @@
 #include "../../src/core/portable_stdio.hpp"
+#include "../../src/core/portable_expert_timer.hpp"
 #include <fstream>
 #include <iostream>
 using namespace strata::core::stdio_detail;
+struct FakeClock {
+    using time_point = std::chrono::time_point<FakeClock, std::chrono::milliseconds>;
+    static inline int reads = 0;
+    static inline int ticks = 0;
+    static time_point now() { ++reads; return time_point(std::chrono::milliseconds(ticks)); }
+};
 int main() {
+    double elapsed = 0; uint64_t calls = 0;
+    {
+        strata::core::portable_detail::ScopedExpertTimer<FakeClock> timer(false, elapsed, calls);
+        FakeClock::ticks = 3;
+    }
+    if(FakeClock::reads || elapsed || calls) return 4;
+    {
+        strata::core::portable_detail::ScopedExpertTimer<FakeClock> timer(true, elapsed, calls);
+        FakeClock::ticks += 7;
+    }
+    try {
+        strata::core::portable_detail::ScopedExpertTimer<FakeClock> timer(true, elapsed, calls);
+        FakeClock::ticks += 5;
+        throw std::runtime_error("fake executor failure");
+    } catch(const std::runtime_error&) {}
+    if(elapsed != 12 || calls != 2 || FakeClock::reads != 4) return 5;
     auto valid = parse("GEN 3 0,12,99", 3, 100);
     if (valid.max_new != 3 || valid.tokens != std::vector<int32_t>({0, 12, 99}))
         return 1;

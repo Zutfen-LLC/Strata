@@ -1,6 +1,7 @@
 # AMD05 existing CPU pool phase exposure — one bounded resident run
 
-Pending parent review and Hermes dispatch. Do not alter the NVIDIA resident run
+Hermes completed this checkpoint; see the [physical receipt](portable-pool-phase-amd-results-v1.md).
+The original recipe follows as provenance, not new execution authority. Do not alter the NVIDIA resident run
 pinned to45513fd8. This slice is stacked on PR48 docs head
 `92a58ceeb9be19f09d73bee83b7ba036289ed5ed`; the final handoff supplies this new
 candidate's exact SHA and complete-source archive/checksum. No fleet run or new

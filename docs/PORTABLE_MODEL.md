@@ -341,3 +341,50 @@ The portable and native users of the same compiled strata_kernels_cpu/ggml-cpu
 libraries in one build do not establish a separate portable-only scalar kernel.
 That shared source/link relationship does not establish ISA parity between
 separately deployed builds; their actual build flags and dispatch remain unverified.
+
+### Coarse expert provider and executor boundaries
+
+The [physical pool-timing receipt](../agenthandoffs/portable-pool-phase-amd-results-v1.md)
+reports about1.55s of CPU pool elapsed in warm requests with about46.6s of
+prompt/decode wall. The remainder includes other CPU/preparation/GPU/transfer and
+model/backend/reporting work; it is not identified as GPU compute.
+
+`--stdio --expert-timings` explicitly enables two coarse steady-clock boundaries.
+Without --expert-timings, the new scopes read no clock and emit no new fields;
+existing defaults, pool counters, one-shot outputs and timing-file schema remain
+unchanged. --expert-timings requires --stdio in the CLI. The model API equivalent
+is PortableModelOptions::expert_timings, default false.
+
+Whole-provider timing starts at entry to the model's expert-row callback and
+ends on return/unwind. It includes optional route logging, provider source/resource
+checks, request preparation, CPU expert copy/digest/pool calls, local GPU expert
+calls, reply validation and row scatter. Routing/activation preparation before
+callback invocation and weighted merging after callback return remain outside.
+The cumulative PortableExpertWork provider_ms/provider_calls survive reset.
+Done receipts report expert_provider_ms_delta and expert_provider_calls_delta.
+There is one provider callback per layer per consumed token.
+
+Each local device's infer_rows_ms/infer_rows_calls measures only its existing
+executor infer_rows invocation and return/unwind, excluding adapter checks and
+request preparation outside that call. It includes the executor's host work,
+transfers and existing backend waits; it is **not pure GPU execution time**. No
+additional synchronization is inserted. Done receipts report ordered device
+arrays gpu_infer_rows_ms_delta and gpu_infer_rows_calls_delta, with the same
+ordering as the expert-device report. Devices with no participating call record
+zero. Loading/prepare_source is excluded.
+
+All these counters are cumulative, not maxima. Failed attempts are captured on
+unwind but produce no successful done receipt; copied session device reports may
+be stale after a failed step and must not be used as final failure measurements.
+Resource sampling remains independent. Enabled scope/call counters accumulate
+across reset; reading them adds no timing or work.
+
+Provider elapsed encloses its CPU-pool and GPU-executor intervals. In the current
+serial adapter, device calls run sequentially; their time remains inside provider
+time. Never add provider time to pool/executor time. Existing pool enclosing time
+also overlaps its own phases. Whole-request deltas do not split prompt/decode
+pool/provider time. Time outside provider includes model/backend work, other CPU
+work, preparation, transfers and reporting; it must not all be called dense/GPU
+compute. See the [bounded four-request recipe](../agenthandoffs/portable-expert-boundary-hermes-v1.md).
+Shared compiled libraries within one build establish no portable-only scalar
+kernel; separately deployed build ISA parity remains unverified.

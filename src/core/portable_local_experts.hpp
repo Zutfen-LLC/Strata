@@ -28,7 +28,7 @@ private:
     std::vector<Device> devices_;
     std::vector<PortableExpertDeviceReport> report_;
     std::vector<std::filesystem::file_time_type> times_;
-    bool check_rows_ = false;
+    bool check_rows_ = false, timings_ = false;
     uint64_t sequence_=0, gpu_entries_=0, cpu_entries_=0;
     void sources() const;
     void guard(size_t);
