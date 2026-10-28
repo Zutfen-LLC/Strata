@@ -1,10 +1,12 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Portable model: first implementation checkpoint
 
 Scope authority: delegated product milestone, stacked on corrected PR41 commit
 `1d8eae1c3906962932b77e366f324c51aa89819d`. No fleet access, merges, deployment,
 installation, defaults change, or optimization campaign is part of this task.
 
-Checkout: `/home/zutfen/Documents/Codex/2026-10-27/task-8/strata`.
+Checkout: `${PRIVATE_ARTIFACT_CE645004}`.
 Branch: `codex/portable-model-session`. Other task worktrees remain untouched.
 
 ## Implemented at this checkpoint
@@ -55,11 +57,11 @@ product expert provider exists yet. No full-model numerical claim is made.
 7. Run meaningful synthetic session/head/expert/reference tests and prior
    regressions; verify strict Vulkan placement on available local software
    Vulkan. Publish one draft PR stacked on PR41 with exact checks/limits and
-   a versioned Hermes recipe. Parent owns real AMD and reference runs.
+   a versioned operator recipe. Parent owns real AMD and reference runs.
 
 ## Local verification
 
-Build directory `/tmp/strata-portable-model-build`; dependency:
+Build directory `${BUILD_ARTIFACT_83FD5685}`; dependency:
 `/tmp/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 CMake `/tmp/cmake-3.31.6-linux-x86_64/bin/cmake`.
 CPU configure uses STRATA_BUILD_TESTS, STRATA_NATIVE_EXPERTS,
@@ -72,12 +74,12 @@ portable_qsa_gguf_test, portable_ple_test, portable_ffn_test.
 
 CTest command:
 ```
-/tmp/cmake-3.31.6-linux-x86_64/bin/ctest --test-dir /tmp/strata-portable-model-build --output-on-failure -R '^portable_(gdn|qsa|qsa_gguf|ple|ffn)_test$' -j 1
+/tmp/cmake-3.31.6-linux-x86_64/bin/ctest --test-dir ${BUILD_ARTIFACT_83FD5685} --output-on-failure -R '^portable_(gdn|qsa|qsa_gguf|ple|ffn)_test$' -j 1
 ```
 
-Logs: `/tmp/portable-model-checkpoint-build.log`,
-`/tmp/portable-model-checkpoint-rebuild.log`,
-`/tmp/portable-model-checkpoint-ctest.log`.
+Logs: `${BUILD_ARTIFACT_71283027}`,
+`${BUILD_ARTIFACT_C1B09B0D}`,
+`${BUILD_ARTIFACT_7061C016}`.
 
 ## Narrow parent input needed before final model admission/recipe
 

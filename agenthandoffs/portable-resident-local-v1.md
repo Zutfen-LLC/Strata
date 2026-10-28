@@ -6,7 +6,7 @@ execution was used. The process protocol and restrictions are in
 `docs/PORTABLE_MODEL.md`; the complete-source exact-commit build and guarded
 one-warmup/three-measurement recipe is `portable-resident-hermes-v1.md`.
 
-Passed on Valinor:
+Passed on validation host:
 
 - Fresh Release Vulkan-linked build with CMake3.31.6, retained GGML
   `3cf03257f219afbe7334045ff7c6a06ac68c627d`, retained SPIRV headers;
@@ -34,7 +34,7 @@ These are local working receipts, not physical AMD evidence. No performance or
 quality change is claimed. Documentation impact is the explicit resident CLI
 contract and executable guarded handoff; accepted campaign/quality status is
 unchanged. The subsequent [AMD physical result](portable-resident-amd-results-v1.md)
-records Hermes execution separately from these local checks.
+records operator execution separately from these local checks.
 
 Limitations: POSIX stdio only; finite serial requests, no network/concurrency.
 Signals clean up cooperatively at idle/load/token boundaries; the supervisor

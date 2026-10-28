@@ -1,9 +1,11 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Moving QSA spare-key correction — v2
 
 This additive correction supersedes v1's zero-spare assumption. The exact
 candidate is identified by the PR head and `portable-qsa-source-v2.sha256`.
 Existing CUDA behavior, FFN/GDN/PLE sources, state policy and placement policy
-are unchanged. Parent/Hermes owns corrected physical validation.
+are unchanged. Parent/operator owns corrected physical validation.
 
 ## Source contract and fix
 
@@ -50,8 +52,8 @@ Only corrected tests/oracle and score-builder extraction were applied:
 - Strict llvmpipe `portable_qsa_vulkan_test` failed at token0:
   `completed and spare keys mismatch at 0 actual=0.000000 expected=0.506630`.
 
-Logs: `/tmp/portable-qsa-spare-red.log` and
-`/tmp/portable-qsa-spare-red-vulkan.log`. No tolerance was relaxed to pass.
+Logs: `${BUILD_ARTIFACT_C8D6CBA5}` and
+`${BUILD_ARTIFACT_F351958E}`. No tolerance was relaxed to pass.
 
 ## Observed GREEN after the fix
 
@@ -59,15 +61,15 @@ Same retained Linux/GCC16.2.1/CMake3.31.6/ggml/llvmpipe environment and isolated
 builds as v1. Exact build commands:
 
 ```sh
-/tmp/cmake-3.31.6-linux-x86_64/bin/cmake --build /tmp/strata-portable-qsa-build \
+/tmp/cmake-3.31.6-linux-x86_64/bin/cmake --build ${BUILD_ARTIFACT_FF6747B2} \
   --target portable_qsa_test portable_qsa_gguf_test --parallel 2
-/tmp/cmake-3.31.6-linux-x86_64/bin/cmake --build /tmp/strata-portable-qsa-vulkan \
+/tmp/cmake-3.31.6-linux-x86_64/bin/cmake --build ${BUILD_ARTIFACT_4336C66D} \
   --target portable_qsa_vulkan_test portable_qsa_test portable_qsa_gguf_test --parallel 2
 /tmp/cmake-3.31.6-linux-x86_64/bin/ctest --test-dir BUILD \
   -R '^(portable_(qsa|qsa_gguf|ffn|gdn|ple)_test|gguf_(reader|split|geometry)_test)$' \
   --output-on-failure
 GGML_VK_VISIBLE_DEVICES=0 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
-  timeout 180s /tmp/strata-portable-qsa-vulkan/portable_qsa_vulkan_test \
+  timeout 180s ${BUILD_ARTIFACT_F5A7A00E} \
   --device 0 --expect-device llvmpipe
 ```
 
@@ -85,17 +87,17 @@ actual strict Vulkan placement. Existing cached-cell checks still report
 is unchanged: weights79,235,072B; peak graphs/workspace190,338,372B;
 host-state bound34,973,984B at capacity9.
 
-Logs: `/tmp/portable-qsa-spare-green-cpu.log`,
-`/tmp/portable-qsa-spare-green-vulkan-ctest.log`, and
-`/tmp/portable-qsa-spare-green-vulkan.log`.
+Logs: `${BUILD_ARTIFACT_40AB21A1}`,
+`${BUILD_ARTIFACT_B5D1813B}`, and
+`${BUILD_ARTIFACT_DA4FD8B9}`.
 
 ## Old-head physical evidence and remaining limits
 
-Parent supplied Hermes receipt1793142605.492489 in thread1793142298.778149:
+Parent supplied operator receipt1793142605.492489 in thread1793142298.778149:
 old head `f1cdabda2212f8c6a4679af3435ac107c698eb1f` passed the original synthetic
 QSA suite on both physical V340 dies, sequentially, with48 source checks,
 ggml pin, eight CPU tests and cleaned build/test processes. Evidence on05:
-`/home/hermes/portable-qsa-pr41-f1cdabd-evidence`. This proves those old
+`${PRIVATE_ARTIFACT_35EB6936}`. This proves those old
 fixtures/pipelines execute on the hardware; it does not resolve or qualify
 the moving-spare semantics. No deployed source was changed or test interrupted.
 

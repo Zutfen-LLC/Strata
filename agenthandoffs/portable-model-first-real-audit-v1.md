@@ -1,14 +1,16 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # PR42 first real run and numerical interpretation — v1
 
 This is a source/retained-evidence audit, with no new inference, optimization,
 threshold changes or raw-logit upload. Runtime observations below were supplied
-by the parent from Hermes receipt1793150510.782879 in thread1793145122.081359;
+by the parent from operator receipt1793150510.782879 in thread1793145122.081359;
 this coding task did not inspect or execute the host-local run.
 
 ## Observed result
 
 Source `ae6489205c9eca5c072610dbacbc78c8489dffda`; run on05:
-`/home/hermes/portable-model-pr42-ae64892-real`.
+`${PRIVATE_ARTIFACT_0EBCDC73}`.
 Product binary SHA256:
 `06831fc5743559190ce56ec148187aa16f09dd3360410667adad13f6f4589c0a`.
 The v4 recipe completed strict contiguous placement for48 layers and the head,
@@ -131,7 +133,7 @@ included in this audit.
 
 Read-only Slack artifact `F0CCQEZN54Z` (`strata-run5-resolved-nonsecret.json`)
 confirms LOCAL argv uses `--native`, `--pack
-/home/hermes/strata-local-q8-20261023T152939Z/native-pack`, `--prefill 64`,
+${PRIVATE_ARTIFACT_F9BFB2C4}`, `--prefill 64`,
 `--expert-cache 960`, `--expert-cache-per-layer`, and
 `--expert-cache-device1 1378`. Its explicit resolved environment contains no
 `STRATA_HC_Q8`. The current harness `harness/owner.py` constructs
@@ -171,7 +173,7 @@ accessible (no transfer, new inference, build or install):
 : "${REFERENCE_LOCAL:?already accessible retained02 local-first-logits.0}"
 python3 -B "$SOURCE/agenthandoffs/portable-model-logit-diagnostic-v1.py" \
   --reference "$REFERENCE_LOCAL" \
-  --candidate /home/hermes/portable-model-pr42-ae64892-real/logits/pos-37.f32
+  --candidate ${PRIVATE_ARTIFACT_25FFAA93}
 ```
 
 Verify the helper SHA256 is

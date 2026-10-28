@@ -1,8 +1,10 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Portable local Vulkan expert residency: bounded handoff
 
 The initial physical smoke passed; see [its receipt](portable-local-residency-physical-v1.md)
 and [the conditional larger-placement recipe](portable-local-residency-large-v1.md).
-Historical initial instructions follow, for parent review and Hermes dispatch. No fleet run by
+Historical initial instructions follow, for parent review and operator dispatch. No fleet run by
 this coding task. Stacked on PR44. This is a product capability slice, not a
 CUDA-versus-Vulkan performance verdict. No CUDA de-offload work.
 
@@ -72,7 +74,7 @@ screen remain separate checks; original full-model logit gates remain FAILED.
 Parent exports this draft PR's exact committed tree with `git archive`; record
 commit and archive SHA256 across transfer. Export the complete tree, not selected
 Python files. Fresh isolated SOURCE/BUILD/CHECKS/ROOT on 05 must all live below
-`/srv/models/inferswarm-artifacts/portable-local-residency-v1`. Preserve qualified
+`${PRIVATE_ARTIFACT_B1A12880}`. Preserve qualified
 binaries, models, resident services and previous evidence. No installs/downloads.
 
 Use the retained CMAKE and pinned dependency LLAMA_SRC, with the successful
@@ -109,12 +111,12 @@ Stop on failure. Local synthetic CPU tests are not physical offload qualificatio
 
 ## First physical smoke: one discovery token and one resident token
 
-Parent/Hermes performs current idle/model-writer checks. Preserve all existing
+Parent/operator performs current idle/model-writer checks. Preserve all existing
 host/cgroup/swap/per-die guards. Devices remain verified Vulkan0/1, PCI 07:00.0 and
 0b:00.0, contiguous dense split 32/16, caps 7680 MiB each, CPU workers 12, threads 4.
 The wrapper imports those same admission/guard/placement checks, starts only its
 owned child, samples every 0.2 s, limits each run to 300 s and retains STOP/cleanup.
-It performs no clocks or remote operations. Use Hermes's already-verified finite
+It performs no clocks or remote operations. Use operator's already-verified finite
 high/temperature/clock guard if parent requests the full-clock profile; build
 outside the window. Discovery plus smoke use at most 650 s plus owned cleanup,
 inside the existing 30-minute window; no voltage/power/driver changes.
@@ -126,10 +128,10 @@ timeout --signal=TERM --kill-after=15s 325s "$PYTHON05" -B "$SMOKE" \
   --binary "$BUILD/portable_model" --binary-sha256 "$BINARY_SHA" \
   --phase discover --out "$ROOT/discover"
 "$BUILD/strata-gpu-manifest" plan \
-  /home/hermes/strata-pr10-9ed478e-20261025-05-peer/assets/manifest \
+  ${PRIVATE_ARTIFACT_32CC92CE} \
   "$ROOT/discover/assignments-0.txt" "$ROOT/plan0"
 "$BUILD/strata-gpu-manifest" plan \
-  /home/hermes/strata-pr10-9ed478e-20261025-05-peer/assets/manifest \
+  ${PRIVATE_ARTIFACT_32CC92CE} \
   "$ROOT/discover/assignments-1.txt" "$ROOT/plan1"
 timeout --signal=TERM --kill-after=15s 325s "$PYTHON05" -B "$SMOKE" \
   --binary "$BUILD/portable_model" --binary-sha256 "$BINARY_SHA" \
@@ -185,9 +187,9 @@ scorer. This later stage is separate from the first smoke dispatch.
 
 ```sh
 "$PYTHON05" -B "$SOURCE/tools/validation-harness/portable_quality_v1.py" \
-  --gguf /srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf \
+  --gguf ${PRIVATE_ARTIFACT_ED0D8ADE} \
   portable --binary "$BUILD/portable_model" --binary-sha256 "$BINARY_SHA" \
-  --suite /srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2/suite \
+  --suite ${PRIVATE_ARTIFACT_021ADBD1} \
   --expert-plan "0:$ROOT/plan0" --expert-plan "1:$ROOT/plan1" \
   --expert-tensor-mib 256,256 --expert-workspace-mib 128,128 \
   --expert-free-reserve-mib 512,512 --out "$ROOT/quality"
@@ -199,7 +201,7 @@ must select an explicit shorter bound or a separately guarded operation; **do
 not silently extend the clock window**. Smoke completion does not authorize
 launching this later stage. Reuse the existing score command on 02 with the
 retained native quality root; on 02 suite is
-`/home/hermes/portable-quality-ac85ff3-v2/suite`. Baseline 10/12 means the scorer's
+`${PRIVATE_ARTIFACT_0B0DB264}`. Baseline 10/12 means the scorer's
 inconclusive-baseline exit 1 is expected, distinct from a runtime failure. Report
 both scores, changed case IDs/tokens and any stops; do not change gold or gates.
 
