@@ -31,7 +31,14 @@ Portable: 300 s per case, 1200 s suite; external 1250 s deadline plus 15 s kill
 allowance. All four trials, **including setup**, fit within the verified 1800 s
 high-clock window. Build and synthetic tests occur before that window opens.
 Native: existing startup900 / LOAD or READY1800 / request300 / stop420 s ceilings,
-further bounded by external 1800 s arm deadline and 450 s cleanup allowance.
+further bounded by external 1800 s arm deadline and 1320 s cleanup allowance.
+The retained driver cleans up the engine before the adapter cleans up its
+separately-sessioned worker. Before DONE this can use 420 + 420 = 840 s of timed
+waits. After READY and DONE, engine_stage can call quit_engine: QUIT waits 420 s,
+then stop_process_group can wait another 420 s before KILL; the worker can then
+wait 420 s. Allow 1260 s plus 60 s margin, rather than killing the adapter before
+worker cleanup. These are timed wait allowances; final reap after KILL relies on
+the OS. This native-only allowance does not enlarge the AMD high-clock window.
 No automatic retries. SIGTERM enters owned cleanup. Inspect STOP receipts first.
 
 Preserve inherited portable six-shard working-set +32 GiB anonymous +8 GiB reserve
@@ -106,7 +113,7 @@ existing suite files on both hosts and confirm the same hashes before either arm
 export GGUF02=/srv/models/qwen38-q8/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf
 export SUITE02=/home/hermes/portable-quality-ac85ff3-v2/suite
 sha256sum "$SUITE02/requests" "$SUITE02/quality_manifest"
-timeout --signal=TERM --kill-after=450s 1800s \
+timeout --signal=TERM --kill-after=1320s 1800s \
   "$PYTHON02" -B "$SOURCE02/tools/validation-harness/portable_quality_v1.py" \
   --gguf "$GGUF02" native --benchmark \
   --driver /home/hermes/strata-nd-repeat-20261027-run.driver5.py \
