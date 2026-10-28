@@ -23,18 +23,32 @@ class LocalSmoke(unittest.TestCase):
     def test_pressure_failure_retains_stop_and_reaps_owned_child(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);binary=root/'binary';binary.write_bytes(b'mocked child')
-            child=SimpleNamespace(pid=123456789,poll=lambda:None,wait=lambda timeout:0)
+            child=SimpleNamespace(pid=123456789,poll=lambda:None,wait=lambda timeout=None:-15)
             argv=['smoke','--binary',str(binary),'--binary-sha256',M.Q.bundle.sha(binary),
                   '--out',str(root/'out'),'--phase','discover']
-            with patch('sys.argv',argv),patch.object(M.S,'host_memory',return_value={'effective_available':1<<40}), \
+            with patch('sys.argv',argv),patch.object(M.S,'host_memory',side_effect=[
+                     {'effective_available':1<<40,'SwapUsed':10,'pswpout':2},
+                     {'effective_available':1<<39,'SwapUsed':20,'pswpout':3}]), \
                  patch.object(M.S,'model_working_set',return_value={'working_set_bound_bytes':0}), \
-                 patch.object(M.S,'vram',return_value={'used':0,'total':8<<30}), \
-                 patch.object(M.S,'rss',return_value={}), \
+                 patch.object(M.S,'vram',side_effect=[{'used':0,'total':8<<30}, {'used':0,'total':8<<30},
+                     {'used':100,'total':8<<30}, {'used':200,'total':8<<30}]), \
+                 patch.object(M.S,'rss',return_value=dict(VmRSS=1000,VmHWM=2000,VmSwap=30)), \
                  patch.object(M.S,'guard_host',side_effect=ValueError('pressure')), \
                  patch.object(M.subprocess,'Popen',return_value=child),patch.object(M.os,'killpg') as kill:
                 with self.assertRaisesRegex(ValueError,'pressure'):M.main()
                 kill.assert_called_once_with(child.pid,M.signal.SIGTERM)
             receipt=json.loads((root/'out/summary.json').read_text())
             self.assertEqual(receipt['status'],'STOP');self.assertEqual(receipt['error'],'pressure')
+            self.assertEqual(receipt['exit_code'],-15);self.assertTrue(receipt['child_reaped'])
+            self.assertEqual(receipt['sample_count'],1)
+            self.assertEqual(receipt['minimum_effective_available'],1<<39)
+            self.assertEqual(receipt['sampled_peak_vram'],[100,200])
+            self.assertEqual(receipt['sampled_peak_growth'],[100,200])
+            self.assertEqual(receipt['minimum_vram_free'],[(8<<30)-100,(8<<30)-200])
+            self.assertEqual(receipt['peak_process'],dict(VmRSS=1000,VmHWM=2000,VmSwap=30))
+            self.assertEqual(receipt['peak_swap_used'],20)
+            self.assertEqual(receipt['maximum_swap_out_pages_delta'],1)
+            self.assertEqual(receipt['baseline_host']['pswpout'],2)
+            self.assertEqual(receipt['last_host']['pswpout'],3)
 
 if __name__=='__main__':unittest.main()

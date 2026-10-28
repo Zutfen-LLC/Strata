@@ -156,6 +156,15 @@ Retained stderr fields:
   pool counters include any reference evaluations.
 - Existing expert_work/device_memory and full dense placements remain.
 
+The wrapper summary.json also retains baseline/last host and per-die VRAM
+snapshots, sample count, minimum effective host/cgroup availability, sampled
+VRAM peaks/growth/minimum free, peak process RSS/HWM/swap, peak system swap use
+and maximum swap-out page delta. The failing sample is retained before guard
+checks. These compact extrema are bounded in size; no unbounded sample log is
+introduced. exit_code is the final wait/reap result even on failure, accompanied
+by child_reaped. This Python receipt correction requires the latest source
+export but does not require rebuilding the C++ binary at05601aba.
+
 Verify owned process cleanup and any clock restoration. Stop at this first
 physical checkpoint for independent review of rows, resources and actual hits.
 

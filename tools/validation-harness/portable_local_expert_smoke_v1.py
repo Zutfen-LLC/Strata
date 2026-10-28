@@ -70,16 +70,39 @@ def main():
     child = None
     try:
         baseline = S.host_memory(); work = S.model_working_set()
+        summary['baseline_host'] = baseline
+        summary['minimum_effective_available'] = baseline['effective_available']
         summary['host_admission'] = S.admit_host(baseline, work['working_set_bound_bytes'])
         initial = [S.vram(pci) for pci in S.PCI]
+        summary['baseline_vram'] = initial
+        summary['sampled_peak_vram'] = [v['used'] for v in initial]
+        summary['minimum_vram_free'] = [v['total']-v['used'] for v in initial]
+        summary['sample_count'] = 0
+        summary['peak_process'] = dict(VmRSS=0, VmHWM=0, VmSwap=0)
+        summary['peak_swap_used'] = baseline.get('SwapUsed', 0)
+        summary['maximum_swap_out_pages_delta'] = 0
         if any(v['total']-v['used'] < 7680 << 20 for v in initial): raise ValueError('per-die free admission')
         start = time.monotonic()
         with (args.out/'stdout.jsonl').open('x') as stdout, (args.out/'stderr.log').open('x') as stderr:
             child = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
             while True:
-                S.guard_host(S.host_memory(), baseline, S.rss(child.pid))
-                for die, pci in enumerate(S.PCI):
-                    if S.vram(pci)['used']-initial[die]['used'] > 7680 << 20: raise ValueError('per-die growth cap')
+                host, process = S.host_memory(), S.rss(child.pid)
+                sample = [S.vram(pci) for pci in S.PCI]
+                # Save the failing sample too; compact extrema stay bounded in size.
+                summary['sample_count'] += 1
+                summary['last_host'], summary['last_process'], summary['last_vram'] = host, process, sample
+                summary['minimum_effective_available'] = min(summary['minimum_effective_available'], host['effective_available'])
+                summary['peak_swap_used'] = max(summary['peak_swap_used'], host.get('SwapUsed', 0))
+                summary['maximum_swap_out_pages_delta'] = max(summary['maximum_swap_out_pages_delta'], host.get('pswpout', 0)-baseline.get('pswpout', 0))
+                for key in summary['peak_process']:
+                    summary['peak_process'][key] = max(summary['peak_process'][key], process.get(key, 0))
+                for die, value in enumerate(sample):
+                    summary['sampled_peak_vram'][die] = max(summary['sampled_peak_vram'][die], value['used'])
+                    summary['minimum_vram_free'][die] = min(summary['minimum_vram_free'][die], value['total']-value['used'])
+                summary['sampled_peak_growth'] = [summary['sampled_peak_vram'][i]-initial[i]['used'] for i in range(2)]
+                S.guard_host(host, baseline, process)
+                for die, value in enumerate(sample):
+                    if value['used']-initial[die]['used'] > 7680 << 20: raise ValueError('per-die growth cap')
                 if time.monotonic()-start > 300: raise TimeoutError('one-token case budget 300s; no retry')
                 if any((args.out/name).stat().st_size > 16 << 20 for name in ('stdout.jsonl','stderr.log')):
                     raise ValueError('output log cap')
@@ -106,11 +129,18 @@ def main():
         summary['error'] = str(error)
         raise
     finally:
-        if child is not None and child.poll() is None:
-            os.killpg(child.pid, signal.SIGTERM)
-            try: child.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGKILL); child.wait()
+        if child is not None:
+            if child.poll() is None:
+                try: os.killpg(child.pid, signal.SIGTERM)
+                except ProcessLookupError: pass
+                try: summary['exit_code'] = child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try: os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                    summary['exit_code'] = child.wait()
+            else:
+                summary['exit_code'] = child.wait()
+            summary['child_reaped'] = True
         Q.write(args.out/'summary.json', summary)
 
 

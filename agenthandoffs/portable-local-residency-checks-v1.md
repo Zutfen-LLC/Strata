@@ -60,3 +60,9 @@ Raw configure/build/test/help receipts and local build trees remain untracked in
 `validation/`. The complete-source recipe is
 [portable-local-residency-hermes-v1.md](portable-local-residency-hermes-v1.md).
 No merge, deployment, unrelated cleanup or fleet launch occurred here.
+
+Python-only receipt follow-up: smoke summaries now retain compact resource
+baselines/last snapshots, sampled VRAM/host/process/swap extrema and final reaped
+child exit_code on STOP as well as success. The focused pressure-failure test
+checks that the failing sample and -15 reaped result survive. All30 Python tests
+pass after the change. No C++ source changed or rebuild was required.
