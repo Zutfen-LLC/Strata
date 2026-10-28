@@ -1,6 +1,7 @@
 # One Q8 expert on Vulkan
 
-This is an offline measurement, not a worker or a model runner. It addresses
+This standalone project provides an offline measurement and an opt-in in-process
+executor experiment. It is not a listener or a model runner. It addresses
 [issue #23](https://github.com/Zutfen-LLC/Strata/issues/23). It has its own CMake entry
 point; no production build file, CUDA/HIP kernel, default or launch path changes.
 
@@ -173,3 +174,61 @@ The Vulkan-enabled diagnostic translation unit compiled against the pinned API
 with `-Wall -Wextra -Wpedantic`. Full Vulkan shader/backend compilation and this
 expert's GPU execution are **not run here**. CUDA/HIP builds are not required for
 these isolated diagnostic-only additions; their source/build paths are unchanged.
+
+
+## Opt-in in-process adapter
+
+`strata_vulkan_executor` is built only by this standalone CMake project. Call
+`create_vulkan_gpu_executor(device)` explicitly and use the existing
+`GpuExecutor::prepare -> infer_rows -> release` interface. No production target,
+worker negotiation, listener, scheduler, transport or default selects it.
+
+The adapter accepts one trusted, cache-verified plain Q8_0/Q8_0 expert at
+H2560/FF640. Requests require T=1, one active entry in a bounded K-entry frame,
+F32 activations and the prepared model/placement identity. The reply preserves
+session, sequence and the original entry index. Its row is unweighted; the
+routing weight is never applied. Changed plans, other shapes, multiple active
+entries, packed input and weighted `infer` are rejected. Calls must be serial.
+The caller opens/prepares/publishes the existing `GpuCache`; the adapter rereads
+and rehashes the assigned blob before initializing a backend.
+
+The shared graph retains the hybrid computation above. Runtime code contains no
+CPU reference weight projections, evidence dumps or model access. The explicit
+CPU substitution factory is compiled only with `STRATA_AMD_EXECUTOR_HOST_TEST`
+in this standalone test project; Vulkan errors never select it.
+
+The executor owns its backend and one tensor buffer, capped below 16 MiB, plus
+bounded graph metadata and host activation storage. `gpu_allocated_bytes` counts
+that tensor buffer; `gpu_weight_bytes` counts its 5,222,400 weight bytes and
+`gpu_scratch_bytes` is the remaining tensor allocation/alignment. These counters
+exclude ggml internal compute buffers, shader pipelines and driver allocations.
+`gpu_allocation_count` is the live owned tensor-buffer count for this adapter;
+release clears all four owned counters, retaining the historical peak. A nonzero
+runtime VRAM reserve is explicitly unsupported. Use the existing external
+process/VRAM guard; counters alone cannot establish total device memory use.
+
+Add `--native-q8-boundaries --executor-check` to the diagnostic. It prepares the
+same deterministic expert through the cache and adapter, submits the signal at
+entry index 2 with weight 0.125, and requires its 10,240 returned row bytes to
+match the direct hybrid diagnostic row on the same device/build. It then releases
+the adapter and checks zero owned counters. `ADAPTER_ACCEPTED` and
+`ADAPTER_COMPLETED` record that exact comparison; native CPU differences stay in
+`metrics.tsv` with no tolerance gate. `COMPLETED` is still required for the whole
+diagnostic. The raw/default invocation and prior artifacts remain unchanged.
+
+`amd_vulkan_adapter_host` runs this through an explicit CPU graph substitution.
+It checks before/after-release errors, missing cache, a valid unsupported-shape
+plan, reserve rejection, malformed/batched/unassigned requests, a valid changed
+plan, indexed unweighted output, repeated prepare and failed reprepare cleanup.
+It never initializes Vulkan. See [EXECUTOR_HANDOFF.md](EXECUTOR_HANDOFF.md) for the
+incremental Vulkan build and one-run acceptance request.
+
+Local validation for this slice: Linux x86-64, GCC 16.2.1, Release, pinned ggml
+source. Both host CTests passed. The substituted adapter returned index 2,
+10,240 byte-identical row bytes, a 5,250,560-byte owned tensor buffer and zero
+owned bytes/live allocations after release. All 34 raw and 42 hybrid evidence
+files matched the retained PR #25 CPU executable byte for byte. Both changed
+Vulkan-enabled translation units passed `-Wall -Wextra -Wpedantic` syntax checks
+against the pinned API. Full Vulkan compilation and GPU execution are not run
+here; host substitution is not AMD execution evidence. CUDA/HIP/SYCL code and
+production build files are untouched.

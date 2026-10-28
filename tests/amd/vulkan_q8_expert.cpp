@@ -1,5 +1,6 @@
 // One deterministic Q8_0 expert. Measurement, not a cross-backend tolerance gate.
-#include "strata/kernels/cpu/native_expert.hpp"
+#include "../../src/worker/vulkan_expert_graph.hpp"
+#include "strata/worker/vulkan_executor.hpp"
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
@@ -23,13 +24,8 @@
 #include <vector>
 
 namespace {
-namespace cpu = strata::kernels::cpu;
-constexpr int H = 2560, F = 640;
+using namespace strata::worker::vulkan_detail;
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559, "requires IEEE binary32");
-void require(bool ok, const std::string& why) { if (!ok) throw std::runtime_error(why); }
-using Backend = std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)>;
-using Context = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
-using Buffer = std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)>;
 uint64_t digest(const void* data, size_t bytes) {
     auto p = static_cast<const uint8_t*>(data);
     uint64_t v = 14695981039346656037ull;
@@ -41,20 +37,6 @@ void save(const std::filesystem::path& path, const void* data, size_t bytes) {
     require(bool(file), "cannot create " + path.string());
     file.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
     file.close(); require(bool(file), "cannot finish " + path.string());
-}
-void finite(const std::vector<float>& v) {
-    for (float x : v) require(std::isfinite(x), "nonfinite expert value");
-}
-struct Rows { std::vector<float> gate, up, hidden, out; };
-float host_swiglu(float gate, float up) { return (gate/(1.f+std::exp(-gate)))*up; }
-struct Boundaries {
-    std::vector<uint8_t> input_q, hidden_q;
-    std::vector<float> input_f, down_f;
-};
-void validate(const Rows& r) {
-    require(r.gate.size() == F && r.up.size() == F && r.hidden.size() == F && r.out.size() == H,
-            "expert result shape mismatch");
-    finite(r.gate); finite(r.up); finite(r.hidden); finite(r.out);
 }
 bool same(const std::vector<float>& a, const std::vector<float>& b) {
     return a.size() == b.size() && !std::memcmp(a.data(), b.data(), a.size()*sizeof(float));
@@ -109,78 +91,7 @@ Rows native_reference(const cpu::NativeFmt& fmt, const std::vector<uint8_t>& blo
     validate(r); return r;
 }
 
-class ExpertGraph {
-    Context ctx_{nullptr,ggml_free};
-    Buffer buf_{nullptr,ggml_backend_buffer_free};
-    ggml_cgraph *graph_ = nullptr, *down_graph_ = nullptr;
-    ggml_tensor *x_ = nullptr, *g_ = nullptr, *u_ = nullptr, *hidden_ = nullptr, *out_ = nullptr;
-    ggml_backend_t backend_;
-    cpu::NativeFmt fmt_;
-    bool native_boundaries_;
-    Boundaries boundaries_;
-    std::vector<float> read(ggml_tensor* t) {
-        std::vector<float> v(static_cast<size_t>(ggml_nelements(t)));
-        ggml_backend_tensor_get(t,v.data(),0,v.size()*sizeof(float)); return v;
-    }
-public:
-    ExpertGraph(ggml_backend_t backend, const cpu::NativeFmt& fmt, const std::vector<uint8_t>& blob,
-                bool native_boundaries = false):backend_(backend),fmt_(fmt),native_boundaries_(native_boundaries) {
-        ggml_init_params p{2u<<20,nullptr,true};
-        ctx_.reset(ggml_init(p)); require(bool(ctx_), "ggml metadata allocation failed");
-        auto* gate = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,H,F);
-        auto* up = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,H,F);
-        auto* down = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,F,H);
-        x_ = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_F32,H,1);
-        g_ = ggml_mul_mat(ctx_.get(),gate,x_); u_ = ggml_mul_mat(ctx_.get(),up,x_);
-        hidden_ = native_boundaries_ ? ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_F32,F,1) :
-                  ggml_mul(ctx_.get(),ggml_silu(ctx_.get(),g_),u_);
-        out_ = ggml_mul_mat(ctx_.get(),down,hidden_);
-        graph_ = ggml_new_graph(ctx_.get());
-        if (native_boundaries_) {
-            ggml_build_forward_expand(graph_,g_); ggml_build_forward_expand(graph_,u_);
-            down_graph_ = ggml_new_graph(ctx_.get()); ggml_build_forward_expand(down_graph_,out_);
-        } else ggml_build_forward_expand(graph_,out_);
-        // Direct backend execution only. Unsupported operations stop; no scheduler/CPU fallback.
-        for (auto* graph : {graph_,down_graph_}) if (graph)
-            for (int i = 0; i < ggml_graph_n_nodes(graph); ++i)
-                require(ggml_backend_supports_op(backend_,ggml_graph_node(graph,i)), "backend declines expert operation");
-        buf_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),backend_));
-        require(bool(buf_), "backend expert allocation failed");
-        require(ggml_backend_buffer_get_size(buf_.get()) < (16u<<20), "unexpected backend tensor allocation above 16 MiB");
-        ggml_backend_tensor_set(gate,blob.data(),0,fmt.up_off);
-        ggml_backend_tensor_set(up,blob.data()+fmt.up_off,0,fmt.up_off);
-        ggml_backend_tensor_set(down,blob.data()+fmt.down_off,0,fmt.bytes-fmt.down_off);
-    }
-    size_t buffer_bytes() const { return ggml_backend_buffer_get_size(buf_.get()); }
-    const Boundaries& boundaries() const { return boundaries_; }
-    Rows run(const std::vector<float>& x) {
-        if (native_boundaries_) {
-            boundaries_.input_q.resize(fmt_.act_bytes); boundaries_.input_f.resize(H);
-            cpu::native_quant_act(fmt_,x.data(),boundaries_.input_q.data());
-            ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float(boundaries_.input_q.data(),boundaries_.input_f.data(),H);
-            finite(boundaries_.input_f);
-            ggml_backend_tensor_set(x_,boundaries_.input_f.data(),0,H*sizeof(float));
-            require(ggml_backend_graph_compute(backend_,graph_) == GGML_STATUS_SUCCESS,"hybrid gate/up compute failed");
-            ggml_backend_synchronize(backend_);
-            Rows r{read(g_),read(u_),std::vector<float>(F),{}};
-            finite(r.gate); finite(r.up);
-            for (int i = 0; i < F; ++i) r.hidden[i] = host_swiglu(r.gate[i],r.up[i]);
-            finite(r.hidden);
-            boundaries_.hidden_q.resize(fmt_.h_bytes); boundaries_.down_f.resize(F);
-            cpu::native_quant_h(fmt_,r.hidden.data(),boundaries_.hidden_q.data());
-            ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float(boundaries_.hidden_q.data(),boundaries_.down_f.data(),F);
-            finite(boundaries_.down_f);
-            ggml_backend_tensor_set(hidden_,boundaries_.down_f.data(),0,F*sizeof(float));
-            require(ggml_backend_graph_compute(backend_,down_graph_) == GGML_STATUS_SUCCESS,"hybrid down compute failed");
-            ggml_backend_synchronize(backend_);
-            r.out = read(out_); validate(r); return r;
-        }
-        ggml_backend_tensor_set(x_,x.data(),0,x.size()*sizeof(float));
-        require(ggml_backend_graph_compute(backend_,graph_) == GGML_STATUS_SUCCESS,"backend expert compute failed");
-        ggml_backend_synchronize(backend_);
-        Rows r{read(g_),read(u_),read(hidden_),read(out_)}; validate(r); return r;
-    }
-};
+
 void metric(std::ofstream& file, const std::string& pair, const char* stage,
             const std::vector<float>& got, const std::vector<float>& ref) {
     require(got.size() == ref.size() && !got.empty(), "metric shape"); finite(got); finite(ref);
@@ -205,12 +116,14 @@ void save_rows(const std::filesystem::path& dir, const std::string& name, const 
     const std::array<std::pair<const char*,const std::vector<float>*>,4> parts = {{{"gate",&r.gate},{"up",&r.up},{"hidden",&r.hidden},{"out",&r.out}}};
     for (const auto& p : parts) save(dir/(name+"."+p.first+".f32"),p.second->data(),p.second->size()*4);
 }
+#include "vulkan_executor_check.hpp"
 int run(int argc, char** argv) {
     const uint16_t endian = 1;
     require(*reinterpret_cast<const uint8_t*>(&endian) == 1,"fixture requires little-endian Q8/F32 storage");
-    std::string backend,output; int device = -1; bool native_boundaries = false;
+    std::string backend,output; int device = -1; bool native_boundaries = false, check_executor = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+        if (arg == "--executor-check") { require(!check_executor,"duplicate executor check"); check_executor=true; continue; }
         if (arg == "--native-q8-boundaries") { require(!native_boundaries,"duplicate native-boundary control"); native_boundaries = true; continue; }
         require(i+1 < argc,"missing option value"); const std::string value = argv[++i];
         if (arg == "--backend") backend = value;
@@ -225,6 +138,7 @@ int run(int argc, char** argv) {
 #ifndef STRATA_AMD_PROBE_VULKAN
     require(backend == "cpu","Vulkan not compiled; no CPU fallback");
 #endif
+    require(!check_executor || native_boundaries,"executor check requires --native-q8-boundaries");
     require(std::filesystem::create_directory(output),"output directory already exists");
     cpu::NativeFmt fmt; std::string why;
     require(cpu::native_fmt(8,8,H,F,fmt,why),why);
@@ -269,6 +183,7 @@ int run(int argc, char** argv) {
                     boundaries.hidden_q == again.hidden_q && same(boundaries.input_f,again.input_f) &&
                     same(boundaries.down_f,again.down_f),"hybrid boundary bytes changed on repeat");
         }
+        if (check_executor && !zero) executor_check(backend,device,output,blob,x,selected_rows.out);
         if (zero) for (float v : selected_rows.out) require(v == 0,"zero expert produced nonzero output");
         else require(std::any_of(native.out.begin(),native.out.end(),[](float v){return v != 0;}),"degenerate signal fixture");
         compare(metrics,name+".cpu_graph_vs_native",cpu_rows,native);
