@@ -99,7 +99,7 @@ sha256sum "$BUILD/portable_model" > "$PAIR/binary-before.sha256"
   --timeout-seconds "$SECONDS_PER_ARM"
 sha256sum "$BUILD/portable_model" > "$PAIR/binary-after.sha256"
 cmp "$PAIR/binary-before.sha256" "$PAIR/binary-after.sha256"
-python3 - "$PAIR" <<'PY'
+python3 - "$PAIR" > "$PAIR/compare.json" <<'PY'
 import json, math, pathlib, sys
 pair = pathlib.Path(sys.argv[1])
 roots = [pair / 'oracle', pair / 'optimized']

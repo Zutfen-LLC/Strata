@@ -92,7 +92,7 @@ portable QSA code; there are no outstanding build/test failures. The v1
 missing-PLE manual link failure remains recorded in v1 and was not hidden.
 
 Not run: physical V340, real model, clean CUDA/HIP/SYCL builds or timing
-comparison. No fleet access, deployment, model modification or inference
+comparison. No fleet access, deployment, model modification or real-model inference
 launch occurred. The failed CUDA numerical screen remains failed. Local
 CTest duration is validation cost, not model-performance evidence.
 
