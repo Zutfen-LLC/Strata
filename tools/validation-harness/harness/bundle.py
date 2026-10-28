@@ -142,6 +142,20 @@ def validate(cfg, source):
     if cfg.get('capture_first_logits'):
         if type(cfg['capture_first_logits']) is not bool or 'STRATA_DUMP_FIRST_LOGITS' in cfg['env']:
             raise ValueError('first-logit capture uses unique arm paths; remove the global dump prefix')
+    if cfg.get('evaluation_mode', 'exact') not in ('exact', 'quality'):
+        raise ValueError('unknown evaluation_mode')
+    if cfg.get('evaluation_mode') == 'quality':
+        if not cfg.get('capture_first_logits') or 'STRATA_FIRST_REQUEST_TRACE' in cfg['env']:
+            raise ValueError('quality requires full generation and first-logit capture')
+        if cfg['argv'].count('--greedy') != 1:
+            raise ValueError('quality requires explicit greedy decoding')
+        if len(cfg['arms']) != 1 or cfg['arms'][0]['restart'] or cfg['arms'][0]['requests'] != list(range(12)):
+            raise ValueError('quality requires one warm ordered twelve-request arm')
+        if 'quality_manifest' not in cfg['assets']:
+            raise ValueError('quality requires frozen manifest asset')
+        frozen = json.loads(pathlib.Path(cfg['assets']['quality_manifest']).read_text())
+        if frozen['requests_sha256'] != sha(cfg['assets']['requests']):
+            raise ValueError('quality requests differ from frozen manifest')
     trace_path = cfg['env'].get('STRATA_FIRST_REQUEST_TRACE')
     if trace_path:
         if not cfg.get('capture_first_logits') or len(cfg['arms']) != 1 or \

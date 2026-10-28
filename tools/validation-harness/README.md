@@ -109,3 +109,8 @@ Keep the private config, pins, per-entry configs, owner exit/stop receipts, outp
 summary together. Do not commit private bindings, generated caches or raw campaign logs. Inspect the
 exact intended staged file list and diff before publication. See [regressions](REGRESSIONS.md) and
 [focused operator validation](HERMES.md). No desktop build, test or inference is authorized by this file.
+
+For the separate explicit `evaluation_mode: "quality"` answer screen, see
+[QUALITY.md](QUALITY.md). It freezes twelve short mechanically scored cases and
+retains exact/numeric mismatches as diagnostics. Exact mode remains the default.
+No hardware or model result is implied by this prospective run contract.

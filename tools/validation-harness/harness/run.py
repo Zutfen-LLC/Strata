@@ -119,6 +119,31 @@ def launch_worker(configuration, arm):
     masks(arm, phase='setup')
 
 
+def check_references(cfg, arm, summary, root):
+    # Quality is explicitly exploratory: retain exact failures as data, never rename a pass.
+    quality = cfg.get('evaluation_mode', 'exact') == 'quality'
+    diagnostics = []
+    if arm.get('reference'):
+        reference = json.loads(pathlib.Path(cfg['assets'][arm['reference']]).read_text())['requests']
+        expected = {row['index']: row for row in reference}
+        for row in summary['requests']:
+            prior = expected[row['index']]
+            same = row['tokens'] == prior['tokens'] and row['worker_entries'] == prior['worker_entries']
+            diagnostics.append({'index': row['index'], 'exact_tokens_and_entries_pass': same})
+            if not same and not quality:
+                raise RuntimeError('reference tokens/worker entries diverged')
+    if arm.get('first_logits_reference'):
+        actual = root / (arm['name'] + '-first-logits.0')
+        expected = pathlib.Path(cfg['assets'][arm['first_logits_reference']])
+        same = actual.read_bytes() == expected.read_bytes()
+        diagnostics.append({'exact_first_logits_pass': same})
+        if not same and not quality:
+            raise RuntimeError('reference first logits diverged')
+    if quality:
+        C.atom(root / (arm['name'] + '-exact-diagnostics.json'),
+               {'mode': 'exploratory-backend-quality', 'checks': diagnostics})
+
+
 def run(root):
     root = pathlib.Path(root).resolve()
     cfg = bundle.verify(root)  # complete preflight before import binding or any Popen
@@ -165,18 +190,7 @@ def run(root):
                 if arm['requests']:
                     for key in ('loaded_bytes','verified_bytes','arena_allocations','unloads','expirations'):
                         if status[key]!=before[name]['status'][key]:raise RuntimeError('warm peer storage changed: '+name)
-            if arm.get('reference'):
-                reference = json.loads(pathlib.Path(cfg['assets'][arm['reference']]).read_text())['requests']
-                expected = {row['index']: row for row in reference}
-                for row in summary['requests']:
-                    prior = expected[row['index']]
-                    if row['tokens'] != prior['tokens'] or row['worker_entries'] != prior['worker_entries']:
-                        raise RuntimeError('reference tokens/worker entries diverged')
-            if arm.get('first_logits_reference'):
-                actual = root / (arm['name'] + '-first-logits.0')
-                expected = pathlib.Path(cfg['assets'][arm['first_logits_reference']])
-                if actual.read_bytes() != expected.read_bytes():
-                    raise RuntimeError('reference first logits diverged')
+            check_references(cfg, arm, summary, root)
             results.append(summary)
         if cfg['final_worker'] == 'stop': C.stop_owned_worker()
         C.atom(root / 'summary.json', {'arms': results, 'final_worker': cfg['final_worker']})
