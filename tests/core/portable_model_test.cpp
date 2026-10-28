@@ -43,8 +43,11 @@ int main() {
                 check(baseline->step(token, logits, error), error);
                 reference.push_back(std::move(logits));
             }
+            check(baseline->expert_work().provider_ms == 0 && baseline->expert_work().provider_calls == 0,
+                  "default provider path has no new timing capture");
         }
         opts.expert_dispatch_oracle = false;
+        opts.expert_timings = true;
         auto session = PortableModelSession::open(fixture.paths, (fixture.root / "manifest").string(), opts, error);
         check(bool(session), error);
         check(session->position() == 0 && !session->poisoned() && !session->ended(), "fresh session");
@@ -77,8 +80,15 @@ int main() {
                   before_reset.pool_down_ms == after_reset.pool_down_ms &&
                   before_reset.pool_elapsed_ms == after_reset.pool_elapsed_ms,
                   "reset preserves pool accumulators without adding work");
+            check(before_reset.provider_ms == after_reset.provider_ms &&
+                  before_reset.provider_calls == after_reset.provider_calls,
+                  "reset preserves provider timing and call count");
             check(session->step(token, logits, error), error);
             const auto after_step = session->expert_work();
+            check(after_step.provider_calls == after_reset.provider_calls+48 &&
+                  std::isfinite(after_step.provider_ms) && after_step.provider_ms > after_reset.provider_ms &&
+                  after_step.provider_ms >= after_step.pool_elapsed_ms,
+                  "one enclosing provider capture per layer callback");
             check(after_step.pool_elapsed_ms > after_reset.pool_elapsed_ms &&
                   after_step.pool_gu_ms >= after_reset.pool_gu_ms &&
                   after_step.pool_quant_ms >= after_reset.pool_quant_ms &&

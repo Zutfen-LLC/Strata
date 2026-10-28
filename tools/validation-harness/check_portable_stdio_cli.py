@@ -21,6 +21,7 @@ with tempfile.TemporaryDirectory() as d:
     baseline=subprocess.run([binary,'--model',model,'--manifest',manifest,'--tokens','5,7','--max-new','2','--context','4'],
                                 capture_output=True,text=True,check=True,timeout=90)
     baseline_rows=[json.loads(line) for line in baseline.stdout.splitlines()]
+    command+=['--expert-timings']
     r=start('reuse')
     try:
         a=r.request([5,7],2,1)
@@ -38,6 +39,11 @@ with tempfile.TemporaryDirectory() as d:
             assert all(math.isfinite(value) and value>=0 for value in values)
             assert values[3]>0 and sum(values[:3])<=values[3]+1e-6
         assert all('cpu_pool_' not in line for line in baseline.stdout.splitlines())
+        for result in (a,b,again):
+            m=result['metrics']
+            assert m['expert_provider_calls_delta']==len(result['rows'])*48
+            assert math.isfinite(m['expert_provider_ms_delta']) and m['expert_provider_ms_delta']>=m['cpu_pool_elapsed_ms_delta']
+            assert m['gpu_infer_rows_ms_delta']==[] and m['gpu_infer_rows_calls_delta']==[]
         r.finish()
     finally: r.close()
     for mode in ('eof','quit','signal','malformed','mutation'):

@@ -79,9 +79,14 @@ class Resident:
                 if reason=='context' and len(rows)!=256: raise ValueError('unexpected context stop')
                 if any(rows[i]['token']!=rows[i-1]['greedy_next'] for i in range(len(tokens),len(rows))):
                     raise ValueError('non-greedy completion')
+                for key, count in (('gpu_infer_rows_ms_delta', False), ('gpu_infer_rows_calls_delta', True)):
+                    if key in row:
+                        if not isinstance(row[key], list) or any(not isinstance(v, (int,float)) or
+                                not math.isfinite(v) or v<0 or (count and type(v)!=int) for v in row[key]):
+                            raise ValueError('invalid GPU timing/call delta')
                 for key, value in row.items():
-                    if (key.endswith('_ms') or key.endswith('_ms_delta')) and (not math.isfinite(value) or value<0): raise ValueError('invalid timer')
-                    if key.endswith('_delta') and not key.endswith('_ms_delta') and key!='gpu_entries_per_device_delta' and (not isinstance(value,int) or value<0): raise ValueError('invalid delta')
+                    if (key.endswith('_ms') or key.endswith('_ms_delta')) and not isinstance(value,list) and (not math.isfinite(value) or value<0): raise ValueError('invalid timer')
+                    if key.endswith('_delta') and not key.endswith('_ms_delta') and key not in ('gpu_entries_per_device_delta','gpu_infer_rows_ms_delta','gpu_infer_rows_calls_delta') and (not isinstance(value,int) or value<0): raise ValueError('invalid delta')
                 return dict(rows=rows, stop=stop, metrics=row)
             if 'stop' in row:
                 if stop is not None: raise ValueError('duplicate stop')
@@ -130,6 +135,7 @@ def main():
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--tokens-file', type=Path, required=True, help='frozen JSON array of token IDs')
     p.add_argument('--max-new', type=int, required=True)
+    p.add_argument('--expert-timings', action='store_true', help='coarse provider and per-device executor call timing')
     p.add_argument('--plan', type=Path, action='append', required=True)
     S.device_arguments(p)
     args=p.parse_args()
@@ -186,6 +192,7 @@ def main():
                  '--expert-tensor-mib','2404,2404','--expert-workspace-mib','128,128',
                  '--expert-free-reserve-mib','512,512','--placements',str(args.out/'placements.tsv')]
         for i,plan in enumerate(args.plan): command+=['--expert-plan',f'{i}:{plan.resolve(strict=True)}']
+        if args.expert_timings: command += ['--expert-timings']
         receipt['plan_sha256']=[Q.bundle.sha(plan) for plan in args.plan]
         Q.write(args.out/'argv.json',command)
         runner=Resident(command,args.out,tick)
@@ -193,6 +200,13 @@ def main():
         results=[]
         for index in range(1,5):
             result=runner.request(tokens,args.max_new,index)
+            if args.expert_timings:
+                m=result['metrics']
+                if m['expert_provider_calls_delta']!=len(result['rows'])*48 or m['expert_provider_ms_delta']<=0:
+                    raise ValueError('provider timing/call capture incomplete')
+                if len(m['gpu_infer_rows_ms_delta'])!=2 or len(m['gpu_infer_rows_calls_delta'])!=2 or \
+                   min(m['gpu_infer_rows_ms_delta'])<=0 or min(m['gpu_infer_rows_calls_delta'])<=0:
+                    raise ValueError('GPU timing/call capture incomplete')
             results.append(result)
             Q.write(args.out/f'request-{index}.json',result)
             if index>1:

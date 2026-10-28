@@ -54,6 +54,7 @@ int main(){
         };
         opts.accelerators={reinterpret_cast<ggml_backend_t>(uintptr_t(1)),reinterpret_cast<ggml_backend_t>(uintptr_t(2))};
         PortableExpertDevice a,b;a.plan_path=plan("a",{{0,1},{0,3}});b.plan_path=plan("b",{{0,5}});b.accelerator=1;
+        opts.expert_timings=true;
         opts.expert_devices={a,b};State state;size_t free=7ull<<30;
         auto factory=[&](ggml_backend_t,size_t){return std::make_unique<Fake>(state);};
         auto memory=[&](ggml_backend_t){return std::make_pair(free,size_t(8ull<<30));};
@@ -72,10 +73,14 @@ int main(){
             check(state.prepares==2 && cpu.work().verifications==cold.verifications && cpu.work().hits==cold.hits+7,
                   "serial request reuse retains GPU plans and CPU verification");
             check(local.gpu_entries()==6 && local.cpu_entries()==14,"cumulative request entries persist");
+            for(const auto& d:local.report()) check(d.infer_rows_calls==2 && std::isfinite(d.infer_rows_ms) && d.infer_rows_ms>0,
+                  "one finite executor-call capture per participating device");
             auto bad=route;bad.ids.pop_back();check(!local.run(0,bad,rows,error)&&rows.empty(),"shape refusal");
             state.bad=true;check(!local.run(0,route,rows,error)&&rows.empty(),"duplicate reply slot refusal");state.bad=false;
             state.nonfinite=true;check(!local.run(0,route,rows,error)&&rows.empty(),"nonfinite reply refusal");state.nonfinite=false;
+            const auto calls_before_failure=local.report()[0].infer_rows_calls;
             state.fail=true;check(!local.run(0,route,rows,error)&&rows.empty(),"failure no CPU replay");state.fail=false;
+            check(local.report()[0].infer_rows_calls==calls_before_failure+1,"failed executor attempt captured once");
             free=1;check(!local.run(0,route,rows,error)&&rows.empty(),"runtime free guard");free=7ull<<30;
             check(local.run(0,route,rows,error),"provider reused after caller resets sequence state");
             const auto old=std::filesystem::last_write_time(f.paths[0]);
@@ -84,6 +89,14 @@ int main(){
             std::filesystem::last_write_time(f.paths[0],old);
         }
         check(state.releases==2,"both executors released");
+        opts.expert_timings=false;
+        {
+            portable_detail::LocalExperts untimed(model,cpu,opts,factory,memory);
+            check(untimed.run(0,route,rows,error),error);
+            for(const auto& d:untimed.report()) check(d.infer_rows_calls==0 && d.infer_rows_ms==0,
+                "default executor path has no new timing capture");
+        }
+        opts.expert_timings=true;
         auto rejected=[&](PortableModelOptions bad,const char* why){
             const int before=state.prepares;bool failed=false;
             try{portable_detail::LocalExperts local(model,cpu,bad,factory,memory);}catch(const std::exception&){failed=true;}

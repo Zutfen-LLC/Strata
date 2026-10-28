@@ -39,6 +39,8 @@ struct PortableExpertDeviceReport {
     uint64_t metadata_bound = 0, staging_peak = 0, free_before = 0, free_after = 0, peak_growth = 0;
     uint64_t requests = 0, entries = 0, row_checks = 0;
     double row_max_abs = 0, row_relative_l2 = 0;
+    double infer_rows_ms = 0; // optional host-call wall time, includes existing executor waits
+    uint64_t infer_rows_calls = 0;
 };
 struct PortableModelOptions {
     size_t context = 16; // bounded initial proof, at most 256 text positions
@@ -57,6 +59,7 @@ struct PortableModelOptions {
     bool expert_dispatch_oracle = false;
     size_t expert_staging_cap = 64ull << 20;
     bool expert_check_rows = false, expert_record_routes = false;
+    bool expert_timings = false; // opt-in coarse provider/executor host-call boundaries
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
 };
 struct PortableExpertWork {
@@ -66,6 +69,8 @@ struct PortableExpertWork {
     // Existing ExpertPool host-wall accumulators; phases include synchronization.
     // elapsed encloses the three native phases: never add it to their sum.
     double pool_gu_ms = 0, pool_quant_ms = 0, pool_down_ms = 0, pool_elapsed_ms = 0;
+    double provider_ms = 0; // encloses CPU pool and local GPU expert calls; never add overlapping times
+    uint64_t provider_calls = 0;
 };
 struct PortableModelReport {
     // Unique mapped shard file bytes; PLE may alias the same backing file.

@@ -82,6 +82,7 @@ int main(int argc, char **argv) {
         };
         for (int i = 1; i < argc; ++i) {
             const std::string key = argv[i];
+            if (key == "--expert-timings") { opts.expert_timings = true; continue; }
             if (key == "--stdio") { resident = true; continue; }
             if (key == "--list-vulkan") {
                 if (argc != 2) throw std::runtime_error("--list-vulkan must be used alone");
@@ -105,7 +106,7 @@ int main(int argc, char **argv) {
                              "portable_model --model ANY_SHARD --manifest SWLOCAL1 --tokens ID,ID,...\n"
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
-                             " [--expert-dispatch-oracle] [--allow-cpu-fallback]\n"
+                             " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
                              " [--dump-logits DIRECTORY] [--placements FILE] [--timings FILE]\n"
@@ -179,6 +180,7 @@ int main(int argc, char **argv) {
             else
                 throw std::runtime_error("unknown option: " + key);
         }
+        if (opts.expert_timings && !resident) throw std::runtime_error("--expert-timings requires --stdio");
         if (resident && (!token_text.empty() || max_new || !dump.empty() || !timings_path.empty()))
             throw std::runtime_error("--stdio takes requests on stdin; --tokens/--max-new/--dump-logits/--timings incompatible");
         if (max_requests < 1 || max_requests > 64) throw std::runtime_error("--max-requests must be in [1,64]");
@@ -306,7 +308,8 @@ int main(int argc, char **argv) {
         size_t request_id=0;
         strata::core::PortableExpertWork before;
         Clock::time_point request_start;
-        std::vector<uint64_t> device_entries_before;
+        std::vector<uint64_t> device_entries_before, device_calls_before;
+        std::vector<double> device_ms_before;
         if(resident) {
             sources->check();
             if(interrupted) throw std::runtime_error("resident interrupted during load");
@@ -327,6 +330,10 @@ int main(int argc, char **argv) {
             if(session->poisoned()) throw std::runtime_error("resident session poisoned");
             before=session->expert_work();
             device_entries_before.clear();
+            device_calls_before.clear(); device_ms_before.clear();
+            for(const auto& d:session->report().expert_devices) {
+                device_calls_before.push_back(d.infer_rows_calls); device_ms_before.push_back(d.infer_rows_ms);
+            }
             for(const auto& d:session->report().expert_devices) device_entries_before.push_back(d.entries);
             if(!session->reset(error)) throw std::runtime_error(error);
             tokens=std::move(request.tokens); max_new=request.max_new; ++request_id;
@@ -421,7 +428,19 @@ int main(int argc, char **argv) {
                 << ",\"gpu_entries_per_device_delta\":[";
             for(size_t i=0;i<device_entries_before.size();++i)
                 std::cout << (i ? "," : "") << session->report().expert_devices[i].entries-device_entries_before[i];
-            std::cout << "]}\n" << std::flush;
+            std::cout << "]";
+            if(opts.expert_timings) {
+                std::cout << ",\"expert_provider_ms_delta\":" << after.provider_ms-before.provider_ms
+                    << ",\"expert_provider_calls_delta\":" << after.provider_calls-before.provider_calls
+                    << ",\"gpu_infer_rows_ms_delta\":[";
+                for(size_t i=0;i<device_ms_before.size();++i)
+                    std::cout << (i ? "," : "") << session->report().expert_devices[i].infer_rows_ms-device_ms_before[i];
+                std::cout << "],\"gpu_infer_rows_calls_delta\":[";
+                for(size_t i=0;i<device_calls_before.size();++i)
+                    std::cout << (i ? "," : "") << session->report().expert_devices[i].infer_rows_calls-device_calls_before[i];
+                std::cout << "]";
+            }
+            std::cout << "}\n" << std::flush;
             if(!std::cout) throw std::runtime_error("request result write failed");
         }
         if (!timings_path.empty()) {

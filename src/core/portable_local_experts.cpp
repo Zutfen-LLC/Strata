@@ -1,4 +1,5 @@
 #include "portable_local_experts.hpp"
+#include "portable_expert_timer.hpp"
 #include <cmath>
 #include <set>
 namespace strata::core::portable_detail {
@@ -21,7 +22,7 @@ void LocalExperts::guard(size_t i) {
             "resident expert tensor/runtime growth budget exceeded");
 }
 LocalExperts::LocalExperts(const GgufModel& model,CpuExperts& cpu,const PortableModelOptions& opts,
-                           Factory factory,Memory memory):model_(model),cpu_(cpu),memory_(std::move(memory)),check_rows_(opts.expert_check_rows) {
+                           Factory factory,Memory memory):model_(model),cpu_(cpu),memory_(std::move(memory)),check_rows_(opts.expert_check_rows),timings_(opts.expert_timings) {
     for (size_t s=0;s<model.size();++s) times_.push_back(std::filesystem::last_write_time(model.shard(s).path()));
     std::set<std::pair<int,int>> owned;
     std::set<size_t> dies;
@@ -106,7 +107,10 @@ bool LocalExperts::run(int64_t layer,const PortableRoute& route,std::vector<floa
             if(!count) continue;
             guard(die);
             worker::EntryRowsReply reply;
-            require(d.executor->infer_rows(d.plan,req,reply,error),error);
+            {
+                ScopedExpertTimer<> timer(timings_, report.infer_rows_ms, report.infer_rows_calls);
+                require(d.executor->infer_rows(d.plan,req,reply,error),error);
+            }
             guard(die);
             require(reply.session==req.session && reply.sequence==sequence && reply.indices.size()==count &&
                     reply.rows.size()==count*H,"resident reply identity/shape mismatch");
