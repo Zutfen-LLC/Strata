@@ -44,7 +44,7 @@ from the actual free memory and leave measured headroom for the driver and
 other users. Each V340 die has its own 8 GiB; caps are never pooled. The CLI records
 Vulkan memory snapshots before model loading and after every token; placement
 TSV rows carry layer IDs. For the exact parent-dispatched real-model stages,
-use [the versioned Hermes recipe](../agenthandoffs/portable-model-hermes-v3.md),
+use [the versioned Hermes recipe](../agenthandoffs/portable-model-hermes-v4.md),
 which also samples aggregate VRAM for both PCI devices during the run.
 
 Repeated Vulkan indices are rejected before initialization. Session admission
@@ -70,7 +70,12 @@ not establish full-model quality.
 It validates split headers, tensor inventory, payload extents/non-overlap,
 active-layer shapes/types and metadata. Embedding, huge PLE tables and routed
 expert weights remain read-only mapped. Layer and head weights have owned
-host copies and scheduler backend copies.
+host copies and scheduler backend copies. The actual QSA indexer Q/K matrices
+are BF16 and are widened exactly into F32 storage with one 10 KiB row buffer;
+those projection nodes request F32 accumulation. No re-quantization or native
+BF16 shader support is required. Startup conversions are reported separately
+as `load / BF16_TO_F32_EXACT / CPU`; scheduled projection work remains strict
+Vulkan when requested.
 
 Every token gathers a new host Q8 embedding and broadcasts it into four HC
 streams. Previous-token HC residuals never become the next token's initial

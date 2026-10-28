@@ -73,7 +73,7 @@ struct SparseModel {
                                                                                 {"attn_output.weight", {6144, 2560}},
                                                                                 {"indexer.q_proj.weight", {2560, 512}},
                                                                                 {"indexer.k_proj.weight", {2560, 128}}})
-                    add(s, p + v.first, v.second, 8);
+                    add(s, p + v.first, v.second, v.first.rfind("indexer.", 0) == 0 ? 30 : 8);
                 add(s, p + "attn_q_norm.weight", {256}, 0);
                 add(s, p + "attn_k_norm.weight", {256}, 0);
                 add(s, p + "indexer.q_norm.weight", {128}, 0);

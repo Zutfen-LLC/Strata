@@ -19,8 +19,9 @@ struct PortableFfnGeometry {
     float epsilon = 1e-6f;
 };
 
-// GGUF layout: dimension zero varies fastest. Only F32 (0) and Q8_0 (8)
-// are accepted. Payloads are copied at construction; views need not outlive it.
+// GGUF layout: dimension zero varies fastest. FFN accepts F32 (0)/Q8_0 (8).
+// QSA additionally accepts BF16 (30) only for indexer Q/K projections and
+// widens them exactly to F32. Payloads are copied at construction.
 struct PortableTensorView {
     std::string name;
     std::vector<int64_t> shape;

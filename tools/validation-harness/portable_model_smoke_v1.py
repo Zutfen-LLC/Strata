@@ -139,9 +139,17 @@ def placements(path, devices, split):
     with path.open() as file:
         rows = list(csv.DictReader(file, delimiter="\t"))
     seen = set()
+    load_roles = set()
     tensor_counts = {str(device): 0 for device in devices}
     for row in rows:
         layer = int(row["layer"])
+        if row["phase"] == "load":
+            roles = {f"blk.{layer}.indexer.q_proj.weight", f"blk.{layer}.indexer.k_proj.weight"}
+            if (layer not in range(3, 48, 4) or row["op"] != "BF16_TO_F32_EXACT" or
+                    row["tensor"] not in roles or row["backend"] != "CPU" or row["fallback"]):
+                raise ValueError(f"unexpected host load conversion: {row}")
+            load_roles.add((layer, row["tensor"]))
+            continue
         if row["phase"] == "host":
             if row["op"] != "ROUTE_AND_MERGE" or row["backend"] != "CPU":
                 raise ValueError(f"unexpected host work: {row}")
@@ -158,6 +166,10 @@ def placements(path, devices, split):
         seen.add(layer)
     if seen != set(range(49)):
         raise ValueError(f"layers/head missing actual device assignments: {sorted(set(range(49)) - seen)}")
+    expected_loads = {(layer, f"blk.{layer}.indexer.{role}_proj.weight")
+                      for layer in range(3, 48, 4) for role in ("q", "k")}
+    if load_roles != expected_loads:
+        raise ValueError("actual BF16 indexer load conversions do not cover all24 artifact roles")
     for layer in range(48):
         layer_rows = [row for row in rows if int(row["layer"]) == layer]
         if layer % 4 == 3:
@@ -256,6 +268,7 @@ def main():
         if status:
             raise RuntimeError(f"portable_model exited {status}; preserve stderr and do not retry")
         summary["tensor_operations_by_device"] = placements(evidence / "placements.tsv", devices, args.split)
+        summary["host_bf16_load_conversions"] = 24
         records = [json.loads(line) for line in (evidence / "stdout.jsonl").read_text().splitlines()]
         tokens = [row for row in records if "token" in row]
         if [row["position"] for row in tokens] != list(range(len(tokens))):

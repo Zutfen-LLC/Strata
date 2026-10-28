@@ -25,6 +25,11 @@ class PlacementAdmission(unittest.TestCase):
                 operations = [("qsa-attend", "MUL_MAT")]
             else:
                 operations = [("gdn-attention", "GATED_DELTA_NET"), ("gdn-attention", "SSM_CONV")]
+            if layer < 48 and layer % 4 == 3:
+                for role in ("q", "k"):
+                    result.append(dict(layer=str(layer), phase="load", op="BF16_TO_F32_EXACT",
+                                       tensor=f"blk.{layer}.indexer.{role}_proj.weight", type="BF16->F32",
+                                       backend="CPU", metadata="0", fallback=""))
             for phase, operation in operations:
                 result.append(dict(layer=str(layer), phase=phase, op=operation, tensor="fixture",
                                    type="F32", backend=backend, metadata="0", fallback=""))
@@ -59,8 +64,27 @@ class PlacementAdmission(unittest.TestCase):
 
     def test_qsa_projection_without_attention_is_rejected(self):
         rows = self.rows()
-        next(row for row in rows if row["layer"] == "3")["phase"] = "qsa-project"
+        next(row for row in rows if row["layer"] == "3" and row["phase"] == "qsa-attend")["phase"] = "qsa-project"
         with self.assertRaisesRegex(ValueError, "no executed QSA attention"):
+            self.admit(rows)
+
+
+    def test_load_conversion_must_be_explicit_and_role_specific(self):
+        rows = self.rows()
+        next(row for row in rows if row["phase"] == "load")["op"] = "MUL_MAT"
+        with self.assertRaisesRegex(ValueError, "unexpected host load conversion"):
+            self.admit(rows)
+
+    def test_cpu_tensor_work_is_not_a_load_conversion(self):
+        rows = self.rows()
+        next(row for row in rows if row["phase"] == "qsa-attend")["backend"] = "CPU"
+        with self.assertRaisesRegex(ValueError, "backend/fallback"):
+            self.admit(rows)
+
+    def test_all_real_bf16_roles_must_be_reported(self):
+        rows = self.rows()
+        rows.remove(next(row for row in rows if row["phase"] == "load"))
+        with self.assertRaisesRegex(ValueError, "all24 artifact roles"):
             self.admit(rows)
 
 

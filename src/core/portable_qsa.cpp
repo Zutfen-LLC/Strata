@@ -3,6 +3,7 @@
 #include "ggml-cpu.h"
 #include "portable_graph.hpp"
 #include "portable_qsa_graph.hpp"
+#include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include <algorithm>
 #include <array>
@@ -111,15 +112,13 @@ struct PortableQsaLayer::Impl {
     std::vector<uint16_t> keys, values;
     std::vector<float> pooled, tail, last;
     std::vector<PortablePlacement> fixed_placement, placement;
-    size_t weights_size = 0, fixed_graphs = 0, graphs_size = 0, states_size = 0;
+    size_t weights_size = 0, fixed_graphs = 0, graphs_size = 0, states_size = 0, conversion_scratch = 0;
     uint64_t count = 0;
 
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableQsaOptions opts) : options(opts) {
-        require(layer >= 0 && layer < 48 && layer % 4 == 3,
-                "portable QSA: expected a QSA layer 3/7/.../47");
+        require(layer >= 0 && layer < 48 && layer % 4 == 3, "portable QSA: expected a QSA layer 3/7/.../47");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
-        require(options.capacity > 0 && options.capacity <= 262144,
-                "portable QSA: capacity must be in [1,262144]");
+        require(options.capacity > 0 && options.capacity <= 262144, "portable QSA: capacity must be in [1,262144]");
         // Capacity bound also keeps float prefix counts exact. Price committed
         // and active candidate FP16 caches, pooled state, F32 traces, readbacks,
         // residual/FFN staging and fixed metadata. Scheduler storage is separate.
@@ -132,8 +131,7 @@ struct PortableQsaLayer::Impl {
             require(t.name.rfind(prefix, 0) == 0, "portable QSA: tensor belongs to another layer");
             (shapes().count(t.name.substr(prefix.size())) ? aw : fw).push_back(t);
         }
-        require(aw.size() == shapes().size() && fw.size() == 9,
-                "portable QSA: missing/extra attention or FFN tensors");
+        require(aw.size() == shapes().size() && fw.size() == 9, "portable QSA: missing/extra attention or FFN tensors");
         std::string error;
         ffn = PortableFfn::create({H, HC, R, 640, 512, 10, 1e-6f}, layer, fw, options.execution, error);
         require(bool(ffn), error);
@@ -160,15 +158,24 @@ struct PortableQsaLayer::Impl {
         for (const auto &view : aw) {
             const auto key = view.name.substr(prefix.size());
             const auto &shape = shapes().at(key);
-            require(!w.count(key) && view.shape == shape,
-                    "portable QSA: bad/duplicate tensor shape: " + view.name);
-            require(view.data && view.type == (shape.size() == 2 ? 8u : 0u),
-                    "portable QSA: expected fleet Q8_0/F32 encoding: " + view.name);
-            auto *t = ggml_new_tensor(weights_ctx.get(), ggml_type(view.type), int(shape.size()), shape.data());
+            require(!w.count(key) && view.shape == shape, "portable QSA: bad/duplicate tensor shape: " + view.name);
+            const bool indexer = key == "indexer.q_proj.weight" || key == "indexer.k_proj.weight";
+            const bool widen = indexer && view.type == 30;
+            // Real fleet indexer projections are BF16; legacy Q8 fixtures and
+            // exact F32 references remain supported for these two roles only.
+            require(view.data && (view.type == (shape.size() == 2 ? 8u : 0u) || widen || (indexer && view.type == 0)),
+                    "portable QSA: unsupported encoding for role: " + view.name);
+            const size_t rows = shape.size() == 2 ? size_t(shape[1]) : 1;
+            const size_t source_bytes = ggml_row_size(ggml_type(view.type), shape[0]) * rows;
+            auto *t = ggml_new_tensor(weights_ctx.get(), widen ? GGML_TYPE_F32 : ggml_type(view.type),
+                                      int(shape.size()), shape.data());
             ggml_set_name(t, view.name.c_str());
-            require(view.bytes == ggml_nbytes(t) && view.bytes <= options.execution.weight_budget - weights_size,
+            const size_t storage_bytes = ggml_nbytes(t);
+            require(view.bytes == source_bytes && storage_bytes <= options.execution.weight_budget - weights_size,
                     "portable QSA: weight size/budget mismatch");
-            weights_size += view.bytes;
+            weights_size += storage_bytes;
+            if (widen)
+                conversion_scratch = std::max(conversion_scratch, size_t(shape[0]) * sizeof(float));
             w[key] = t;
         }
         const size_t allocation = ggml_backend_alloc_ctx_tensors_from_buft_size(
@@ -178,8 +185,22 @@ struct PortableQsaLayer::Impl {
         weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), cpu.get()));
         require(bool(weights_buffer), "portable QSA: weight allocation failed");
         ggml_backend_buffer_set_usage(weights_buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-        for (const auto &view : aw)
-            ggml_backend_tensor_set(w.at(view.name.substr(prefix.size())), view.data, 0, view.bytes);
+        for (const auto &view : aw) {
+            auto *target = w.at(view.name.substr(prefix.size()));
+            if (view.type != 30) {
+                ggml_backend_tensor_set(target, view.data, 0, view.bytes);
+                continue;
+            }
+            // Reuse the existing exact BF16 decoder. One row of staging is
+            // bounded; the sole persistent copy is the admitted F32 CPU buffer.
+            std::vector<float> row(size_t(view.shape[0]));
+            const auto *source = static_cast<const uint8_t *>(view.data);
+            for (size_t r = 0; r < size_t(view.shape[1]); ++r) {
+                dequantize_bf16(source + r * row.size() * 2, row.data(), int(row.size()));
+                ggml_backend_tensor_set(target, row.data(), r * row.size() * sizeof(float), row.size() * sizeof(float));
+            }
+            fixed_placement.push_back({"load", "BF16_TO_F32_EXACT", view.name, "BF16->F32", "CPU", "", view.shape});
+        }
         weights_size = ffn->weight_bytes() + ggml_backend_buffer_get_size(weights_buffer.get());
         project = std::make_unique<Phase>();
         auto *c = project->ctx.get();
@@ -197,15 +218,21 @@ struct PortableQsaLayer::Impl {
         inject = ggml_mul_mat(c, w.at("hc_attn_inject.weight"), norm);
         auto *full = ggml_mul_mat(c, w.at("attn_q.weight"), mixed);
         q = ggml_cont(c, ggml_view_3d(c, full, D, QH, 1, 2 * D * sizeof(float), 2 * D * QH * sizeof(float), 0));
-        gate = ggml_cont(c, ggml_view_3d(c, full, D, QH, 1, 2 * D * sizeof(float), 2 * D * QH * sizeof(float),
-                                         D * sizeof(float)));
+        gate = ggml_cont(
+            c, ggml_view_3d(c, full, D, QH, 1, 2 * D * sizeof(float), 2 * D * QH * sizeof(float), D * sizeof(float)));
         q = rope(c, ggml_mul(c, ggml_rms_norm(c, q, 1e-6f), w.at("attn_q_norm.weight")), pos);
         k = ggml_reshape_3d(c, ggml_mul_mat(c, w.at("attn_k.weight"), mixed), D, KH, 1);
         k = rope(c, ggml_mul(c, ggml_rms_norm(c, k, 1e-6f), w.at("attn_k_norm.weight")), pos);
         v = ggml_mul_mat(c, w.at("attn_v.weight"), mixed);
-        iq = ggml_reshape_3d(c, ggml_mul_mat(c, w.at("indexer.q_proj.weight"), mixed), ID, IH, 1);
-        iq = rope(c, ggml_mul(c, ggml_rms_norm(c, iq, 1e-6f), w.at("indexer.q_norm.weight")), pos);
+        auto *index_query = ggml_mul_mat(c, w.at("indexer.q_proj.weight"), mixed);
         ik = ggml_mul_mat(c, w.at("indexer.k_proj.weight"), mixed);
+        // F32 storage must not select a lower-precision accumulation path.
+        if (w.at("indexer.q_proj.weight")->type == GGML_TYPE_F32)
+            ggml_mul_mat_set_prec(index_query, GGML_PREC_F32);
+        if (w.at("indexer.k_proj.weight")->type == GGML_TYPE_F32)
+            ggml_mul_mat_set_prec(ik, GGML_PREC_F32);
+        iq = ggml_reshape_3d(c, index_query, ID, IH, 1);
+        iq = rope(c, ggml_mul(c, ggml_rms_norm(c, iq, 1e-6f), w.at("indexer.q_norm.weight")), pos);
         for (auto pair : {std::pair<ggml_tensor *, const char *>{q, "qsa-query"},
                           {k, "qsa-key"},
                           {v, "qsa-value"},
@@ -218,8 +245,7 @@ struct PortableQsaLayer::Impl {
         pool = std::make_unique<Phase>();
         c = pool->ctx.get();
         pool_input = pool->input({ID, 4, 1});
-        auto *mean =
-            ggml_cont(c, ggml_view_3d(c, pool_input, ID, 1, 1, ID * sizeof(float), 4 * ID * sizeof(float), 0));
+        auto *mean = ggml_cont(c, ggml_view_3d(c, pool_input, ID, 1, 1, ID * sizeof(float), 4 * ID * sizeof(float), 0));
         for (int b = 1; b < 4; ++b)
             mean = ggml_add(c, mean,
                             ggml_view_3d(c, pool_input, ID, 1, 1, ID * sizeof(float), 4 * ID * sizeof(float),
@@ -255,8 +281,7 @@ struct PortableQsaLayer::Impl {
 };
 PortableQsaLayer::PortableQsaLayer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 PortableQsaLayer::~PortableQsaLayer() = default;
-std::unique_ptr<PortableQsaLayer> PortableQsaLayer::create(int64_t layer,
-                                                           const std::vector<PortableTensorView> &views,
+std::unique_ptr<PortableQsaLayer> PortableQsaLayer::create(int64_t layer, const std::vector<PortableTensorView> &views,
                                                            PortableQsaOptions opts, std::string &error) {
     error.clear();
     try {
@@ -270,8 +295,7 @@ std::unique_ptr<PortableQsaLayer> PortableQsaLayer::from_gguf(const GgufModel &m
                                                               PortableQsaOptions opts, std::string &error) {
     error.clear();
     try {
-        require(layer >= 0 && layer < 48 && layer % 4 == 3,
-                "portable QSA: expected a QSA layer 3/7/.../47");
+        require(layer >= 0 && layer < 48 && layer % 4 == 3, "portable QSA: expected a QSA layer 3/7/.../47");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
         const auto &meta = model.meta();
         const auto *arch = meta.get("general.architecture");
@@ -315,8 +339,7 @@ std::unique_ptr<PortableQsaLayer> PortableQsaLayer::from_gguf(const GgufModel &m
         number("rope.scaling.attn_factor", 1.0f, false);
         number("attention.scale", 1.0f / 16.0f, false);
         const auto *scaling = meta.get("qwen4exp.rope.scaling.type");
-        require(!scaling ||
-                    (scaling->type == MetaType::STRING && (scaling->s == "none" || scaling->s == "linear")),
+        require(!scaling || (scaling->type == MetaType::STRING && (scaling->s == "none" || scaling->s == "linear")),
                 "portable QSA: RoPE scaling unsupported");
         // Reject unhandled extension fields rather than silently running default
         // RoPE.
@@ -370,9 +393,8 @@ std::unique_ptr<PortableQsaLayer> PortableQsaLayer::from_gguf(const GgufModel &m
         return nullptr;
     }
 }
-bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residual,
-                            const PortableExpertRows &dispatch, PortableRoute &route, std::string &error,
-                            PortableQsaTrace *trace) {
+bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residual, const PortableExpertRows &dispatch,
+                            PortableRoute &route, std::string &error, PortableQsaTrace *trace) {
     error.clear();
     route = {};
     if (trace)
@@ -434,8 +456,7 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
         Phase attention;
         auto *c = attention.ctx.get();
         const int64_t cells = int64_t(n), blocks = int64_t(complete + 1);
-        auto *ki = attention.input({D, KH, cells}, GGML_TYPE_F16),
-             *vi = attention.input({D, KH, cells}, GGML_TYPE_F16);
+        auto *ki = attention.input({D, KH, cells}, GGML_TYPE_F16), *vi = attention.input({D, KH, cells}, GGML_TYPE_F16);
         auto *qi = attention.input({D, 12, KH}), *idxq = attention.input({ID, IH});
         auto *pk = attention.input({ID, blocks});
         auto *mapping = attention.input({cells}, GGML_TYPE_I32), *bias = attention.input({cells});
@@ -541,15 +562,18 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
     for (auto *phase : {s.project.get(), s.pool.get(), s.combine.get()}) {
         m.host_graph += ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.cpu.get());
         if (s.options.execution.accelerator && s.options.execution.request_accelerator)
-            m.device_graph += ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.options.execution.accelerator);
+            m.device_graph +=
+                ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.options.execution.accelerator);
     }
     // Attention has a fresh temporary scheduler per token. Reserve the unspent
     // aggregate layer graph cap on each backend, including workspaces; fixed
     // scheduler buffers above are actual per-backend allocations.
     const size_t buffers = m.host_graph + m.device_graph;
-    const size_t allowance = s.options.execution.graph_budget > buffers ? s.options.execution.graph_budget - buffers : 0;
-    m.host_extra_bound += state_bytes() + (16u << 20) + allowance;
-    if (s.options.execution.request_accelerator) m.device_extra_bound += allowance;
+    const size_t allowance =
+        s.options.execution.graph_budget > buffers ? s.options.execution.graph_budget - buffers : 0;
+    m.host_extra_bound += state_bytes() + (16u << 20) + allowance + s.conversion_scratch;
+    if (s.options.execution.request_accelerator)
+        m.device_extra_bound += allowance;
     return m;
 }
 } // namespace strata::core
