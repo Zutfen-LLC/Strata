@@ -23,6 +23,7 @@ int main() {
         auto fallback = PortableGdnLayer::create(0, f.views, fallback_options, error);
         check(bool(fallback) && fallback->memory_usage().device_weights == 0,
               "missing requested backend preserves permitted CPU fallback");
+        trial_options.execution.resident_dense_weights = true;
         // A borrowed CPU backend exercises the selected-backend allocation branch
         // without initializing GPU hardware; physical Vulkan tests are separate.
         std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> selected(ggml_backend_cpu_init(), ggml_backend_free);

@@ -62,6 +62,7 @@ struct PortableModelOptions {
     bool expert_timings = false; // opt-in coarse provider/executor host-call boundaries
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
     bool gdn_resident_weights = false; // opt-in GDN attention only
+    bool dense_resident_weights = false; // opt-in attention, FFN and head weights
 };
 struct PortableExpertWork {
     uint64_t hits = 0, verifications = 0, copied_bytes = 0, digest_bytes = 0;

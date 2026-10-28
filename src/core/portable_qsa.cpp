@@ -114,6 +114,7 @@ struct PortableQsaLayer::Impl {
     std::vector<uint16_t> keys, values;
     std::vector<float> pooled, tail, last;
     std::vector<PortablePlacement> fixed_placement, placement;
+    size_t attention_device_weights = 0;
     size_t weights_size = 0, fixed_graphs = 0, graphs_size = 0, states_size = 0, conversion_scratch = 0;
     uint64_t count = 0;
 
@@ -180,11 +181,12 @@ struct PortableQsaLayer::Impl {
                 conversion_scratch = std::max(conversion_scratch, size_t(shape[0]) * sizeof(float));
             w[key] = t;
         }
+        auto *weight_backend = portable_detail::weight_backend(options.execution, cpu.get());
         const size_t allocation = ggml_backend_alloc_ctx_tensors_from_buft_size(
-            weights_ctx.get(), ggml_backend_get_default_buffer_type(cpu.get()));
+            weights_ctx.get(), ggml_backend_get_default_buffer_type(weight_backend));
         require(allocation <= options.execution.weight_budget - ffn->weight_bytes(),
                 "portable QSA: aligned weight budget exceeded");
-        weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), cpu.get()));
+        weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), weight_backend));
         require(bool(weights_buffer), "portable QSA: weight allocation failed");
         ggml_backend_buffer_set_usage(weights_buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
         for (const auto &view : aw) {
@@ -194,7 +196,7 @@ struct PortableQsaLayer::Impl {
                 continue;
             }
             // Reuse the existing exact BF16 decoder. One row of staging is
-            // bounded; the sole persistent copy is the admitted F32 CPU buffer.
+            // bounded; the sole persistent copy is the admitted F32 backend buffer.
             std::vector<float> row(size_t(view.shape[0]));
             const auto *source = static_cast<const uint8_t *>(view.data);
             for (size_t r = 0; r < size_t(view.shape[1]); ++r) {
@@ -203,7 +205,11 @@ struct PortableQsaLayer::Impl {
             }
             fixed_placement.push_back({"load", "BF16_TO_F32_EXACT", view.name, "BF16->F32", "CPU", "", view.shape});
         }
-        weights_size = ffn->weight_bytes() + ggml_backend_buffer_get_size(weights_buffer.get());
+        const size_t actual_weights = ggml_backend_buffer_get_size(weights_buffer.get());
+        require(actual_weights <= options.execution.weight_budget - ffn->weight_bytes(),
+                "portable QSA: actual aligned weight budget exceeded");
+        attention_device_weights = weight_backend != cpu.get() ? actual_weights : 0;
+        weights_size = ffn->weight_bytes() + actual_weights;
         project = std::make_unique<Phase>();
         auto *c = project->ctx.get();
         input = project->input({H, HC, 1});
@@ -560,7 +566,8 @@ size_t PortableQsaLayer::state_bytes() const { return impl_->states_size; }
 PortableMemoryUsage PortableQsaLayer::memory_usage() const {
     const auto &s = *impl_;
     auto m = s.ffn->memory_usage();
-    m.host_weights = s.weights_size;
+    m.device_weights += s.attention_device_weights;
+    m.host_weights = s.weights_size - m.device_weights;
     for (auto *phase : {s.project.get(), s.pool.get(), s.combine.get()}) {
         m.host_graph += ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.cpu.get());
         if (s.options.execution.accelerator && s.options.execution.request_accelerator)

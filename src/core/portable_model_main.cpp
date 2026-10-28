@@ -106,7 +106,7 @@ int main(int argc, char **argv) {
                              "portable_model --model ANY_SHARD --manifest SWLOCAL1 --tokens ID,ID,...\n"
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
-                             " [--gdn-resident-weights (trial, default off)]\n"
+                             " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
@@ -123,6 +123,10 @@ int main(int argc, char **argv) {
             }
             if (key == "--expert-dispatch-oracle") {
                 opts.expert_dispatch_oracle = true;
+                continue;
+            }
+            if (key == "--dense-resident-weights") {
+                opts.dense_resident_weights = true;
                 continue;
             }
             if (key == "--gdn-resident-weights") {

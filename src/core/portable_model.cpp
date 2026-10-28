@@ -185,6 +185,7 @@ struct PortableModelSession::Impl {
             PortableFfnOptions o;
             o.threads = opts.threads;
             o.allow_cpu_fallback = opts.allow_cpu_fallback;
+            o.resident_dense_weights = opts.dense_resident_weights;
             o.weight_budget = output ? opts.head_weight_cap : opts.layer_weight_cap;
             o.graph_budget = output ? opts.head_graph_cap : opts.layer_graph_cap;
             if (!opts.accelerators.empty()) {
@@ -200,7 +201,8 @@ struct PortableModelSession::Impl {
             // workspaces are admitted separately from those scheduler buffers.
             const size_t private_workspace = l % 4 == 3 ? (24u << 20) : (136u << 20);
             require(opts.layer_graph_cap <= SIZE_MAX - private_workspace, "portable model: graph cap overflow");
-            const bool resident = opts.gdn_resident_weights && l % 4 != 3 && !opts.accelerators.empty();
+            const bool resident = !opts.accelerators.empty() &&
+                                  (opts.dense_resident_weights || (opts.gdn_resident_weights && l % 4 != 3));
             const size_t resident_bound = resident ? opts.layer_weight_cap : 0;
             require(resident_bound <= SIZE_MAX - opts.layer_graph_cap - private_workspace,
                     "portable model: resident weight preflight overflow");
@@ -230,7 +232,11 @@ struct PortableModelSession::Impl {
             hw.push_back(view(model, name));
         require(hw[1].type == 8 && hw[2].type == 8 && hw[3].type == 8,
                 "portable model: fleet output HC/head must be Q8_0");
-        preflight(device(L - 1), opts.head_weight_cap, opts.head_graph_cap, 64u << 20);
+        const size_t head_resident_bound = opts.dense_resident_weights && !opts.accelerators.empty()
+                                               ? opts.head_weight_cap : 0;
+        require(head_resident_bound <= SIZE_MAX - opts.head_graph_cap,
+                "portable model: resident head preflight overflow");
+        preflight(device(L - 1), opts.head_weight_cap, opts.head_graph_cap + head_resident_bound, 64u << 20);
         head = PortableHead::create({H, HC, 320, int64_t(vocabulary), 1e-6f}, hw, execution(L - 1, true), error);
         require(bool(head), error);
         account(head->memory_usage(), device(L - 1));

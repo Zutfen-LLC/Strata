@@ -134,7 +134,8 @@ struct PortableGdnLayer::Impl {
             weights_size += view.bytes;
             w[key] = t;
         }
-        const bool resident = options.resident_attention_weights && options.execution.request_accelerator &&
+        const bool resident = (options.resident_attention_weights || options.execution.resident_dense_weights) &&
+                              options.execution.request_accelerator &&
                               options.execution.accelerator;
         auto *weight_backend = resident ? options.execution.accelerator : cpu.get();
         const size_t allocation = ggml_backend_alloc_ctx_tensors_from_buft_size(
@@ -458,8 +459,8 @@ size_t PortableGdnLayer::state_bytes() const { return HOST_STATE_BYTES + (impl_-
 PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     const auto &s = *impl_;
     auto m = s.ffn->memory_usage();
-    m.host_weights = s.weights_size - s.attention_device_weights;
     m.device_weights += s.attention_device_weights;
+    m.host_weights = s.weights_size - m.device_weights;
     m.host_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
     if (s.options.execution.accelerator && s.options.execution.request_accelerator)
         m.device_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.options.execution.accelerator);

@@ -79,7 +79,7 @@ struct PortableFfn::Impl {
     ggml_tensor *post_input = nullptr, *post_inject = nullptr, *post_block = nullptr, *output = nullptr;
     std::vector<float> state;
     std::vector<PortablePlacement> placement;
-    size_t weights_size = 0, graphs_size = 0;
+    size_t weights_size = 0, graphs_size = 0, device_weights = 0;
     bool initialized = false;
 
 
@@ -125,13 +125,16 @@ struct PortableFfn::Impl {
             weights_size += view.bytes;
             w[key] = t;
         }
-        const size_t allocation = ggml_backend_alloc_ctx_tensors_from_buft_size(weights_ctx.get(), ggml_backend_get_default_buffer_type(cpu.get()));
+        auto *weight_backend = portable_detail::weight_backend(options, cpu.get());
+        const size_t allocation = ggml_backend_alloc_ctx_tensors_from_buft_size(weights_ctx.get(), ggml_backend_get_default_buffer_type(weight_backend));
         require(allocation <= options.weight_budget, "portable FFN: aligned weight budget exceeded");
-        weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), cpu.get()));
+        weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), weight_backend));
         require(bool(weights_buffer), "portable FFN: weight allocation failed");
         ggml_backend_buffer_set_usage(weights_buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
         for (const auto& view : weights) ggml_backend_tensor_set(w.at(view.name.substr(prefix.size())), view.data, 0, view.bytes);
         weights_size = ggml_backend_buffer_get_size(weights_buffer.get());
+        require(weights_size <= options.weight_budget, "portable FFN: actual aligned weight budget exceeded");
+        device_weights = weight_backend != cpu.get() ? weights_size : 0;
 
         auto* c = pre_ctx.get();
         input = named(ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, 1), "residual");
@@ -247,7 +250,8 @@ size_t PortableFfn::graph_bytes() const { return impl_->graphs_size; }
 PortableMemoryUsage PortableFfn::memory_usage() const {
     const auto &s = *impl_;
     PortableMemoryUsage m;
-    m.host_weights = s.weights_size;
+    m.host_weights = s.weights_size - s.device_weights;
+    m.device_weights = s.device_weights;
     for (auto *sched : {s.pre_sched.get(), s.post_sched.get()}) {
         m.host_graph += ggml_backend_sched_get_buffer_size(sched, s.cpu.get());
         if (s.options.accelerator && s.options.request_accelerator)

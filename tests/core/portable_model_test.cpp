@@ -54,6 +54,7 @@ int main() {
             check(baseline->expert_work().provider_ms == 0 && baseline->expert_work().provider_calls == 0,
                   "default provider path has no new timing capture");
         }
+        opts.dense_resident_weights = true;
         opts.gdn_resident_weights = true; // CPU execution must preserve the default reference
         opts.expert_dispatch_oracle = false;
         opts.expert_timings = true;

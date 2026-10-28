@@ -29,6 +29,13 @@ inline void account_matrix_conversion(PortableMemoryUsage& m, ggml_backend_t bac
 #endif
     m.device_extra_bound += bytes; // unverified backend: preserve additive bound
 }
+// Match native model ownership: load immutable weights once on the chosen backend.
+// Missing/unrequested accelerators retain CPU storage; scheduling still enforces
+// the existing explicit CPU fallback policy.
+inline ggml_backend_t weight_backend(const PortableFfnOptions &options, ggml_backend_t cpu) {
+    return options.resident_dense_weights && options.request_accelerator && options.accelerator
+               ? options.accelerator : cpu;
+}
 inline bool metadata_only(ggml_tensor *t) {
     return t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;
 }

@@ -28,10 +28,13 @@ int main(int argc, char **argv) {
                                                                            ggml_backend_free);
         check(bool(device) && !ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "distinct Vulkan buffers required");
-        for (bool resident : {false, true}) {
+        for (int mode : {0, 1, 2}) {
+            const bool resident = mode != 0;
+            std::printf("dense weight fixture: mode=%d (default=0 GDN-only=1 dense=2)\n", mode);
             Fixture f;
             PortableGdnOptions options;
-            options.resident_attention_weights = resident;
+            options.resident_attention_weights = mode == 1;
+            options.execution.resident_dense_weights = mode == 2;
             options.execution.accelerator = device.get();
             options.execution.request_accelerator = true;
             std::string error;
