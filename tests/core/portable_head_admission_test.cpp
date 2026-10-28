@@ -62,7 +62,7 @@ int main() {
         check(D::head_conversion_bound(full,hc,false)==full,"conservative path unchanged");
         check(D::head_conversion_bound(full,hc,true)==hc,"HC conversion retained");
         auto fresh=[] {
-            PortableModelReport r;r.device_admission={0};r.device_scheduler={0};r.device_workspace_bound={0};
+            PortableModelReport r;r.device_admission={0};r.device_scheduler={0};r.device_weights={0};r.device_workspace_bound={0};
             r.device_shared_conversion_bound={0};r.device_token_temporary_bound={0};return r;
         };
         auto initial=fresh();PortableMemoryUsage layer;

@@ -83,7 +83,7 @@ struct PortableGdnLayer::Impl {
     std::vector<float> ple_history;
     std::vector<float> state, history, last;
     std::vector<PortablePlacement> placement;
-    size_t weights_size = 0, graphs_size = 0;
+    size_t weights_size = 0, graphs_size = 0, attention_device_weights = 0;
     uint64_t count = 0;
 
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
@@ -134,16 +134,23 @@ struct PortableGdnLayer::Impl {
             weights_size += view.bytes;
             w[key] = t;
         }
+        const bool resident = options.resident_attention_weights && options.execution.request_accelerator &&
+                              options.execution.accelerator;
+        auto *weight_backend = resident ? options.execution.accelerator : cpu.get();
         const size_t allocation = ggml_backend_alloc_ctx_tensors_from_buft_size(
-            weights_ctx.get(), ggml_backend_get_default_buffer_type(cpu.get()));
+            weights_ctx.get(), ggml_backend_get_default_buffer_type(weight_backend));
         require(allocation <= options.execution.weight_budget - ffn->weight_bytes(),
                 "portable GDN: aligned weight budget exceeded");
-        weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), cpu.get()));
+        weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), weight_backend));
         require(bool(weights_buffer), "portable GDN: weight allocation failed");
         ggml_backend_buffer_set_usage(weights_buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
         for (const auto &view : aw)
             ggml_backend_tensor_set(w.at(view.name.substr(prefix.size())), view.data, 0, view.bytes);
-        weights_size = ffn->weight_bytes() + ggml_backend_buffer_get_size(weights_buffer.get());
+        const size_t actual_weights = ggml_backend_buffer_get_size(weights_buffer.get());
+        require(actual_weights <= options.execution.weight_budget - ffn->weight_bytes(),
+                "portable GDN: actual aligned weight budget exceeded");
+        attention_device_weights = resident ? actual_weights : 0;
+        weights_size = ffn->weight_bytes() + actual_weights;
         auto *c = ctx.get();
         input = ggml_new_tensor_3d(c, GGML_TYPE_F32, H, HC, 1);
         state_input = ggml_new_tensor_4d(c, GGML_TYPE_F32, D, D, HV, 1);
@@ -451,7 +458,8 @@ size_t PortableGdnLayer::state_bytes() const { return HOST_STATE_BYTES + (impl_-
 PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     const auto &s = *impl_;
     auto m = s.ffn->memory_usage();
-    m.host_weights = s.weights_size;
+    m.host_weights = s.weights_size - s.attention_device_weights;
+    m.device_weights += s.attention_device_weights;
     m.host_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
     if (s.options.execution.accelerator && s.options.execution.request_accelerator)
         m.device_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.options.execution.accelerator);

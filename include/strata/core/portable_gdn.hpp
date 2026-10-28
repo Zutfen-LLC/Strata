@@ -6,6 +6,7 @@ struct PortableGdnOptions {
     PortableFfnOptions execution;
     size_t state_budget = 16ull << 20;           // host committed/candidate state and residuals
     std::shared_ptr<PortablePleTable> ple_table; // enables configured layer-1 PLE; host only
+    bool resident_attention_weights = false; // opt-in; CPU execution retains CPU allocation
 };
 // Cumulative host-call wall scopes. Compute is nested in attention/exchange;
 // full FFN includes the provider. Reset does not clear caller-owned totals.

@@ -61,6 +61,7 @@ struct PortableModelOptions {
     bool expert_check_rows = false, expert_record_routes = false;
     bool expert_timings = false; // opt-in coarse provider/executor host-call boundaries
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
+    bool gdn_resident_weights = false; // opt-in GDN attention only
 };
 struct PortableExpertWork {
     uint64_t hits = 0, verifications = 0, copied_bytes = 0, digest_bytes = 0;
@@ -85,6 +86,7 @@ struct PortableModelReport {
     size_t graph_admission_bound = 0;
     size_t host_scheduler = 0;
     std::vector<size_t> device_scheduler, device_workspace_bound, device_token_temporary_bound, device_shared_conversion_bound, device_admission;
+    std::vector<size_t> device_weights; // actual persistent dense weights per physical backend
     uint64_t retained_manifest_identity_a = 0, retained_manifest_identity_b = 0;
     // Header/range checks plus first-use selected expert digests; no new
     // whole-file hash campaign. PLE mapping is file-backed, not an arena.

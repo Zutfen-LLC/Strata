@@ -28,57 +28,63 @@ int main(int argc, char **argv) {
                                                                            ggml_backend_free);
         check(bool(device) && !ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "distinct Vulkan buffers required");
-        Fixture f;
-        PortableGdnOptions options;
-        options.execution.accelerator = device.get();
-        options.execution.request_accelerator = true;
-        std::string error;
-        auto layer = PortableGdnLayer::create(0, f.views, options, error);
-        check(bool(layer), error);
-        auto cpu = PortableGdnLayer::create(0, f.views, {}, error);
-        check(bool(cpu), error);
-        size_t gdn = 0, conv = 0, mat = 0;
-        for (const auto &p : layer->placements())
-            if (p.phase == "gdn-attention" && !p.metadata_only) {
-                check(p.backend == ggml_backend_name(device.get()) && p.fallback_reason.empty(),
-                      "strict attention placement");
-                if (p.operation == "GATED_DELTA_NET")
-                    ++gdn;
-                if (p.operation == "SSM_CONV")
-                    ++conv;
-                if (p.operation == "MUL_MAT")
-                    ++mat;
+        for (bool resident : {false, true}) {
+            Fixture f;
+            PortableGdnOptions options;
+            options.resident_attention_weights = resident;
+            options.execution.accelerator = device.get();
+            options.execution.request_accelerator = true;
+            std::string error;
+            auto layer = PortableGdnLayer::create(0, f.views, options, error);
+            check(bool(layer), error);
+            check((layer->memory_usage().device_weights > 0) == resident, "resident weight ledger");
+            check(layer->memory_usage().host_weights + layer->memory_usage().device_weights == layer->weight_bytes(),
+                  "host/device weight allocation reconciliation");
+            auto cpu = PortableGdnLayer::create(0, f.views, {}, error);
+            check(bool(cpu), error);
+            size_t gdn = 0, conv = 0, mat = 0;
+            for (const auto &p : layer->placements())
+                if (p.phase == "gdn-attention" && !p.metadata_only) {
+                    check(p.backend == ggml_backend_name(device.get()) && p.fallback_reason.empty(),
+                          "strict attention placement");
+                    if (p.operation == "GATED_DELTA_NET")
+                        ++gdn;
+                    if (p.operation == "SSM_CONV")
+                        ++conv;
+                    if (p.operation == "MUL_MAT")
+                        ++mat;
+                }
+            check(gdn == 1 && conv == 1 && mat == 8, "actual attention operation coverage");
+            PortableRoute route;
+            PortableGdnTrace trace;
+            for (int t = 0; t < 2; ++t) {
+                auto state = layer->recurrent_state(), history = layer->convolution_history();
+                PortableRoute cpu_route;
+                check(cpu->step(f.input(t), experts(), cpu_route, error), error);
+                check(layer->step(f.input(t), experts(), route, error, &trace), error);
+                reference(f, state, history, trace, *layer);
+                close(layer->last_residual(), cpu->last_residual(), 0.003f, "full layer CPU/Vulkan output");
+                close(route.weights, cpu_route.weights, 0.003f, "full layer route weights");
+                check(route.ids == cpu_route.ids, "full layer route IDs");
             }
-        check(gdn == 1 && conv == 1 && mat == 8, "actual attention operation coverage");
-        PortableRoute route;
-        PortableGdnTrace trace;
-        for (int t = 0; t < 2; ++t) {
-            auto state = layer->recurrent_state(), history = layer->convolution_history();
-            PortableRoute cpu_route;
-            check(cpu->step(f.input(t), experts(), cpu_route, error), error);
-            check(layer->step(f.input(t), experts(), route, error, &trace), error);
+            auto state = layer->recurrent_state(), history = layer->convolution_history(), last = layer->last_residual();
+            check(!layer->step(
+                      f.input(2), [](int64_t, const PortableRoute &, std::vector<float> &, std::string &) { return false; },
+                      route, error),
+                  "Vulkan callback rejection");
+            close(layer->recurrent_state(), state, 0, "Vulkan state rollback");
+            close(layer->convolution_history(), history, 0, "Vulkan history rollback");
+            close(layer->last_residual(), last, 0, "Vulkan residual rollback");
+            check(layer->tokens() == 2 && layer->reset(error), "Vulkan reset");
+            state = layer->recurrent_state();
+            history = layer->convolution_history();
+            check(layer->step(f.input(0), experts(), route, error, &trace), error);
             reference(f, state, history, trace, *layer);
-            close(layer->last_residual(), cpu->last_residual(), 0.003f, "full layer CPU/Vulkan output");
-            close(route.weights, cpu_route.weights, 0.003f, "full layer route weights");
-            check(route.ids == cpu_route.ids, "full layer route IDs");
-        }
-        auto state = layer->recurrent_state(), history = layer->convolution_history(), last = layer->last_residual();
-        check(!layer->step(
-                  f.input(2), [](int64_t, const PortableRoute &, std::vector<float> &, std::string &) { return false; },
-                  route, error),
-              "Vulkan callback rejection");
-        close(layer->recurrent_state(), state, 0, "Vulkan state rollback");
-        close(layer->convolution_history(), history, 0, "Vulkan history rollback");
-        close(layer->last_residual(), last, 0, "Vulkan residual rollback");
-        check(layer->tokens() == 2 && layer->reset(error), "Vulkan reset");
-        state = layer->recurrent_state();
-        history = layer->convolution_history();
-        check(layer->step(f.input(0), experts(), route, error, &trace), error);
-        reference(f, state, history, trace, *layer);
-        std::printf("portable_gdn_vulkan_test: device=%s actual H2560/S128/Hk16/Hv48; backend=%s GATED_DELTA_NET=%zu "
-                    "SSM_CONV=%zu attention_MUL_MAT=%zu strict execution, independent state, full layer CPU parity, "
-                    "reset and rollback passed\n",
-                    description, ggml_backend_name(device.get()), gdn, conv, mat);
+            std::printf("portable_gdn_vulkan_test: device=%s actual H2560/S128/Hk16/Hv48; backend=%s GATED_DELTA_NET=%zu "
+                        "SSM_CONV=%zu attention_MUL_MAT=%zu strict execution, independent state, full layer CPU parity, "
+                        "reset and rollback passed\n",
+                        description, ggml_backend_name(device.get()), gdn, conv, mat);
+        } // exercise both streamed and resident weight placement
         return 0;
     } catch (const std::exception &e) {
         std::fprintf(stderr, "%s\n", e.what());
