@@ -23,7 +23,7 @@ cmake --build build-worker --target strata-expert-worker
 No CUDA/HIP/SYCL toolkit is involved; the target links only `strata_kernels_cpu` (and ggml-cpu). The
 listener binds **127.0.0.1 by default**. To reach it through an authenticated, encrypted connection,
 forward a port over an SSH tunnel you own (for example
-`ssh -L 7431:127.0.0.1:7431 validation host`) and point the client at the tunnel's local end.
+`ssh -L 7431:127.0.0.1:7431 "$WORKER_HOST"`) and point the client at the tunnel's local end.
 
 For an operator-controlled trusted LAN, explicitly select a local address with `--bind-ip IPv4` and
 repeat `--allow-peer-ip IPv4` for each permitted source. A non-loopback bind without peers is refused.
@@ -272,11 +272,11 @@ The evidence it reports: a startup line with the frozen partition (blob count, G
 the tier's cumulative counters plus the worker's own STATUS (requests, failures, CPU service seconds -
 the worker's kernel time, never the client's wait - and inference bytes in/out).
 
-## The two-host recipe (validation host + validation host)
+## The two-host recipe (coordinator and worker)
 
 A self-contained operator recipe for the first bounded run lives in
-**[CPU_WORKER_RECIPE.md](CPU_WORKER_RECIPE.md)**.  Its shape: build the CPU-only worker on **validation host**
-(`build-worker`, no GPU toolkit involved) and a CUDA `sm_86` engine on **validation host** (NOT the default
+**[CPU_WORKER_RECIPE.md](CPU_WORKER_RECIPE.md)**.  Its shape: build the CPU-only worker on the **worker host**
+(`build-worker`, no GPU toolkit involved) and a CUDA `sm_86` engine on the **coordinator host** (NOT the default
 `sm_120` default), forward the worker's loopback port through controller-owned SSH connections, and
 start the engine with `--serve --remote-cpu-experts 127.0.0.1:7431`, fixed placement
 (`--adapt-every 0`, `--pcie-frac 0`, `STRATA_ROUTE_TAIL_SKIP=0`), short prompts (`--short-read`), and one
