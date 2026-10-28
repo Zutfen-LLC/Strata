@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # First HC projection controlled discriminator — v1
 
 Run exactly one bounded real-weight operation comparison on05, not another full
@@ -32,7 +34,7 @@ The test reports eight vector metric groups (max abs, RMS, relative L2, worst
 channel), no raw arrays or model output files. Success means valid finite strict
 execution, **not** a new numerical/quality pass. No limits are fitted to results.
 
-## Versioned Hermes command
+## Versioned operator command
 
 Parent supplies the exact published commit containing this handoff as SOURCE_SHA.
 Use a separate Git checkout and build directory, preserving deployed source,
@@ -71,7 +73,7 @@ timeout --signal=TERM --kill-after=5s 120s \
 # One real-weight boundary: die0, which owns layer0 in the completed product run.
 timeout --signal=TERM --kill-after=5s 120s \
   "$BUILD/portable_hc_boundary" --model \
-  /srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf 0 \
+  ${PRIVATE_ARTIFACT_ED0D8ADE} 0 \
   > "$EVIDENCE/real.json" 2> "$EVIDENCE/real.log"
 ```
 
@@ -114,15 +116,15 @@ CPU quantized-input scalar oracle versus CPU Q8 was8.7068413e-7, while its
 predicted activation-quantization effect was0.0073399589. These validate the
 mechanism and illustrate distinguishable signatures; they are not real-weight
 or AMD results and do not set acceptance thresholds. Logs:
-`/tmp/portable-hc-boundary-{build,synthetic}.log` and
-`/tmp/portable-hc-boundary-synthetic.json`.
+`${BUILD_ARTIFACT_0A1812F1},synthetic}.log` and
+`${BUILD_ARTIFACT_82BAE760}`.
 
 ## Physical result supplied by parent — receipt1793153523.065029
 
-Hermes ran the synthetic and real operation checks at
+operator ran the synthetic and real operation checks at
 `9c476e014d5eeb3861d0e9eac85d7975649895c4`; both exited0. Real execution
 was strict Vulkan0 UUID `00000000-0700-0000-0000-000000000000`, with no
-remaining process. Evidence05 `/home/hermes/portable-hc-9c476e0-evidence`;
+remaining process. Evidence05 `${PRIVATE_ARTIFACT_8F6A6DD8}`;
 binary SHA256 `cb62f177f41c1eb7c92fcfe8d6358d2dd2c8985f624a0a78d4096441fb71ae09`.
 Slack C0C5MK91H3L, thread1793152694.143009, message1793153523.065029.
 These are parent-supplied runtime observations, not execution by this task.

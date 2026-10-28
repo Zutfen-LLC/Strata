@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # PR #38: bounded Vulkan placement validation on 05
 
 Parent dispatch only, **after the additional CPU SMT arm is stopped and cleaned
@@ -24,7 +26,7 @@ set -eu
 : "${PORTABLE_BUILD05:?new isolated candidate build directory}"
 : "${EXPECTED_HEAD:?exact PR38 commit selected by parent}"
 : "${EVIDENCE05:?new evidence directory supplied by parent}"
-GGML_SRC05=/home/hermes/vulkan-q8-screen-20261026/src
+GGML_SRC05=${PRIVATE_ARTIFACT_9CA76AB8}
 
 if test -e "$PORTABLE_SRC05/.git"; then
   test "$(git -C "$PORTABLE_SRC05" rev-parse HEAD)" = "$EXPECTED_HEAD"

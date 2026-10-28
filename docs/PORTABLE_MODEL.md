@@ -44,7 +44,7 @@ from the actual free memory and leave measured headroom for the driver and
 other users. Each V340 die has its own 8 GiB; caps are never pooled. The CLI records
 Vulkan memory snapshots before model loading and after every token; placement
 TSV rows carry layer IDs. For the exact parent-dispatched real-model stages,
-use [the versioned Hermes recipe](../agenthandoffs/portable-model-hermes-v4.md),
+use [the versioned operator recipe](../agenthandoffs/portable-model-hermes-v4.md),
 which also samples aggregate VRAM for both PCI devices during the run.
 
 Repeated Vulkan indices are rejected before initialization. Session admission

@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Frozen twelve-case answer screen — corrected owned lifecycle, v2
 
 **Completed; historical dispatch instructions below are not a request to rerun.**
@@ -27,7 +29,7 @@ Pins:
 
 The PR43 binary is already qualified at source
 `ac85ff3fdf0834c13437b69b1568d8704e9b0717`; use it unchanged. The driver is
-already on02 at `/home/hermes/strata-nd-repeat-20261027-run.driver5.py`, also
+already on02 at `${PRIVATE_ARTIFACT_A27E9A14}`, also
 shared as Slack F0CCH9D1CPP. Its exact source was read/hash-verified locally.
 Importing it loads definitions only. The adapter never calls its `main`,
 distributed arm, historical replay/comparison, OpenSSL/certificate check or TLS
@@ -44,8 +46,8 @@ artifact directories, mode0700; do not reuse prior output roots.
 ```sh
 set -euo pipefail
 umask 077
-export SCREEN05=/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2
-export GGUF05=/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf
+export SCREEN05=${PRIVATE_ARTIFACT_1245348D}
+export GGUF05=${PRIVATE_ARTIFACT_ED0D8ADE}
 mkdir "$SCREEN05"
 "$PYTHON05" -B "$SOURCE05/tools/validation-harness/quality.py" --gguf "$GGUF05" \
   prepare --out "$SCREEN05/suite"
@@ -57,7 +59,7 @@ sha256sum "$SCREEN05/suite/requests" "$SCREEN05/suite/quality_manifest" \
 Freeze the resulting complete request/manifest hashes in the receipt. Parent's
 existing approved file transport may relay only these small suite files/source
 exports between hosts. Place exact suite/requests and suite/quality_manifest on02
-at `/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2/suite/`; verify
+at `${PRIVATE_ARTIFACT_135B0956}`; verify
 both file hashes against05. Never regenerate or change prompts/gold between arms.
 The earlier10/12 native result is historical observed evidence, not ground truth
 or this paired baseline: different ELF and no matched current suite results.
@@ -69,17 +71,17 @@ before launch the adapter refuses an occupied127.0.0.1:17431 without stopping it
 An occupied port is a concrete stop, never authorization to kill another service.
 
 ```sh
-export SCREEN02=/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2
-export GGUF02=/srv/models/qwen38-q8/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf
+export SCREEN02=${PRIVATE_ARTIFACT_1245348D}
+export GGUF02=${PRIVATE_ARTIFACT_38696482}
 "$PYTHON02" -B "$SOURCE02/tools/validation-harness/portable_quality_v1.py" \
   --gguf "$GGUF02" native \
-  --driver /home/hermes/strata-nd-repeat-20261027-run.driver5.py \
+  --driver ${PRIVATE_ARTIFACT_A27E9A14} \
   --suite "$SCREEN02/suite" --out "$SCREEN02/native"
 ```
 
 Reads only the driver's known retained inputs:
-`/home/hermes/NDon-strata-ndab-20261026T161728Z.input-config.json` and
-`/home/hermes/strata-pr10-9ed478e-20261025-run/A0-load.config.json`.
+`${PRIVATE_ARTIFACT_D2184BFE}` and
+`${PRIVATE_ARTIFACT_4739C8B0}`.
 These are inputs to the same retained local-argv derivation, not an assertion
 that the NDon configuration was the actual local launch. GPU-peer options are
 removed by the original driver; actual local argv is recorded for every case.
@@ -102,7 +104,7 @@ existing validity check; no complete token-position logit dumps.
 ```sh
 "$PYTHON05" -B "$SOURCE05/tools/validation-harness/portable_quality_v1.py" \
   --gguf "$GGUF05" portable \
-  --binary /srv/models/inferswarm-artifacts/portable-expert-ac85ff3/build/portable_model \
+  --binary ${PRIVATE_ARTIFACT_23A84F79} \
   --binary-sha256 cb71b55bd7309320a81446c117728e493ea1d19c8f1ec0d54c7ef2836c8734c3 \
   --suite "$SCREEN05/suite" --out "$SCREEN05/portable"
 ```

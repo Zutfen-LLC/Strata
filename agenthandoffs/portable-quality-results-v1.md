@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Frozen twelve-case functional screen — completed result v1
 
 The unchanged scorer returned **inconclusive-baseline (exit1)**: native CUDA
@@ -8,7 +10,7 @@ The scorer's exit1 is the expected baseline-miss verdict, not a runtime failure
 or reason to repeat the suite. This is not broad model-quality equivalence.
 
 Primary evidence read through the Slack connector:
-[Hermes final receipt1793158976.227939](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793158976227939).
+[operator final receipt1793158976.227939](PRIVATE_RECEIPT).
 This coding task did not execute either model or inspect private raw outputs.
 No decoded answers or raw logits are published here.
 
@@ -19,7 +21,7 @@ No decoded answers or raw logits are published here.
 | Portable binary SHA256 | `cb71b55bd7309320a81446c117728e493ea1d19c8f1ec0d54c7ef2836c8734c3` |
 | Native binary SHA256 | `931569c089a4f04114395a428c85f85227142c733f4fa0511243d05f97b46b89` |
 | Existing frozen suite/scorer quality.py SHA256 | `01a1a6c4dc6c1a5f94f005316e34b7983699362fb5f3a4edb3811597892e38f1` |
-| Actual private score path on02 | `/home/hermes/portable-quality-ac85ff3-v2/score.json` |
+| Actual private score path on02 | `${PRIVATE_ARTIFACT_0F22AC76}` |
 | Score SHA256 | `3154b628313c48b0786c363236454b91be99da09ca94dc25c032731571772c15` |
 | Owned native worker cleanup | exited0, loopback port17431 closed |
 | Owned portable cleanup | no owned process remains |

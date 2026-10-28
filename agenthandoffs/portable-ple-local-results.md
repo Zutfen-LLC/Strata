@@ -11,7 +11,7 @@ and strict scheduler placement. It is not an AMD hardware result.
 CPU-only configure and build used:
 
 ```sh
-/tmp/cmake-3.31.6-linux-x86_64/bin/cmake -S . -B /tmp/strata-portable-ple-build \
+/tmp/cmake-3.31.6-linux-x86_64/bin/cmake -S . -B ${BUILD_ARTIFACT_FDE67CFC} \
   -DCMAKE_BUILD_TYPE=Release -DSTRATA_PORTABLE_FFN=ON -DSTRATA_PORTABLE_GDN=ON \
   -DSTRATA_BUILD_TESTS=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF \
   -DSTRATA_HIP_GFX906=OFF -DSTRATA_ENABLE_SYCL=OFF \
@@ -19,17 +19,17 @@ CPU-only configure and build used:
   -DSTRATA_GGML_DIR=/tmp/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d
 ```
 
-The isolated Vulkan build `/tmp/strata-portable-ple-vulkan` used those settings
+The isolated Vulkan build `${BUILD_ARTIFACT_CC1A42EB}` used those settings
 plus `-DGGML_VULKAN=ON`,
-`-DCMAKE_PREFIX_PATH=/tmp/strata-spirv-headers-prefix`, and
-`-DCMAKE_CXX_FLAGS=-I/tmp/strata-spirv-headers-prefix/include`.
+`-DCMAKE_PREFIX_PATH=${BUILD_ARTIFACT_D2E5D17A}`, and
+`-DCMAKE_CXX_FLAGS=-I${BUILD_ARTIFACT_A3EFA7CB}`.
 Built targets: `portable_ple_test portable_ple_vulkan_test portable_gdn_test
 portable_gdn_vulkan_test portable_ffn_test portable_ffn_vulkan_test
 gguf_reader_test gguf_split_test gguf_geometry_test`, with `--parallel 2`.
 
 ```sh
 /tmp/cmake-3.31.6-linux-x86_64/bin/ctest \
-  --test-dir /tmp/strata-portable-ple-vulkan \
+  --test-dir ${BUILD_ARTIFACT_CC1A42EB} \
   -R '^(portable_(ple|gdn|ffn)_test|gguf_(reader|split|geometry)_test)$' \
   --output-on-failure
 ```
@@ -50,11 +50,11 @@ Device commands, one process at a time:
 ```sh
 export GGML_VK_VISIBLE_DEVICES=0
 export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
-timeout 180s /tmp/strata-portable-ple-vulkan/portable_ple_vulkan_test \
+timeout 180s ${BUILD_ARTIFACT_DFC0618A} \
   --device 0 --expect-device llvmpipe
-timeout 120s /tmp/strata-portable-ple-vulkan/portable_gdn_vulkan_test \
+timeout 120s ${BUILD_ARTIFACT_789AAF19} \
   --device 0 --expect-device llvmpipe
-timeout 120s /tmp/strata-portable-ple-vulkan/portable_ffn_vulkan_test \
+timeout 120s ${BUILD_ARTIFACT_755BD796} \
   --device 0 --expect-device llvmpipe
 ```
 
@@ -63,7 +63,7 @@ The PLE result reports actual H2560 layer1 PLE+GDN+FFN,
 ten tokens, independent scalar PLE/GDN, CPU parity, EOS/reset/rollback.
 The unchanged GDN and FFN executables also pass.
 
-Opt-out configure in `/tmp/strata-portable-ple-default` with
+Opt-out configure in `${BUILD_ARTIFACT_67BFC229}` with
 `STRATA_PORTABLE_FFN=OFF STRATA_PORTABLE_GDN=OFF STRATA_BUILD_TESTS=OFF`
 has no portable libraries/test targets. Existing CUDA/HIP/SYCL sources and
 prior portable regression sources have no diff. This is source/target gating

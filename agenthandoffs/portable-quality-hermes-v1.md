@@ -1,4 +1,6 @@
-# Frozen twelve-case functional screen — Hermes v1
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
+# Frozen twelve-case functional screen — operator v1
 
 **Superseded by portable-quality-hermes-v2.md. Do not dispatch v1.** The staged
 bundle/attached-resident premise was unsupported; v2 uses the verified retained
@@ -6,7 +8,7 @@ driver’s owned worker lifecycle and the qualified PR43 binary hash.
 
 No model build. Use PR43 source `ac85ff3fdf0834c13437b69b1568d8704e9b0717`
 and its already qualified `portable_model` under
-`/srv/models/inferswarm-artifacts/portable-expert-ac85ff3/build/` on05. Parent
+`${PRIVATE_ARTIFACT_781B2161}` on05. Parent
 must supply its exact **qualified binary SHA256 from the pair receipt**; do not
 turn a freshly calculated hash into new qualification. The adapter uses the
 unchanged CLI; source inspection of PR43 confirms no extra reuse switch is needed.
@@ -26,7 +28,7 @@ The existing metadata/tokenizer Python environment (with regex) is required.
 
 Located the original12-case native receipt: Slack C0C5MK91H3L,
 thread1793054475.545389, final1793055522.698579. Private evidence02:
-`/home/hermes/amd-quality-pr34-20261026/score.json`, with config/pins/suite nearby.
+`${PRIVATE_ARTIFACT_D776074E}`, with config/pins/suite nearby.
 It scored10/12 (cases9/12 failed), mixed11/12; result inconclusive-baseline.
 Its native ELF was `dbea1269...`, not the selected current native ELF SHA256
 `931569c089a4f04114395a428c85f85227142c733f4fa0511243d05f97b46b89`.
@@ -38,9 +40,9 @@ bundle** for the selected current02 native binary/settings, with `config.json`,
 `pins.json`, attached resident identity root and existing helpers/assets. It must
 have one native arm, an explicitly attached idle CPU resident, restart=false and
 retain on success/failure. Known run5 receipt root is
-`/home/hermes/strata-nd-repeat-20261027-run5/local/`, but this task has not verified
+`${PRIVATE_ARTIFACT_9EDEECEE}`, but this task has not verified
 that it is such a bundle. Do not invent `pins.json`, an attach-root, PID, port or
-launch policy if it is not. Hermes/parent can provide the exact retained bundle
+launch policy if it is not. operator/parent can provide the exact retained bundle
 path; that small prerequisite is needed before the paired dispatch. No broad
 search, resident restart, network/security change or new driver is authorized.
 
@@ -62,9 +64,9 @@ umask 077
 : "${SOURCE:?exact published handoff source export}"
 : "${PYTHON:?existing tokenizer Python with regex}"
 : "${QUALIFIED_PR43_BINARY_SHA256:?exact binary SHA from accepted PR43 pair receipt}"
-export SCREEN05=/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v1
-export GGUF05=/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf
-export PORTABLE05=/srv/models/inferswarm-artifacts/portable-expert-ac85ff3/build/portable_model
+export SCREEN05=${PRIVATE_ARTIFACT_EA6FB26C}
+export GGUF05=${PRIVATE_ARTIFACT_ED0D8ADE}
+export PORTABLE05=${PRIVATE_ARTIFACT_23A84F79}
 mkdir "$SCREEN05"
 "$PYTHON" -B "$SOURCE/tools/validation-harness/quality.py" --gguf "$GGUF05" \
   prepare --out "$SCREEN05/suite"
@@ -86,13 +88,13 @@ Freeze binary SHA/config receipts as well. Keep source hashes with the receipt.
 Set `SOURCE02` to the same handoff source export, `PYTHON02` to the existing
 interpreter, `NATIVE_TEMPLATE02` to the prerequisite verified staged bundle, and
 `GGUF02` to the existing metadata shard:
-`/srv/models/qwen38-q8/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf`.
+`${PRIVATE_ARTIFACT_38696482}`.
 Create the fresh02 artifact root and place the frozen suite at its `suite/`.
-Before launch, parent/Hermes confirms exclusive idle use of the attached resident
+Before launch, parent/operator confirms exclusive idle use of the attached resident
 using its existing identity procedure; no guessed PID or service restart.
 
 ```sh
-export SCREEN02=/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v1
+export SCREEN02=${PRIVATE_ARTIFACT_EA6FB26C}
 export NATIVE_SHA256=931569c089a4f04114395a428c85f85227142c733f4fa0511243d05f97b46b89
 "$PYTHON02" -B "$SOURCE02/tools/validation-harness/portable_quality_v1.py" \
   --gguf "$GGUF02" stage-native --template-root "$NATIVE_TEMPLATE02" \
