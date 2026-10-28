@@ -225,14 +225,20 @@ struct PortableModelSession::Impl {
                     embedding.shape[1] > 0 && embedding.shape[1] <= 1048576,
                 "portable model: expected Q8 token embedding [2560,vocabulary]");
         vocabulary = size_t(embedding.shape[1]);
-        const auto *eos = model.meta().get("tokenizer.ggml.eos_token_id");
-        require(eos && eos->is_num() && eos->u < vocabulary, "portable model: EOS metadata missing/out of range");
-        eos_id = int32_t(eos->u);
+        auto token_id = [&](const char *key) {
+            const auto *value = model.meta().get(key);
+            require(value && value->is_num() && value->type != MetaType::F32 && value->type != MetaType::F64 &&
+                        value->type != MetaType::BOOL && value->u < vocabulary,
+                    "portable model: " + std::string(key) + " requires an in-vocabulary integer token ID");
+            return int32_t(value->u);
+        };
+        eos_id = token_id("tokenizer.ggml.eos_token_id");
         const auto *ple_layers = model.meta().get("qwen4exp.ple.layers");
         if (ple_layers && !ple_layers->items.empty()) {
-            const auto *ple_eos = model.meta().get("qwen4exp.ple.eos_token_id");
-            require(ple_eos && ple_eos->is_num() && ple_eos->u == eos->u,
-                    "portable model: tokenizer and PLE EOS metadata disagree");
+            // PLE's predecessor-history boundary is independent of the
+            // tokenizer's generated end-of-turn token. The fleet has 248044
+            // and 248046 respectively; PortablePleTable validates its own config.
+            (void)token_id("qwen4exp.ple.eos_token_id");
         }
         for (size_t s = 0; s < model.size(); ++s)
             report.mapped_bytes += model.shard(s).file_size();
@@ -352,7 +358,7 @@ struct PortableModelSession::Impl {
         poison = false;
         return true;
     }
-    bool step(int32_t token, std::vector<float> &logits, std::string &error) {
+    bool step(int32_t token, std::vector<float> &logits, std::string &error, PortableTokenKind kind) {
         error.clear();
         logits.clear();
         if (poison) {
@@ -384,7 +390,7 @@ struct PortableModelSession::Impl {
                 append_placements(layers[l].placements(), int64_t(l));
             append_placements(head->placements(), int64_t(L));
             ++pos;
-            eos_seen = token == eos_id;
+            eos_seen = kind == PortableTokenKind::generated && token == eos_id;
             return true;
         } catch (const std::exception &e) {
             poison = true;
@@ -408,8 +414,8 @@ std::unique_ptr<PortableModelSession> PortableModelSession::open(const std::vect
         return nullptr;
     }
 }
-bool PortableModelSession::step(int32_t token, std::vector<float> &logits, std::string &error) {
-    return impl_->step(token, logits, error);
+bool PortableModelSession::step(int32_t token, std::vector<float> &logits, std::string &error, PortableTokenKind kind) {
+    return impl_->step(token, logits, error, kind);
 }
 bool PortableModelSession::reset(std::string &error) {
     error.clear();
@@ -444,10 +450,6 @@ bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t m
     for (int32_t token : prompt) {
         if (!step(token, logits, error))
             return false;
-        if (ended()) {
-            result.stop = PortableStop::eos;
-            return true;
-        }
     }
     for (size_t n = 0; n < max_new; ++n) {
         if (position() == impl_->opts.context) {
@@ -456,7 +458,7 @@ bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t m
         }
         // max_element returns the first (lowest ID) in an exact tie.
         const auto token = int32_t(std::max_element(logits.begin(), logits.end()) - logits.begin());
-        if (!step(token, logits, error))
+        if (!step(token, logits, error, PortableTokenKind::generated))
             return false;
         result.tokens.push_back(token);
         if (ended()) {

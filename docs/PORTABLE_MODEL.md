@@ -44,7 +44,7 @@ from the actual free memory and leave measured headroom for the driver and
 other users. Each V340 die has its own 8 GiB; caps are never pooled. The CLI records
 Vulkan memory snapshots before model loading and after every token; placement
 TSV rows carry layer IDs. For the exact parent-dispatched real-model stages,
-use [the versioned Hermes recipe](../agenthandoffs/portable-model-hermes-v2.md),
+use [the versioned Hermes recipe](../agenthandoffs/portable-model-hermes-v3.md),
 which also samples aggregate VRAM for both PCI devices during the run.
 
 Repeated Vulkan indices are rejected before initialization. Session admission
@@ -81,7 +81,13 @@ A failed `step` poisons the session, including invalid inputs and failures
 after earlier layers committed. Another step is refused until explicit
 `reset` and replay of the desired token sequence. Reset failure also leaves
 the session poisoned. Generation preflight can reject an empty/over-budget
-request without changing state. EOS is consumed, then generation stops.
+request without changing state. Only a **generated** tokenizer EOS is consumed
+and stops generation. Input and teacher-forced turn separators are fed normally, including tokenizer EOS
+inside a chat prompt. The API defaults `step` to input; callers feeding a
+sampled token pass `PortableTokenKind::generated`. The fleet's tokenizer EOS
+is 248046, independently of its PLE predecessor-history boundary 248044. Both
+metadata fields retain independent integer/range validation; PLE's existing
+configuration validation and hash/history behavior are unchanged.
 Context exhaustion and max-new exhaustion have separate stop reasons. Exact
 logit ties select the lowest token ID. There is no MTP, batching, speculation,
 or tokenizer implementation in this executable.

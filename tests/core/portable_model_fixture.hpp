@@ -27,8 +27,8 @@ struct SparseModel {
     };
     std::array<Shard, 6> shards;
     strata::kernels::cpu::NativeFmt fmt;
-    static constexpr size_t H = 2560, V = 248064;
-    SparseModel() {
+    static constexpr size_t H = 2560, V = 248320;
+    explicit SparseModel(bool headers_only = false) {
         root = std::filesystem::temp_directory_path() /
                ("strata-model-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         check(std::filesystem::create_directory(root), "fixture mkdir");
@@ -40,6 +40,17 @@ struct SparseModel {
             t.type = type;
             shards[s].tensors.push_back({std::move(name), std::move(shape), type, 0, strata::tensor_payload_bytes(t)});
         };
+        if (headers_only) {
+            add(0, "token_embd.weight", {H, V}, 8);
+            for (size_t i = 0; i < 6; ++i) {
+                auto keys = i == 0 ? metadata() : std::vector<fixture::Kv>{};
+                keys.push_back(fixture::u32("split.count", 6));
+                keys.push_back(fixture::u32("split.no", i));
+                keys.push_back(fixture::u32("split.tensors.count", 1));
+                write(i, keys);
+            }
+            return; // no weight writes, native layout construction or payload reads
+        }
         for (size_t l = 0; l < 48; ++l) {
             const size_t s = l / 16;
             const auto p = "blk." + std::to_string(l) + ".";
@@ -115,7 +126,7 @@ struct SparseModel {
                     std::vector<float> ones(size_t(t.bytes / 4), 1);
                     patch(s, t.name, 0, ones.data(), t.bytes);
                 }
-        for (int token : {5, 6, 248044}) {
+        for (int token : {5, 6, 7, 248044, 248046}) {
             std::vector<uint8_t> row(H / 32 * 34);
             for (size_t b = 0; b < H / 32; ++b) {
                 const uint16_t d = 0x3c00;
@@ -124,6 +135,8 @@ struct SparseModel {
             }
             const int8_t first = token == 6 ? -3 : 2;
             std::memcpy(row.data() + 2, &first, 1);
+            if (token == 7)
+                row[3] = 64; // makes the dedicated generation-EOS row win
             patch(0, "token_embd.weight", size_t(token) * row.size(), row.data(), row.size());
         }
         for (size_t r = 0; r < 2; ++r) {
@@ -133,6 +146,13 @@ struct SparseModel {
             const int8_t code = r ? -1 : 1;
             std::memcpy(block + 2, &code, 1);
             patch(0, "output.weight", r * (H / 32 * 34), block, sizeof(block));
+        }
+        {
+            uint8_t block[34]{};
+            const uint16_t scale = 0x3400; // exactly1/4, on the second component
+            std::memcpy(block, &scale, 2);
+            block[3] = 1;
+            patch(0, "output.weight", 248046ull * (H / 32 * 34), block, sizeof(block));
         }
         std::string error;
         check(strata::kernels::cpu::native_fmt(8, 8, 2560, 640, fmt, error), error);
@@ -189,7 +209,7 @@ struct SparseModel {
         file.write(static_cast<const char *>(data), std::streamsize(bytes));
         check(bool(file), "fixture patch");
     }
-    std::vector<fixture::Kv> metadata() {
+    static std::vector<fixture::Kv> metadata() {
         std::vector<fixture::Kv> kv{fixture::str("general.architecture", "qwen4exp")};
         for (const auto &v : std::vector<std::pair<std::string, uint64_t>>{{"embedding_length", 2560},
                                                                            {"block_count", 48},
@@ -220,7 +240,9 @@ struct SparseModel {
                                                                            {"ple.eos_token_id", 248044},
                                                                            {"ple.image_token_id", 248056}})
             kv.push_back(fixture::u32("qwen4exp." + v.first, v.second));
-        kv.push_back(fixture::u32("tokenizer.ggml.eos_token_id", 248044));
+        kv.push_back(fixture::u32("tokenizer.ggml.eos_token_id", 248046));
+        kv.push_back(fixture::u32("tokenizer.ggml.bos_token_id", 248044));
+        kv.push_back(fixture::u32("tokenizer.ggml.padding_token_id", 248044));
         kv.push_back(fixture::f32("qwen4exp.rope.freq_base", 1e7f));
         kv.push_back(fixture::f32("qwen4exp.attention.layer_norm_rms_epsilon", 1e-6f));
         kv.push_back(fixture::u32s("qwen4exp.rope.dimension_sections", {11, 11, 10, 0}));

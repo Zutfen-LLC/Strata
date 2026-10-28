@@ -21,8 +21,10 @@ void logits_reference(const std::vector<float> &logits, int32_t token) {
     check(std::fabs(logits[0] - expected) <= 0.015f * (1 + std::fabs(expected)),
           "full model independent scalar logit reference");
     check(std::fabs(logits[1] + logits[0]) < 1e-5f, "opposite output rows");
+    check(std::fabs(logits[248046] - 0.125f / output_rms) <= 0.005f, "independent generation-EOS output row");
     for (size_t i = 2; i < logits.size(); ++i)
-        check(logits[i] == 0, "zero output rows");
+        if (i != 248046)
+            check(logits[i] == 0, "zero output rows");
 }
 } // namespace
 int main() {
@@ -34,6 +36,7 @@ int main() {
         auto session = PortableModelSession::open(fixture.paths, (fixture.root / "manifest").string(), opts, error);
         check(bool(session), error);
         check(session->position() == 0 && !session->poisoned() && !session->ended(), "fresh session");
+        check(session->eos() == 248046, "generation EOS comes from tokenizer metadata, not PLE");
         check(session->report().mapped_bytes > (170ull << 30), "huge tables/experts are mapped");
         check(session->report().host_weights < (6ull << 30) &&
                   session->report().expert_staging == 10 * fixture.fmt.bytes,
@@ -64,10 +67,19 @@ int main() {
               "bounded greedy generation feeds its token and stops at context");
         check(!session->step(5, logits, error) && session->poisoned(), "context exhausted step poisons");
         check(session->reset(error), error);
-        check(session->generate({248044, 5}, 2, result, error), error);
-        check(result.tokens.empty() && result.stop == PortableStop::eos && session->position() == 1 && session->ended(),
-              "EOS is consumed and terminates prompt/generation");
-        check(session->reset(error), error);
+        check(session->step(248044, logits, error, PortableTokenKind::generated), error);
+        check(!session->ended(), "PLE boundary token is not generation EOS");
+        check(session->generate({248046, 5}, 0, result, error), error);
+        check(result.tokens.empty() && result.stop == PortableStop::max_new && session->position() == 3 &&
+                  !session->ended(),
+              "prompt tokenizer EOS is a consumed turn separator, not a generation stop");
+        check(session->reset(error) && session->position() == 0 && !session->ended(), error);
+        check(session->generate({7}, 3, result, error), error);
+        check(result.tokens == std::vector<int32_t>{248046} && result.stop == PortableStop::eos &&
+                  session->position() == 2 && session->ended(),
+              "generated tokenizer EOS is fed once and stops generation");
+        check(!session->step(5, logits, error) && session->poisoned(), "ended session requires explicit reset");
+        check(session->reset(error) && !session->ended() && !session->poisoned(), error);
         check(!session->step(-1, logits, error) && session->poisoned(), "invalid token poisons");
         check(session->reset(error), error);
         check(!session->generate({}, 1, result, error) && !session->poisoned() && session->position() == 0,

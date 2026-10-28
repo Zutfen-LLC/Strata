@@ -170,7 +170,9 @@ int main(int argc, char **argv) {
         std::vector<float> logits;
         auto consume = [&](int32_t token, bool generated) {
             const uint64_t pos = session->position();
-            if (!session->step(token, logits, error))
+            if (!session->step(token, logits, error,
+                               generated ? strata::core::PortableTokenKind::generated
+                                         : strata::core::PortableTokenKind::input))
                 throw std::runtime_error(error);
             device_memory("token-complete", pos);
             if (!dump.empty()) {
@@ -190,11 +192,8 @@ int main(int argc, char **argv) {
                       << ",\"greedy_next\":" << std::max_element(logits.begin(), logits.end()) - logits.begin()
                       << "}\n";
         };
-        for (int32_t token : tokens) {
+        for (int32_t token : tokens)
             consume(token, false);
-            if (session->ended())
-                break;
-        }
         size_t generated = 0;
         while (!session->ended() && generated < max_new && session->position() < opts.context) {
             const int32_t next = int32_t(std::max_element(logits.begin(), logits.end()) - logits.begin());

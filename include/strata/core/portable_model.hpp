@@ -53,6 +53,7 @@ struct PortableModelReport {
     std::string identity_evidence;
 };
 enum class PortableStop { none, eos, context, max_new };
+enum class PortableTokenKind { input, generated };
 struct PortableGeneration {
     std::vector<int32_t> tokens;
     PortableStop stop = PortableStop::none;
@@ -66,7 +67,11 @@ class PortableModelSession {
                                                       const std::string &local_manifest, PortableModelOptions options,
                                                       std::string &error);
     ~PortableModelSession();
-    bool step(int32_t token, std::vector<float> &logits, std::string &error);
+    // Input/teacher-forced turn separators never terminate generation.
+    // Only a generated tokenizer EOS marks ended(); PLE handles every token
+    // with its separate metadata history boundary, regardless of token kind.
+    bool step(int32_t token, std::vector<float> &logits, std::string &error,
+              PortableTokenKind kind = PortableTokenKind::input);
     bool generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result, std::string &error);
     bool reset(std::string &error);
     uint64_t position() const;
