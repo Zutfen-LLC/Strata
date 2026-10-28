@@ -119,17 +119,53 @@ can cover only expert-containing shards, such as shards 4–6 of this model;
 it is not a six-shard checksum manifest. The existing parser validates it.
 The provider compares every expert tensor's shape/type, source filename/size
 and absolute role ranges with the GGUF directory. Each selected expert is
-checked against the retained blob digest before execution. There is no setup
+checked against the retained blob digest on first use, then its verified native
+view is reused by this model instance. There is no setup
 scan of all expert bytes and no new full-file checksum claim.
 
 Standard `NativeFmt` Q8 experts consist of the GGUF gate, up and down slices
 in order. The provider validates row sizes, offsets and blob size against
-`native_fmt`, copies the selected slices into a reusable ten-expert staging
-arena, quantizes with `native_quant_act`, and calls
+`native_fmt`, copies first-use slices into a reusable ten-expert staging arena
+for verification, then points native jobs directly into the session-owned GGUF
+mappings. Repeated hits skip both copies and paired forward/reverse FNV-1a
+scans. Quantization still uses `native_quant_act` and execution calls
 `ExpertPool::run_split_multi_native`. It never substitutes the canonical
 engine's packed weight layout, expands experts to F32, or creates another
 unbounded arena. Rows are unweighted and follow route order. `PortableFfn`
 alone applies router weights and reduces them.
+
+Model files must remain immutable from open through session destruction,
+including during each dispatch. The provider checks every source's size and
+modification time before dispatch; a time change invalidates all verified
+entries, while a size change or metadata error rejects the request. Changed
+selected payloads still fail their first digest check. Intentional model edits
+require reopening the session; this is not a hot-reload facility. Reset retains
+verification state for unchanged files and does not repair model identity.
+
+This differs from the former provider's digest on every dispatch. Metadata
+checks detect ordinary writes, not adversarial mutation during execution,
+restored timestamps, same-size replacements preserving modification time, or
+filesystems that hide changes within their timestamp resolution. Read-only
+mapping permissions do not make backing files immutable. Native execution
+reads the mappings, not the staging snapshot whose digest was checked, so
+source stability must cover copy, digest and native execution even on first use. No file lock or new
+security setting is added. The explicit `--expert-dispatch-oracle` comparison
+mode retains the former copy/digest-per-dispatch path and executes copied
+bytes. Neither mode is a cryptographic or concurrent-mutation guarantee.
+
+`expert_work` CLI records are cumulative per session: hits, verifications,
+copied bytes, digest input bytes (two logical byte accesses each), native
+batches and source invalidations. Verification keys are local layer/expert
+indices bound to validated role layout and the owned model; no global cache
+or F32 expert expansion exists. Cache metadata fits within the existing
+32 MiB manifest/index/state allowance. Staging and host admission caps remain
+unchanged. See `agenthandoffs/portable-cpu-expert-proof-v2.md` for the matched
+comparison recipe. Parent/operator reports all 41 raw logit rows and stdout
+byte-identical in the physical V340 pair at `ac85ff3`, with fewer copy/digest
+bytes and unchanged native batch counts. The fixed oracle-first timing is
+order-biased and does not establish a general speedup. See
+`agenthandoffs/portable-cpu-expert-physical-results-v1.md` for the attributed
+receipt. The failed CUDA parity screen remains failed.
 
 ## Memory and current limits
 

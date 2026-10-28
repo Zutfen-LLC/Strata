@@ -160,6 +160,28 @@ class HostAdmission(unittest.TestCase):
             sample = json.loads((evidence / "memory.jsonl").read_text().splitlines()[0])
             self.assertEqual(sample["host"]["MemAvailable"], 7 << 30)
 
+    def test_comparison_flag_only_changes_expert_dispatch_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            commands = []
+            for oracle in (False, True):
+                evidence = pathlib.Path(directory) / str(oracle)
+                argv = ["smoke", "--binary", sys.executable, "--evidence", str(evidence),
+                        "--timeout-seconds", "60"]
+                if oracle:
+                    argv.append("--expert-dispatch-oracle")
+                with mock.patch.object(sys, "argv", argv), \
+                        mock.patch.object(smoke, "model_working_set", return_value={"working_set_bound_bytes": self.WORKING_SET}), \
+                        mock.patch.object(smoke, "host_memory", return_value=self.host(7 << 30)), \
+                        mock.patch.object(smoke.subprocess, "Popen") as launch:
+                    with self.assertRaisesRegex(ValueError, "insufficient host/cgroup headroom"):
+                        smoke.main()
+                    launch.assert_not_called()
+                command = json.loads((evidence / "argv.json").read_text())
+                for flag in ("--dump-logits", "--placements"):
+                    command[command.index(flag) + 1] = "OUTPUT"
+                commands.append(command)
+            self.assertEqual(commands[1], commands[0] + ["--expert-dispatch-oracle"])
+
     def test_finite_ancestor_cgroup_limits_are_included(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

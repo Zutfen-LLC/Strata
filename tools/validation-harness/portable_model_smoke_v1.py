@@ -192,6 +192,8 @@ def main():
     parser.add_argument("--split", type=int, default=32)
     parser.add_argument("--device-cap-mib", type=int, default=7680)
     parser.add_argument("--timeout-seconds", type=int, required=True)
+    parser.add_argument("--expert-dispatch-oracle", action="store_true",
+                        help="comparison only: copy and verify experts on every dispatch")
     args = parser.parse_args()
     devices = [int(value) for value in args.devices.split(",")]
     if len(devices) != 2 or len(set(devices)) != 2 or min(devices) < 0:
@@ -210,6 +212,8 @@ def main():
                "--vulkan", args.devices, "--device-cap-mib", ",".join([str(args.device_cap_mib)] * 2),
                "--split", str(args.split), "--dump-logits", str(evidence / "logits"),
                "--placements", str(evidence / "placements.tsv")]
+    if args.expert_dispatch_oracle:
+        command.append("--expert-dispatch-oracle")
     (evidence / "argv.json").write_text(json.dumps(command, indent=2) + "\n")
     cap = args.device_cap_mib << 20
     summary = {"launched": False, "status": "STOP", "prompt_tokens": len(PROMPT),

@@ -1,5 +1,6 @@
 #include "strata/core/portable_model.hpp"
 #include "portable_graph.hpp"
+#include "portable_cpu_experts.hpp"
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -30,99 +31,6 @@ PortableTensorView view(const GgufModel &m, const std::string &name) {
     }
     return v;
 }
-// Standard NativeFmt is deliberately distinct from the canonical Q2_0 packed
-// engine layout. Its validated GGUF Q8 rows are copied role by role; no F32
-// expert expansion and no assumption that a canonical packed blob is GGUF.
-class CpuExperts {
-    const GgufModel &model;
-    worker::LocalManifest manifest;
-    kernels::cpu::NativeFmt fmt;
-    std::array<std::array<PortableTensorView, 3>, L> weights;
-    std::vector<uint8_t> staging;
-    std::unique_ptr<kernels::cpu::ExpertPool> pool;
-
-  public:
-    CpuExperts(const GgufModel &m, const std::string &path, const PortableModelOptions &opts) : model(m) {
-        std::string error;
-        require(worker::read_local_manifest(path, manifest, error), error);
-        require(manifest.n_layers == L && manifest.n_expert == NE && manifest.n_embd == H && manifest.n_ff == FF &&
-                    manifest.gu_type == 8 && manifest.d_type == 8,
-                "portable model: expert manifest geometry/type mismatch");
-        require(kernels::cpu::native_fmt(8, 8, H, FF, fmt, error), error);
-        require(fmt.gu_row == H / 32 * 34 && fmt.d_row == FF / 32 * 34 && fmt.up_off == FF * fmt.gu_row &&
-                    fmt.down_off == 2 * fmt.up_off && fmt.bytes == fmt.down_off + H * fmt.d_row && !fmt.tail_off &&
-                    !fmt.had_gu && !fmt.had_d,
-                "portable model: unsupported native Q8 expert layout");
-        require(K * fmt.bytes <= opts.expert_staging_cap, "portable model: expert staging cap too small");
-        const char *roles[]{"gate", "up", "down"};
-        for (size_t l = 0; l < L; ++l)
-            for (size_t r = 0; r < 3; ++r) {
-                const auto name = "blk." + std::to_string(l) + ".ffn_" + roles[r] + "_exps.weight";
-                size_t shard = 0;
-                const auto *t = model.find(name, &shard);
-                require(t && model.in_bounds(*t, shard), "portable model: missing expert tensor " + name);
-                const auto &range = manifest.layers[l][r];
-                const auto &file = manifest.files[range.file];
-                const size_t per = r < 2 ? fmt.up_off : fmt.bytes - fmt.down_off;
-                require(t->type == 8 && t->shape == std::vector<uint64_t>{r < 2 ? H : FF, r < 2 ? FF : H, NE} &&
-                            tensor_payload_bytes(*t) == per * NE && range.bytes == per &&
-                            range.offset == model.shard(shard).data_start() + t->offset &&
-                            file.name == std::filesystem::path(model.shard(shard).path()).filename().string() &&
-                            file.bytes == model.shard(shard).file_size(),
-                        "portable model: expert manifest/header/range mismatch: " + name);
-                weights[l][r] = view(model, name);
-            }
-        staging.resize(K * fmt.bytes);
-        require(opts.expert_workers >= 1 && opts.expert_workers <= 256,
-                "portable model: expert worker count outside [1,256]");
-        // Explicit count, no affinity changes to unrelated processes/services.
-        pool = std::make_unique<kernels::cpu::ExpertPool>(opts.expert_workers, false);
-    }
-    size_t bytes() const { return staging.size(); }
-    const worker::LocalManifest &identity() const { return manifest; }
-    bool run(int64_t layer, const PortableRoute &route, std::vector<float> &rows, std::string &error) {
-        error.clear();
-        rows.clear();
-        try {
-            require(layer >= 0 && layer < int64_t(L) && route.ids.size() == K && route.activation.size() == H,
-                    "portable model: invalid expert request");
-            finite(route.activation, "expert activation");
-            alignas(64) std::array<uint8_t, kernels::cpu::kNativeActBytes> activation{};
-            kernels::cpu::native_quant_act(fmt, route.activation.data(), activation.data());
-            rows.assign(K * H, 0);
-            std::array<kernels::cpu::ExpertJobMulti, K> jobs{};
-            const size_t offsets[]{0, fmt.up_off, fmt.down_off};
-            const size_t sizes[]{fmt.up_off, fmt.up_off, fmt.bytes - fmt.down_off};
-            std::set<int32_t> seen;
-            for (size_t slot = 0; slot < K; ++slot) {
-                const int32_t id = route.ids[slot];
-                require(id >= 0 && id < int32_t(NE) && seen.insert(id).second,
-                        "portable model: expert ID duplicate/out of range");
-                auto *blob = staging.data() + slot * fmt.bytes;
-                for (size_t r = 0; r < 3; ++r)
-                    std::memcpy(blob + offsets[r],
-                                static_cast<const uint8_t *>(weights[size_t(layer)][r].data) + size_t(id) * sizes[r],
-                                sizes[r]);
-                const auto digest = worker::blob_digest(blob, fmt.bytes);
-                const auto expected = manifest.digests[size_t(layer) * NE + size_t(id)];
-                require(digest.a == expected.a && digest.b == expected.b,
-                        "portable model: selected expert digest mismatch at layer " + std::to_string(layer) +
-                            " expert " + std::to_string(id));
-                jobs[slot].blob = blob;
-                jobs[slot].nt = 1;
-                jobs[slot].nact[0] = activation.data();
-                jobs[slot].out[0] = rows.data() + slot * H;
-            }
-            pool->run_split_multi_native(fmt, jobs.data(), int(K));
-            finite(rows, "expert rows"); // deliberately unweighted, in route order
-            return true;
-        } catch (const std::exception &e) {
-            rows.clear();
-            error = e.what();
-            return false;
-        }
-    }
-};
 struct Layer {
     std::unique_ptr<PortableGdnLayer> gdn;
     std::unique_ptr<PortableQsaLayer> qsa;
@@ -187,7 +95,7 @@ void inventory(const GgufModel &m) {
 struct PortableModelSession::Impl {
     PortableModelOptions opts;
     GgufModel model; // before all consumers; destroyed last
-    std::unique_ptr<CpuExperts> experts;
+    std::unique_ptr<portable_detail::CpuExperts> experts;
     PortableTensorView embedding;
     std::vector<Layer> layers;
     std::unique_ptr<PortableHead> head;
@@ -242,12 +150,15 @@ struct PortableModelSession::Impl {
         }
         for (size_t s = 0; s < model.size(); ++s)
             report.mapped_bytes += model.shard(s).file_size();
-        experts = std::make_unique<CpuExperts>(model, manifest, opts);
+        experts = std::make_unique<portable_detail::CpuExperts>(model, manifest, opts);
         report.expert_staging = experts->bytes();
         report.retained_manifest_identity_a = experts->identity().identity.a;
         report.retained_manifest_identity_b = experts->identity().identity.b;
-        report.identity_evidence = "SWLOCAL1 expert ranges/file sizes matched; selected expert digests verified at "
-                                   "dispatch; six GGUF headers/inventory/bounds checked; no new full-file hashes";
+        report.identity_evidence =
+            std::string("SWLOCAL1 expert ranges/file sizes matched; selected expert digests verified ") +
+            (opts.expert_dispatch_oracle ? "on every dispatch (staging oracle); " :
+             "on first use after source metadata changes (immutable sources required); ") +
+            "six GGUF headers/inventory/bounds checked; no new full-file hashes";
         // Pool-owned split scratch is capped at 96 experts, MAXT=8. Include
         // its allocation, per-worker scratch/stacks and bounded manifest/index.
         report.host_state_bound = (32u << 20) + size_t(opts.expert_workers + 1) * (9u << 20);
@@ -431,6 +342,7 @@ uint64_t PortableModelSession::position() const { return impl_->pos; }
 bool PortableModelSession::poisoned() const { return impl_->poison; }
 bool PortableModelSession::ended() const { return impl_->eos_seen; }
 int32_t PortableModelSession::eos() const { return impl_->eos_id; }
+PortableExpertWork PortableModelSession::expert_work() const { return impl_->experts->work(); }
 const PortableModelReport &PortableModelSession::report() const { return impl_->report; }
 const std::vector<PortablePlacement> &PortableModelSession::placements() const { return impl_->placement; }
 bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result,
