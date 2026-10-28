@@ -62,6 +62,7 @@ struct PortableModelOptions {
     bool expert_timings = false; // opt-in coarse provider/executor host-call boundaries
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
     bool gdn_resident_weights = false; // opt-in GDN attention only
+    bool gdn_resident_state = false; // opt-in; independent of weight residency
     bool dense_resident_weights = false; // opt-in attention, FFN and head weights
 };
 struct PortableExpertWork {
@@ -87,6 +88,7 @@ struct PortableModelReport {
     size_t graph_admission_bound = 0;
     size_t host_scheduler = 0;
     std::vector<size_t> device_scheduler, device_workspace_bound, device_token_temporary_bound, device_shared_conversion_bound, device_admission;
+    std::vector<size_t> device_state; // actual aligned session state, separate from schedulers/weights
     std::vector<size_t> device_weights; // actual persistent dense weights per physical backend
     uint64_t retained_manifest_identity_a = 0, retained_manifest_identity_b = 0;
     // Header/range checks plus first-use selected expert digests; no new

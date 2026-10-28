@@ -177,6 +177,7 @@ struct PortableModelSession::Impl {
         report.host_state_bound = (32u << 20) + size_t(opts.expert_workers + 1) * (9u << 20);
         report.device_admission.assign(opts.accelerators.size(), 0);
         report.device_scheduler.assign(opts.accelerators.size(), 0);
+        report.device_state.assign(opts.accelerators.size(), 0);
         report.device_weights.assign(opts.accelerators.size(), 0);
         report.device_workspace_bound.assign(opts.accelerators.size(), 0);
         report.device_token_temporary_bound.assign(opts.accelerators.size(), 0);
@@ -203,11 +204,15 @@ struct PortableModelSession::Impl {
             require(opts.layer_graph_cap <= SIZE_MAX - private_workspace, "portable model: graph cap overflow");
             const bool resident = !opts.accelerators.empty() &&
                                   (opts.dense_resident_weights || (opts.gdn_resident_weights && l % 4 != 3));
+            const size_t state_bound = opts.gdn_resident_state && l % 4 != 3 && !opts.accelerators.empty()
+                                           ? PortableGdnOptions{}.resident_state_budget : 0;
+            require(state_bound <= SIZE_MAX - opts.layer_graph_cap - private_workspace,
+                    "portable model: resident state preflight overflow");
             const size_t resident_bound = resident ? opts.layer_weight_cap : 0;
-            require(resident_bound <= SIZE_MAX - opts.layer_graph_cap - private_workspace,
+            require(resident_bound <= SIZE_MAX - opts.layer_graph_cap - private_workspace - state_bound,
                     "portable model: resident weight preflight overflow");
             preflight(device(l), opts.layer_weight_cap,
-                      opts.layer_graph_cap + private_workspace + resident_bound, 128u << 20);
+                      opts.layer_graph_cap + private_workspace + resident_bound + state_bound, 128u << 20);
             Layer layer;
             if (l % 4 == 3) {
                 PortableQsaOptions o;
@@ -217,6 +222,7 @@ struct PortableModelSession::Impl {
                 require(bool(layer.qsa), "portable model: layer " + std::to_string(l) + ": " + error);
             } else {
                 PortableGdnOptions o;
+                o.resident_state = opts.gdn_resident_state;
                 o.resident_attention_weights = opts.gdn_resident_weights;
                 o.execution = execution(l, false);
                 layer.gdn = PortableGdnLayer::from_gguf(model, int64_t(l), o, error);

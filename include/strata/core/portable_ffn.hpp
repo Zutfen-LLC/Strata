@@ -59,6 +59,7 @@ struct PortableMemoryUsage {
     // Only the verified Vulkan backend-context X conversion buffer. Other
     // backend/private buffers remain additive in device_extra_bound.
     size_t device_shared_conversion_bound = 0;
+    size_t device_state = 0; // actual aligned persistent session state
     size_t device_weights = 0; // actual aligned persistent weights, separate from scheduler storage
 };
 

@@ -5,7 +5,7 @@ using namespace strata::core;
 namespace {
 void check(bool b,const char* e){if(!b)throw std::runtime_error(e);}
 PortableModelReport fresh(){
-    PortableModelReport r;r.device_admission={0,0};r.device_scheduler={0,0};r.device_weights={0,0};
+    PortableModelReport r;r.device_admission={0,0};r.device_scheduler={0,0};r.device_state={0,0};r.device_weights={0,0};
     r.device_workspace_bound={0,0};r.device_shared_conversion_bound={0,0};r.device_token_temporary_bound={0,0};return r;
 }
 }
@@ -56,6 +56,19 @@ int main(){
               weights.device_weights==saved.device_weights && weights.device_scheduler==saved.device_scheduler &&
               weights.device_workspace_bound==saved.device_workspace_bound,"resident refusal preserves every ledger");
         check(weights.device_weights[1]==0,"resident weights remain per-die");
+        auto states=fresh();PortableMemoryUsage state;
+        state.device_state=4*M;state.device_graph=M;
+        portable_detail::account_device_memory(states,0,10*M,state);
+        portable_detail::account_device_memory(states,0,10*M,state);
+        portable_detail::account_device_memory(states,1,5*M,state);
+        check(states.device_state[0]==8*M && states.device_state[1]==4*M &&
+              states.device_admission[0]==10*M && states.device_scheduler[0]==2*M,
+              "persistent state sums once per layer, independently per die");
+        const auto saved_state=states;refused=false;
+        try{portable_detail::account_device_memory(states,0,14*M,state);}catch(const std::exception&){refused=true;}
+        check(refused && states.device_state==saved_state.device_state &&
+              states.device_admission==saved_state.device_admission && states.device_scheduler==saved_state.device_scheduler,
+              "state admission refusal transactional");
         auto overflow=fresh();overflow.device_admission[0]=std::numeric_limits<size_t>::max()-1;
         overflow.device_scheduler[0]=overflow.device_admission[0];
         q={};q.device_graph=2;refused=false;

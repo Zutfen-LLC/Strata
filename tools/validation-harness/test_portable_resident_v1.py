@@ -77,7 +77,7 @@ class HarnessTest(unittest.TestCase):
             r.tick=stop
             with self.assertRaisesRegex(ValueError,'guard STOP'): r.request([5],0,1)
         self.run_fake('ok',action)
-    def main_run(self,pressure,timings=False,resident_weights=False,dense_weights=False):
+    def main_run(self,pressure,timings=False,resident_weights=False,dense_weights=False,state_resident=False):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); out=root/'out'; tokens=root/'tokens.json';tokens.write_text('[5,7]')
             plans=[root/'p0',root/'p1']
@@ -94,6 +94,7 @@ class HarnessTest(unittest.TestCase):
             if timings: args+=['--expert-timings']
             if resident_weights: args+=['--gdn-resident-weights']
             if dense_weights: args+=['--dense-resident-weights']
+            if state_resident: args+=['--gdn-resident-state']
             with mock.patch.object(sys,'argv',args), mock.patch.object(M,'Resident',side_effect=runner), \
                  mock.patch.object(M.S,'host_memory',return_value=host), \
                  mock.patch.object(M.S,'model_working_set',return_value=dict(working_set_bound_bytes=0)), \
@@ -115,6 +116,7 @@ class HarnessTest(unittest.TestCase):
             self.assertEqual('--expert-timings' in commands[0],timings)
             self.assertEqual(commands[0].count('--gdn-resident-weights'),int(resident_weights))
             self.assertEqual(commands[0].count('--dense-resident-weights'),int(dense_weights))
+            self.assertEqual(commands[0].count('--gdn-resident-state'),int(state_resident))
             self.assertEqual(commands[0][commands[0].index('--expert-tensor-mib')+1],'2404,2404')
             if not pressure:
                 self.assertEqual(len(receipt['requests']),4)
@@ -125,5 +127,7 @@ class HarnessTest(unittest.TestCase):
     def test_main_timing_forwarding(self): self.main_run(False,True)
     def test_main_resident_weight_forwarding(self): self.main_run(False,True,True)
     def test_main_dense_weight_forwarding(self): self.main_run(False,True,False,True)
+    def test_main_state_forwarding(self): self.main_run(False,state_resident=True)
+    def test_main_state_and_dense_forwarding(self): self.main_run(False,dense_weights=True,state_resident=True)
     def test_main_both_weight_flags(self): self.main_run(False,True,True,True)
 if __name__=='__main__': unittest.main()

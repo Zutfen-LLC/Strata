@@ -2,6 +2,7 @@
 #include "ggml-vulkan.h"
 #include "portable_gdn_fixture.hpp"
 #include <cstdlib>
+#include <limits>
 using namespace strata::core;
 using namespace gdn_fixture;
 int main(int argc, char **argv) {
@@ -28,11 +29,15 @@ int main(int argc, char **argv) {
                                                                            ggml_backend_free);
         check(bool(device) && !ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "distinct Vulkan buffers required");
-        for (int mode : {0, 1, 2}) {
+        for (int trial : {0, 1, 2, 3, 4, 5}) {
+            const int mode = trial % 3;
+            const bool state_resident = trial >= 3;
+            std::printf("state residency=%d\n", int(state_resident));
             const bool resident = mode != 0;
             std::printf("dense weight fixture: mode=%d (default=0 GDN-only=1 dense=2)\n", mode);
             Fixture f;
             PortableGdnOptions options;
+            options.resident_state = state_resident;
             options.resident_attention_weights = mode == 1;
             options.execution.resident_dense_weights = mode == 2;
             options.execution.accelerator = device.get();
@@ -40,6 +45,7 @@ int main(int argc, char **argv) {
             std::string error;
             auto layer = PortableGdnLayer::create(0, f.views, options, error);
             check(bool(layer), error);
+            check((layer->memory_usage().device_state > 0) == state_resident, "resident state ledger");
             check((layer->memory_usage().device_weights > 0) == resident, "resident weight ledger");
             check(layer->memory_usage().host_weights + layer->memory_usage().device_weights == layer->weight_bytes(),
                   "host/device weight allocation reconciliation");
@@ -78,7 +84,24 @@ int main(int argc, char **argv) {
             close(layer->recurrent_state(), state, 0, "Vulkan state rollback");
             close(layer->convolution_history(), history, 0, "Vulkan history rollback");
             close(layer->last_residual(), last, 0, "Vulkan residual rollback");
-            check(layer->tokens() == 2 && layer->reset(error), "Vulkan reset");
+            for (int failure = 0; failure < 2; ++failure) {
+                check(!layer->step(f.input(2),
+                    [failure](int64_t, const PortableRoute &, std::vector<float> &rows, std::string &) -> bool {
+                        if (failure == 0) throw std::runtime_error("callback threw");
+                        rows.assign(25600, std::numeric_limits<float>::quiet_NaN());
+                        return true;
+                    }, route, error, &trace), "Vulkan callback failure accepted");
+                check(layer->recurrent_state() == state && layer->convolution_history() == history &&
+                      layer->last_residual() == last && layer->tokens() == 2 && trace.attention.empty(),
+                      "Vulkan failed candidate committed");
+            }
+            // A valid retry must consume the last committed device state.
+            PortableRoute cpu_route;
+            check(cpu->step(f.input(2), experts(), cpu_route, error), error);
+            check(layer->step(f.input(2), experts(), route, error, &trace), error);
+            reference(f, state, history, trace, *layer);
+            close(layer->last_residual(), cpu->last_residual(), 0.003f, "Vulkan retry after rollback");
+            check(layer->tokens() == 3 && layer->reset(error), "Vulkan reset");
             state = layer->recurrent_state();
             history = layer->convolution_history();
             check(layer->step(f.input(0), experts(), route, error, &trace), error);
@@ -87,7 +110,7 @@ int main(int argc, char **argv) {
                         "SSM_CONV=%zu attention_MUL_MAT=%zu strict execution, independent state, full layer CPU parity, "
                         "reset and rollback passed\n",
                         description, ggml_backend_name(device.get()), gdn, conv, mat);
-        } // exercise both streamed and resident weight placement
+        } // state OFF/ON crossed with all three weight placements
         return 0;
     } catch (const std::exception &e) {
         std::fprintf(stderr, "%s\n", e.what());
