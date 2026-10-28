@@ -128,6 +128,22 @@ class Resident:
         self.selector.close(); self.log.close(); self.transcript.close()
 
 
+def model_phase_fields(metrics, consumed):
+    for key, multiplier in (('model_step_calls_delta',1),('gdn_layer_calls_delta',36),
+                            ('qsa_layer_calls_delta',12),('output_head_calls_delta',1)):
+        if metrics[key] != consumed*multiplier: raise ValueError('model phase call capture incomplete')
+    step=metrics['model_step_ms_delta']; gdn=metrics['gdn_layer_ms_delta']
+    qsa=metrics['qsa_layer_ms_delta']; head=metrics['output_head_ms_delta']
+    gp=metrics['gdn_provider_ms_delta']; qp=metrics['qsa_provider_ms_delta']
+    residual=metrics['model_residual_ms_delta']; provider=metrics['expert_provider_ms_delta']
+    epsilon=max(1e-6,step*1e-9)
+    if min(step,gdn,qsa,head,gp,qp,residual,provider)<0 or not all(math.isfinite(v) for v in (step,gdn,qsa,head,gp,qp,residual,provider)) or \
+       gdn+qsa+head>step+epsilon or gp>gdn+epsilon or qp>qsa+epsilon or \
+       abs(gp+qp-provider)>epsilon or \
+       abs(step-gdn-qsa-head-residual)>epsilon:
+        raise ValueError('model phase containment/reconciliation failed')
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--binary', type=Path, required=True)
@@ -202,6 +218,7 @@ def main():
             result=runner.request(tokens,args.max_new,index)
             if args.expert_timings:
                 m=result['metrics']
+                model_phase_fields(m,len(result['rows']))
                 if m['expert_provider_calls_delta']!=len(result['rows'])*48 or m['expert_provider_ms_delta']<=0:
                     raise ValueError('provider timing/call capture incomplete')
                 if len(m['gpu_infer_rows_ms_delta'])!=2 or len(m['gpu_infer_rows_calls_delta'])!=2 or \

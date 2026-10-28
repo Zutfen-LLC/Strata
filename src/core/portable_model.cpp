@@ -116,6 +116,7 @@ struct PortableModelSession::Impl {
     bool poison = false, eos_seen = false;
     double provider_ms = 0;
     uint64_t provider_calls = 0;
+    PortableModelWork model_work;
     size_t vocabulary = 0;
     Impl(const std::vector<std::string> &shards, const std::string &manifest, PortableModelOptions options)
         : opts(std::move(options)), model(shards) {
@@ -322,6 +323,7 @@ struct PortableModelSession::Impl {
         return true;
     }
     bool step(int32_t token, std::vector<float> &logits, std::string &error, PortableTokenKind kind) {
+        portable_detail::ScopedExpertTimer<> step_timer(opts.expert_timings, model_work.step_ms, model_work.step_calls);
         error.clear();
         logits.clear();
         if (poison) {
@@ -353,12 +355,24 @@ struct PortableModelSession::Impl {
                 return experts->run(l, r, rows, e);
             };
             for (size_t l = 0; l < layers.size(); ++l) {
-                const bool ok = layers[l].step(token, pos, residual, dispatch, error);
-                require(ok, "portable model: token position " + std::to_string(pos) + " layer " + std::to_string(l) +
-                                ": " + error);
+                const bool gdn = bool(layers[l].gdn);
+                const double provider_before = provider_ms;
+                {
+                    portable_detail::ScopedExpertTimer<> layer_timer(opts.expert_timings,
+                        gdn ? model_work.gdn_ms : model_work.qsa_ms,
+                        gdn ? model_work.gdn_calls : model_work.qsa_calls);
+                    const bool ok = layers[l].step(token, pos, residual, dispatch, error);
+                    require(ok, "portable model: token position " + std::to_string(pos) + " layer " + std::to_string(l) +
+                                    ": " + error);
+                }
+                if (opts.expert_timings)
+                    (gdn ? model_work.gdn_provider_ms : model_work.qsa_provider_ms) += provider_ms-provider_before;
             }
-            const bool head_ok = head->run(residual, logits, error);
-            require(head_ok, "portable model: output head: " + error);
+            {
+                portable_detail::ScopedExpertTimer<> head_timer(opts.expert_timings, model_work.head_ms, model_work.head_calls);
+                const bool head_ok = head->run(residual, logits, error);
+                require(head_ok, "portable model: output head: " + error);
+            }
             placement.clear();
             for (size_t l = 0; l < layers.size(); ++l)
                 append_placements(layers[l].placements(), int64_t(l));
@@ -421,6 +435,7 @@ PortableExpertWork PortableModelSession::expert_work() const {
 #endif
     return work;
 }
+PortableModelWork PortableModelSession::model_work() const { return impl_->model_work; }
 const PortableModelReport &PortableModelSession::report() const { return impl_->report; }
 const std::vector<PortablePlacement> &PortableModelSession::placements() const { return impl_->placement; }
 bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result,

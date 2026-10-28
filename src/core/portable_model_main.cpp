@@ -307,6 +307,7 @@ int main(int argc, char **argv) {
         expert_report("loaded",0);
         size_t request_id=0;
         strata::core::PortableExpertWork before;
+        strata::core::PortableModelWork model_before;
         Clock::time_point request_start;
         std::vector<uint64_t> device_entries_before, device_calls_before;
         std::vector<double> device_ms_before;
@@ -329,6 +330,7 @@ int main(int argc, char **argv) {
             sources->check();
             if(session->poisoned()) throw std::runtime_error("resident session poisoned");
             before=session->expert_work();
+            model_before=session->model_work();
             device_entries_before.clear();
             device_calls_before.clear(); device_ms_before.clear();
             for(const auto& d:session->report().expert_devices) {
@@ -439,6 +441,22 @@ int main(int argc, char **argv) {
                 for(size_t i=0;i<device_calls_before.size();++i)
                     std::cout << (i ? "," : "") << session->report().expert_devices[i].infer_rows_calls-device_calls_before[i];
                 std::cout << "]";
+                const auto model_after=session->model_work();
+                const double step=model_after.step_ms-model_before.step_ms;
+                const double gdn=model_after.gdn_ms-model_before.gdn_ms;
+                const double qsa=model_after.qsa_ms-model_before.qsa_ms;
+                const double head=model_after.head_ms-model_before.head_ms;
+                std::cout << ",\"model_step_ms_delta\":" << step
+                    << ",\"gdn_layer_ms_delta\":" << gdn
+                    << ",\"qsa_layer_ms_delta\":" << qsa
+                    << ",\"output_head_ms_delta\":" << head
+                    << ",\"model_residual_ms_delta\":" << step-gdn-qsa-head
+                    << ",\"gdn_provider_ms_delta\":" << model_after.gdn_provider_ms-model_before.gdn_provider_ms
+                    << ",\"qsa_provider_ms_delta\":" << model_after.qsa_provider_ms-model_before.qsa_provider_ms
+                    << ",\"model_step_calls_delta\":" << model_after.step_calls-model_before.step_calls
+                    << ",\"gdn_layer_calls_delta\":" << model_after.gdn_calls-model_before.gdn_calls
+                    << ",\"qsa_layer_calls_delta\":" << model_after.qsa_calls-model_before.qsa_calls
+                    << ",\"output_head_calls_delta\":" << model_after.head_calls-model_before.head_calls;
             }
             std::cout << "}\n" << std::flush;
             if(!std::cout) throw std::runtime_error("request result write failed");

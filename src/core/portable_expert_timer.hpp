@@ -2,7 +2,7 @@
 #include <chrono>
 #include <cstdint>
 namespace strata::core::portable_detail {
-// Two optional host-call boundaries only. No GPU synchronization or worker timer.
+// Optional coarse host-call scopes only. No GPU synchronization or worker timer.
 // Clock parameter permits deterministic capture/disabled-path tests.
 template<class Clock = std::chrono::steady_clock> class ScopedExpertTimer {
     double& elapsed_;
