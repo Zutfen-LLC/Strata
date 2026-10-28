@@ -44,8 +44,13 @@ from the actual free memory and leave measured headroom for the driver and
 other users. Each V340 die has its own 8 GiB; caps are never pooled. The CLI records
 Vulkan memory snapshots before model loading and after every token; placement
 TSV rows carry layer IDs. For the exact parent-dispatched real-model stages,
-use [the versioned Hermes recipe](../agenthandoffs/portable-model-hermes-v1.md),
+use [the versioned Hermes recipe](../agenthandoffs/portable-model-hermes-v2.md),
 which also samples aggregate VRAM for both PCI devices during the run.
+
+Repeated Vulkan indices are rejected before initialization. Session admission
+also rejects distinct backend handles that share the same ggml device identity,
+so one physical die cannot receive two independent ledgers. Equal device
+names/descriptions do not imply a shared identity.
 
 The split is contiguous: layers [0,32) on the first device, [32,48) on the
 second, then the global output head on the second. `--split` can select another
@@ -118,6 +123,18 @@ its actual vocabulary size. Each new module is checked against remaining
 caps before allocation, then reconciled to actual scheduler reservations and
 workspace bounds. These bounds can reject a placement that a more optimized
 implementation could fit.
+
+The real-weight supervisor separately admits the sum of six unique shard stat
+sizes as a worst-case file working set, plus the32GiB anonymous cap and8GiB
+reserve (about215.3GiB total for this model). It checks both MemAvailable and
+any finite inherited cgroup-v2 memory allowance. During loading and decoding,
+it samples MemAvailable, swap counters and child VmSwap every0.2s and stops
+only its own process group on an8GiB reserve breach, new system swap-out or
+child swap. Historical system swap is recorded and may be nonzero. The32GiB
+CLI cap alone does not bound total resident model memory. File mappings are
+logical address space; actual residency changes as pages are touched. Sampled
+guards and initial headroom do not guarantee that no transient OOM can occur
+between observations. The supervisor never changes a cgroup or retries.
 
 Driver pipelines/command pools and unrelated backend users are outside this
 owned-allocation ledger; operator-selected caps need actual headroom. No claim

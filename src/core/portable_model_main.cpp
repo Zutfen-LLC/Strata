@@ -107,6 +107,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("prompt/max-new exceeds context bound");
         if (devices.size() != caps.size() || devices.size() > 2)
             throw std::runtime_error("separate cap required for each Vulkan device");
+        if (devices.size() == 2 && devices[0] == devices[1])
+            throw std::runtime_error("duplicate Vulkan device index");
         std::vector<std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)>> backends;
         for (size_t i = 0; i < devices.size(); ++i) {
             if (devices[i] < 0 || caps[i] <= 0 || caps[i] > 8192)

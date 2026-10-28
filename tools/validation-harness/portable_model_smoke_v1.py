@@ -17,6 +17,107 @@ REFERENCE_PREFIX = [71093, 12305, 198]
 PCI = ["0000:07:00.0", "0000:0b:00.0"]
 MODEL_ROOT = pathlib.Path("/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66")
 MANIFEST = "/home/hermes/strata-pr10-9ed478e-20261025-05-peer/assets/manifest"
+HOST_ANONYMOUS_CAP = 32 << 30
+HOST_RESERVE = 8 << 30
+
+
+def model_working_set():
+    files, identities = [], set()
+    for number in range(1, 7):
+        path = MODEL_ROOT / f"Qwen3.8-Flash-Next-Q8_0-0000{number}-of-00006.gguf"
+        stat = path.stat()
+        identity = (stat.st_dev, stat.st_ino)
+        if identity in identities:
+            raise ValueError("model shard paths do not identify six unique files")
+        identities.add(identity)
+        files.append({"path": str(path), "bytes": stat.st_size})
+    # Worst-case file working set, not a measurement of resident file pages.
+    return {"files": files, "working_set_bound_bytes": sum(item["bytes"] for item in files)}
+
+
+def cgroup_limits(leaf, root):
+    limits = []
+    while True:
+        maximum = leaf / "memory.max"
+        if maximum.exists():
+            value = maximum.read_text().strip()
+            if value != "max":
+                limit = int(value)
+                current = int((leaf / "memory.current").read_text())
+                limits.append({"path": str(leaf), "limit": limit, "current": current,
+                               "available": max(0, limit-current)})
+        if leaf == root:
+            return limits
+        leaf = leaf.parent
+
+
+def cgroup_memory():
+    memberships = [line.split(":", 2) for line in pathlib.Path("/proc/self/cgroup").read_text().splitlines()]
+    unified = next((path for group, controllers, path in memberships if group == "0" and not controllers), None)
+    if unified is None:
+        if any("memory" in controllers.split(",") for _, controllers, _ in memberships):
+            raise ValueError("bounded host guard needs readable cgroup-v2 memory accounting; v1 memory controller found")
+        return {"limits": [], "available": None}
+    for line in pathlib.Path("/proc/self/mountinfo").read_text().splitlines():
+        mount, filesystem = line.split(" - ", 1)
+        if filesystem.split()[0] != "cgroup2":
+            continue
+        fields = mount.split()
+        root = pathlib.Path(fields[4].replace(chr(92) + "040", " ").replace(chr(92) + "134", chr(92))).resolve(strict=True)
+        mount_root = pathlib.PurePosixPath(fields[3])
+        membership = pathlib.PurePosixPath(unified)
+        # cgroup namespaces can expose a membership relative to their own
+        # root rather than the mount's global root. Never escape the mount.
+        relative = membership.relative_to(mount_root) if membership.is_relative_to(mount_root) else membership.relative_to("/")
+        leaf = (root / relative).resolve(strict=True)
+        if not leaf.is_relative_to(root):
+            raise ValueError("cannot resolve effective memory cgroup beneath its mount")
+        limits = cgroup_limits(leaf, root)
+        return {"limits": limits, "available": min((item["available"] for item in limits), default=None)}
+    raise ValueError("unified cgroup membership has no readable cgroup2 mount")
+
+
+def host_memory():
+    memory = {}
+    for line in pathlib.Path("/proc/meminfo").read_text().splitlines():
+        key, value = line.split(":", 1)
+        if key in {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"}:
+            memory[key] = int(value.split()[0]) * 1024
+    for line in pathlib.Path("/proc/vmstat").read_text().splitlines():
+        key, value = line.split()
+        if key in {"pswpin", "pswpout"}:
+            memory[key] = int(value)  # kernel counters in pages
+    for key in {"MemAvailable", "SwapTotal", "SwapFree", "pswpin", "pswpout"}:
+        if key not in memory:
+            raise ValueError(f"host memory observation missing {key}")
+    memory["SwapUsed"] = memory["SwapTotal"] - memory["SwapFree"]
+    memory["cgroup"] = cgroup_memory()
+    available = memory["cgroup"]["available"]
+    memory["effective_available"] = min(memory["MemAvailable"], available) if available is not None else memory["MemAvailable"]
+    return memory
+
+
+def host_admission_terms(working_set):
+    return {"working_set_bound_bytes": working_set, "anonymous_cap_bytes": HOST_ANONYMOUS_CAP,
+            "reserve_bytes": HOST_RESERVE,
+            "required_available_bytes": working_set + HOST_ANONYMOUS_CAP + HOST_RESERVE}
+
+
+def admit_host(memory, working_set):
+    terms = host_admission_terms(working_set)
+    required = terms["required_available_bytes"]
+    if memory["effective_available"] < required:
+        raise ValueError(f"insufficient host/cgroup headroom: available={memory['effective_available']} required={required}")
+    return terms
+
+
+def guard_host(memory, baseline, process):
+    if memory["effective_available"] < HOST_RESERVE:
+        raise ValueError("host/cgroup available memory breached 8 GiB reserve")
+    if memory["pswpout"] > baseline["pswpout"]:
+        raise ValueError("system swap-out grew from pre-launch baseline")
+    if process.get("VmSwap", 0) > 0:
+        raise ValueError("owned child VmSwap grew from zero baseline")
 
 
 def vram(pci):
@@ -31,7 +132,7 @@ def rss(pid):
     except FileNotFoundError:
         return {}
     return {line.split(":", 1)[0]: int(line.split()[1]) * 1024
-            for line in rows if line.startswith(("VmRSS:", "VmHWM:"))}
+            for line in rows if line.startswith(("VmRSS:", "VmHWM:", "VmSwap:"))}
 
 
 def placements(path, devices, split):
@@ -93,6 +194,7 @@ def main():
     command = [str(binary), "--model", str(MODEL_ROOT / "Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf"),
                "--manifest", MANIFEST, "--tokens", ",".join(map(str, PROMPT)),
                "--context", "64", "--max-new", "3", "--threads", "4", "--expert-workers", "12",
+               "--host-cap-mib", str(HOST_ANONYMOUS_CAP >> 20),
                "--vulkan", args.devices, "--device-cap-mib", ",".join([str(args.device_cap_mib)] * 2),
                "--split", str(args.split), "--dump-logits", str(evidence / "logits"),
                "--placements", str(evidence / "placements.tsv")]
@@ -104,6 +206,13 @@ def main():
                "memory_scope": "sampled aggregate per-PCI VRAM, including other users; not an exact transient peak"}
     process = None
     try:
+        working_set = model_working_set()
+        summary["model_file_working_set"] = working_set
+        baseline_host = host_memory()
+        summary["baseline_host"] = baseline_host
+        summary["host_admission"] = host_admission_terms(working_set["working_set_bound_bytes"])
+        admit_host(baseline_host, working_set["working_set_bound_bytes"])
+        summary["minimum_effective_available"] = baseline_host["effective_available"]
         initial = [vram(pci) for pci in PCI]
         summary["baseline_vram"] = initial
         for item in initial:
@@ -115,11 +224,19 @@ def main():
                 (evidence / "memory.jsonl").open("w") as memory:
             process = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
             summary["launched"] = True
+            summary["baseline_process"] = rss(process.pid)
+            guard_host(baseline_host, baseline_host, summary["baseline_process"])
             while True:
                 now = time.monotonic()
                 sample = [vram(pci) for pci in PCI]
-                memory.write(json.dumps({"seconds": now-start, "vram": sample, "process": rss(process.pid)}) + "\n")
+                host = host_memory()
+                child = rss(process.pid)
+                memory.write(json.dumps({"seconds": now-start, "vram": sample, "host": host, "process": child}) + "\n")
                 memory.flush()
+                summary["last_host"] = host
+                summary["last_process"] = child
+                summary["minimum_effective_available"] = min(summary["minimum_effective_available"], host["effective_available"])
+                guard_host(host, baseline_host, child)
                 for index, item in enumerate(sample):
                     peak[index] = max(peak[index], item["used"])
                     if item["used"] - initial[index]["used"] > cap:

@@ -204,11 +204,15 @@ struct PortableModelSession::Impl {
                 "portable model: context [1,256]/thread limits");
         require(opts.accelerators.size() <= 2 && opts.device_caps.size() == opts.accelerators.size(),
                 "portable model: supply a separate cap for each of at most two accelerators");
-        require(opts.accelerators.size() < 2 ||
-                    (opts.split >= 1 && opts.split < L && opts.accelerators[0] != opts.accelerators[1]),
-                "portable model: invalid contiguous split/duplicate accelerator");
-        for (auto *a : opts.accelerators)
+        require(opts.accelerators.size() < 2 || (opts.split >= 1 && opts.split < L),
+                "portable model: invalid contiguous split");
+        std::set<ggml_backend_dev_t> devices;
+        for (auto *a : opts.accelerators) {
             require(a != nullptr, "portable model: missing requested accelerator");
+            const auto device = ggml_backend_get_device(a);
+            require(device != nullptr, "portable model: requested accelerator has no device identity");
+            require(devices.insert(device).second, "portable model: duplicate physical accelerator device");
+        }
         require(check_architecture(model.meta()).empty(), "portable model: unsupported architecture");
         require(opts.expert_workers >= 1 && opts.expert_workers <= 256,
                 "portable model: expert workers must be in [1,256]");
