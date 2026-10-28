@@ -28,16 +28,16 @@ Vulkan-linked QSA CPU executable was rebuilt/rerun after that correction.
 No outstanding numerical or placement failure remains.
 
 Useful logs:
-- `/tmp/portable-qsa-final-vulkan.log` — final strict QSA result.
-- `/tmp/portable-qsa-final-cpu-ctest2.log` — final eight CPU CTests.
-- `/tmp/portable-qsa-final-vulkan-ctest.log` — eight Vulkan-linked CTests.
-- `/tmp/portable-qsa-checkpoint-vulkan-cpu.log` — rebuilt QSA CPU test after
+- `${BUILD_ARTIFACT_87C31802}` — final strict QSA result.
+- `${BUILD_ARTIFACT_4F449316}` — final eight CPU CTests.
+- `${BUILD_ARTIFACT_F7B092C1}` — eight Vulkan-linked CTests.
+- `${BUILD_ARTIFACT_C2CA6777}` — rebuilt QSA CPU test after
   removing the invalid admission-bound test.
-- `/tmp/portable-qsa-{ple,gdn,ffn}-regression.log` — strict existing device tests.
-- `/tmp/portable-qsa-final-vulkan-build.log`, `/tmp/portable-qsa-final-cpu-build.log`.
+- `${BUILD_ARTIFACT_1A2F734F},gdn,ffn}-regression.log` — strict existing device tests.
+- `${BUILD_ARTIFACT_494CC583}`, `${BUILD_ARTIFACT_33C87A18}`.
 
-Builds: `/tmp/strata-portable-qsa-build`, `/tmp/strata-portable-qsa-vulkan`,
-`/tmp/strata-portable-qsa-default`. Source checkout is task-7/strata.
+Builds: `${BUILD_ARTIFACT_FF6747B2}`, `${BUILD_ARTIFACT_4336C66D}`,
+`${BUILD_ARTIFACT_1A5228F7}`. Source checkout is task-7/strata.
 
 Remaining before final delivery: inspect full final diff, verify new source
 manifest, publish draft stacked on `codex/portable-ple-layer`, attach its URL,

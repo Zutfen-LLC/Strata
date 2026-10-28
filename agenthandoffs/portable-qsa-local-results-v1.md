@@ -10,7 +10,7 @@ GCC 16.2.1, CMake 3.31.6, retained upstream ggml at
 Two isolated builds used:
 
 ```sh
-/tmp/cmake-3.31.6-linux-x86_64/bin/cmake -S . -B /tmp/strata-portable-qsa-build \
+/tmp/cmake-3.31.6-linux-x86_64/bin/cmake -S . -B ${BUILD_ARTIFACT_FF6747B2} \
   -DCMAKE_BUILD_TYPE=Release -DSTRATA_PORTABLE_FFN=ON \
   -DSTRATA_PORTABLE_GDN=ON -DSTRATA_PORTABLE_QSA=ON \
   -DSTRATA_BUILD_TESTS=ON -DSTRATA_ENABLE_CUDA=OFF \
@@ -19,9 +19,9 @@ Two isolated builds used:
   -DSTRATA_GGML_DIR=/tmp/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d
 ```
 
-The second, `/tmp/strata-portable-qsa-vulkan`, adds `-DGGML_VULKAN=ON`,
-`-DCMAKE_PREFIX_PATH=/tmp/strata-spirv-headers-prefix` and
-`-DCMAKE_CXX_FLAGS=-I/tmp/strata-spirv-headers-prefix/include`. No installs.
+The second, `${BUILD_ARTIFACT_4336C66D}`, adds `-DGGML_VULKAN=ON`,
+`-DCMAKE_PREFIX_PATH=${BUILD_ARTIFACT_D2E5D17A}` and
+`-DCMAKE_CXX_FLAGS=-I${BUILD_ARTIFACT_A3EFA7CB}`. No installs.
 Built the three QSA targets, existing FFN/GDN/PLE CPU and Vulkan tests, and
 GGUF reader/split/geometry tests, with `--parallel 2`.
 
@@ -38,13 +38,13 @@ Strict Vulkan commands ran sequentially, one executable at a time:
 ```sh
 export GGML_VK_VISIBLE_DEVICES=0
 export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
-timeout 180s /tmp/strata-portable-qsa-vulkan/portable_qsa_vulkan_test \
+timeout 180s ${BUILD_ARTIFACT_F5A7A00E} \
   --device 0 --expect-device llvmpipe
-timeout 180s /tmp/strata-portable-qsa-vulkan/portable_ple_vulkan_test \
+timeout 180s ${BUILD_ARTIFACT_CE4A25A4} \
   --device 0 --expect-device llvmpipe
-timeout 120s /tmp/strata-portable-qsa-vulkan/portable_gdn_vulkan_test \
+timeout 120s ${BUILD_ARTIFACT_80BFA9E4} \
   --device 0 --expect-device llvmpipe
-timeout 120s /tmp/strata-portable-qsa-vulkan/portable_ffn_vulkan_test \
+timeout 120s ${BUILD_ARTIFACT_45783E66} \
   --device 0 --expect-device llvmpipe
 ```
 
@@ -79,7 +79,7 @@ and explicit fallback reporting. GGUF tests bind actual-shaped Q8_0/F32
 payloads, close the model and run, check required metadata and types, and
 reject unsupported RoPE/scaling aliases/extensions and PLE at layer3.
 
-Default-OFF configure `/tmp/strata-portable-qsa-default` succeeds and its target
+Default-OFF configure `${BUILD_ARTIFACT_1A5228F7}` succeeds and its target
 list contains no portable libraries/tests. Existing FFN/GDN/PLE sources,
 shared scheduler, CUDA/HIP/SYCL/Metal code have no diff against PR40. This is
 source/target gating evidence, not a default-engine binary comparison.

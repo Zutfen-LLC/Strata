@@ -1,7 +1,9 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Physical local CUDA / Vulkan timing result
 
-Completed on October 28, 2026 by Hermes, not by this coding task. Primary
-[Hermes result and cleanup report](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793161012072129).
+Completed on October 28, 2026 by operator, not by this coding task. Primary
+[operator result and cleanup report](PRIVATE_RECEIPT).
 Code source: ef2434a5ebad85f82139e5c13d0aeaf32d700a23. Recipe corrections:
 909641bf0585c8c3aee89b4c5f05306040184f04. Candidate portable binary SHA256:
 `8429fc3a82c86f4556d5b26adcf63c59e5372c774d857d94f1c0eab25782fb0a`.
@@ -56,7 +58,7 @@ reused that resident CPU cache.
 
 The exact expert-placement argv included `--expert-cache 960
 --expert-cache-per-layer --expert-cache-device1 1378 --vram-reserve-mib 1152`,
-`--expert-profile /home/hermes/strata-local-q8-20261023T152939Z/expert-profile.bin`,
+`--expert-profile ${PRIVATE_ARTIFACT_A777A264}`,
 `--adapt-every 0 --adapt-swaps 0 --pcie-frac 0 --remote-expert-opt`, and the
 retained CPU resident entry-row worker configuration. Worker settings included
 memory-budget-mib110756, workers12 and local-load-threads4.
@@ -68,7 +70,7 @@ PCIe or another GPU, out of278 routed entries in that counter's scope. These
 scopes differ and must not be summed into a total CPU/GPU work fraction. Total
 primary-GPU expert dispatch is not established by these excerpts. Configured
 environment values are not process readbacks after exit. Source:
-[Hermes native placement receipts](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793161378436649).
+[operator native placement receipts](PRIVATE_RECEIPT).
 The timing difference remains a comparison of unequal expert placements.
 
 Both dies recorded 1500 MHz GPU / 945 MHz HBM in all 189 retained two-second
@@ -83,8 +85,8 @@ restoration at 04:15:28 UTC and exited 0. Independent readback at 00:16:30 EDT
 confirmed both dies auto, no owned inference/guard/telemetry process remained,
 and native port17431 was closed. No artifacts were deleted.
 
-Evidence remains private on02 at `/home/hermes/local-performance-v1` and on05 at
-`/srv/models/inferswarm-artifacts/local-performance-v1`. These directories retain
+Evidence remains private on02 at `${PRIVATE_ARTIFACT_AF8C795A}` and on05 at
+`${PRIVATE_ARTIFACT_BD4E1786}`. These directories retain
 individual receipts, argv, stdout/stderr, placement, source/build identity and
 clock/temperature/cleanup evidence. This task read the linked report and its
 thread; it did not SSH hosts or independently retrieve private raw files.

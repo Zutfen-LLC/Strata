@@ -1,7 +1,7 @@
 # Local residency implementation checks
 
 Scope: the opt-in local provider and direct-source/borrowed-backend Vulkan
-executor additions in this commit, stacked on64634517. Local Valinor Linux
+executor additions in this commit, stacked on64634517. Local validation host Linux
 x86_64, GCC16.2.1, retained CMake3.31.6 and existing GGML/SPIR-V snapshots. No
 fleet SSH, physical GPU inference, clocks, model mutation, new dependencies or
 service changes. The source tree contains no generated model/cache payloads.
@@ -13,7 +13,7 @@ Passed:
   portable_cpu_experts_test and portable_model_test, two build jobs. Vulkan also
   builds strata-gpu-manifest. Uses the previously configured disconnected GGML
   snapshot at `/tmp/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d`, with
-  `/tmp/strata-spirv-headers-prefix` for Vulkan. That local dependency snapshot
+  `${BUILD_ARTIFACT_D2E5D17A}` for Vulkan. That local dependency snapshot
   lacks Git metadata; its retained path is provenance, not a new hash audit.
 - Four selected CTests in each configuration:
   `ctest --test-dir validation/{cpu,vulkan} --output-on-failure -R '^portable_(local_experts|timing_cli|cpu_experts|model)_test$'`.
@@ -54,7 +54,7 @@ GpuExecutor interface adds a default unsupported direct-loader method; CUDA
 source and execution are unchanged, but those backend builds remain unverified.
 Vulkan-linked host tests execute CPU substitution or fake executors and must not
 be represented as physical GPU offload. Keep the PR draft pending independent
-review and parent/Hermes hardware dispatch.
+review and parent/operator hardware dispatch.
 
 Raw configure/build/test/help receipts and local build trees remain untracked in
 `validation/`. The complete-source recipe is

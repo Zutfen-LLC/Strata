@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Two local Vulkan plans from a pinned source ranking
 
 **The ranked token and single frozen-case checkpoint completed.** See the
@@ -6,7 +8,7 @@ execution commands are retained for provenance, not a request to repeat them.
 The ranked placement has not run the full 12-case suite. No further fleet test
 is dispatched by this document.
 
-Parent review and Hermes dispatch only. This metadata utility stacks on PR45
+Parent review and operator dispatch only. This metadata utility stacks on PR45
 `3d7e20e1f9c7e173b468191251826a5e49ab4a47`. No fleet execution occurred here.
 Do not touch the running 12-case quality suite or its plans. Wait for its final
 result and owned-process/clock cleanup before this candidate's physical steps.
@@ -30,13 +32,13 @@ output hashes, geometry, counts and duplicate count. It never opens weights,
 starts inference, reconstructs CUDA/helper ownership or changes routing.
 
 Known candidate source on02:
-`/home/hermes/strata-local-q8-20261023T152939Z/expert-profile.bin`.
-Hermes's [read-only evidence](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793165687914299),
+`${PRIVATE_ARTIFACT_A777A264}`.
+operator's [read-only evidence](PRIVATE_RECEIPT),
 relayed by parent, reports 196632 bytes, SHA256
 `8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf`,
 STRP version 1, 48 layers, 512 experts, 24576 unique in-range ranked pairs and
 a consistent inverse-rank table. Adjacent receipts show the file was copied
-from `inferswarm03:/home/hermes/strata-trial-17ecafc/data/expert-profile.bin`
+from `validation host:${PRIVATE_ARTIFACT_596BE285}`
 and later used on02 local Q8 with per-layer primary placement and six coding
 requests. **The original generation trace is unknown.** This establishes a
 valid candidate order, not measured workload heat or how the order was built.
@@ -46,7 +48,7 @@ Obtain the complete original file on02/05, not a prefix, text conversion,
 regenerated profile or CUDA/helper complement. Preserve the original path and
 origin receipt beside it. The runtime exporter validates the independently
 supplied hash and full format before writing assignments; no raw profile is
-needed on Valinor. Partial writer rankings have size 98328 + 4 * n_ranked;
+needed on validation host. Partial writer rankings have size 98328 + 4 * n_ranked;
 this candidate's reported 196632-byte size matches its complete ranking.
 
 The format supports ordered placement but does not establish current workload
@@ -76,12 +78,12 @@ sha256sum "$EXPORT_DIR/source.tar" > "$EXPORT_DIR/source.sha256"
 ```
 
 Transfer only that source export and the small original profile/origin receipt.
-On05 use a fresh root below `/srv/models/inferswarm-artifacts`, for example
+On05 use a fresh root below `${PRIVATE_ARTIFACT_50028F15}`, for example
 `portable-local-ranked-v1-<commit-prefix>`. Verify the archive hash against the
 parent's independent receipt before extracting to `$ROOT/source`. Keep the source
 commit and archive hash beside the extracted tree. No new dependency download,
 C++ rebuild, model copy or expert disk cache is needed. Reuse the already verified
-binary and an existing `strata-gpu-manifest` executable; Hermes supplies that
+binary and an existing `strata-gpu-manifest` executable; operator supplies that
 tool's exact retained path and hash from its build receipt. Do not derive expected
 hashes from candidate files being checked. Keep all old source/build/results.
 
@@ -96,8 +98,8 @@ PROFILE_SHA=8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf
 : "${PLAN_TOOL:?existing strata-gpu-manifest absolute path}"
 : "${PLAN_TOOL_SHA:?independent retained executable SHA256}"
 SOURCE="$ROOT/source"
-MANIFEST=/home/hermes/strata-pr10-9ed478e-20261025-05-peer/assets/manifest
-BINARY=/srv/models/inferswarm-artifacts/portable-local-residency-large-v1/build/portable_model
+MANIFEST=${PRIVATE_ARTIFACT_32CC92CE}
+BINARY=${PRIVATE_ARTIFACT_79D942D4}
 BINARY_SHA=560507fa0b87a31206e03f172796fb3e60aae47ff5916aa45bd0de534bddae1b
 printf '%s  %s\n' "$PROFILE_SHA" "$PROFILE" "$PLAN_TOOL_SHA" "$PLAN_TOOL" \
   "$BINARY_SHA" "$BINARY" \
@@ -126,7 +128,7 @@ the mapped model on open. No full weight scan or cache regeneration. Export twic
 to another fresh metadata directory and compare all four files if a manual
 determinism receipt is desired; expected actual plan/output hashes become known
 only from the pinned original profile and manifest, and must be frozen before
-inference. Existing plans at `/home/hermes/amd-quality-pr37-split/plan-die*.plan`
+inference. Existing plans at `${PRIVATE_ARTIFACT_1AC007FA}`
 are never overwritten. This creates no native/CUDA plan or ownership change.
 
 ## Bounded physical checkpoint after the current suite completes
@@ -140,7 +142,7 @@ source/lifetime based. The retained conservative head bound still blocks 1152
 per die. New ownership may fail actual hits or admission; preserve that STOP.
 
 After verifying the current quality run has finished and restored its controls,
-Hermes uses the existing finite temperature/clock guard, maximum 30 minutes for
+operator uses the existing finite temperature/clock guard, maximum 30 minutes for
 this two-command checkpoint. Each command has a 325 s outer bound, with up to
 15 s owned cleanup; total at most 680 s. Metadata work stays outside the window.
 No discovery/native rerun, retry, altered gold, new tolerance or larger suite.
@@ -160,15 +162,15 @@ actual entries >0 on **both** dies, row_checks=entries, finite reported row erro
 strict dense placements, unchanged budgets, passed growth/free admission and
 owned cleanup. Zero hits, identity/admission/runtime guard failure or timeout is
 STOP, with no replacement profile to force a pass. The wrapper checks hits/rows;
-Hermes also inspects assigned counts and the retained resource receipts.
+operator also inspects assigned counts and the retained resource receipts.
 
 ```sh
-GGUF05=/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf
+GGUF05=${PRIVATE_ARTIFACT_ED0D8ADE}
 sha256sum -c "$ROOT/inputs-outputs.sha256"
 timeout --signal=TERM --kill-after=15s 325s \
   "$PYTHON05" -B "$SOURCE/tools/validation-harness/portable_quality_v1.py" \
   --gguf "$GGUF05" portable --single-case --binary "$BINARY" --binary-sha256 "$BINARY_SHA" \
-  --suite /srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2/suite \
+  --suite ${PRIVATE_ARTIFACT_021ADBD1} \
   --expert-plan "0:$PLAN0" --expert-plan "1:$PLAN1" --expert-tensor-mib 2404,2404 \
   --expert-workspace-mib 128,128 --expert-free-reserve-mib 512,512 --out "$ROOT/case1"
 ```
@@ -197,12 +199,12 @@ CUDA verdict. Parent handles independent review and release; no merge here.
 
 ## Physical ranked-placement result
 
-Hermes's [checkpoint report](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793167556883949),
+operator's [checkpoint report](PRIVATE_RECEIPT),
 relayed by parent, records one resident-token run and one frozen case1 run,
 each exactly once, using the source export at `4c5afefb49a57eea69d034ea0a8f4a1980957515`.
 This coding task recorded the supplied report; it did not run fleet inference.
 Evidence remains on05 under
-`/srv/models/inferswarm-artifacts/portable-local-ranked-v1-4c5afef`, including
+`${PRIVATE_ARTIFACT_91120C95}`, including
 `checkpoint-control/closeout.json`, `token/` and `case1/`. Preserve those receipts
 and all old-plan evidence. The original profile generation trace remains unknown.
 

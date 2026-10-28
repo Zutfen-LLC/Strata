@@ -34,7 +34,7 @@ Operational stages: `portable-model-hermes-v1.md`. Main interface and limits:
 - Supervisor --help and Python compilation, git diff --check.
 
 The Vulkan-linked seven-CTest CPU suite passed in35.79s, recorded in
-`/tmp/portable-model-vulkan-linked-cpu.log`. The final new head workspace
+`${BUILD_ARTIFACT_74001DCE}`. The final new head workspace
 bound was additionally exercised by strict Vulkan head execution. The model
 CLI is linked with Vulkan but the whole assembled model has not run on
 Vulkan locally.
@@ -44,15 +44,15 @@ Vulkan locally.
 Source: task-8/strata, branch codex/portable-model-session.
 CMake: `/tmp/cmake-3.31.6-linux-x86_64/bin/cmake`.
 Pinned dependency: `/tmp/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d`.
-CPU build: `/tmp/strata-portable-model-build`.
-Vulkan build: `/tmp/strata-portable-model-vulkan`.
-Default build: `/tmp/strata-portable-model-default`.
+CPU build: `${BUILD_ARTIFACT_83FD5685}`.
+Vulkan build: `${BUILD_ARTIFACT_4E1E2E30}`.
+Default build: `${BUILD_ARTIFACT_3C594F8C}`.
 
 Vulkan configure used Release, all portable flags and tests ON,
 STRATA_NATIVE_EXPERTS=ON, GGML_VULKAN=ON,
 FETCHCONTENT_FULLY_DISCONNECTED=ON,
-CMAKE_PREFIX_PATH=/tmp/strata-spirv-headers-prefix, and
-CMAKE_CXX_FLAGS=-I/tmp/strata-spirv-headers-prefix/include.
+CMAKE_PREFIX_PATH=${BUILD_ARTIFACT_D2E5D17A}, and
+CMAKE_CXX_FLAGS=-I${BUILD_ARTIFACT_36492828}
 
 The first configure/build omitted that include flag and failed compiling
 spirv/unified1/spirv.hpp; it was corrected using the already-existing header
@@ -67,30 +67,30 @@ GGML_VK_VISIBLE_DEVICES=0
 ```
 Executed with that environment, sequentially:
 ```
-timeout 90s /tmp/strata-portable-model-vulkan/portable_head_test --vulkan 0
-timeout 120s /tmp/strata-portable-model-vulkan/portable_ffn_vulkan_test --device 0 --expect-device llvmpipe
-timeout 120s /tmp/strata-portable-model-vulkan/portable_gdn_vulkan_test --device 0 --expect-device llvmpipe
-timeout 180s /tmp/strata-portable-model-vulkan/portable_ple_vulkan_test --device 0 --expect-device llvmpipe
-timeout 180s /tmp/strata-portable-model-vulkan/portable_qsa_vulkan_test --device 0 --expect-device llvmpipe
+timeout 90s ${BUILD_ARTIFACT_8915F53B} --vulkan 0
+timeout 120s ${BUILD_ARTIFACT_855E6BF1} --device 0 --expect-device llvmpipe
+timeout 120s ${BUILD_ARTIFACT_81477536} --device 0 --expect-device llvmpipe
+timeout 180s ${BUILD_ARTIFACT_5DB22BD4} --device 0 --expect-device llvmpipe
+timeout 180s ${BUILD_ARTIFACT_C2C4F360} --device 0 --expect-device llvmpipe
 ```
 
 Logs:
-- `/tmp/portable-model-publication-cpu-build.log`
-- `/tmp/portable-model-publication-cpu-ctest.log`
-- `/tmp/portable-model-vulkan-config2.log`
-- `/tmp/portable-model-vulkan-build2.log`
-- `/tmp/portable-model-head-workspace-build.log`
-- `/tmp/portable-model-head-vulkan-final2.log`
-- `/tmp/portable-model-{ffn,gdn,ple,qsa}-vulkan.log`
-- `/tmp/portable-model-vulkan-linked-cpu.log`
-- `/tmp/portable-model-final-gguf-{build,ctest}.log`
-- `/tmp/portable-model-smoke-admission-test.log`
-- `/tmp/portable-model-default-final-{config,targets}.log`
+- `${BUILD_ARTIFACT_4A4CD819}`
+- `${BUILD_ARTIFACT_99B50F4D}`
+- `${BUILD_ARTIFACT_C958B8DB}`
+- `${BUILD_ARTIFACT_1096FE3E}`
+- `${BUILD_ARTIFACT_23BBD0B1}`
+- `${BUILD_ARTIFACT_E8F5126A}`
+- `${BUILD_ARTIFACT_4F6FF6D3},gdn,ple,qsa}-vulkan.log`
+- `${BUILD_ARTIFACT_74001DCE}`
+- `${BUILD_ARTIFACT_E6536328},ctest}.log`
+- `${BUILD_ARTIFACT_6A7C3BD7}`
+- `${BUILD_ARTIFACT_262A9BCC},targets}.log`
 
 ## Pending and limits
 
 No first real-weight GGUF binding/run or physical simultaneous dual-V340
-execution has been performed by this task. Parent/Hermes owns stage dispatch
+execution has been performed by this task. Parent/operator owns stage dispatch
 and numerical interpretation. The final recipe uses the retained38-token
 prompt, context64, max-new3, explicit contiguous32/16 layer placement, head on
 final die, host PLE and in-process CPU experts. It preserves full-vocabulary
