@@ -188,3 +188,33 @@ invalid rows). CLI controls passed for parseable JSON with original gate failure
 and centered zero error, implementation hashes, and malformed file refusal.
 `git diff --check` passed. No real retained arrays were analyzed in this task;
 no runtime code, tolerance, inference or optimization changed.
+
+## Native head log interpretation — retained receipt1793151184.944419
+
+The parent reports retained02 stderr says `experimental native Q5_K head`.
+This wording does **not** establish a Q5_K/Q8_0 format mismatch. At both current
+source and historical tree `fd35f8032b41a05cbf4aff8bc2ceb4c49e0cb5c5`,
+`generate.cpp:5621` prints that literal after any successful `NativeHead::load`,
+without checking tensor type. `--native` defaults the native head source to
+its supplied GGUF, independently of the canonical pack. `NativeHead::load`
+finds `output.weight` in those shards, validates its actual supported GGML
+type/shape/bounds, copies the original payload and stores `type_`. It does not
+convert Q8_0 to Q5_K. `NativeHead::run` selects the special Q5_K path only for
+actual type13; Q8_0 type8 instead uses Q8_1 input packing and typed MMVQ.
+The retained executable filename contains fd35f803, but is not source proof;
+examining that tree only strengthens the log-label interpretation.
+
+The accompanying logged `weight_bytes()` is a cheap retained discriminator:
+H2560/vocab248320 Q8_0 requires675430400B (34B per32 weights), while Q5_K
+requires437043200B (176B per256). Those are payload counts, not allocator or
+VRAM totals. Request the full already-retained line if its byte count was
+omitted; no inference or payload scan is needed. The resolved native GGUF
+path plus its saved output tensor header would also settle source format.
+Do not infer a head-format mismatch from the label alone.
+
+The parent additionally reports301 native projection matrices/2975MiB,
+Q8_0 mapped embedding, CUDA0 staged HC, prefill64 with CPU share for chunks
+below1024, and run-level GPU/cache counters. These do not identify HC pack
+format or expert participation at position37. Keep them separate from the
+pending retained-row diagnostic and the unchanged failed numerical verdict.
+No runtime/product changes or new model execution were made for this check.
