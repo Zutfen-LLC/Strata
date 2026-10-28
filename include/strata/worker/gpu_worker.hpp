@@ -9,10 +9,15 @@ struct GpuExecutionTrace {
     std::vector<int32_t> experts,asset_slots,start,dst,tok,original;
 };
 // Test seam substitutes only execution, never protocol validation/cache/session logic.
+using GpuAssetReader = std::function<bool(const GpuAsset&, std::vector<uint8_t>&, std::string&)>;
 class GpuExecutor {
 public:
     virtual ~GpuExecutor() = default;
     virtual bool prepare(const GpuPlan&, uint64_t reserve, GpuCache&, GpuCounters&, std::string&) = 0;
+    // In-process loading without a network or persistent asset cache.
+    virtual bool prepare_source(const GpuPlan&, const GpuAssetReader&, GpuCounters&, std::string& err) {
+        err="executor does not support direct local assets"; return false;
+    }
     virtual bool infer(const GpuPlan&, const InferRequest&, InferReply&, std::string&) = 0;
     virtual bool supports_rows() const { return false; }
     virtual bool infer_rows(const GpuPlan&, const InferRequest&, EntryRowsReply&, std::string& err) {
