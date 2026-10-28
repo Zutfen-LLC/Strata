@@ -77,7 +77,7 @@ class HarnessTest(unittest.TestCase):
             r.tick=stop
             with self.assertRaisesRegex(ValueError,'guard STOP'): r.request([5],0,1)
         self.run_fake('ok',action)
-    def main_run(self,pressure,timings=False,resident_weights=False,dense_weights=False,state_resident=False):
+    def main_run(self,pressure,timings=False,resident_weights=False,dense_weights=False,state_resident=False,tensor_caps=None):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); out=root/'out'; tokens=root/'tokens.json';tokens.write_text('[5,7]')
             plans=[root/'p0',root/'p1']
@@ -91,6 +91,7 @@ class HarnessTest(unittest.TestCase):
             args=['resident','--binary',sys.executable,'--binary-sha256',M.Q.bundle.sha(sys.executable),
                   '--out',str(out),'--tokens-file',str(tokens),'--max-new','0',
                   '--plan',str(plans[0]),'--plan',str(plans[1])]
+            if tensor_caps is not None: args+=['--expert-tensor-mib',tensor_caps]
             if timings: args+=['--expert-timings']
             if resident_weights: args+=['--gdn-resident-weights']
             if dense_weights: args+=['--dense-resident-weights']
@@ -117,7 +118,7 @@ class HarnessTest(unittest.TestCase):
             self.assertEqual(commands[0].count('--gdn-resident-weights'),int(resident_weights))
             self.assertEqual(commands[0].count('--dense-resident-weights'),int(dense_weights))
             self.assertEqual(commands[0].count('--gdn-resident-state'),int(state_resident))
-            self.assertEqual(commands[0][commands[0].index('--expert-tensor-mib')+1],'2404,2404')
+            self.assertEqual(commands[0][commands[0].index('--expert-tensor-mib')+1],tensor_caps or '2404,2404')
             if not pressure:
                 self.assertEqual(len(receipt['requests']),4)
                 self.assertEqual(receipt['excluded_warmups'],1)
@@ -129,5 +130,22 @@ class HarnessTest(unittest.TestCase):
     def test_main_dense_weight_forwarding(self): self.main_run(False,True,False,True)
     def test_main_state_forwarding(self): self.main_run(False,state_resident=True)
     def test_main_state_and_dense_forwarding(self): self.main_run(False,dense_weights=True,state_resident=True)
+    def test_main_explicit_default_tensor_caps(self): self.main_run(False,tensor_caps='2404,2404')
+    def test_main_tensor_caps_with_state_and_dense(self):
+        self.main_run(False,dense_weights=True,state_resident=True,tensor_caps='3606,3606')
+    def test_invalid_tensor_caps_before_launch(self):
+        for caps in ('3606','3606,3606,1','0,3606','3606,0','-1,3606','8193,3606','3606,8193',
+                     '3606.0,3606','3606,NaN','3606, 3606',',3606','3606,','3606,+1'):
+            with self.subTest(caps=caps), tempfile.TemporaryDirectory() as d:
+                out=Path(d)/'out'
+                args=['resident','--binary',sys.executable,'--binary-sha256','0'*64,
+                      '--out',str(out),'--tokens-file',str(Path(d)/'missing-tokens'),'--max-new','32',
+                      '--plan','p0','--plan','p1','--expert-tensor-mib',caps]
+                with mock.patch.object(sys,'argv',args), mock.patch.object(sys,'stderr'), \
+                     mock.patch.object(M,'Resident') as child, self.assertRaises(SystemExit) as stopped:
+                    M.main()
+                self.assertEqual(stopped.exception.code,2)
+                child.assert_not_called()
+                self.assertFalse(out.exists())
     def test_main_both_weight_flags(self): self.main_run(False,True,True,True)
 if __name__=='__main__': unittest.main()
