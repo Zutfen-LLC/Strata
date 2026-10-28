@@ -1,5 +1,9 @@
 # Frozen twelve-case functional screen — Hermes v1
 
+**Superseded by portable-quality-hermes-v2.md. Do not dispatch v1.** The staged
+bundle/attached-resident premise was unsupported; v2 uses the verified retained
+driver’s owned worker lifecycle and the qualified PR43 binary hash.
+
 No model build. Use PR43 source `ac85ff3fdf0834c13437b69b1568d8704e9b0717`
 and its already qualified `portable_model` under
 `/srv/models/inferswarm-artifacts/portable-expert-ac85ff3/build/` on05. Parent

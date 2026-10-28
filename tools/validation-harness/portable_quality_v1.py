@@ -136,63 +136,124 @@ def run_portable(args, tok):
 
 
 
-def native_configuration(original, suite, output, expected_sha):
-    # Reuse the accepted lifecycle. Never start/restart/stop a resident worker.
-    import copy
-    cfg = copy.deepcopy(original)
-    if not cfg.get('attach_root') or not cfg.get('attached_worker_idle') or \
-       cfg.get('final_worker') != 'retain' or cfg.get('failure_worker') != 'retain':
-        raise ValueError('native template must retain an explicitly attached idle resident')
-    if len(cfg['arms']) != 1 or cfg['arms'][0].get('engine', 'engine') != 'engine' or cfg['arms'][0]['restart'] or cfg.get('worker_peers') or \
-       any(a.startswith('--remote-gpu-') for a in cfg['argv']):
-        raise ValueError('need one native arm without worker restart/offload peers')
-    if Q.bundle.sha(cfg['assets']['engine']) != expected_sha:
-        raise ValueError('native template executable is not selected reference')
-    if 'STRATA_FIRST_REQUEST_TRACE' in cfg['env']:
-        raise ValueError('trace-stop native template cannot run quality suite')
-    assets = {name: cfg['assets'][name] for name in ('engine', 'worker', 'manifest')}
-    assets.update(requests=str(Path(suite).resolve() / 'requests'),
-                  quality_manifest=str(Path(suite).resolve() / 'quality_manifest'))
-    old_paths = {cfg['assets'][name]: '@'+name for name in ('engine', 'worker', 'manifest')}
-    cfg['argv'] = [old_paths.get(arg, arg) for arg in cfg['argv']]
-    cfg['worker_argv'] = [old_paths.get(arg, arg) for arg in cfg['worker_argv']]
-    cfg.update(assets=assets, run_root=str(Path(output).resolve()), evaluation_mode='quality', capture_first_logits=True)
-    cfg['arms'][0].update(name='NATIVE12', requests=list(range(12)))
-    for key in ('reference', 'first_logits_reference'):
-        cfg['arms'][0].pop(key, None)
-    # Native existing harness must still validate all identities/limits/masks.
-    return cfg
+DRIVER_SHA256 = 'b5f1a5c10a0337d6254776ad01a19dd787076f41fd114538ea01f28708a1ae2f'
+NATIVE_SHA256 = '931569c089a4f04114395a428c85f85227142c733f4fa0511243d05f97b46b89'
+EXPERT_MANIFEST_SHA256 = '8cc9a1ca01ded6b747628522f3fc896c6ca315583461e9c3826edda8b8f62318'
+
+
+def retained_driver(path):
+    import importlib.util
+    if Q.bundle.sha(path) != DRIVER_SHA256:
+        raise ValueError('retained driver5 digest mismatch')
+    spec = importlib.util.spec_from_file_location('retained_native_driver5', path)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)  # imports definitions; never calls its main/distributed/TLS campaign
+    return driver
+
+
+def owned_native(driver, ndc, loadc, prompts, summary, output):
+    manifest, load, local, _unused_distributed = driver.prepare_argv(ndc, loadc)
+    worker_argv = [a.replace('@worker', ndc['assets']['worker']).replace('@manifest', manifest)
+                   for a in ndc['worker_argv']]
+    worker_argv[0] = ndc['assets']['worker']
+    driver.set_single_value(worker_argv, '--local-manifest', manifest)
+    driver.require_once(worker_argv, '--residency-forever')
+    driver.require_once(worker_argv, '--port', '17431')
+    if any(a in worker_argv for a in ('--bind', '--bind-ip', '--allow-peer')):
+        raise ValueError('only retained default loopback worker binding is allowed')
+    if driver.port_open(17431):
+        raise ValueError('127.0.0.1:17431 already occupied; do not touch existing listener')
+    driver.R, driver.DRIVER_LOG = output, output / 'driver.log'
+    worker, log = None, (output / 'cpu-worker.log').open('xb')
+    try:
+        worker = driver.subprocess.Popen(worker_argv,
+            env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','OMP_NUM_THREADS':'2'},
+            cwd=str(output), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        summary['owned_worker'] = dict(pid=worker.pid, argv=worker_argv)
+        started = time.monotonic()
+        while not driver.port_open(17431):
+            if worker.poll() is not None:
+                raise RuntimeError('owned CPU worker exited during startup')
+            if time.monotonic()-started > driver.WORKER_START_SECONDS:
+                raise TimeoutError('owned CPU worker startup budget')
+            time.sleep(2)
+        if worker.poll() is not None:
+            raise RuntimeError('owned CPU worker exited before LOAD')
+        summary['load'] = driver.engine_stage('load', loadc, load, '', False, 0, False)
+        if not driver.stage_ok(summary['load'], measured=False):
+            raise RuntimeError('owned resident LOAD failed; no requests started')
+        # Unchanged driver5 engine_stage owns READY/GEN/DONE/QUIT and reaps its engine.
+        # One fresh engine per case matches the portable CLI's sequence isolation.
+        for index, prompt in enumerate(prompts, 1):
+            case = output / f'case-{index:02d}'
+            case.mkdir()
+            driver.R = case
+            (case / 'request.txt').write_text('GEN 32 ' + ' '.join(map(str, prompt)) + '\n')
+            result = driver.engine_stage('local', ndc, local,
+                'GEN 32 ' + ' '.join(map(str, prompt)), True, 0, True)
+            Q.write(case / 'result.json', result)
+            if not driver.stage_ok(result, measured=True):
+                raise RuntimeError(f'native case{index} failed; no retry')
+            done = result['done']
+            ids = result['tokens']
+            if done['finish'] not in ('stop','length') or not 0 < len(ids) <= 32 or \
+               done['output_count'] != len(ids) or any(type(t) is not int or not 0 <= t < 248320 for t in ids):
+                raise ValueError('native abnormal/nonfinite/invalid completion')
+            logits = case / 'local' / 'local-first-logits.0'
+            if len(Q.compare_logits.read(logits)) != 248320:
+                raise ValueError('native finite first-logit vocabulary mismatch')
+            summary['requests'].append(dict(index=index, tokens=ids, finish=done['finish']))
+    finally:
+        driver.R = output
+        if worker is not None:
+            summary['cpu_worker_rc'] = driver.stop_process_group(worker, 'owned CPU worker')
+        log.close()
+    if summary.get('cpu_worker_rc') != 0 or driver.port_open(17431):
+        raise RuntimeError('owned CPU worker cleanup did not complete cleanly')
+
+
+def run_native(args, tok):
+    prompts, binding = frozen(tok, args.suite)
+    driver = retained_driver(args.driver)
+    ndc = json.loads(driver.NDC_PATH.read_text())
+    loadc = json.loads(driver.LOADC_PATH.read_text())
+    worker = ndc['assets']['worker']
+    manifest = ndc['assets']['manifest']
+    if driver.sha256(driver.ENGINE) != NATIVE_SHA256 or not driver.sha256(worker).startswith(driver.CPU_WORKER_SHA_PREFIX):
+        raise ValueError('retained native/worker executable identity mismatch')
+    if driver.sha256(manifest) != EXPERT_MANIFEST_SHA256:
+        raise ValueError('retained expert manifest mismatch')
+    args.out.mkdir(mode=0o700, exist_ok=False)
+    summary = dict(status='STOP', suite=binding, binary_sha256=NATIVE_SHA256, driver_sha256=DRIVER_SHA256,
+                   worker_sha256=driver.sha256(worker), manifest_sha256=driver.sha256(manifest), requests=[])
+    Q.write(args.out / 'input-pins.json', dict(ndon_config_sha256=driver.sha256(driver.NDC_PATH),
+            load_config_sha256=driver.sha256(driver.LOADC_PATH), driver_sha256=DRIVER_SHA256, suite=binding))
+    try:
+        owned_native(driver, ndc, loadc, prompts, summary, args.out)
+        summary['status'] = 'complete'
+    except BaseException as error:
+        summary['error'] = str(error)
+        raise
+    finally:
+        Q.write(args.out / 'summary.json', summary)
 
 
 def native_rows(root, binding, prompts, expected_sha):
     root = Path(root)
-    if (root / 'failure.json').exists():
-        raise ValueError('failed native run')
-    cfg = Q.bundle.verify(root)
-    if Q.bundle.sha(cfg['assets']['engine']) != expected_sha:
-        raise ValueError('native baseline binary differs from selected reference')
-    if json.loads(Path(cfg['assets']['quality_manifest']).read_text()) != binding or \
-       Q.bundle.sha(cfg['assets']['requests']) != binding['requests_sha256']:
-        raise ValueError('native frozen suite mismatch')
-    if cfg['request_lines'] != ['GEN 32 ' + ' '.join(map(str, p)) for p in prompts]:
-        raise ValueError('native prompt IDs differ')
-    if cfg.get('worker_peers') or any(a.startswith('--remote-gpu-') for a in cfg['argv']):
-        raise ValueError('baseline must be native local-GPU/CPU, no offload peers')
-    if '--native' not in cfg['argv'] or cfg['argv'][cfg['argv'].index('--native')+1].split('/')[-1] != \
-       'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf':
-        raise ValueError('native model family/path differs')
-    if Q.bundle.sha(cfg['assets']['manifest']) != '8cc9a1ca01ded6b747628522f3fc896c6ca315583461e9c3826edda8b8f62318':
-        raise ValueError('expert manifest identity differs')
-    arms = json.loads((root / 'summary.json').read_text())['arms']
-    if len(arms) != 1 or cfg['arms'][0]['requests'] != list(range(12)):
-        raise ValueError('native baseline needs one complete ordered12-request arm')
-    if cfg['arms'][0].get('engine', 'engine') != 'engine':
-        raise ValueError('native arm selects a different executable')
+    result = json.loads((root / 'summary.json').read_text())
+    if result['status'] != 'complete' or result['suite'] != binding or \
+       result['binary_sha256'] != expected_sha or result['driver_sha256'] != DRIVER_SHA256 or \
+       result['manifest_sha256'] != EXPERT_MANIFEST_SHA256 or result.get('cpu_worker_rc') != 0:
+        raise ValueError('incomplete/foreign/unclean native run')
     for index in range(12):
-        row = Q.compare_logits.read(root / (arms[0]['arm'] + '-first-logits.' + str(index)))
-        if len(row) != 248320:
+        if (root / f'case-{index+1:02d}' / 'request.txt').read_text() != 'GEN 32 ' + ' '.join(map(str, prompts[index])) + '\n':
+            raise ValueError('native consumed prompt receipt differs')
+        argv = json.loads((root / f'case-{index+1:02d}' / 'local' / 'engine-argv.json').read_text())
+        if any(a.startswith('--remote-gpu-') for a in argv) or '--native' not in argv:
+            raise ValueError('native arm is not retained local policy')
+        if len(Q.compare_logits.read(root / f'case-{index+1:02d}' / 'local' / 'local-first-logits.0')) != 248320:
             raise ValueError('native first-logit vocabulary differs')
-    return arms[0]['requests']
+    return result['requests']
 
 
 def score(tok, args):
@@ -232,9 +293,8 @@ def main():
     p.add_argument('--binary-sha256', required=True)
     p.add_argument('--suite', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True)
-    p = commands.add_parser('stage-native')
-    p.add_argument('--template-root', type=Path, required=True)
-    p.add_argument('--native-sha256', required=True)
+    p = commands.add_parser('native')
+    p.add_argument('--driver', type=Path, required=True)
     p.add_argument('--suite', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True)
     p = commands.add_parser('score')
@@ -245,12 +305,8 @@ def main():
     p.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     tok = Q.tokenizer(args.gguf)
-    if args.command == 'stage-native':
-        frozen(tok, args.suite)
-        cfg = native_configuration(Q.bundle.verify(args.template_root), args.suite, args.out, args.native_sha256)
-        configuration = args.out.with_name(args.out.name + '.input.json')
-        Q.write(configuration, cfg)
-        print(Q.bundle.stage(configuration))
+    if args.command == 'native':
+        run_native(args, tok)
         return 0
     if args.command == 'portable':
         run_portable(args, tok)
@@ -259,4 +315,7 @@ def main():
 
 
 if __name__ == '__main__':
+    def terminate(_signum, _frame):
+        raise SystemExit('termination requested; cleaning owned processes')
+    signal.signal(signal.SIGTERM, terminate)
     raise SystemExit(main())

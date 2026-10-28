@@ -37,23 +37,52 @@ class QualityAdapter(unittest.TestCase):
             with self.assertRaises(ValueError): P.completion(bad+[stop],[1],248320)
         with self.assertRaises(ValueError): P.completion(rows+[dict(stop='context',position=3)],[1],248320)
 
-    def test_native_clone_preserves_runtime_and_resident(self):
-        cfg=dict(attach_root='/resident',attached_worker_idle=True,final_worker='retain',failure_worker='retain',
-                 arms=[dict(name='old',restart=False,requests=[0],reference='old')],
-                 assets=dict(engine='/engine',worker='/worker',manifest='/manifest'),
-                 argv=['/engine','--native','/model','--prefill','64'],worker_argv=['/worker','--port','1'],env={'X':'Y'})
-        original=copy.deepcopy(cfg)
-        with patch.object(P.Q.bundle,'sha',return_value='sha'):
-            result=P.native_configuration(cfg,'/suite','/output','sha')
-            self.assertEqual(result['argv'][1:],cfg['argv'][1:])
-            self.assertEqual(result['env'],cfg['env'])
-            self.assertEqual(result['attach_root'],'/resident')
-            self.assertFalse(result['arms'][0]['restart'])
-            self.assertEqual(result['arms'][0]['requests'],list(range(12)))
-            self.assertEqual(cfg,original)
-            for key,value in [('attach_root',None),('failure_worker','stop')]:
-                bad=copy.deepcopy(cfg);bad[key]=value
-                with self.assertRaises(ValueError): P.native_configuration(bad,'/suite','/out','sha')
+    def test_native_owned_lifecycle_and_failure_cleanup(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        for failure in (False, True):
+            with tempfile.TemporaryDirectory() as d:
+                root=Path(d)
+                child=SimpleNamespace(pid=54321,poll=lambda:None)
+                calls=[]
+                def engine(name,cfg,argv,line,measured,peers,dump):
+                    calls.append((name,line,measured,peers,dump))
+                    if name=='load':return dict(error=None,engine_rc=0)
+                    if failure:return dict(error='request failed',engine_rc=1)
+                    return dict(error=None,engine_rc=0,tokens=[2],done=dict(finish='stop',output_count=1))
+                driver=SimpleNamespace(
+                    prepare_argv=lambda n,l:('/manifest',['LOAD'],['LOCAL'],['unused']),
+                    set_single_value=Mock(),require_once=Mock(),port_open=Mock(side_effect=[False,True,False]),
+                    subprocess=SimpleNamespace(Popen=Mock(return_value=child)),
+                    stop_process_group=Mock(return_value=0),engine_stage=engine,
+                    stage_ok=lambda r,measured:r.get('error') is None and r.get('engine_rc')==0,
+                    WORKER_START_SECONDS=1)
+                ndc=dict(assets=dict(worker='/worker'),worker_argv=['@worker','--port','17431','--residency-forever'])
+                summary={'requests':[]}
+                with patch.object(P.Q.compare_logits,'read',return_value=[0.]*248320):
+                    if failure:
+                        with self.assertRaisesRegex(RuntimeError,'native case1 failed'):
+                            P.owned_native(driver,ndc,{},[[1],[1]],summary,root)
+                    else:P.owned_native(driver,ndc,{},[[1],[1]],summary,root)
+                driver.subprocess.Popen.assert_called_once()
+                driver.stop_process_group.assert_called_once_with(child,'owned CPU worker')
+                self.assertEqual(calls[0][0],'load')
+                self.assertEqual(len(calls),2 if failure else 3)
+                if not failure:self.assertEqual(len(summary['requests']),2)
+                self.assertEqual(summary['cpu_worker_rc'],0)
+
+    def test_native_occupied_endpoint_never_launches_or_stops(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as d:
+            driver=SimpleNamespace(prepare_argv=lambda n,l:('/manifest',[],[],[]),
+                set_single_value=Mock(),require_once=Mock(),port_open=lambda p:True,
+                subprocess=SimpleNamespace(Popen=Mock()),stop_process_group=Mock())
+            ndc=dict(assets=dict(worker='/worker'),worker_argv=['@worker'])
+            with self.assertRaisesRegex(ValueError,'already occupied'):
+                P.owned_native(driver,ndc,{},[[1]],{'requests':[]},Path(d))
+            driver.subprocess.Popen.assert_not_called()
+            driver.stop_process_group.assert_not_called()
 
     def test_guard_failure_reaps_only_owned_child_and_keeps_failure(self):
         from types import SimpleNamespace
