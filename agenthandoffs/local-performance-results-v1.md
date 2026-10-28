@@ -8,6 +8,11 @@ Code source: ef2434a5ebad85f82139e5c13d0aeaf32d700a23. Recipe corrections:
 The original qualified PR43 binary remains unchanged. The isolated physical-host
 synthetic timing differential passed 1/1 in 24.88 s before inference.
 
+**These are two unequal engine configurations, not a backend performance verdict.**
+Portable has all experts on CPU; native has GPU-offloaded experts. Matched
+expert placement/work is required before inferring an AMD/Vulkan performance
+deficit from the difference.
+
 Both arms completed four valid trials: one excluded warmup and three measured
 fresh engines, frozen case 1, GEN32, early EOS. Every trial generated four tokens,
 including EOS; token-sequence hashes matched across all eight trials. No trial
@@ -37,13 +42,13 @@ from portable fresh model opens. Setup is not a loading-speed comparison or part
 of TPS. This short EOS-ending sample is not steady-state throughput. Matching
 output hashes do not resolve the original FAILED logit-parity gates.
 
-**Placement is a central confounder.** Portable has exactly zero GPU-resident
+**Placement differs.** Portable has exactly zero GPU-resident
 experts: all 48 layers' selected expert evaluations run on CPU, while only dense
 and coordinator work runs on the two GPUs. Native uses the retained local CUDA
 configuration plus the owned CPU worker at127.0.0.1:17431, CPU resident entry-row
 mode and original-order reduction; the driver strips remote-GPU options and
-retains prefill64 and the existing speculative/greedy settings. The exact native
-GPU expert residency/cache count and per-device plan are not exposed in the
+retains prefill64 and the existing speculative/greedy settings. The native arm includes GPU expert offload, as established in parent context;
+its exact GPU expert residency/cache count and per-device plan are not exposed in the
 supplied report or locally available retained driver definitions. Read the
 existing native case engine-argv.json and stderr/READY receipts to establish
 those values before interpreting the gap as a backend comparison. Do not assume
@@ -114,7 +119,32 @@ work. The supplied report/thread exposes no values from those lines and no
 stage timing log. They must not be treated as observed here. Read these existing
 receipts before new inference; no aggregate benchmark repeat is needed.
 
-## Single cheapest useful next split
+## Smallest practical matched-placement next step
+
+Before attributing a supposed backend deficit, read the existing native argv,
+READY/cache and dispatch receipts to record the exact GPU expert count, helper
+cache/device plan and GPU-vs-CPU expert work. Those numerical residency details
+remain unavailable to this coding task; they are a specific evidence gap, not
+permission to infer them from timing. No new inference is required for this read.
+
+Then establish whether the retained native engine supports zero GPU-resident
+**and zero GPU-executed** experts while keeping dense CUDA work and the same
+model, prompt/output bound, CPU expert policy and numerics. If supported, the
+smallest practical placement control is a bounded native all-CPU-expert arm
+against the portable all-CPU-expert configuration, with matching actual token
+counts and reported lifecycle/prefill/kernel differences. Parent should decide
+whether retained portable measurements suffice or a matched-time pair is needed;
+this checkpoint does not authorize another aggregate campaign.
+
+Do not simply prescribe `--expert-cache 0`: static inspection of fd35f803
+src/program/generate.cpp shows a nonempty expert profile converts zero to auto.
+Helper caches, profile-triggered auto sizing and other GPU expert execution paths
+also need verification against the retained argv and actual dispatch receipts.
+Removing only one cache flag would not establish all-CPU execution. No validated
+all-CPU native command is claimed here. If no supported control exists, report
+that limitation and keep the two existing configurations labeled unequal.
+
+## Single cheapest useful stage split, after placement is explicit
 
 Propose one opt-in **per-token stage ledger**, reusing existing synchronous
 boundaries, with three disjoint accumulators plus an unassigned host remainder:
