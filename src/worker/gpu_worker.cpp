@@ -21,9 +21,14 @@ GpuWorkerService::~GpuWorkerService() {
 }
 bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
     if (!executor_ || options_.deadline_ms < 1 || options_.setup_ms < 1 ||
-        options_.runtime_reserve < (64ull << 20) || !validate_gpu_plan(options_.plan, err)) {
-        if (err.empty()) err = "invalid CUDA worker options or reserve (minimum 64 MiB)";
+        (options_.vulkan ? options_.runtime_reserve != 0 : options_.runtime_reserve < (64ull << 20)) ||
+        !validate_gpu_plan(options_.plan, err)) {
+        if (err.empty()) err = options_.vulkan ? "invalid Vulkan worker options or nonzero reserve" :
+            "invalid CUDA worker options or reserve (minimum 64 MiB)";
         return false;
+    }
+    if(options_.vulkan && (options_.plan.n_embd != 2560 || options_.plan.n_ff != 640)) {
+        err="Vulkan worker requires Q8_0 H2560/FF640"; return false;
     }
     if (!cache_.open(options_.cache_root, options_.cache_budget, err)) return false;
     sock_fd fd = kBadFd;
@@ -45,9 +50,9 @@ void GpuWorkerService::run() {
     }
     reset();
     sock_fd fd = (sock_fd)listener_; sock::close_fd(fd); listener_ = ~(uintptr_t)0;
-    std::fprintf(stderr,"cuda-worker stopped assigned=%llu cached=%llu transferred=%llu persisted=%llu retained_disk=%llu verified=%llu reused=%llu staging_peak=%llu "
+    std::fprintf(stderr,"%s-worker stopped assigned=%llu cached=%llu transferred=%llu persisted=%llu retained_disk=%llu verified=%llu reused=%llu staging_peak=%llu "
       "gpu_allocated=%llu gpu_peak=%llu gpu_weights=%llu gpu_scratch=%llu requests=%llu entries=%llu failures=%llu service_ns=%llu\n",
-      (unsigned long long)counters_.assigned_bytes,(unsigned long long)counters_.cached_bytes,
+      options_.vulkan?"vulkan":"cuda",(unsigned long long)counters_.assigned_bytes,(unsigned long long)counters_.cached_bytes,
       (unsigned long long)counters_.transferred_bytes,(unsigned long long)counters_.persisted_bytes,
       (unsigned long long)counters_.retained_disk_bytes,(unsigned long long)counters_.verified_bytes,
       (unsigned long long)counters_.reused_bytes,(unsigned long long)counters_.host_staging_peak,
@@ -68,8 +73,8 @@ void GpuWorkerService::serve(uintptr_t fd) {
         const bool ok = dispatch(in,out,err);
         if (!ok) {
             ++counters_.failures; out.status = out.status == ST_OK ? ST_BAD_REQUEST : out.status;
-            std::fprintf(stderr,"cuda-worker refused msg=%u status=%s model=%llx placement=%llx:%llx reason=%s\n",
-                in.msg,status_name(out.status),(unsigned long long)options_.plan.model_id,
+            std::fprintf(stderr,"%s-worker refused msg=%u status=%s model=%llx placement=%llx:%llx reason=%s\n",
+                options_.vulkan?"vulkan":"cuda",in.msg,status_name(out.status),(unsigned long long)options_.plan.model_id,
                 (unsigned long long)options_.plan.placement_id.a,(unsigned long long)options_.plan.placement_id.b,err.c_str());
         }
         if (!gpu_codec::send(fd,out.msg,out.status,out.payload,options_.deadline_ms,cancel,err)) {
@@ -94,12 +99,16 @@ bool GpuWorkerService::dispatch(const WireFrame& in, WireFrame& out, std::string
     Cursor c{in.payload};
     if (in.msg == GPU_HELLO) {
         const auto version = c.get(4), capability = c.get(4), numerics = c.get(4);
-        if (negotiated_ || !c.done() || version != kGpuWireVersion || (capability != kGpuCapabilityCuda && capability != (kGpuCapabilityCuda|kGpuCapabilityEntryRows)) ||
-            numerics != kGpuNumericsQ8_1) return refuse(ST_PROTOCOL,"unsupported CUDA capability/numerics");
+        const auto expected_backend=options_.vulkan ? kGpuCapabilityVulkan : kGpuCapabilityCuda;
+        const auto expected_numerics=options_.vulkan ? kGpuNumericsVulkanHybridQ8 : kGpuNumericsQ8_1;
+        const bool valid_capability=options_.vulkan ? capability == (expected_backend|kGpuCapabilityEntryRows) :
+            (capability == expected_backend || capability == (expected_backend|kGpuCapabilityEntryRows));
+        if (negotiated_ || !c.done() || version != kGpuWireVersion || !valid_capability ||
+            numerics != expected_numerics) return refuse(ST_PROTOCOL,"unsupported GPU capability/numerics");
         rows_ = (capability & kGpuCapabilityEntryRows)!=0;
-        if(rows_ && !executor_->supports_rows()) return refuse(ST_PROTOCOL,"CUDA entry rows unsupported");
+        if(rows_ && !executor_->supports_rows()) return refuse(ST_PROTOCOL,"GPU entry rows unsupported");
         put(out.payload,kGpuWireVersion,4); put(out.payload,capability,4);
-        put(out.payload,kGpuNumericsQ8_1,4); put(out.payload,kUploadChunkMax,4);
+        put(out.payload,expected_numerics,4); put(out.payload,kUploadChunkMax,4);
         negotiated_ = true; return true;
     }
     if (!negotiated_) return refuse(ST_WRONG_STATE,"CUDA HELLO required");
@@ -175,6 +184,7 @@ bool GpuWorkerService::dispatch(const WireFrame& in, WireFrame& out, std::string
         InferRequest r;
         if (!decode_request(options_.plan,in.payload,r) || r.session != session_ || r.sequence != sequence_+1)
             return refuse(ST_STALE_SESSION,"inference binding/sequence/shape");
+        if(options_.vulkan && r.T != 1) return refuse(ST_BAD_REQUEST,"Vulkan worker requires T1");
         uint64_t entries = 0;
         for (size_t i=0;i<r.mask.size();++i) {
             if (r.mask[i]>1 || (r.mask[i] && !options_.plan.owns(r.layer,r.ids[i])))

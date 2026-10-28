@@ -280,3 +280,51 @@ PR #25 evidence. Both Vulkan-enabled translation units passed strict syntax
 checks. No GPU execution or total-memory measurement was performed for this
 follow-on slice. See [RESIDENT_HANDOFF.md](RESIDENT_HANDOFF.md) for the minimal
 incremental build and one acceptance run per die.
+
+## Opt-in loopback worker path
+
+The standalone project now builds `strata-vulkan-expert-worker`. It selects the
+same budgeted executor through `GpuWorkerService`, binds only `127.0.0.1` (default
+port 0), and accepts a trusted `--plan`, operator-created `--cache-root`, device
+and tensor/cache budgets. It has no LAN-address, credential or reserve option.
+The production build/default launcher still does not select Vulkan.
+
+`GpuWorkerOptions::vulkan` and `GpuWorkerTier::Open::vulkan` explicitly select
+this experiment. The client requires `127.0.0.1` and `entry_rows=true`; the service
+requires zero reserve and the existing Q8_0 H2560/FF640 shape, and rejects T2.
+Existing SGW1 framing, version, setup/upload/cache, binding/sequence, indexed-row
+and status layouts are reused. The existing HELLO capability/numerics fields
+carry Vulkan + entry rows (6) and native-host-boundary hybrid numerics (2).
+CUDA stays at its prior values; mismatched peers refuse negotiation. Vulkan must
+not advertise CUDA/q8_1 arithmetic. No protocol framing or transport redesign,
+model integration or mTLS change is included.
+
+Add `--native-q8-boundaries --loopback-worker-check` to the diagnostic for the
+bounded acceptance fixture. It uses the same two distinct direct hybrid rows and
+starts a real service thread on an ephemeral loopback socket. The real client
+uploads the two synthetic experts through existing bounded frames, reaches READY
+once, and submits three requests in one session. Every reply must preserve
+indices 0,2 / expert order 3,1 and match 20,480 unweighted direct-hybrid bytes.
+A counting wrapper verifies exactly one executor prepare; fetch counts and status
+verification/transfer/allocation counters must remain unchanged across requests.
+Unsupported plan shape/reserve, weighted Vulkan mode, another address, CUDA
+negotiation and T2 execution are refused. Close/stop/join must clear owned counters.
+The standalone worker executable uses the same service and executor; the fixture
+needs only one process and real TCP loopback, with no fleet or model access.
+
+The diagnostic retains native differences for both experts separately, saves all
+three indexed row replies and the synthetic plan, and writes
+`LOOPBACK_COMPLETED`. Require that file and the final `COMPLETED`, as well as
+`LOOPBACK_ACCEPTED`. Expected negotiation/T2 refusal messages are part of the test.
+The pre-existing direct resident acceptance still explicitly asserts its two
+expected output rows differ by raw bytes before testing reverse association;
+swapping them cannot pass merely because their weights have different hashes.
+
+Local CPU-substitution validation passed all four CTests, including real
+loopback service/client execution and the existing CUDA-contract host regression
+suite. The sandbox initially refused socket creation; those two socket tests
+passed with permission for CPU-only loopback execution. No Vulkan hardware run,
+full CUDA/HIP/SYCL build or RSS/peak-VRAM measurement was performed for this slice.
+The owned tensor budget still excludes backend/driver and host memory. See
+[LOOPBACK_HANDOFF.md](LOOPBACK_HANDOFF.md) for the retained-build increment and
+one bounded Vulkan loopback acceptance per die.

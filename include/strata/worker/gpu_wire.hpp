@@ -1,4 +1,4 @@
-// Opt-in CUDA network contract. SEW1 CPU arithmetic and frames are unchanged.
+// SGW1 GPU contract: default CUDA or explicit Vulkan hybrid. SEW1 is unchanged.
 #pragma once
 #include "strata/worker/gpu_assets.hpp"
 #include <functional>
@@ -8,9 +8,12 @@ inline constexpr uint32_t kGpuWireMagic = 0x31574753u; // SGW1
 inline constexpr uint32_t kGpuWireVersion = 1;
 inline constexpr uint32_t kGpuCapabilityCuda = 1;
 inline constexpr uint32_t kGpuCapabilityEntryRows = 2;
+inline constexpr uint32_t kGpuCapabilityVulkan = 4; // explicit opt-in, entry rows only
 // NativeExpertLayout Q8_0 weights, q8_1 activations, FP32 SwiGLU/output. Approximate,
 // never the CPU worker's native-bitwise numerical contract.
 inline constexpr uint32_t kGpuNumericsQ8_1 = 1;
+// Q8_0 weights/matvecs on Vulkan, native host Q8 boundaries + SwiGLU; not CPU bit parity.
+inline constexpr uint32_t kGpuNumericsVulkanHybridQ8 = 2;
 inline constexpr size_t kGpuFrameMax = kGpuPlanMax + 64;
 enum GpuMsg : uint16_t {
     GPU_HELLO = 1, GPU_HELLO_ACK, GPU_SETUP, GPU_SETUP_ACK, GPU_UPLOAD, GPU_UPLOAD_ACK,
