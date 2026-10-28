@@ -17,7 +17,9 @@ using Backend = std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)>;
 using Context = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
 using Buffer = std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)>;
 inline void finite(const std::vector<float>& v) {
-    for (float x : v) require(std::isfinite(x), "nonfinite expert value");
+    for (float x : v)
+        if (!std::isfinite(x))
+            require(false, "nonfinite expert value");
 }
 struct Rows { std::vector<float> gate, up, hidden, out; };
 inline float host_swiglu(float gate, float up) { return (gate/(1.f+std::exp(-gate)))*up; }

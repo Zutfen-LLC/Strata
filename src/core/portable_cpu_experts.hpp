@@ -15,7 +15,8 @@ namespace strata::core::portable_detail {
 inline constexpr size_t H = 2560, FF = 640, NE = 512, K = 10, L = 48;
 inline void finite(const std::vector<float> &x, const char *what) {
     for (float v : x)
-        require(std::isfinite(v), std::string("portable model: nonfinite ") + what);
+        if (!std::isfinite(v))
+            require(false, std::string("portable model: nonfinite ") + what);
 }
 inline PortableTensorView view(const GgufModel &m, const std::string &name) {
     size_t shard = 0;
@@ -153,8 +154,8 @@ class CpuExperts {
             size_t job_count = 0;
             for (size_t slot = 0; slot < K; ++slot) {
                 const int32_t id = route.ids[slot];
-                require(id >= 0 && id < int32_t(NE) && seen.insert(id).second,
-                        "portable model: expert ID duplicate/out of range");
+                if (!(id >= 0 && id < int32_t(NE) && seen.insert(id).second))
+                    require(false, "portable model: expert ID duplicate/out of range");
                 if (active && !(*active)[slot]) continue;
                 auto *blob = staging.data() + slot * fmt.bytes;
                 const size_t l = size_t(layer), e = size_t(id);

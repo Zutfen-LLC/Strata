@@ -89,7 +89,9 @@ bool LocalExperts::run(int64_t layer,const PortableRoute& route,std::vector<floa
                 route.activation.size()==H,"resident route shape mismatch");
         finite(route.activation,"resident activation"); finite(route.weights,"resident routing weights");
         std::set<int32_t> ids;
-        for(auto id:route.ids) require(id>=0 && id<int32_t(NE) && ids.insert(id).second,"invalid resident expert IDs");
+        for(auto id:route.ids)
+            if (!(id>=0 && id<int32_t(NE) && ids.insert(id).second))
+                require(false,"invalid resident expert IDs");
         require(sequence_<UINT64_MAX,"resident request sequence exhausted");
         const uint64_t sequence=++sequence_;
         std::array<bool,K> cold; cold.fill(true);
@@ -118,7 +120,8 @@ bool LocalExperts::run(int64_t layer,const PortableRoute& route,std::vector<floa
             std::array<bool,K> seen{};
             for(size_t n=0;n<count;++n) {
                 const size_t slot=reply.indices[n];
-                require(slot<K && req.mask[slot] && !seen[slot],"resident reply duplicate/unowned slot");
+                if (!(slot<K && req.mask[slot] && !seen[slot]))
+                    require(false,"resident reply duplicate/unowned slot");
                 seen[slot]=true;
                 std::copy_n(reply.rows.begin()+n*H,H,result.begin()+slot*H);
             }
