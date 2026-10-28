@@ -53,10 +53,15 @@ void finite(const std::vector<float> &x) {
         if (!std::isfinite(f))
             require(false, "portable GDN: nonfinite input/result");
 }
-std::vector<float> read(ggml_tensor *t) {
-    std::vector<float> out(size_t(ggml_nelements(t)));
+void read_into(ggml_tensor *t, std::vector<float> &out) {
+    if (size_t(ggml_nelements(t)) != out.size())
+        require(false, "portable GDN: candidate readback size mismatch");
     ggml_backend_tensor_get(t, out.data(), 0, out.size() * sizeof(float));
     finite(out);
+}
+std::vector<float> read(ggml_tensor *t) {
+    std::vector<float> out(size_t(ggml_nelements(t)));
+    read_into(t, out);
     return out;
 }
 void write(ggml_tensor *t, const std::vector<float> &x) {
@@ -86,6 +91,9 @@ struct PortableGdnLayer::Impl {
     std::array<int32_t, 2> previous{{-1, -1}};
     std::vector<float> ple_history;
     std::vector<float> state, history, last;
+    // Separate host banks, already priced by HOST_STATE_BYTES/PLE_STATE_BYTES.
+    // Only a complete successful step swaps these into the public mirrors.
+    std::vector<float> candidate_state, candidate_history, candidate_ple_history;
     std::vector<PortablePlacement> placement;
     size_t weights_size = 0, graphs_size = 0, attention_device_weights = 0;
     uint64_t count = 0;
@@ -258,6 +266,7 @@ struct PortableGdnLayer::Impl {
                 ggml_build_forward_expand(graph, t);
             }
             ple_history.assign(PLE_HISTORY, 0);
+            candidate_ple_history.resize(PLE_HISTORY);
         }
         if (keep_state) {
             // Native session ownership: one committed state allocation per layer.
@@ -285,6 +294,8 @@ struct PortableGdnLayer::Impl {
         scheduler = portable_detail::schedule(graph, "gdn-attention", options.execution, cpu, placement, graphs_size);
         state.assign(STATES, 0);
         history.assign(HISTORY, 0);
+        candidate_state.resize(STATES);
+        candidate_history.resize(HISTORY);
     }
 };
 
@@ -381,6 +392,8 @@ bool PortableGdnLayer::reset(std::string &error) {
             ggml_backend_synchronize(impl_->options.execution.accelerator);
             impl_->state_healthy = true;
         }
+        // Private candidates may contain a rejected step. Keep their capacity:
+        // every successful step fully reads and validates them before swapping.
         std::fill(impl_->state.begin(), impl_->state.end(), 0);
         std::fill(impl_->history.begin(), impl_->history.end(), 0);
         std::fill(impl_->ple_history.begin(), impl_->ple_history.end(), 0);
@@ -413,7 +426,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         auto next_previous = s.previous;
         PortableGdnWork disabled;
         auto &timing = work ? *work : disabled;
-        std::vector<float> next_state, next_history, next_residual, next_ple_history;
+        std::vector<float> next_residual;
         {
             portable_detail::ScopedExpertTimer<> attention_timer(work != nullptr,
                 timing.attention_exchange_ms, timing.attention_exchange_calls);
@@ -442,10 +455,11 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
                 status = ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph);
             }
             require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
-            next_state = read(s.state_output);
-            next_history = read(s.history_output);
+            read_into(s.state_output, s.candidate_state);
+            read_into(s.history_output, s.candidate_history);
             next_residual = read(s.attn_residual);
-            next_ple_history = s.options.ple_table ? read(s.ple_hist_out) : std::vector<float>{};
+            if (s.options.ple_table)
+                read_into(s.ple_hist_out, s.candidate_ple_history);
             if (trace) {
                 next_trace.qkv = read(s.qkv);
                 next_trace.convolution = read(s.conv);
@@ -486,10 +500,10 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
             ggml_backend_synchronize(s.options.execution.accelerator);
             s.state_healthy = true;
         }
-        s.ple_history.swap(next_ple_history);
+        s.ple_history.swap(s.candidate_ple_history);
         s.previous = next_previous;
-        s.state.swap(next_state);
-        s.history.swap(next_history);
+        s.state.swap(s.candidate_state);
+        s.history.swap(s.candidate_history);
         s.last.swap(next_residual);
         ++s.count;
         route = std::move(candidate);

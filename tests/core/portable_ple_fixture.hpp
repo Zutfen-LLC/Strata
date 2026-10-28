@@ -142,10 +142,21 @@ inline void exercise(PortableGdnLayer &layer, const Fixture &f, PortableGdnLayer
     const int32_t tokens[] = {0, 19, 248044, 42, 248056, 248046, 93, 15, 26, 37};
     std::vector<float> first;
     std::array<int32_t, 2> previous_tokens{{-1, -1}};
+    const auto *state0=layer.recurrent_state().data(), *history0=layer.convolution_history().data(),
+               *ple0=layer.ple_convolution_history().data();
+    const float *state1=nullptr, *history1=nullptr, *ple1=nullptr;
     for (size_t t = 0; t < 10; ++t) {
         auto history = layer.ple_convolution_history(), state = layer.recurrent_state(),
              gdn_history = layer.convolution_history();
         check(layer.step(tokens[t], f.input(int(t)), experts(), route, error, &trace), error);
+        if(t==0) {
+            state1=layer.recurrent_state().data();history1=layer.convolution_history().data();
+            ple1=layer.ple_convolution_history().data();
+            check(state1!=state0 && history1!=history0 && ple1!=ple0,"PLE/GDN candidate banks do not alias committed mirrors");
+        }
+        check(layer.recurrent_state().data()==(t%2?state0:state1) &&
+              layer.convolution_history().data()==(t%2?history0:history1) &&
+              layer.ple_convolution_history().data()==(t%2?ple0:ple1),"PLE/GDN reuse exactly two banks");
         const auto c = small_config();
         uint64_t context[3] = {uint64_t(tokens[t]), uint64_t(c.eos), uint64_t(c.eos)};
         if (previous_tokens[1] >= 0 && previous_tokens[1] != c.eos) {
@@ -182,6 +193,7 @@ inline void exercise(PortableGdnLayer &layer, const Fixture &f, PortableGdnLayer
         state = layer.recurrent_state();
         gdn_history = layer.convolution_history();
         auto last = layer.last_residual();
+        const auto *committed_state=layer.recurrent_state().data(), *committed_ple=layer.ple_convolution_history().data();
         for (int failure = 0; failure < 3; ++failure) {
             check(!layer.step(
                       999, f.input(10),
@@ -203,6 +215,8 @@ inline void exercise(PortableGdnLayer &layer, const Fixture &f, PortableGdnLayer
             close(layer.convolution_history(), gdn_history, 0, "GDN convolution rollback");
             close(layer.last_residual(), last, 0, "residual rollback");
             check(route.ids.empty() && trace.ple_embedding.empty(), "failed output cleared");
+            check(layer.recurrent_state().data()==committed_state &&
+                  layer.ple_convolution_history().data()==committed_ple,"failed step published candidate storage");
         }
     }
     check(!layer.step(f.input(0), experts(), route, error), "layer1 requires token ID");
