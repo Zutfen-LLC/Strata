@@ -404,6 +404,7 @@ uint64_t PortableModelSession::position() const { return impl_->pos; }
 bool PortableModelSession::poisoned() const { return impl_->poison; }
 bool PortableModelSession::ended() const { return impl_->eos_seen; }
 int32_t PortableModelSession::eos() const { return impl_->eos_id; }
+size_t PortableModelSession::vocabulary() const { return impl_->vocabulary; }
 PortableExpertWork PortableModelSession::expert_work() const {
     auto work=impl_->experts->work();
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS

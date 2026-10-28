@@ -1,4 +1,11 @@
 #include "ggml-backend.h"
+#include "portable_stdio.hpp"
+#include <csignal>
+#ifndef _WIN32
+#include <poll.h>
+#include <unistd.h>
+#include <cerrno>
+#endif
 #include "strata/artifact/gguf_split.hpp"
 #include "strata/core/portable_model.hpp"
 #ifdef STRATA_PORTABLE_MODEL_VULKAN
@@ -14,6 +21,34 @@
 #include <stdexcept>
 
 namespace {
+volatile std::sig_atomic_t interrupted = 0;
+void interrupt(int signal) { interrupted = signal; }
+// Polling only stdin keeps idle SIGTERM/SIGINT cleanup bounded. No listener.
+bool request_line(std::string& line) {
+    line.clear();
+#ifndef _WIN32
+    for (;;) {
+        if(interrupted) throw std::runtime_error("resident interrupted");
+        pollfd fd{STDIN_FILENO,POLLIN,0};
+        const int ready=::poll(&fd,1,100);
+        if(ready<0) { if(errno==EINTR) continue; throw std::runtime_error("stdin poll failed"); }
+        if(!ready) continue;
+        char c;
+        const auto n=::read(STDIN_FILENO,&c,1);
+        if(n<0) { if(errno==EINTR) continue; throw std::runtime_error("stdin read failed"); }
+        if(!n) {
+            if(!line.empty()) throw std::runtime_error("incomplete request at EOF");
+            return false;
+        }
+        if(c=='\n') return true;
+        if(line.size()==4096) throw std::runtime_error("request line exceeds 4096 bytes");
+        line.push_back(c);
+    }
+#else
+    throw std::runtime_error("--stdio requires POSIX stdin polling");
+#endif
+}
+
 std::vector<int64_t> numbers(const std::string &text) {
     std::vector<int64_t> out;
     std::istringstream in(text);
@@ -37,7 +72,8 @@ int main(int argc, char **argv) {
         using Clock = std::chrono::steady_clock;
         Clock::time_point setup_start, prompt_start, decode_start, decode_end, last_prompt_start, last_selection;
         std::vector<int64_t> devices, caps, expert_tensors, expert_workspaces, expert_reserves;
-        size_t max_new = 0;
+        size_t max_new = 0, max_requests = 4;
+        bool resident = false;
         auto integer = [](const std::string &s) {
             const auto v = numbers(s);
             if (v.size() != 1 || v[0] < 0)
@@ -46,6 +82,7 @@ int main(int argc, char **argv) {
         };
         for (int i = 1; i < argc; ++i) {
             const std::string key = argv[i];
+            if (key == "--stdio") { resident = true; continue; }
             if (key == "--list-vulkan") {
                 if (argc != 2) throw std::runtime_error("--list-vulkan must be used alone");
 #ifdef STRATA_PORTABLE_MODEL_VULKAN
@@ -72,6 +109,7 @@ int main(int argc, char **argv) {
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
                              " [--dump-logits DIRECTORY] [--placements FILE] [--timings FILE]\n"
+                             " Or --stdio [--max-requests 4]: GEN <max_new> <id,id,...> / QUIT; JSONL replies.\n"
                              "T=1 serial text; all 48 layers; fresh embedding per token; CPU experts/host PLE.\n"
                              "Every consumed prompt/generated token can dump its full vocabulary as pos-N.f32.\n";
                 return 0;
@@ -100,6 +138,8 @@ int main(int argc, char **argv) {
                 token_text = value;
             else if (key == "--context")
                 opts.context = integer(value);
+            else if (key == "--max-requests")
+                max_requests = integer(value);
             else if (key == "--max-new")
                 max_new = integer(value);
             else if (key == "--threads" || key == "--expert-workers") {
@@ -139,9 +179,15 @@ int main(int argc, char **argv) {
             else
                 throw std::runtime_error("unknown option: " + key);
         }
-        if (model.empty() || manifest.empty() || token_text.empty())
+        if (resident && (!token_text.empty() || max_new || !dump.empty() || !timings_path.empty()))
+            throw std::runtime_error("--stdio takes requests on stdin; --tokens/--max-new/--dump-logits/--timings incompatible");
+        if (max_requests < 1 || max_requests > 64) throw std::runtime_error("--max-requests must be in [1,64]");
+#ifdef _WIN32
+        if(resident) throw std::runtime_error("--stdio requires POSIX stdin polling");
+#endif
+        if (model.empty() || manifest.empty() || (!resident && token_text.empty()))
             throw std::runtime_error("--model/--manifest/--tokens required; see --help");
-        const auto raw_tokens = numbers(token_text);
+        const auto raw_tokens = resident ? std::vector<int64_t>{} : numbers(token_text);
         std::vector<int32_t> tokens;
         for (int64_t t : raw_tokens) {
             if (t < 0 || t > INT32_MAX)
@@ -154,7 +200,10 @@ int main(int argc, char **argv) {
             throw std::runtime_error("separate cap required for each Vulkan device");
         if (devices.size() == 2 && devices[0] == devices[1])
             throw std::runtime_error("duplicate Vulkan device index");
-        if (!timings_path.empty())
+        if(resident) {
+            std::signal(SIGINT,interrupt); std::signal(SIGTERM,interrupt); std::signal(SIGPIPE,SIG_IGN);
+        }
+        if (resident || !timings_path.empty())
             setup_start = Clock::now();
         const auto budget=[&](const std::vector<int64_t>& values,size_t slot,size_t fallback) {
             if(values.empty()) return fallback;
@@ -211,7 +260,14 @@ int main(int argc, char **argv) {
         if (!dump.empty() && !std::filesystem::is_directory(dump))
             throw std::runtime_error("--dump-logits directory must already exist");
         std::string error;
-        auto session = strata::core::PortableModelSession::open(strata::gguf_split_paths(model), manifest, opts, error);
+        auto paths = strata::gguf_split_paths(model);
+        auto source_paths = paths;
+        source_paths.push_back(manifest);
+        for(const auto& d:opts.expert_devices) source_paths.push_back(d.plan_path);
+        // Capture before loading; observed change requires a new process.
+        std::unique_ptr<strata::core::stdio_detail::Sources> sources;
+        if(resident) sources=std::make_unique<strata::core::stdio_detail::Sources>(source_paths);
+        auto session = strata::core::PortableModelSession::open(paths, manifest, opts, error);
         if (!session)
             throw std::runtime_error(error);
         device_memory("model-loaded", 0);
@@ -247,13 +303,46 @@ int main(int argc, char **argv) {
                     << " row_max_abs=" << d.row_max_abs << " row_relative_l2=" << d.row_relative_l2 << '\n';
         };
         expert_report("loaded",0);
+        size_t request_id=0;
+        strata::core::PortableExpertWork before;
+        Clock::time_point request_start;
+        std::vector<uint64_t> device_entries_before;
+        if(resident) {
+            sources->check();
+            if(interrupted) throw std::runtime_error("resident interrupted during load");
+            std::cout << std::setprecision(17) << "{\"ready\":true,\"schema\":1,\"load_ms\":"
+                << std::chrono::duration<double,std::milli>(Clock::now()-setup_start).count()
+                << ",\"context\":" << opts.context << ",\"max_requests\":" << max_requests << "}\n" << std::flush;
+            if(!std::cout) throw std::runtime_error("ready write failed");
+        }
+        do {
+        if(resident) {
+            if(request_id==max_requests) break;
+            std::string line;
+            if(!request_line(line) || line=="QUIT") break;
+            // Parse completely before reset or other mutation.
+            auto request=strata::core::stdio_detail::parse(line,opts.context,session->vocabulary());
+            request_start=Clock::now();
+            sources->check();
+            if(session->poisoned()) throw std::runtime_error("resident session poisoned");
+            before=session->expert_work();
+            device_entries_before.clear();
+            for(const auto& d:session->report().expert_devices) device_entries_before.push_back(d.entries);
+            if(!session->reset(error)) throw std::runtime_error(error);
+            tokens=std::move(request.tokens); max_new=request.max_new; ++request_id;
+        }
         std::vector<float> logits;
         auto consume = [&](int32_t token, bool generated) {
+            if(resident) {
+                if(interrupted) throw std::runtime_error("resident interrupted");
+                sources->check();
+            }
             const uint64_t pos = session->position();
             if (!session->step(token, logits, error,
                                generated ? strata::core::PortableTokenKind::generated
                                          : strata::core::PortableTokenKind::input))
                 throw std::runtime_error(error);
+            if(resident && interrupted) throw std::runtime_error("resident interrupted during token");
             device_memory("token-complete", pos);
             const auto work = session->expert_work();
             std::cerr << "expert_work position=" << pos << " hits=" << work.hits
@@ -282,29 +371,55 @@ int main(int argc, char **argv) {
                       << ",\"greedy_next\":" << std::max_element(logits.begin(), logits.end()) - logits.begin()
                       << "}\n";
         };
-        if (!timings_path.empty())
+        if (resident || !timings_path.empty())
             prompt_start = Clock::now();
         // Native DONE places the last prompt forward step in decode. Keep
         // that selection boundary as well as this CLI's full-consumption phases.
         for (size_t i = 0; i < tokens.size(); ++i) {
-            if (!timings_path.empty() && i + 1 == tokens.size())
+            if ((resident || !timings_path.empty()) && i + 1 == tokens.size())
                 last_prompt_start = Clock::now();
             consume(tokens[i], false);
         }
-        if (!timings_path.empty())
+        if (resident || !timings_path.empty())
             decode_start = Clock::now();
         size_t generated = 0;
         while (!session->ended() && generated < max_new && session->position() < opts.context) {
             const int32_t next = int32_t(std::max_element(logits.begin(), logits.end()) - logits.begin());
-            if (!timings_path.empty())
+            if (resident || !timings_path.empty())
                 last_selection = Clock::now();
             consume(next, true);
             ++generated;
         }
-        if (!timings_path.empty())
+        if (resident || !timings_path.empty())
             decode_end = Clock::now();
         const char *stop = session->ended() ? "eos" : session->position() == opts.context ? "context" : "max_new";
         std::cout << "{\"stop\":\"" << stop << "\",\"position\":" << session->position() << "}\n";
+        if(resident) {
+            sources->check();
+            const auto after=session->expert_work();
+            const auto ms=[](Clock::time_point a,Clock::time_point b) { return std::chrono::duration<double,std::milli>(b-a).count(); };
+            std::cout << std::setprecision(17) << "{\"done\":" << request_id
+                << ",\"setup_reset_ms\":" << ms(request_start,prompt_start)
+                << ",\"prompt_ms\":" << ms(prompt_start,decode_start)
+                << ",\"decode_ms\":" << ms(decode_start,decode_end)
+                << ",\"selection_prompt_ms\":" << ms(prompt_start,last_prompt_start)
+                << ",\"selection_decode_ms\":" << (generated?ms(last_prompt_start,last_selection):0.)
+                << ",\"terminal_feed_ms\":" << (generated?ms(last_selection,decode_end):0.)
+                << ",\"prompt_count\":" << tokens.size() << ",\"output_count\":" << generated
+                << ",\"selection_prompt_steps\":" << tokens.size()-1 << ",\"selection_decode_steps\":" << generated
+                << ",\"cpu_hits_delta\":" << after.hits-before.hits
+                << ",\"cpu_verifications_delta\":" << after.verifications-before.verifications
+                << ",\"cpu_copied_bytes_delta\":" << after.copied_bytes-before.copied_bytes
+                << ",\"cpu_digest_bytes_delta\":" << after.digest_bytes-before.digest_bytes
+                << ",\"source_invalidations_delta\":" << after.source_invalidations-before.source_invalidations
+                << ",\"gpu_entries_delta\":" << after.gpu_entries-before.gpu_entries
+                << ",\"cpu_entries_delta\":" << after.cpu_entries-before.cpu_entries
+                << ",\"gpu_entries_per_device_delta\":[";
+            for(size_t i=0;i<device_entries_before.size();++i)
+                std::cout << (i ? "," : "") << session->report().expert_devices[i].entries-device_entries_before[i];
+            std::cout << "]}\n" << std::flush;
+            if(!std::cout) throw std::runtime_error("request result write failed");
+        }
         if (!timings_path.empty()) {
             const auto ms = [](Clock::time_point a, Clock::time_point b) {
                 return std::chrono::duration<double, std::milli>(b - a).count();
@@ -324,7 +439,8 @@ int main(int argc, char **argv) {
             if (!file)
                 throw std::runtime_error("timing report write failed");
         }
-        if (!placement_path.empty()) {
+        } while(resident);
+        if (!placement_path.empty() && (!resident || request_id)) {
             std::ofstream file(placement_path);
             file << "layer\tphase\top\ttensor\ttype\tbackend\tmetadata\tfallback\n";
             for (const auto &p : session->placements())
