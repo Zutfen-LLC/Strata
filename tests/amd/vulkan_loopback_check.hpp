@@ -27,13 +27,16 @@ struct VulkanLoopbackService {
     void stop() { service.stop(); if(thread.joinable()) thread.join(); }
     ~VulkanLoopbackService() { stop(); }
 };
-void loopback_check(const std::string& backend,int device,const std::filesystem::path& output,
+void loopback_check(const std::string& backend,int device,ggml_backend_t selected,const std::filesystem::path& output,
                     const strata::worker::GpuPlan& plan,const std::vector<uint8_t>& first,
                     const std::vector<uint8_t>& second,const std::vector<float>& x,
                     const std::vector<float>& expected) {
     using namespace strata::worker;
     const uint64_t budget=16ull<<20;
     auto executor=[&]() { return backend == "cpu" ? create_vulkan_executor_cpu_test(budget) : create_vulkan_gpu_executor(device,budget); };
+#ifdef STRATA_TEST_TLS
+    TlsFixture tls_fixture;
+#endif
     GpuWorkerOptions o; o.plan=plan; o.vulkan=true; o.runtime_reserve=0;
     o.cache_root=(output/"loopback-cache").string(); o.cache_budget=2*first.size()+4096;
     o.deadline_ms=5000; o.setup_ms=60000;
@@ -49,9 +52,18 @@ void loopback_check(const std::string& backend,int device,const std::filesystem:
     bad=o; bad.runtime_reserve=1;
     { GpuWorkerService refused(bad,executor()); uint16_t port=0;
       require(!refused.listen(port,err),"Vulkan service accepted nonzero reserve"); }
+    bad=o;bad.bind_ip="10.0.0.5";bad.allow_peer_ips={"10.0.0.2"};
+    { GpuWorkerService refused(bad,executor());uint16_t port=0;
+      require(!refused.listen(port,err) && err.find("mTLS")!=std::string::npos,"private Vulkan plaintext listener accepted"); }
+#ifdef STRATA_TEST_TLS
+    o.tls=tls_fixture.config("worker","coordinator.test");
+#endif
     auto counted=std::make_unique<CountedVulkanExecutor>(executor()); auto* observed=counted.get();
     VulkanLoopbackService worker(o,std::move(counted));
     GpuWorkerTier::Open open; open.plan=plan; open.port=worker.port; open.vulkan=true;
+#ifdef STRATA_TEST_TLS
+    open.tls=tls_fixture.config("coordinator","worker.test");
+#endif
     open.entry_rows=true; open.deadline_ms=5000; open.setup_ms=60000;
     unsigned fetches=0;
     open.fetch=[&](int64_t layer,int64_t expert,uint8_t* dst,uint32_t bytes) {
@@ -62,8 +74,8 @@ void loopback_check(const std::string& backend,int device,const std::filesystem:
     };
     { auto invalid=open; invalid.entry_rows=false; GpuWorkerTier tier;
       require(!tier.open(invalid,err),"Vulkan client accepted weighted mode"); }
-    { auto invalid=open; invalid.host="127.0.0.2"; GpuWorkerTier tier;
-      require(!tier.open(invalid,err),"Vulkan client accepted nonselected loopback address"); }
+    { auto invalid=open; invalid.host="10.0.0.5"; invalid.tls={}; GpuWorkerTier tier;
+      require(!tier.open(invalid,err),"Vulkan client accepted private plaintext"); }
     { auto cuda=open; cuda.vulkan=false; GpuWorkerTier tier;
       require(!tier.open(cuda,err) && observed->prepares == 0 && fetches == 0,
               "Vulkan service accepted CUDA numerical contract"); }
@@ -72,34 +84,52 @@ void loopback_check(const std::string& backend,int device,const std::filesystem:
     require(fetches == 2 && observed->prepares == 1,"loopback setup did not load exactly two experts once");
     GpuCounters before,after;
     require(tier.status(before,err),err);
-    const int32_t ids[]={3,0,1}; const uint8_t mask[]={1,0,1}; const float weights[]={0.125f,0,0.75f};
-    for(unsigned request=1;request<=3;++request) {
-        require(tier.post(0,x.data(),ids,weights,mask,1,3,err) && tier.finish(err) && tier.served(),err);
+    cpu::NativeFmt fmt; require(cpu::native_fmt(8,8,H,F,fmt,err),err);
+    ExpertGraph direct_first(selected,fmt,first,true), direct_second(selected,fmt,second,true);
+    unsigned total_entries=0, request=0;
+    for(int T=1;T<=kMaxT;++T) {
+        ++request;
+        std::vector<float> activations;
+        std::vector<int32_t> ids; std::vector<uint8_t> mask; std::vector<float> weights, reference;
+        std::vector<uint16_t> indices;
+        for(int t=0;t<T;++t) {
+            auto token=x;
+            for(auto& value:token)value*=float(t+1)/T; // distinct token input detects entry/K mistakes
+            activations.insert(activations.end(),token.begin(),token.end());
+            ids.insert(ids.end(),{3,0,1}); mask.insert(mask.end(),{1,0,1}); weights.insert(weights.end(),{0.125f,0,0.75f});
+            const auto a=direct_second.run(token),b=direct_first.run(token);
+            reference.insert(reference.end(),a.out.begin(),a.out.end());
+            reference.insert(reference.end(),b.out.begin(),b.out.end());
+            indices.push_back(uint16_t(t*3));indices.push_back(uint16_t(t*3+2));
+        }
+        if(T==1)require(same(reference,expected),"T1 direct reference changed");
+        require(tier.post(0,activations.data(),ids.data(),weights.data(),mask.data(),T,3,err) && tier.finish(err) && tier.served(),err);
         const auto& rows=tier.entry_rows();
         require(rows.session == tier.stats().session && rows.sequence == request &&
-                rows.indices == std::vector<uint16_t>({0,2}) && same(rows.rows,expected),
-                "loopback indexed rows differ from direct hybrid reference");
+                rows.indices == indices && same(rows.rows,reference),
+                "window indexed rows differ from same-token direct hybrid reference");
         save(output/("loopback.request"+std::to_string(request)+".rows.f32"),rows.rows.data(),rows.rows.size()*4);
+        save(output/("loopback.request"+std::to_string(request)+".direct.f32"),reference.data(),reference.size()*4);
+        total_entries+=2*T;
         require(tier.status(after,err),err);
         require(observed->prepares == 1 && fetches == 2 && after.gpu_allocation_count == 2 &&
                 after.gpu_allocated_bytes == before.gpu_allocated_bytes && after.gpu_weight_bytes == before.gpu_weight_bytes &&
                 after.verified_bytes == before.verified_bytes && after.transferred_bytes == before.transferred_bytes &&
-                after.requests == request && after.entries == 2*request,"request reloaded/reallocated resident experts");
+                after.requests == request && after.entries == total_entries,"request reloaded/reallocated resident experts");
     }
     std::string report; tier.report(report);
     require(report.find("Vulkan/native-Q8-host-boundaries") == 0,"mislabelled Vulkan report");
-    std::vector<float> batched=x; batched.insert(batched.end(),x.begin(),x.end());
-    const int32_t ids2[]={3,0,1,3,0,1}; const uint8_t mask2[]={1,0,1,1,0,1};
-    const float weights2[]={0.125f,0,0.75f,0.125f,0,0.75f};
-    require(!tier.post(0,batched.data(),ids2,weights2,mask2,2,3,err) && tier.dead(),
-            "loopback service accepted unsupported T2 execution");
+    std::vector<float> oversized((kMaxT+1)*H,0.f),weights((kMaxT+1)*3,0.f);
+    std::vector<int32_t> ids((kMaxT+1)*3,1); std::vector<uint8_t> mask(ids.size(),1);
+    require(!tier.post(0,oversized.data(),ids.data(),weights.data(),mask.data(),kMaxT+1,3,err) && tier.dead(),
+            "oversized token window accepted");
     tier.close(); worker.stop();
     const auto& released=worker.service.counters(); // thread joined; no concurrent reads
     require(observed->prepares == 1 && released.gpu_allocated_bytes == 0 && released.gpu_weight_bytes == 0 &&
             released.gpu_scratch_bytes == 0 && released.gpu_allocation_count == 0,"loopback cleanup leaked owned counters");
     require(write_gpu_plan((output/"loopback.plan").string(),plan,err),err);
-    std::printf("LOOPBACK_ACCEPTED backend=%s requests=3 experts=2 prepares=1 fetches=2 unsupported_t2_refused=1 indices=0,2 expert_order=3,1 row_bytes=20480 bit_differences=0 owned_tensor_bytes=%llu released_bytes=0 live_allocations=0\n",
-                backend.c_str(),(unsigned long long)before.gpu_allocated_bytes);
-    const std::string receipt="three loopback client/service requests matched direct hybrid bytes; one prepare; owned counters cleared\n";
+    std::printf("LOOPBACK_ACCEPTED backend=%s requests=%u experts=2 prepares=1 fetches=2 bounded_t1_through_t8=1 oversized_refused=1 t1_indices=0,2 t1_expert_order=3,1 t1_row_bytes=20480 bit_differences=0 owned_tensor_bytes=%llu released_bytes=0 live_allocations=0\n",
+                backend.c_str(),request,(unsigned long long)before.gpu_allocated_bytes);
+    const std::string receipt="all bounded token-window loopback client/service requests matched direct hybrid bytes; one prepare; owned counters cleared\n";
     save(output/"LOOPBACK_COMPLETED",receipt.data(),receipt.size());
 }

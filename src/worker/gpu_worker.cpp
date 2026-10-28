@@ -20,6 +20,15 @@ GpuWorkerService::~GpuWorkerService() {
     sock_fd fd = (sock_fd)listener_; sock::close_fd(fd);
 }
 bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
+    if (!sock::listener_policy(options_.bind_ip, options_.allow_peer_ips, allowed_peers_, err)) return false;
+    in_addr address{};
+    ::inet_pton(AF_INET, options_.bind_ip.c_str(), &address); // parsed by listener_policy
+    const uint32_t ip = ntohl(address.s_addr);
+    if ((ip >> 24) != 127 && (ip >> 24) != 10 && (ip >> 20) != 0xac1 &&
+        (ip >> 16) != 0xc0a8) {
+        err = "CUDA bind IP must be loopback or one specific RFC1918 private interface address";
+        return false;
+    }
     if (!executor_ || options_.deadline_ms < 1 || options_.setup_ms < 1 ||
         (options_.vulkan ? options_.runtime_reserve != 0 : options_.runtime_reserve < (64ull << 20)) ||
         !validate_gpu_plan(options_.plan, err)) {
@@ -30,9 +39,16 @@ bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
     if(options_.vulkan && (options_.plan.n_embd != 2560 || options_.plan.n_ff != 640)) {
         err="Vulkan worker requires Q8_0 H2560/FF640"; return false;
     }
+    if (!options_.tls.validate(err)) return false;
+    if(options_.vulkan && options_.bind_ip!="127.0.0.1" && !options_.tls.enabled()) {
+        err="private Vulkan listener requires mTLS";return false;
+    }
     if (!cache_.open(options_.cache_root, options_.cache_budget, err)) return false;
     sock_fd fd = kBadFd;
-    if (!sock::listen_loopback(port, fd, err)) return false;
+    const bool listening = options_.bind_ip == "127.0.0.1" && allowed_peers_.empty()
+        ? sock::listen_loopback(port, fd, err)
+        : sock::listen_ipv4(options_.bind_ip, port, fd, err);
+    if (!listening) return false;
     listener_ = (uintptr_t)fd;
     return true;
 }
@@ -45,7 +61,10 @@ void GpuWorkerService::reset() {
 void GpuWorkerService::run() {
     while (!stop_.load()) {
         sock_fd peer = kBadFd;
-        if (!sock::accept_one((sock_fd)listener_, peer, 100)) continue;
+        const bool accepted = allowed_peers_.empty()
+            ? sock::accept_one((sock_fd)listener_, peer, 100, options_.accepted_tcp_nodelay)
+            : sock::accept_allowed((sock_fd)listener_, peer, 100, options_.accepted_tcp_nodelay, allowed_peers_);
+        if (!accepted) continue;
         reset(); serve((uintptr_t)peer); sock::close_fd(peer); reset();
     }
     reset();
@@ -64,9 +83,15 @@ void GpuWorkerService::run() {
 void GpuWorkerService::serve(uintptr_t fd) {
     const auto cancel = [&] { return stop_.load() || (setup_ && !ready_ &&
         now_ms() - setup_started_ >= (uint64_t)options_.setup_ms); };
+    TlsSession session;
+    TlsSession* tls = options_.tls.enabled() ? &session : nullptr;
+    std::string handshake_error;
+    if (tls && !tls->handshake(fd,options_.tls,true,options_.deadline_ms,cancel,handshake_error)) {
+        ++counters_.failures; return;
+    }
     while (!cancel()) {
         WireFrame in, out; std::string err;
-        if (!gpu_codec::receive(fd,in,kGpuFrameMax,options_.deadline_ms,cancel,err)) {
+        if (!gpu_codec::receive(fd,in,kGpuFrameMax,options_.deadline_ms,cancel,err,0,tls)) {
             ++counters_.failures; return;
         }
         if (in.status != ST_OK) { ++counters_.failures; return; }
@@ -77,7 +102,7 @@ void GpuWorkerService::serve(uintptr_t fd) {
                 options_.vulkan?"vulkan":"cuda",in.msg,status_name(out.status),(unsigned long long)options_.plan.model_id,
                 (unsigned long long)options_.plan.placement_id.a,(unsigned long long)options_.plan.placement_id.b,err.c_str());
         }
-        if (!gpu_codec::send(fd,out.msg,out.status,out.payload,options_.deadline_ms,cancel,err)) {
+        if (!gpu_codec::send(fd,out.msg,out.status,out.payload,options_.deadline_ms,cancel,err,tls)) {
             ++counters_.failures; return;
         }
         // A refused operation ends this connection/session. No partial result or retry is possible.
@@ -184,7 +209,7 @@ bool GpuWorkerService::dispatch(const WireFrame& in, WireFrame& out, std::string
         InferRequest r;
         if (!decode_request(options_.plan,in.payload,r) || r.session != session_ || r.sequence != sequence_+1)
             return refuse(ST_STALE_SESSION,"inference binding/sequence/shape");
-        if(options_.vulkan && r.T != 1) return refuse(ST_BAD_REQUEST,"Vulkan worker requires T1");
+        // The wire codec bounds T to kMaxT; Vulkan evaluates each token through its resident T1 graph.
         uint64_t entries = 0;
         for (size_t i=0;i<r.mask.size();++i) {
             if (r.mask[i]>1 || (r.mask[i] && !options_.plan.owns(r.layer,r.ids[i])))

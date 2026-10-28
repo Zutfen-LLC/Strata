@@ -69,10 +69,24 @@ def validate_network_gpu(cfg):
     for i,a in enumerate(argv):
         if a!='--remote-gpu-worker':continue
         if i+2>=len(argv):raise ValueError('missing GPU endpoint/plan')
-        host,port=argv[i+1].rsplit(':',1)
-        if ipaddress.ip_address(host)!=ipaddress.ip_address('127.0.0.1') or not 1<=int(port)<=65535 or argv[i+1] in endpoints:
-            raise ValueError('external GPU peers require distinct existing loopback forwards')
-        endpoints.add(argv[i+1])
+        selected=argv[i+1]
+        backend='cuda'
+        if '@' in selected:
+            backend,selected=selected.split('@',1)
+            if backend not in ('cuda','vulkan'):raise ValueError('unsupported GPU backend')
+        host,port=selected.rsplit(':',1)
+        if backend=='vulkan' and host!='127.0.0.1' and any(flag not in argv for flag in
+                ('--remote-gpu-tls-ca','--remote-gpu-tls-cert','--remote-gpu-tls-key','--remote-gpu-tls-peer')):
+            raise ValueError('private Vulkan peers require explicit mTLS')
+        address=ipaddress.IPv4Address(host)  # numeric only; no DNS, IPv6 or CIDRs
+        private=any(address in ipaddress.IPv4Network(network) for network in
+                    ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16'))
+        if (address!=ipaddress.IPv4Address('127.0.0.1') and not private) or \
+           not port.isascii() or not port.isdecimal() or not 1<=int(port)<=65535:
+            raise ValueError('external GPU peers require numeric loopback or RFC1918 IPv4 endpoints')
+        endpoint=(address,int(port))
+        if endpoint in endpoints:raise ValueError('external GPU peer endpoints must be distinct')
+        endpoints.add(endpoint)
 
 
 def validate(cfg, source):

@@ -106,6 +106,11 @@ bool GpuWorkerGroup::validate(const std::vector<GpuWorkerTier::Open>& opts,std::
             !endpoints.emplace(o.host,o.port).second || !validate_gpu_plan(o.plan,err)) {
             if(err.empty())err="invalid/duplicate CUDA endpoint or deadline";return false;
         }
+        if(o.vulkan && (!o.entry_rows || (o.host!="127.0.0.1" && !o.tls.enabled()) ||
+            o.plan.n_embd!=2560 || o.plan.n_ff!=640)) {
+            err="Vulkan requires indexed rows, H2560/FF640 and mTLS outside loopback";return false;
+        }
+        if(!o.tls.validate(err))return false;
         const auto& p=o.plan;
         if (o.entry_rows!=opts.front().entry_rows) {err="CUDA group reply modes differ";return false;}
         if (p.model_id!=first.model_id || p.layout_id!=first.layout_id || p.n_layers!=first.n_layers ||

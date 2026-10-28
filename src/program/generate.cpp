@@ -584,6 +584,8 @@ struct Options {
     bool remote_gpu_experts = false;
     bool remote_gpu_legacy = false;
     std::vector<strata::worker::GpuEndpoint> remote_gpu_workers;
+    std::string remote_gpu_tls_ca, remote_gpu_tls_cert, remote_gpu_tls_key;
+    std::vector<std::string> remote_gpu_tls_peers;
     std::string remote_gpu_host = "127.0.0.1", remote_gpu_plan;
     int remote_gpu_port = 7432, remote_gpu_deadline_ms = 10000, remote_gpu_setup_ms = 600000;
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
@@ -1043,7 +1045,9 @@ void usage() {
                  "                       needs --remote-cpu-experts, its trusted --remote-cpu-local-manifest,\n"
                  "                       and --remote-gpu-plan; CPU residency stays intact, CUDA owns the assigned subset\n"
                  "  --remote-gpu-plan FILE  frozen selective expert plan (plain Q8_0/Q8_0 only)\n"
-                 "  --remote-gpu-worker HOST:PORT PLAN  repeat for 1..8 disjoint parallel workers;\n"
+                 "  --remote-gpu-tls-ca FILE --remote-gpu-tls-cert FILE --remote-gpu-tls-key FILE\n"
+                 "  --remote-gpu-tls-peer DNS  repeat per GPU endpoint in order; exact SAN identity\n"
+                 "  --remote-gpu-worker [cuda@|vulkan@]HOST:PORT PLAN  1..8 disjoint workers;\n"
                  "                       replaces the legacy endpoint/plan pair; same fixed CPU partition\n"
                  "  --remote-gpu-setup-ms N  whole setup budget (default 600000)\n"
                  "  --remote-gpu-deadline-ms N  per-frame deadline (default 10000)\n"
@@ -2324,7 +2328,9 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--remote-gpu-worker" || a == "--remote-gpu-experts" || a == "--remote-gpu-plan" ||
-            a == "--remote-gpu-setup-ms" || a == "--remote-gpu-deadline-ms") {
+            a == "--remote-gpu-setup-ms" || a == "--remote-gpu-deadline-ms" ||
+            a == "--remote-gpu-tls-ca" || a == "--remote-gpu-tls-cert" ||
+            a == "--remote-gpu-tls-key" || a == "--remote-gpu-tls-peer") {
 #ifndef STRATA_NATIVE_EXPERTS
             std::fprintf(stderr, "strata: %s requires STRATA_NATIVE_EXPERTS=ON\n", a.c_str());
             return 2;
@@ -2332,6 +2338,9 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata: %s requires the CUDA/native POSIX network worker build\n", a.c_str());
             return 2;
 #else
+            if(a.rfind("--remote-gpu-tls-",0)==0 && (i+1>=argc || !*argv[i+1])) {
+                std::fprintf(stderr,"GPU mTLS options require nonempty values\n");return 2;
+            }
             i += std::min(a == "--remote-gpu-worker" ? 2 : 1, argc-i-1);
             continue;
 #endif
@@ -2645,11 +2654,15 @@ int main(int argc, char** argv) {
         else if (a == "--remote-gpu-worker") {
             strata::worker::GpuEndpoint endpoint;
             if (!strata::worker::parse_gpu_endpoint(next("--remote-gpu-worker"),endpoint)) {
-                std::fprintf(stderr,"--remote-gpu-worker takes numeric HOST:PORT followed by PLAN\n");return 2;
+                std::fprintf(stderr,"--remote-gpu-worker takes [cuda@|vulkan@]HOST:PORT followed by PLAN\n");return 2;
             }
             endpoint.plan=next("--remote-gpu-worker PLAN");
             o.remote_gpu_workers.push_back(std::move(endpoint));o.remote_gpu_experts=true;
         }
+        else if (a == "--remote-gpu-tls-ca") o.remote_gpu_tls_ca=next("--remote-gpu-tls-ca");
+        else if (a == "--remote-gpu-tls-cert") o.remote_gpu_tls_cert=next("--remote-gpu-tls-cert");
+        else if (a == "--remote-gpu-tls-key") o.remote_gpu_tls_key=next("--remote-gpu-tls-key");
+        else if (a == "--remote-gpu-tls-peer") o.remote_gpu_tls_peers.emplace_back(next("--remote-gpu-tls-peer"));
         else if (a == "--remote-gpu-setup-ms") o.remote_gpu_setup_ms = std::atoi(next("--remote-gpu-setup-ms"));
         else if (a == "--remote-gpu-deadline-ms") o.remote_gpu_deadline_ms = std::atoi(next("--remote-gpu-deadline-ms"));
         else if (a == "--expert-cache-remote-placement")
@@ -3417,6 +3430,13 @@ int main(int argc, char** argv) {
     if (!o.remote_cpu_local_manifest.empty() && (!o.mmap_experts || o.native_preset.empty())) {
         std::fprintf(stderr, "strata generate: local worker sources require --mmap-experts and --native GGUF reference slices\n");
         return 2;
+    }
+    const bool gpu_tls = !o.remote_gpu_tls_ca.empty() || !o.remote_gpu_tls_cert.empty() ||
+        !o.remote_gpu_tls_key.empty() || !o.remote_gpu_tls_peers.empty();
+    if (gpu_tls && (!o.remote_gpu_experts || o.remote_gpu_tls_ca.empty() || o.remote_gpu_tls_cert.empty() ||
+        o.remote_gpu_tls_key.empty() || o.remote_gpu_tls_peers.size() !=
+        (o.remote_gpu_workers.empty()?size_t(1):o.remote_gpu_workers.size()))) {
+        std::fprintf(stderr,"GPU mTLS requires CA/cert/key and one --remote-gpu-tls-peer SAN DNS name per endpoint, in endpoint order\n");return 2;
     }
     if ((o.remote_gpu_legacy && !o.remote_gpu_workers.empty()) ||
         o.remote_gpu_workers.size()>strata::worker::kMaxGpuWorkers ||
@@ -6859,9 +6879,18 @@ int main(int argc, char** argv) {
         if (o.remote_gpu_experts) {
           auto endpoints=o.remote_gpu_workers;
           if(endpoints.empty())endpoints.push_back({o.remote_gpu_host,o.remote_gpu_plan,(uint16_t)o.remote_gpu_port});
+          size_t tls_peer_index=0;
           for(const auto& endpoint:endpoints) {
             strata::worker::GpuWorkerTier::Open item;item.entry_rows=mixed_worker_rows;
+            item.vulkan=endpoint.vulkan;
+            if(item.vulkan && !mixed_worker_rows) {
+                std::fprintf(stderr,"Vulkan requires grouped CPU backing and --remote-cpu-entry-rows for ordered reduction\n");return 1;
+            }
             item.host=endpoint.host;item.port=endpoint.port;item.deadline_ms=o.remote_gpu_deadline_ms;item.setup_ms=o.remote_gpu_setup_ms;
+            if(gpu_tls) {
+                item.tls={o.remote_gpu_tls_ca,o.remote_gpu_tls_cert,o.remote_gpu_tls_key,o.remote_gpu_tls_peers[tls_peer_index++]};
+                if(!item.tls.validate(err)) {std::fprintf(stderr,"GPU mTLS: %s\n",err.c_str());return 1;}
+            }
             auto& gpu_plan=item.plan;
             if (!strata::worker::read_gpu_plan(endpoint.plan, gpu_plan, err)) {
                 std::fprintf(stderr, "strata generate: network GPU plan: %s\n", err.c_str());
