@@ -69,7 +69,21 @@ int main() {
         const auto weights=session->report().host_weights;
         const auto verified=session->expert_work().verifications;
         for(int32_t token : {6, 5, 5}) {
-            check(session->reset(error) && session->step(token, logits, error), error);
+            const auto before_reset = session->expert_work();
+            check(session->reset(error), error);
+            const auto after_reset = session->expert_work();
+            check(before_reset.pool_gu_ms == after_reset.pool_gu_ms &&
+                  before_reset.pool_quant_ms == after_reset.pool_quant_ms &&
+                  before_reset.pool_down_ms == after_reset.pool_down_ms &&
+                  before_reset.pool_elapsed_ms == after_reset.pool_elapsed_ms,
+                  "reset preserves pool accumulators without adding work");
+            check(session->step(token, logits, error), error);
+            const auto after_step = session->expert_work();
+            check(after_step.pool_elapsed_ms > after_reset.pool_elapsed_ms &&
+                  after_step.pool_gu_ms >= after_reset.pool_gu_ms &&
+                  after_step.pool_quant_ms >= after_reset.pool_quant_ms &&
+                  after_step.pool_down_ms >= after_reset.pool_down_ms,
+                  "pool phases accumulate across reset");
             const auto& expected=reference[token==6 ? 1 : 0];
             check(logits==expected, "A/B/A reset rows differ from explicit same-backend reference");
             check(session->expert_work().verifications==verified, "reset discarded verified CPU views");

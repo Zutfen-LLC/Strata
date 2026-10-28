@@ -1,5 +1,6 @@
 """Real sparse-model CLI lifecycle checks; driven by the C++ fixture owner."""
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -32,6 +33,11 @@ with tempfile.TemporaryDirectory() as d:
         assert again['metrics']['cpu_hits_delta']==480*3
         assert a['metrics']['cpu_verifications_delta']==480
         assert a['metrics']['cpu_hits_delta']==480*2
+        for result in (a,b,again):
+            values=[result['metrics']['cpu_pool_'+key+'_ms_delta'] for key in ('gu','quant','down','elapsed')]
+            assert all(math.isfinite(value) and value>=0 for value in values)
+            assert values[3]>0 and sum(values[:3])<=values[3]+1e-6
+        assert all('cpu_pool_' not in line for line in baseline.stdout.splitlines())
         r.finish()
     finally: r.close()
     for mode in ('eof','quit','signal','malformed','mutation'):

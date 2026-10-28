@@ -302,3 +302,42 @@ parity is established. The original strict parity failure remains unchanged.
 The [NVIDIA02 recipe](../agenthandoffs/portable-resident-nvidia02-v1.md) reuses the
 same runtime source and explicit local paths/PCI selection; it remains pending
 parent review/dispatch. This documentation update authorizes no additional run.
+
+### Existing CPU expert pool phase deltas
+
+`expert_work()` exposes the pool's existing cumulative host-wall milliseconds as
+pool_gu_ms, pool_quant_ms, pool_down_ms and pool_elapsed_ms. Resident done receipts
+subtract before/after snapshots into `cpu_pool_gu_ms_delta`,
+`cpu_pool_quant_ms_delta`, `cpu_pool_down_ms_delta`, `cpu_pool_elapsed_ms_delta`.
+They accumulate across reset; reading a snapshot adds no timing or work. Existing
+one-shot stdout, stderr counters, timing-file schema and arithmetic are unchanged.
+
+The source of the first three counters is ExpertPool::ms_multi_gu/ms_multi_q/
+ms_multi_down. In run_split_multi_native, gate/up wraps run_phase(5), including
+worker parking, publication, host participation, drain and re-park. Quantization
+covers host intermediate activation quantization. Down starts after quantization,
+includes phase setup and run_phase(6), with its synchronization. These are wall
+intervals, not pure arithmetic or summed worker CPU time.
+
+pool_elapsed_ms reads the **drain** output of phase_ms(). CpuExperts exclusively
+uses run_split_multi_native: its drain accumulator encloses the native call's
+batch loop and three phase intervals, plus batch setup/bookkeeping. Legacy run()
+wait-park/repark counters are not separately timed for this native path; their zero
+values would not mean synchronization is free. The phase sum is contained in the
+enclosing native elapsed interval (subject to floating subtraction/rounding).
+Never add elapsed to the phases. These snapshots cover all native calls through
+this provider, including CPU reference rows if --expert-check-rows is enabled.
+The timed recipe leaves that diagnostic off.
+
+Selected expert copy/digest, initial activation quantization and route/row buffer
+preparation outside the native call are excluded from pool elapsed. Forward wall
+time outside it also includes routing, GPU experts, dense/backend work, transfers,
+merging and logging; it must not all be labeled dense compute. These are complete
+request deltas, not separate prompt/decode pool breakdowns or a new profiler.
+The [bounded AMD timing recipe](../agenthandoffs/portable-pool-phase-hermes-v1.md)
+keeps the old480 plans and frozen case1 for parent review before dispatch.
+
+The portable and native users of the same compiled strata_kernels_cpu/ggml-cpu
+libraries in one build do not establish a separate portable-only scalar kernel.
+That shared source/link relationship does not establish ISA parity between
+separately deployed builds; their actual build flags and dispatch remain unverified.
