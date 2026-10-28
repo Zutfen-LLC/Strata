@@ -27,6 +27,7 @@ struct PortableHead::Impl {
     ggml_tensor *input = nullptr, *output = nullptr;
     std::vector<PortablePlacement> placement;
     size_t weight_size = 0, graph_size = 0, device_bytes = 0, device_workspace = 0;
+    ggml_backend_t accelerator = nullptr;
     Impl(PortableHeadGeometry geometry, const std::vector<PortableTensorView> &views, PortableFfnOptions opts)
         : g(geometry) {
         require(g.hidden > 0 && g.hidden <= 16384 && g.streams == 4 && g.rank > 0 && g.rank <= 4096 &&
@@ -88,6 +89,7 @@ struct PortableHead::Impl {
         if (opts.request_accelerator && opts.accelerator) {
             // Pinned Vulkan tensor workspace: a full F32 image of the largest head matrix plus
             // input/output conversion and split-K temporary rows (<=8 splits).
+            accelerator=opts.accelerator;
             device_workspace =
                 std::max(size_t(g.hidden * g.vocabulary), size_t(width * g.rank)) * sizeof(float) + size_t(g.vocabulary * 16 + width * 4) * sizeof(float);
             require(device_workspace <= opts.graph_budget - graph_size, "portable head: device workspace budget");
@@ -146,7 +148,11 @@ PortableMemoryUsage PortableHead::memory_usage() const {
     m.host_extra_bound = (4u << 20) + size_t(s.g.vocabulary * 2 + s.g.hidden * 16) * sizeof(float);
     if (s.graph_size > buffers)
         m.host_extra_bound += s.graph_size - buffers;
-    m.device_extra_bound = s.device_workspace;
+    if(s.device_workspace) {
+        const size_t conversion=std::max(size_t(s.g.hidden*s.g.vocabulary),size_t(s.g.hidden*s.g.streams*s.g.rank))*sizeof(float);
+        m.device_extra_bound=s.device_workspace-conversion;
+        portable_detail::account_matrix_conversion(m,s.accelerator,conversion);
+    }
     return m;
 }
 } // namespace strata::core

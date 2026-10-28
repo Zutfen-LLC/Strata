@@ -204,7 +204,10 @@ int main(int argc, char **argv) {
                   << '\n';
         for (size_t i = 0; i < report.device_admission.size(); ++i)
             std::cerr << "die=" << i << " actual_scheduler_bytes=" << report.device_scheduler[i]
-                      << " workspace_and_transient_bound=" << report.device_workspace_bound[i]
+                      << " workspace_and_transient_bound=" << report.device_workspace_bound[i]+report.device_token_temporary_bound[i]+report.device_shared_conversion_bound[i]
+                      << " backend_private_bound=" << report.device_workspace_bound[i]
+                      << " token_temporary_bound=" << report.device_token_temporary_bound[i]
+                      << " shared_conversion_bound=" << report.device_shared_conversion_bound[i]
                       << " admitted_bytes=" << report.device_admission[i] << " cap_bytes=" << opts.device_caps[i]
                       << " headroom_bytes=" << opts.device_caps[i] - report.device_admission[i] << '\n';
         std::cerr << report.identity_evidence << '\n';

@@ -441,8 +441,10 @@ PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     const size_t allowance = s.graphs_size > buffers ? s.graphs_size - buffers : 0;
     m.host_extra_bound += state_bytes() + (8u << 20) + allowance +
                           ggml_graph_plan(s.graph, s.options.execution.threads, nullptr).work_size;
-    if (s.options.execution.request_accelerator)
-        m.device_extra_bound += allowance + size_t(H * CHANNELS) * sizeof(float) + (8u << 20);
+    if (s.options.execution.request_accelerator) {
+        m.device_extra_bound += allowance + (8u << 20);
+        portable_detail::account_matrix_conversion(m,s.options.execution.accelerator,size_t(H*CHANNELS)*sizeof(float));
+    }
     return m;
 }
 } // namespace strata::core

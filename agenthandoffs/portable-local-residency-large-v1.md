@@ -1,9 +1,12 @@
 # Larger local Vulkan residency: conditional handoff
 
 Prepared for parent review/dispatch after the16-per-die physical smoke passed.
-No new C++ implementation or fleet run here. Keep the existing source 05601aba
-binary SHA 7d8718ac7dfa9897b248fb208f72117f3c731c765ed10697e0c70e2bc0d59ae4;
-use this PR's latest complete Python source export. No rebuild is needed.
+The original source05601aba ledger rejected both retained counts. A source-grounded
+[accounting correction](portable-memory-accounting-v1.md) now separates serial
+QSA temporary capacity and verified backend-context conversion workspace from
+retained bytes. **Build the latest C++ source in a fresh directory and record its
+new binary SHA. The old05601aba binary must not be used for this larger run.**
+Caps/reserves are unchanged. No larger fleet run has occurred.
 
 The smoke wrapper already supports larger supplied plans and caps. Its flags are
 `--plan` twice, `--tensor-mib`, `--workspace-mib`, `--free-reserve-mib`; it has no
@@ -16,93 +19,79 @@ at `/home/hermes/amd-1152-20261027` (1152 per die) or
 filenames and hashes; none are invented here. Deleted cache payloads need not be
 restored. The local loader reads only the plans and original mapped GGUF ranges.
 
-## Readiness and count selection; metadata only
+## Readiness after the accounting correction
 
-First obtain the exact smoke summary.json and stderr.log paths plus exact retained
-plan filenames/hashes. Require trusted manifest/model identity, disjoint ownership
-and actual counts 1152/1152 or 480/480 from retained receipts. The local adapter
-reconstructs and compares each full plan against the source manifest before expert
-allocation; mismatched identities are a STOP, not permission to regenerate caches.
+The old smoke ledger refused both counts; it must not be used as the admission
+ledger for the corrected binary. The source/lifetime proof and conservative
+480-per-die upper bounds are recorded in
+[portable-memory-accounting-v1.md](portable-memory-accounting-v1.md).
 
-Per die, 1152 weights occupy 6016204800 bytes (5737.5 MiB); 480 occupy 2506752000
-bytes (2390.625 MiB). Host GGML metadata alone is 2.25 GiB/die or 0.9375 GiB/die.
-The implementation's additional host bound including boundary buffers and slack
-is 2356 MiB/die or 991 MiB/die, respectively. Host/cgroup and 32 GiB anonymous-cap
-checks still apply. These values do not include dense/runtime allocations.
+The successful16-expert smoke measured84008960 padded tensor bytes per die.
+Fixed expert geometry/allocation layout gives2520268800 bytes for480 experts,
+rounded to a2404 MiB tensor cap. Host metadata/boundary/loading admission adds
+991 MiB per die; host/cgroup and the32 GiB anonymous cap remain enforced.
 
-Use actual padded tensor bytes from each 16-expert smoke receipt, rather than
-weight bytes alone. Expert geometry and per-expert allocation layout are fixed
-for this binary/backend; round the larger aggregate up to whole MiB. Recover the
-dense admission ledger by subtracting the smoke tensor cap and workspace allowance
-from the printed admitted_bytes. Do not replace it with observed 1.2 GiB usage.
+Preserve caps7680 MiB/die, runtime allowance128 MiB/die and free reserve512 MiB/die.
+The loader must pass its current live free-memory check after dense loading and
+its growth/reserve checks during loading/inference. An observed1.2 GiB dense
+footprint is not a substitute for the corrected admission ledger.
 
-This read-only calculation selects 1152 only if both per-device ledgers and the
-host cap admit it, otherwise 480 with an explicit failed inequality. It does not
-launch a model or replace live free-memory checks:
+## Concrete supported pair and corrected build
+
+The corrected conservative bound admits the retained480-per-die pair with
+`TENSOR_MIB=2404,2404`;1152 remains blocked by the preserved head conversion
+allowance on die1. This is based on the supplied padded allocation/admission
+receipts, not an assumed observed peak. Verify exact retained inputs:
 
 ```sh
-# Hermes resolves these actual retained files; no guessed subpaths.
-: "${SMOKE_SUMMARY:?actual smoke summary.json}" "${SMOKE_STDERR:?actual smoke stderr.log}"
-"$PYTHON05" -B - "$SMOKE_SUMMARY" "$SMOKE_STDERR" <<'PY'
-import json, sys
-M=1<<20
-summary=json.load(open(sys.argv[1])); text=open(sys.argv[2]).read()
-assert summary['status']=='complete'
-reports=summary['expert_devices']
-assert set(reports)=={'0','1'}
-ledgers={}
-for line in text.splitlines():
-    if line.startswith('die='):
-        fields=dict(part.split('=',1) for part in line.split())
-        ledgers[int(fields['die'])]=fields
-hostline=next(line for line in text.splitlines() if line.startswith('mapped_bytes='))
-host=dict(part.split('=',1) for part in hostline.split())
-base_host=sum(int(host[k]) for k in ('host_weight_bytes','host_scheduler','host_state_bound','expert_staging'))
-per_host=(2<<20)+(32<<10)
-base_host-=sum(int(r['assigned'])*per_host+(16<<20) for r in reports.values())
-for count in (1152,480):
-    tensor_caps=[]; reasons=[]
-    for slot in (0,1):
-        r=reports[str(slot)]; ledger=ledgers[slot]
-        assigned=int(r['assigned']); padded=int(r['tensor_bytes'])
-        assert assigned==16 and padded>0 and int(r['entries'])>0
-        tensor=(count*padded+assigned*M-1)//(assigned*M)
-        dense=int(ledger['admitted_bytes'])-int(r['tensor_cap'])-int(r['workspace_cap'])
-        total=dense+tensor*M+128*M
-        cap=int(ledger['cap_bytes'])
-        tensor_caps.append(tensor)
-        if total>cap: reasons.append(f'die{slot}: dense+tensor+workspace={total} > cap={cap}')
-    new_host=base_host+2*(count*per_host+(16<<20))
-    if new_host>32768*M: reasons.append(f'host bound {new_host} > 32GiB')
-    if reasons:
-        print(f'COUNT {count} REJECTED: '+ '; '.join(reasons)); continue
-    print(f'COUNT={count} TENSOR_MIB={tensor_caps[0]},{tensor_caps[1]} HOST_BOUND={new_host}')
-    break
-else:
-    raise SystemExit('Neither retained placement admits; STOP without a tiny replacement or cap relaxation')
-PY
+PLAN0=/home/hermes/amd-quality-pr37-split/plan-die0.plan
+PLAN1=/home/hermes/amd-quality-pr37-split/plan-die1.plan
+TENSOR_MIB=2404,2404
+COUNT=480
+printf '%s  %s\n' \
+  74514c6c5329d2cd518ee8b13015621bc3ba67d3815e3a15753e823dffa8257f "$PLAN0" \
+  064002c422b53f3508b9a771cafe8b8604ca5786865542c61db3a15a094fa061 "$PLAN1" \
+  | sha256sum -c -
 ```
 
-Record its output/rejection reason. Set PLAN0/PLAN1 to the matching retained pair
-for that selected count, and TENSOR_MIB to the printed pair. Do not mix campaigns
-without independently confirming disjoint ownership. Keep workspace 128 MiB/die,
-free reserve 512 MiB/die and total cap 7680 MiB/die. Before launch, current idle/free
-observations must still support the plan. During preparation the loader requires
-live free memory after dense loading >= tensor cap + 128 MiB + 512 MiB reserve,
-then enforces observed growth/free reserve around asset loading and inference.
-Driver transient peaks remain subject to the existing outer sampled guards.
+Retained1152 plans are `/home/hermes/amd-1152-20261027/plan-die0.plan` with SHA
+21f25e49aa488a3dc1c215ff1fee5ffa0581345964db5cca198d346a49906434 and plan-die1.plan
+in that same directory with SHA35598853921b0d41aca724e3a744ef433339369e1be380aa2b37512088d697a5.
+Do not launch that pair under the current conservative head bound.
+
+Use the original complete-source CMake recipe with a fresh SOURCE/BUILD/CHECKS
+below the secondary disk, adding the new portable_memory_admission_test and
+portable_qsa_memory_test targets. Build/test outside the finite clock window:
+
+```sh
+"$CMAKE" --build "$BUILD" --parallel 2 --target portable_model \
+  portable_memory_admission_test portable_qsa_memory_test portable_timing_cli_test \
+  portable_model_test portable_qsa_test > "$CHECKS/build.log" 2>&1
+"$(dirname "$CMAKE")/ctest" --test-dir "$BUILD" --output-on-failure \
+  -R '^portable_(memory_admission|qsa_memory|timing_cli|model|qsa)_test$' \
+  > "$CHECKS/ctest.log" 2>&1
+sha256sum "$BUILD/portable_model" > "$CHECKS/binary.sha256"
+BINARY="$BUILD/portable_model"
+BINARY_SHA=$(sha256sum "$BINARY" | cut -d' ' -f1)
+```
+
+After the first corrected-build token, capture the new private/conversion/temporary
+fields and verify their sum plus scheduler/expert budgets equals admitted_bytes
+on each die. Identity mismatch, cap refusal or zero actual hits is a STOP; do not
+regenerate caches or alter plans/caps to get a pass.
 
 ## One larger resident token
 
 Fresh output directories under the secondary disk only. Set ROOT to a new private
 parent below `/srv/models/inferswarm-artifacts/portable-local-residency-large-v1`.
-SOURCE is the complete latest Python export; BINARY is the retained source 05601aba
-portable_model, verified against the SHA above. No cache/archive recreation.
+SOURCE is the complete latest source export; BINARY is the freshly rebuilt
+portable_model with the corrected ledger. Record BINARY_SHA from that build and
+verify it before launch. No cache/archive recreation.
 
 ```sh
 : "${PLAN0:?Hermes verified exact filename}" "${PLAN1:?matching plan filename}"
 : "${TENSOR_MIB:?derived separate caps}" "${ROOT:?fresh evidence parent}"
-BINARY_SHA=7d8718ac7dfa9897b248fb208f72117f3c731c765ed10697e0c70e2bc0d59ae4
+: "${BINARY_SHA:?new corrected-build binary SHA}"
 sha256sum "$BINARY" "$PLAN0" "$PLAN1"
 timeout --signal=TERM --kill-after=15s 325s \
   "$PYTHON05" -B "$SOURCE/tools/validation-harness/portable_local_expert_smoke_v1.py" \

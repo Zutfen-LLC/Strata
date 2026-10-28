@@ -1,5 +1,6 @@
 #include "strata/core/portable_model.hpp"
 #include "portable_graph.hpp"
+#include "portable_memory.hpp"
 #include "portable_cpu_experts.hpp"
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
 #include "portable_local_experts.hpp"
@@ -173,6 +174,8 @@ struct PortableModelSession::Impl {
         report.device_admission.assign(opts.accelerators.size(), 0);
         report.device_scheduler.assign(opts.accelerators.size(), 0);
         report.device_workspace_bound.assign(opts.accelerators.size(), 0);
+        report.device_token_temporary_bound.assign(opts.accelerators.size(), 0);
+        report.device_shared_conversion_bound.assign(opts.accelerators.size(), 0);
         auto execution = [&](size_t index, bool output) {
             PortableFfnOptions o;
             o.threads = opts.threads;
@@ -297,13 +300,11 @@ struct PortableModelSession::Impl {
                     report.expert_staging <= opts.host_cap - report.host_weights - report.host_state_bound - host_graph,
                 "portable model: host anonymous admission cap exceeded");
         if (!opts.accelerators.empty()) {
-            const size_t required = m.device_graph + m.device_extra_bound;
-            require(report.device_admission[die] <= opts.device_caps[die] &&
-                        required <= opts.device_caps[die] - report.device_admission[die],
-                    "portable model: separate die " + std::to_string(die) + " admission cap exceeded");
-            report.device_admission[die] += required;
-            report.device_scheduler[die] += m.device_graph;
-            report.device_workspace_bound[die] += m.device_extra_bound;
+            const size_t previous_conversion=report.device_shared_conversion_bound[die];
+            const size_t previous_temporary=report.device_token_temporary_bound[die];
+            portable_detail::account_device_memory(report,die,opts.device_caps[die],m);
+            report.graph_admission_bound+=report.device_token_temporary_bound[die]-previous_temporary+
+                report.device_shared_conversion_bound[die]-previous_conversion;
         }
     }
     size_t host_graph = 0;
