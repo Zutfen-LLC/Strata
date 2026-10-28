@@ -51,10 +51,54 @@ int main() {
         close(layer->recurrent_state(), state, 0, "nonfinite state rollback");
         close(layer->convolution_history(), history, 0, "nonfinite history rollback");
         close(layer->last_residual(), residual, 0, "nonfinite residual rollback");
-        auto bad_input = f.input(3);
-        bad_input[0] = std::numeric_limits<float>::infinity();
-        check(!layer->step(bad_input, experts(), route, error), "nonfinite input");
-        check(layer->tokens() == 3, "failed token count");
+        // Exercise the shared finite helper at both boundaries and the middle.
+        // Invalid input must fail before dispatch or any persistent-state commit.
+        for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                              std::numeric_limits<float>::infinity(),
+                              -std::numeric_limits<float>::infinity()}) {
+            for (size_t at : {size_t(0), residual.size() / 2, residual.size() - 1}) {
+                auto bad_input = f.input(3);
+                bad_input[at] = invalid;
+                bool dispatched = false;
+                trace.attention = {1};
+                route.ids = {1};
+                check(!layer->step(bad_input,
+                    [&](int64_t, const PortableRoute &, std::vector<float> &, std::string &) {
+                        dispatched = true;
+                        return true;
+                    }, route, error, &trace), "nonfinite input accepted");
+                check(error == "portable GDN: nonfinite input/result", "finite diagnostic changed");
+                check(!dispatched && trace.attention.empty() && route.ids.empty(),
+                      "nonfinite input dispatched or published trace/route");
+                check(layer->recurrent_state() == state && layer->convolution_history() == history &&
+                      layer->last_residual() == residual && layer->tokens() == 3,
+                      "nonfinite input changed committed state");
+            }
+        }
+        // Inject nonfinite attention weights into an isolated layer to exercise
+        // the read-side guard with finite input, before provider dispatch.
+        auto invalid_views = f.views;
+        std::vector<float> invalid_decay(48, std::numeric_limits<float>::quiet_NaN());
+        for (auto &view : invalid_views)
+            if (view.name == "blk.0.ssm_a")
+                view.data = invalid_decay.data();
+        auto nonfinite_layer = PortableGdnLayer::create(0, invalid_views, options, error);
+        check(bool(nonfinite_layer), error);
+        const auto clean_state = nonfinite_layer->recurrent_state(),
+                   clean_history = nonfinite_layer->convolution_history();
+        bool nonfinite_dispatched = false;
+        check(!nonfinite_layer->step(f.input(0),
+            [&](int64_t, const PortableRoute &, std::vector<float> &, std::string &) {
+                nonfinite_dispatched = true;
+                return true;
+            }, route, error, &trace), "nonfinite attention candidate accepted");
+        check(error == "portable GDN: nonfinite input/result" && !nonfinite_dispatched,
+              "attention candidate finite guard or diagnostic changed: " + error);
+        check(nonfinite_layer->recurrent_state() == clean_state &&
+              nonfinite_layer->convolution_history() == clean_history &&
+              nonfinite_layer->last_residual().empty() && nonfinite_layer->tokens() == 0 &&
+              trace.attention.empty(), "nonfinite attention candidate changed committed state/trace");
+        nonfinite_layer.reset();
         check(layer->step(f.input(3), experts(), route, error, &trace), error);
         reference(f, state, history, trace, *layer);
         check(layer->reset(error), error);
@@ -68,6 +112,28 @@ int main() {
         check(layer->step(f.input(0), experts(), route, error, &trace), error);
         reference(f, state, history, trace, *layer);
         const auto first_output = layer->last_residual();
+        // Signed zero and finite minimum/subnormal values still take the normal
+        // path. Reset/replay must preserve every output and trace byte.
+        auto finite_edges = f.input(0);
+        finite_edges[0] = 0.0f;
+        finite_edges[1] = -0.0f;
+        finite_edges[finite_edges.size() / 2] = std::numeric_limits<float>::min();
+        finite_edges.back() = std::numeric_limits<float>::denorm_min();
+        check(layer->reset(error) && layer->step(finite_edges, experts(), route, error, &trace), error);
+        const auto edge_state = layer->recurrent_state(), edge_history = layer->convolution_history(),
+                   edge_residual = layer->last_residual();
+        const auto edge_trace = trace;
+        check(layer->reset(error) && layer->step(finite_edges, experts(), route, error, &trace), error);
+        const auto same_bytes = [](const std::vector<float> &a, const std::vector<float> &b) {
+            return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0);
+        };
+        check(same_bytes(layer->recurrent_state(), edge_state) &&
+              same_bytes(layer->convolution_history(), edge_history) &&
+              same_bytes(layer->last_residual(), edge_residual), "finite edge replay bytes changed");
+        for (auto member : {&PortableGdnTrace::qkv, &PortableGdnTrace::convolution, &PortableGdnTrace::query,
+                            &PortableGdnTrace::key, &PortableGdnTrace::value, &PortableGdnTrace::decay,
+                            &PortableGdnTrace::beta, &PortableGdnTrace::attention})
+            check(same_bytes(trace.*member, edge_trace.*member), "finite edge trace replay bytes changed");
         check(!PortableGdnLayer::create(1, f.views, options, error), "mismatched layer prefix rejection");
         check(!PortableGdnLayer::create(3, f.views, options, error), "QSA layer rejection");
         // Rebinding identical weights to a late layer must preserve the math
