@@ -284,7 +284,7 @@ failure remains unchanged. Unequal process lifecycles are an unmeasured confound
 this capability alone does not explain the full native/portable latency gap.
 
 
-### Physical resident checkpoint on05
+### Physical resident checkpoint validation host
 
 operator [reported a successful AMD resident checkpoint](../agenthandoffs/portable-resident-amd-results-v1.md)
 at runtime source `45513fd885babcf81d252b73804a14d2a751a74a`: one loaded process,
