@@ -1,6 +1,8 @@
 # Bounded local CUDA / Vulkan timing checkpoint
 
-Prepared for parent review/dispatch only. No fleet run by this task. Draft PR
+**Completed by Hermes; historical recipe below is not a request to rerun.**
+See [physical results and narrow diagnosis](local-performance-results-v1.md).
+No fleet run by this coding task. Draft PR
 stacks on PR43 docs c76d03c7. Expert placement, reduction and precision are
 unchanged: portable dense/coordinator layers on Vulkan0/1, all experts CPU,
 host PLE. PR42's adapter and tests are carried from fb518b1b; its existing owned
