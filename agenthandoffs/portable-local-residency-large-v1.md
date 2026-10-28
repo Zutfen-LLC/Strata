@@ -3,7 +3,10 @@
 **The480-per-die token and single-case stages completed successfully.** See
 [their physical receipt](portable-local-residency-480-results-v1.md). Historical
 commands below are not a request to repeat them. Parent separately released the
-frozen12-case screen with an explicit65-minute guard; its result is pending.
+frozen 12-case screen with an explicit 65-minute guard; it completed with native
+10/12 and portable 10/12, identical tokens on all 12 cases. The scorer returned
+`inconclusive-baseline`; numeric parity remains FAILED. Full scoring/cleanup
+receipts are in the linked result.
 
 Prepared for parent review/dispatch after the16-per-die physical smoke passed.
 The original source05601aba ledger rejected both retained counts. A source-grounded

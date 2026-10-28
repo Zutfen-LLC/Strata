@@ -66,7 +66,7 @@ checks49259 and evidence864892 bytes; the listed subtrees are not a complete
 breakdown of that total. Keep the raw receipts and existing qualified artifacts.
 No deletion or regeneration of old model/cache payloads occurred here.
 
-## Quality follow-up status
+## Completed frozen 12-case screen
 
 The primary result predates quality dispatch: no12-case result was completed at
 that checkpoint. Parent subsequently released the unchanged frozen12-case suite
@@ -76,5 +76,38 @@ existing temperature, sensor-failure, owned cleanup and auto-restoration rules
 remain unchanged. This is a specific parent-authorized extension for that screen,
 not a general relaxation of previous30-minute recipe limits.
 
-No quality score or cleanup result for that follow-up is claimed yet. Retain
-partial STOP on failure; no automatic retries, altered gold or tolerance changes.
+Hermes subsequently completed that screen with the same retained 480-per-die
+plans. This coding task checked the
+[primary completion receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793167106820019).
+The unchanged scorer returned `inconclusive-baseline`: native 10/12 and portable
+10/12, both missing cases 9 and 12. Output token sequences were identical in all
+12 cases, with 61 generated tokens total. The scorer's exit 1 denotes the
+imperfect native baseline; all 12 portable inference requests exited 0 exactly
+once. There was no native rerun, altered gold or row-reference overhead. Each
+portable case recorded positive GPU expert entries on both dies.
+
+This is answer-screen evidence for this fixed configuration. Original whole-model
+numeric/logit-parity gates remain **FAILED**; equal answer tokens do not establish
+numeric parity. It is not a controlled backend performance comparison.
+
+Sampled peak VRAM was 3797774336/3842609152 bytes, with minimum effective host
+availability 261133348864 bytes. Host, cgroup, swap and per-die guards remained
+enabled. Both dies had nonzero-busy samples at 1500/945 MHz; maximum sampled
+temperature was 68 C. Both controls returned to `auto`, VRAM returned to
+8339456 bytes per die, and no owned model or guard process remained. Both binary
+hashes and the retained native-summary hash still matched.
+
+The first offline scorer invocation failed to import `gguf_reader` because it
+used an incomplete older source export. That failure was preserved. Hermes
+rescored the saved outputs using the previously successful complete export and
+scoring environment; **no inference was repeated**.
+
+The 05 outputs remain in
+`/srv/models/inferswarm-artifacts/portable-local-residency-large-v1/quality-v1`,
+with guard/launch receipts in sibling `quality-control`. The score and both
+scorer receipts remain on 02 at
+`/home/hermes/portable-quality-480-local-6d433ced-v1`. The full 05 task root was
+668958767 bytes at completion. No artifacts were deleted by this update.
+The separate PR46 ranked-plan test is a new task; these retained plans were
+unchanged throughout this screen. This completion update changes documentation
+only and launches no further run.
