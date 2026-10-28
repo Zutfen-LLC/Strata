@@ -66,11 +66,19 @@ int main(int argc, char **argv) {
             check(gdn == 1 && conv == 1 && mat == 8, "actual attention operation coverage");
             PortableRoute route;
             PortableGdnTrace trace;
+            const auto *state0=layer->recurrent_state().data(), *history0=layer->convolution_history().data();
+            const float *state1=nullptr, *history1=nullptr;
             for (int t = 0; t < 2; ++t) {
                 auto state = layer->recurrent_state(), history = layer->convolution_history();
                 PortableRoute cpu_route;
                 check(cpu->step(f.input(t), experts(), cpu_route, error), error);
                 check(layer->step(f.input(t), experts(), route, error, &trace), error);
+                if(t==0) {
+                    state1=layer->recurrent_state().data();history1=layer->convolution_history().data();
+                    check(state1!=state0 && history1!=history0,"Vulkan candidate banks do not alias committed mirrors");
+                }
+                check(layer->recurrent_state().data()==(t%2?state0:state1) &&
+                      layer->convolution_history().data()==(t%2?history0:history1),"Vulkan reuses two host banks");
                 reference(f, state, history, trace, *layer);
                 close(layer->last_residual(), cpu->last_residual(), 0.003f, "full layer CPU/Vulkan output");
                 close(route.weights, cpu_route.weights, 0.003f, "full layer route weights");

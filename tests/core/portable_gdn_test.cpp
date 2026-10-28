@@ -5,6 +5,54 @@
 #include <limits>
 using namespace strata::core;
 using namespace gdn_fixture;
+namespace {
+void candidate_reuse(PortableGdnLayer &layer, const Fixture &f) {
+    std::string error;
+    PortableRoute route;
+    const auto reject=[](int64_t, const PortableRoute &, std::vector<float> &, std::string &e) {
+        e="candidate reuse rejection";return false;
+    };
+    check(layer.reset(error),error);
+    const auto memory=layer.memory_usage();
+    const auto *state0=layer.recurrent_state().data(), *history0=layer.convolution_history().data();
+    check(layer.step(f.input(0),experts(),route,error),error);
+    const auto *state1=layer.recurrent_state().data(), *history1=layer.convolution_history().data();
+    check(state1!=state0 && history1!=history0,"candidate and committed banks must not alias");
+    const auto first_state=layer.recurrent_state(), first_history=layer.convolution_history(), first_last=layer.last_residual();
+    for(int t=1;t<5;++t) {
+        const auto before_state=layer.recurrent_state(), before_history=layer.convolution_history();
+        const auto *state=layer.recurrent_state().data(), *history=layer.convolution_history().data();
+        bool called=false;
+        const auto provider=experts();
+        check(layer.step(f.input(t),[&](int64_t l,const PortableRoute &r,std::vector<float> &rows,std::string &e) {
+            called=true;
+            check(layer.recurrent_state().data()==state && layer.convolution_history().data()==history &&
+                  layer.recurrent_state()==before_state && layer.convolution_history()==before_history,
+                  "attention candidate exposed before FFN success");
+            return provider(l,r,rows,e);
+        },route,error),error);
+        check(called,"provider not reached");
+        check(layer.recurrent_state().data()==(t%2?state0:state1) &&
+              layer.convolution_history().data()==(t%2?history0:history1),"successful steps reuse exactly two banks");
+        const auto current=layer.memory_usage();
+        check(current.host_extra_bound==memory.host_extra_bound && current.device_state==memory.device_state,
+              "candidate reuse stays within existing host/device ledger");
+    }
+    const auto continued_state=layer.recurrent_state(), continued_history=layer.convolution_history(), continued_last=layer.last_residual();
+    const auto *committed=layer.recurrent_state().data();
+    check(!layer.step(f.input(9),reject,route,error) && error=="candidate reuse rejection", "failed FFN accepted");
+    check(layer.recurrent_state().data()==committed && layer.recurrent_state()==continued_state &&
+          layer.convolution_history()==continued_history && layer.last_residual()==continued_last && layer.tokens()==5,
+          "failed step exposed stale candidate bank");
+    check(layer.reset(error) && layer.recurrent_state().data()==committed,error);
+    check(layer.step(f.input(0),experts(),route,error),error);
+    check(layer.recurrent_state()==first_state && layer.convolution_history()==first_history &&
+          layer.last_residual()==first_last,"reset replay exposed rejected candidate data");
+    for(int t=1;t<5;++t)check(layer.step(f.input(t),experts(),route,error),error);
+    check(layer.recurrent_state()==continued_state && layer.convolution_history()==continued_history &&
+          layer.last_residual()==continued_last,"repeated sequence with reused candidates changed");
+}
+}
 int main() {
     try {
         Fixture f;
@@ -155,18 +203,23 @@ int main() {
             check(bool(nonfinite_layer), error);
             const auto clean_state = nonfinite_layer->recurrent_state(),
                        clean_history = nonfinite_layer->convolution_history();
-            bool nonfinite_dispatched = false;
-            check(!nonfinite_layer->step(f.input(0),
-                [&](int64_t, const PortableRoute &, std::vector<float> &, std::string &) {
-                    nonfinite_dispatched = true;
-                    return true;
-                }, route, error, &trace), "nonfinite attention candidate accepted");
-            check(error == "portable GDN: nonfinite input/result" && !nonfinite_dispatched,
-                  "attention candidate finite guard or diagnostic changed: " + error);
-            check(nonfinite_layer->recurrent_state() == clean_state &&
-                  nonfinite_layer->convolution_history() == clean_history &&
-                  nonfinite_layer->last_residual().empty() && nonfinite_layer->tokens() == 0 &&
-                  trace.attention.empty(), "nonfinite attention candidate changed committed state/trace");
+            const auto *committed=nonfinite_layer->recurrent_state().data();
+            for(int attempt=0;attempt<2;++attempt) {
+                bool nonfinite_dispatched = false;
+                check(!nonfinite_layer->step(f.input(0),
+                    [&](int64_t, const PortableRoute &, std::vector<float> &, std::string &) {
+                        nonfinite_dispatched = true;
+                        return true;
+                    }, route, error, &trace), "nonfinite attention candidate accepted");
+                check(error == "portable GDN: nonfinite input/result" && !nonfinite_dispatched,
+                      "attention candidate finite guard or diagnostic changed: " + error);
+                check(nonfinite_layer->recurrent_state() == clean_state &&
+                      nonfinite_layer->convolution_history() == clean_history &&
+                      nonfinite_layer->last_residual().empty() && nonfinite_layer->tokens() == 0 &&
+                      trace.attention.empty() && nonfinite_layer->recurrent_state().data()==committed,
+                    "nonfinite attention candidate changed committed state/trace");
+                check(nonfinite_layer->reset(error),error);
+            }
         } // finite guard stays active with state OFF and ON
         check(layer->step(f.input(3), experts(), route, error, &trace), error);
         reference(f, state, history, trace, *layer);
@@ -298,6 +351,8 @@ int main() {
             auto model = strata::GgufModel::open((root / "bad-ple.gguf").string());
             check(!PortableGdnLayer::from_gguf(model, 0, {}, error), "configured PLE0 rejection");
         }
+        candidate_reuse(*layer,f);
+        candidate_reuse(*allocated,f);
         std::printf("portable_gdn_test: actual H2560/FF640/S128/Hk16/Hv48; independent multi-token state/convolution, "
                     "reset, rollback, budgets, PLE/QSA rejection passed; weights=%zu graphs=%zu host_state_bound=%zu\n",
                     layer->weight_bytes(), layer->graph_bytes(), layer->state_bytes());

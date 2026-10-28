@@ -20,6 +20,21 @@ do synchronous backend tensor copies commit candidates to the persistent inputs.
 Host mirrors, token history, count and residual then commit together. Successful
 steps no longer upload those host mirrors as the next token's state inputs.
 
+Host candidate state/history vectors are pre-sized in the existing layer owner
+and reused regardless of the device-state flag. Complete reads and finite
+checks still run in their original order. Only a successful post-FFN commit
+swaps those private banks with the public mirrors; they never alias. Reset
+clears the public state while retaining private capacity. A rejected candidate
+is fully overwritten and validated before any later successful commit.
+
+The host ledger already prices committed and candidate copies, so its state
+budget and the device ledger do not change. Retained host RSS can increase:
+one candidate bank holds 3,268,608 bytes per GDN layer, plus 368,640 bytes for
+configured PLE history. At 36 GDN layers and one PLE layer, candidate payload
+capacity totals 118,038,528 bytes (about 112.57 MiB). This is a geometry-derived
+capacity, not a measured RSS increase. Validate actual host headroom; no cap or
+reserve is raised. Readback volume and synchronization remain unchanged.
+
 Callback rejection, exceptions and nonfinite results before commit leave the
 committed backend inputs and public mirrors intact. A recoverable exception
 during device commit poisons the layer: further steps refuse until reset.
