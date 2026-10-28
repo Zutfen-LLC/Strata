@@ -43,10 +43,10 @@ struct Layer {
     std::unique_ptr<PortableQsaLayer> qsa;
     bool reset(std::string &error) { return gdn ? gdn->reset(error) : qsa->reset(error); }
     bool step(int32_t token, uint64_t pos, std::vector<float> &residual, const PortableExpertRows &experts,
-              std::string &error) {
+              std::string &error, PortableGdnWork *work) {
         PortableRoute route;
         const bool ok =
-            gdn ? gdn->step(token, residual, experts, route, error) : qsa->step(pos, residual, experts, route, error);
+            gdn ? gdn->step(token, residual, experts, route, error, nullptr, work) : qsa->step(pos, residual, experts, route, error);
         if (ok)
             residual = gdn ? gdn->last_residual() : qsa->last_residual();
         return ok;
@@ -361,7 +361,8 @@ struct PortableModelSession::Impl {
                     portable_detail::ScopedExpertTimer<> layer_timer(opts.expert_timings,
                         gdn ? model_work.gdn_ms : model_work.qsa_ms,
                         gdn ? model_work.gdn_calls : model_work.qsa_calls);
-                    const bool ok = layers[l].step(token, pos, residual, dispatch, error);
+                    const bool ok = layers[l].step(token, pos, residual, dispatch, error,
+                        opts.expert_timings ? &model_work.gdn_phases : nullptr);
                     require(ok, "portable model: token position " + std::to_string(pos) + " layer " + std::to_string(l) +
                                     ": " + error);
                 }

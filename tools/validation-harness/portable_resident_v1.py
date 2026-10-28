@@ -130,7 +130,9 @@ class Resident:
 
 def model_phase_fields(metrics, consumed):
     for key, multiplier in (('model_step_calls_delta',1),('gdn_layer_calls_delta',36),
-                            ('qsa_layer_calls_delta',12),('output_head_calls_delta',1)):
+                            ('qsa_layer_calls_delta',12),('output_head_calls_delta',1),
+                            ('gdn_attention_exchange_calls_delta',36),('gdn_attention_compute_calls_delta',36),
+                            ('gdn_ffn_calls_delta',36)):
         if metrics[key] != consumed*multiplier: raise ValueError('model phase call capture incomplete')
     step=metrics['model_step_ms_delta']; gdn=metrics['gdn_layer_ms_delta']
     qsa=metrics['qsa_layer_ms_delta']; head=metrics['output_head_ms_delta']
@@ -142,6 +144,14 @@ def model_phase_fields(metrics, consumed):
        abs(gp+qp-provider)>epsilon or \
        abs(step-gdn-qsa-head-residual)>epsilon:
         raise ValueError('model phase containment/reconciliation failed')
+    attention=metrics['gdn_attention_exchange_ms_delta']; compute=metrics['gdn_attention_compute_ms_delta']
+    ffn=metrics['gdn_ffn_ms_delta']; outer=metrics['gdn_outer_residual_ms_delta']
+    surrounding=metrics['gdn_attention_surrounding_ms_delta']; nonprovider=metrics['gdn_ffn_non_provider_ms_delta']
+    values=(attention,compute,ffn,outer,surrounding,nonprovider)
+    if not all(math.isfinite(v) and v>=0 for v in values) or compute>attention+epsilon or gp>ffn+epsilon or \
+       attention+ffn>gdn+epsilon or abs(gdn-attention-ffn-outer)>epsilon or \
+       abs(attention-compute-surrounding)>epsilon or abs(ffn-gp-nonprovider)>epsilon:
+        raise ValueError('GDN phase containment/reconciliation failed')
 
 
 def main():

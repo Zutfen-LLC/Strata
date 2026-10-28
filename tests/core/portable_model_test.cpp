@@ -44,6 +44,10 @@ int main() {
                 reference.push_back(std::move(logits));
             }
             const auto untimed=baseline->model_work();
+            check(untimed.gdn_phases.attention_exchange_ms==0 && untimed.gdn_phases.attention_compute_ms==0 &&
+                  untimed.gdn_phases.ffn_ms==0 && untimed.gdn_phases.attention_exchange_calls==0 &&
+                  untimed.gdn_phases.attention_compute_calls==0 && untimed.gdn_phases.ffn_calls==0,
+                  "default disables GDN subphase capture");
             check(untimed.step_ms==0 && untimed.gdn_ms==0 && untimed.qsa_ms==0 && untimed.head_ms==0 &&
                   untimed.step_calls==0 && untimed.gdn_calls==0 && untimed.qsa_calls==0 && untimed.head_calls==0,
                   "default model path has no new timing capture");
@@ -96,6 +100,21 @@ int main() {
             check(session->step(token, logits, error), error);
             const auto after_step = session->expert_work();
             const auto phase_after=session->model_work();
+            const auto &ga=phase_after.gdn_phases, &gb=phase_reset.gdn_phases;
+            check(ga.attention_exchange_calls==gb.attention_exchange_calls+36 &&
+                  ga.attention_compute_calls==gb.attention_compute_calls+36 && ga.ffn_calls==gb.ffn_calls+36,
+                  "matched GDN subphase counts");
+            for (double value : {ga.attention_exchange_ms,ga.attention_compute_ms,ga.ffn_ms})
+                check(std::isfinite(value) && value>=0, "finite nonnegative GDN timing");
+            check(ga.attention_compute_ms<=ga.attention_exchange_ms &&
+                  ga.attention_exchange_ms+ga.ffn_ms<=phase_after.gdn_ms &&
+                  ga.ffn_ms>=phase_after.gdn_provider_ms, "nested GDN containment");
+            check(phase_before.gdn_phases.attention_exchange_ms==gb.attention_exchange_ms &&
+                  phase_before.gdn_phases.attention_compute_ms==gb.attention_compute_ms &&
+                  phase_before.gdn_phases.ffn_ms==gb.ffn_ms &&
+                  phase_before.gdn_phases.attention_exchange_calls==gb.attention_exchange_calls &&
+                  phase_before.gdn_phases.attention_compute_calls==gb.attention_compute_calls &&
+                  phase_before.gdn_phases.ffn_calls==gb.ffn_calls, "reset preserves GDN subphase totals");
             check(phase_after.step_calls==phase_reset.step_calls+1 && phase_after.gdn_calls==phase_reset.gdn_calls+36 &&
                   phase_after.qsa_calls==phase_reset.qsa_calls+12 && phase_after.head_calls==phase_reset.head_calls+1,
                   "one model/head and correct layer-family calls per token");

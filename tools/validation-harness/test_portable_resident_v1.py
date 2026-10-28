@@ -18,7 +18,7 @@ for i,line in enumerate(sys.stdin,1):
     tokens=list(map(int,t.split(',')))
     for p,t in enumerate(tokens): print(json.dumps(dict(position=p,token=t,generated=False,greedy_next=7)))
     print(json.dumps(dict(stop='max_new',position=len(tokens))))
-    print(json.dumps(dict(done=i,prompt_count=len(tokens),output_count=0,prompt_ms=0,cpu_hits_delta=10,cpu_pool_gu_ms_delta=(float('nan') if sys.argv[1]=='nan' else -1.25 if sys.argv[1]=='negative' else 1.25),cpu_pool_quant_ms_delta=.25,cpu_pool_down_ms_delta=2.5,cpu_pool_elapsed_ms_delta=4.1,cpu_verifications_delta=0,cpu_copied_bytes_delta=0,cpu_digest_bytes_delta=0,source_invalidations_delta=0,model_step_ms_delta=18.,gdn_layer_ms_delta=10.,qsa_layer_ms_delta=5.,output_head_ms_delta=2.,model_residual_ms_delta=1.,gdn_provider_ms_delta=5.,qsa_provider_ms_delta=2.5,model_step_calls_delta=len(tokens),gdn_layer_calls_delta=36*len(tokens),qsa_layer_calls_delta=12*len(tokens),output_head_calls_delta=len(tokens),expert_provider_ms_delta=7.5,expert_provider_calls_delta=len(tokens)*48,gpu_infer_rows_ms_delta=[1.0,float('nan') if sys.argv[1]=='nan_gpu' else -1.0 if sys.argv[1]=='negative_gpu' else 2.0],gpu_infer_rows_calls_delta=[1,1],gpu_entries_per_device_delta=[1,1])))
+    print(json.dumps(dict(done=i,prompt_count=len(tokens),output_count=0,prompt_ms=0,cpu_hits_delta=10,cpu_pool_gu_ms_delta=(float('nan') if sys.argv[1]=='nan' else -1.25 if sys.argv[1]=='negative' else 1.25),cpu_pool_quant_ms_delta=.25,cpu_pool_down_ms_delta=2.5,cpu_pool_elapsed_ms_delta=4.1,cpu_verifications_delta=0,cpu_copied_bytes_delta=0,cpu_digest_bytes_delta=0,source_invalidations_delta=0,model_step_ms_delta=18.,gdn_layer_ms_delta=10.,qsa_layer_ms_delta=5.,output_head_ms_delta=2.,gdn_attention_exchange_ms_delta=3.,gdn_attention_compute_ms_delta=2.,gdn_ffn_ms_delta=6.,gdn_outer_residual_ms_delta=1.,gdn_attention_surrounding_ms_delta=1.,gdn_ffn_non_provider_ms_delta=1.,gdn_attention_exchange_calls_delta=36*len(tokens),gdn_attention_compute_calls_delta=36*len(tokens),gdn_ffn_calls_delta=36*len(tokens),model_residual_ms_delta=1.,gdn_provider_ms_delta=5.,qsa_provider_ms_delta=2.5,model_step_calls_delta=len(tokens),gdn_layer_calls_delta=36*len(tokens),qsa_layer_calls_delta=12*len(tokens),output_head_calls_delta=len(tokens),expert_provider_ms_delta=7.5,expert_provider_calls_delta=len(tokens)*48,gpu_infer_rows_ms_delta=[1.0,float('nan') if sys.argv[1]=='nan_gpu' else -1.0 if sys.argv[1]=='negative_gpu' else 2.0],gpu_infer_rows_calls_delta=[1,1],gpu_entries_per_device_delta=[1,1])))
     sys.stdout.flush()
 '''
 class HarnessTest(unittest.TestCase):
@@ -34,9 +34,16 @@ class HarnessTest(unittest.TestCase):
     def test_model_phase_reconciliation(self):
         m=dict(model_step_calls_delta=2,gdn_layer_calls_delta=72,qsa_layer_calls_delta=24,output_head_calls_delta=2,
                model_step_ms_delta=18.,gdn_layer_ms_delta=10.,qsa_layer_ms_delta=5.,output_head_ms_delta=2.,
-               model_residual_ms_delta=1.,gdn_provider_ms_delta=5.,qsa_provider_ms_delta=2.5,expert_provider_ms_delta=7.5)
+               gdn_attention_exchange_ms_delta=3.,gdn_attention_compute_ms_delta=2.,gdn_ffn_ms_delta=6.,gdn_outer_residual_ms_delta=1.,gdn_attention_surrounding_ms_delta=1.,gdn_ffn_non_provider_ms_delta=1.,gdn_attention_exchange_calls_delta=72,gdn_attention_compute_calls_delta=72,gdn_ffn_calls_delta=72,model_residual_ms_delta=1.,gdn_provider_ms_delta=5.,qsa_provider_ms_delta=2.5,expert_provider_ms_delta=7.5)
         M.model_phase_fields(m,2)
-        for key,value in [('gdn_layer_calls_delta',71),('qsa_provider_ms_delta',6.),('model_step_ms_delta',15.),
+        for key,value in [('gdn_attention_exchange_calls_delta',71),('gdn_attention_compute_calls_delta',71),('gdn_ffn_calls_delta',71),
+                          ('gdn_attention_exchange_ms_delta',float('inf')),('gdn_attention_compute_ms_delta',4.),
+                          ('gdn_ffn_ms_delta',4.),('gdn_attention_exchange_ms_delta',5.),
+                          ('gdn_attention_compute_ms_delta',float('nan')),('gdn_ffn_ms_delta',float('inf')),
+                          ('gdn_outer_residual_ms_delta',float('nan')),('gdn_attention_surrounding_ms_delta',2.),
+                          ('gdn_ffn_non_provider_ms_delta',2.),('gdn_outer_residual_ms_delta',2.),
+                          ('gdn_attention_surrounding_ms_delta',float('nan')),('gdn_ffn_non_provider_ms_delta',-1.),
+                          ('gdn_layer_calls_delta',71),('qsa_provider_ms_delta',6.),('model_step_ms_delta',15.),
                           ('model_residual_ms_delta',2.),('gdn_layer_ms_delta',float('nan')),('model_residual_ms_delta',float('nan'))]:
             bad=dict(m);bad[key]=value
             with self.subTest(key=key),self.assertRaises(ValueError): M.model_phase_fields(bad,2)

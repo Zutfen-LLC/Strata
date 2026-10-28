@@ -1,4 +1,5 @@
 #include "strata/core/portable_gdn.hpp"
+#include "portable_expert_timer.hpp"
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
 #include "portable_graph.hpp"
@@ -346,11 +347,11 @@ bool PortableGdnLayer::reset(std::string &error) {
     }
 }
 bool PortableGdnLayer::step(const std::vector<float> &residual, const PortableExpertRows &dispatch,
-                            PortableRoute &route, std::string &error, PortableGdnTrace *trace) {
-    return step(-1, residual, dispatch, route, error, trace);
+                            PortableRoute &route, std::string &error, PortableGdnTrace *trace, PortableGdnWork *work) {
+    return step(-1, residual, dispatch, route, error, trace, work);
 }
 bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, const PortableExpertRows &dispatch,
-                            PortableRoute &route, std::string &error, PortableGdnTrace *trace) {
+                            PortableRoute &route, std::string &error, PortableGdnTrace *trace, PortableGdnWork *work) {
     error.clear();
     route = {};
     if (trace)
@@ -362,49 +363,65 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         finite(residual);
         PortableGdnTrace next_trace;
         auto next_previous = s.previous;
-        if (s.options.ple_table) {
-            std::vector<float> embedding;
-            std::array<uint32_t, 16> rows{};
-            require(s.options.ple_table->gather(token, s.previous, rows, embedding, error), error);
-            write(s.ple_emb, embedding);
-            write(s.ple_hist, s.ple_history);
-            next_previous = {{s.previous[1], token}};
-            if (trace) {
-                next_trace.ple_rows = rows;
-                next_trace.ple_embedding = std::move(embedding);
-            }
-        }
-        write(s.input, residual);
-        write(s.state_input, s.state);
-        write(s.history_input, s.history);
-        require(ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph) == GGML_STATUS_SUCCESS,
-                "portable GDN: attention graph failed");
-        auto next_state = read(s.state_output), next_history = read(s.history_output),
-             next_residual = read(s.attn_residual);
-        auto next_ple_history = s.options.ple_table ? read(s.ple_hist_out) : std::vector<float>{};
-        if (trace) {
-            next_trace.qkv = read(s.qkv);
-            next_trace.convolution = read(s.conv);
-            next_trace.query = read(s.q);
-            next_trace.key = read(s.k);
-            next_trace.value = read(s.v);
-            next_trace.decay = read(s.g);
-            next_trace.beta = read(s.beta);
-            next_trace.attention = read(s.attention);
+        PortableGdnWork disabled;
+        auto &timing = work ? *work : disabled;
+        std::vector<float> next_state, next_history, next_residual, next_ple_history;
+        {
+            portable_detail::ScopedExpertTimer<> attention_timer(work != nullptr,
+                timing.attention_exchange_ms, timing.attention_exchange_calls);
             if (s.options.ple_table) {
-                next_trace.ple_key = read(s.ple_key);
-                next_trace.ple_value = read(s.ple_value);
-                next_trace.ple_gate = read(s.ple_gate);
-                next_trace.ple_normalized = read(s.ple_norm);
-                next_trace.ple_convolution = read(s.ple_conv);
-                next_trace.ple_residual = read(s.ple_result);
+                std::vector<float> embedding;
+                std::array<uint32_t, 16> rows{};
+                require(s.options.ple_table->gather(token, s.previous, rows, embedding, error), error);
+                write(s.ple_emb, embedding);
+                write(s.ple_hist, s.ple_history);
+                next_previous = {{s.previous[1], token}};
+                if (trace) {
+                    next_trace.ple_rows = rows;
+                    next_trace.ple_embedding = std::move(embedding);
+                }
+            }
+            write(s.input, residual);
+            write(s.state_input, s.state);
+            write(s.history_input, s.history);
+            ggml_status status;
+            {
+                portable_detail::ScopedExpertTimer<> compute_timer(work != nullptr,
+                    timing.attention_compute_ms, timing.attention_compute_calls);
+                status = ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph);
+            }
+            require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
+            next_state = read(s.state_output);
+            next_history = read(s.history_output);
+            next_residual = read(s.attn_residual);
+            next_ple_history = s.options.ple_table ? read(s.ple_hist_out) : std::vector<float>{};
+            if (trace) {
+                next_trace.qkv = read(s.qkv);
+                next_trace.convolution = read(s.conv);
+                next_trace.query = read(s.q);
+                next_trace.key = read(s.k);
+                next_trace.value = read(s.v);
+                next_trace.decay = read(s.g);
+                next_trace.beta = read(s.beta);
+                next_trace.attention = read(s.attention);
+                if (s.options.ple_table) {
+                    next_trace.ple_key = read(s.ple_key);
+                    next_trace.ple_value = read(s.ple_value);
+                    next_trace.ple_gate = read(s.ple_gate);
+                    next_trace.ple_normalized = read(s.ple_norm);
+                    next_trace.ple_convolution = read(s.ple_conv);
+                    next_trace.ple_residual = read(s.ple_result);
+                }
             }
         }
-        require(s.ffn->reset(next_residual, error), error);
         PortableRoute candidate;
-        const bool ok = s.ffn->step(dispatch, candidate, error);
-        require(ok, error);
-        next_residual = s.ffn->residual(); // allocate before the no-throw public commit
+        {
+            portable_detail::ScopedExpertTimer<> ffn_timer(work != nullptr, timing.ffn_ms, timing.ffn_calls);
+            require(s.ffn->reset(next_residual, error), error);
+            const bool ok = s.ffn->step(dispatch, candidate, error);
+            require(ok, error);
+            next_residual = s.ffn->residual(); // allocate before the no-throw public commit
+        }
         s.ple_history.swap(next_ple_history);
         s.previous = next_previous;
         s.state.swap(next_state);
