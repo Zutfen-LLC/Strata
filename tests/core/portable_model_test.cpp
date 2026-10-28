@@ -43,6 +43,10 @@ int main() {
                 check(baseline->step(token, logits, error), error);
                 reference.push_back(std::move(logits));
             }
+            const auto untimed=baseline->model_work();
+            check(untimed.step_ms==0 && untimed.gdn_ms==0 && untimed.qsa_ms==0 && untimed.head_ms==0 &&
+                  untimed.step_calls==0 && untimed.gdn_calls==0 && untimed.qsa_calls==0 && untimed.head_calls==0,
+                  "default model path has no new timing capture");
             check(baseline->expert_work().provider_ms == 0 && baseline->expert_work().provider_calls == 0,
                   "default provider path has no new timing capture");
         }
@@ -72,9 +76,15 @@ int main() {
         const auto weights=session->report().host_weights;
         const auto verified=session->expert_work().verifications;
         for(int32_t token : {6, 5, 5}) {
+            const auto phase_before=session->model_work();
             const auto before_reset = session->expert_work();
             check(session->reset(error), error);
             const auto after_reset = session->expert_work();
+            const auto phase_reset=session->model_work();
+            check(phase_before.step_ms==phase_reset.step_ms && phase_before.gdn_ms==phase_reset.gdn_ms &&
+                  phase_before.qsa_ms==phase_reset.qsa_ms && phase_before.head_ms==phase_reset.head_ms &&
+                  phase_before.gdn_provider_ms==phase_reset.gdn_provider_ms &&
+                  phase_before.qsa_provider_ms==phase_reset.qsa_provider_ms, "reset preserves model totals");
             check(before_reset.pool_gu_ms == after_reset.pool_gu_ms &&
                   before_reset.pool_quant_ms == after_reset.pool_quant_ms &&
                   before_reset.pool_down_ms == after_reset.pool_down_ms &&
@@ -85,6 +95,15 @@ int main() {
                   "reset preserves provider timing and call count");
             check(session->step(token, logits, error), error);
             const auto after_step = session->expert_work();
+            const auto phase_after=session->model_work();
+            check(phase_after.step_calls==phase_reset.step_calls+1 && phase_after.gdn_calls==phase_reset.gdn_calls+36 &&
+                  phase_after.qsa_calls==phase_reset.qsa_calls+12 && phase_after.head_calls==phase_reset.head_calls+1,
+                  "one model/head and correct layer-family calls per token");
+            check(phase_after.step_ms>=phase_after.gdn_ms+phase_after.qsa_ms+phase_after.head_ms &&
+                  phase_after.gdn_ms>=phase_after.gdn_provider_ms && phase_after.qsa_ms>=phase_after.qsa_provider_ms &&
+                  std::fabs(phase_after.gdn_provider_ms+phase_after.qsa_provider_ms-after_step.provider_ms)<1e-6,
+                  "matched provider containment without double counting");
+            check(session->model_work().step_ms==phase_after.step_ms, "reading model totals is idempotent");
             check(after_step.provider_calls == after_reset.provider_calls+48 &&
                   std::isfinite(after_step.provider_ms) && after_step.provider_ms > after_reset.provider_ms &&
                   after_step.provider_ms >= after_step.pool_elapsed_ms,

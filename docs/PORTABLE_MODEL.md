@@ -388,3 +388,50 @@ work, preparation, transfers and reporting; it must not all be called dense/GPU
 compute. See the [bounded four-request recipe](../agenthandoffs/portable-expert-boundary-hermes-v1.md).
 Shared compiled libraries within one build establish no portable-only scalar
 kernel; separately deployed build ISA parity remains unverified.
+
+### Coarse model phase totals
+
+With `--stdio --expert-timings`, model_work() exposes cumulative model-step,
+GDN-layer, QSA-layer and output-head host-wall milliseconds and call counts.
+The same opt-in controls all new scopes; defaults take no new clock readings.
+Successful done receipts add model_step_ms_delta, gdn_layer_ms_delta,
+qsa_layer_ms_delta, output_head_ms_delta and model_residual_ms_delta, plus their
+step/layer/head call-count deltas. Counters survive reset; snapshots are read-only.
+No per-op instrumentation, new GPU synchronization or execution change is added.
+
+A layer interval encloses the existing whole Layer::step call, including residual
+copy, validation, transfers, backend waits, preparation, FFN and expert-provider
+calls. It is not attention-only or pure GPU time. A head interval encloses the
+existing output-head call and its validation. Model-step elapsed encloses these
+serial layer/head intervals and the rest of PortableModelSession::step, including
+embedding gathering/broadcast, placement/report rebuilding, state bookkeeping and
+normal return cleanup. Reset/load and the CLI consume wrapper remain outside.
+
+The residual field is **model_step minus GDN minus QSA minus output_head** from
+matched request deltas. It covers model work outside those intervals, not an
+additional enclosing interval. The request's prompt+decode wall minus model-step
+elapsed also includes CLI source checks, device-memory queries, expert-work logs,
+output/greedy selection and other wrapper work; it is separate from model residual.
+Report rounding/subtraction tolerance rather than silently clamping differences.
+
+GDN/QSA totals each include their provider calls. gdn_provider_ms_delta and
+qsa_provider_ms_delta capture differences in the existing provider accumulator
+around each matched successful layer call, adding no new clock boundaries.
+Subtract only the matching family provider interval to derive a non-provider
+family remainder. Their sum reconciles to expert_provider_ms_delta for successful
+requests. Do not add layer totals to provider/pool/executor times or add enclosing
+model-step to its phases. Provider/pool/executor nesting remains as documented.
+Current complete tokens call36 GDN layers,12 QSA layers and one output head.
+Failed attempts may leave partial totals; no successful done receipt is emitted,
+and the normal fail-closed/poison contract is unchanged.
+
+Static source inspection identifies candidates to measure, not demonstrated costs:
+QSA constructs/schedules a token-specific attention Phase and stages active
+histories; GDN/head retain their main graphs but transfer/read state and logits;
+the model rebuilds a placement vector after each successful token; and the CLI
+queries device memory and writes per-token diagnostics. Memory-admission account()
+and module memory_usage() calls are in construction, not the main token loop.
+No existing coarse counters covered these model totals. This patch neither
+removes nor attributes those candidate costs. Non-provider time can include other
+CPU/preparation, GPU/transfer and reporting work; it is not all dense/GPU compute.
+Operator receipts and machine-specific run instructions are retained privately.

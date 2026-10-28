@@ -72,6 +72,12 @@ struct PortableExpertWork {
     double provider_ms = 0; // encloses CPU pool and local GPU expert calls; never add overlapping times
     uint64_t provider_calls = 0;
 };
+// Optional whole-call wall totals. Layer totals include matched provider intervals.
+struct PortableModelWork {
+    double step_ms = 0, gdn_ms = 0, qsa_ms = 0, head_ms = 0;
+    double gdn_provider_ms = 0, qsa_provider_ms = 0;
+    uint64_t step_calls = 0, gdn_calls = 0, qsa_calls = 0, head_calls = 0;
+};
 struct PortableModelReport {
     // Unique mapped shard file bytes; PLE may alias the same backing file.
     size_t mapped_bytes = 0, host_weights = 0, host_state_bound = 0, expert_staging = 0;
@@ -114,6 +120,7 @@ class PortableModelSession {
     size_t vocabulary() const;
     // Cumulative across reset; digest_bytes counts input bytes, two FNV passes.
     PortableExpertWork expert_work() const;
+    PortableModelWork model_work() const;
     const PortableModelReport &report() const;
     const std::vector<PortablePlacement> &placements() const;
 
