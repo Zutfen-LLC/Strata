@@ -116,3 +116,78 @@ mechanism and illustrate distinguishable signatures; they are not real-weight
 or AMD results and do not set acceptance thresholds. Logs:
 `/tmp/portable-hc-boundary-{build,synthetic}.log` and
 `/tmp/portable-hc-boundary-synthetic.json`.
+
+## Physical result supplied by parent — receipt1793153523.065029
+
+Hermes ran the synthetic and real operation checks at
+`9c476e014d5eeb3861d0e9eac85d7975649895c4`; both exited0. Real execution
+was strict Vulkan0 UUID `00000000-0700-0000-0000-000000000000`, with no
+remaining process. Evidence05 `/home/hermes/portable-hc-9c476e0-evidence`;
+binary SHA256 `cb62f177f41c1eb7c92fcfe8d6358d2dd2c8985f624a0a78d4096441fb71ae09`.
+Slack C0C5MK91H3L, thread1793152694.143009, message1793153523.065029.
+These are parent-supplied runtime observations, not execution by this task.
+
+| Real-weight comparison | Relative L2 |
+| --- | ---: |
+| Q8 CPU versus Vulkan | 0.00128030826017 |
+| F32 CPU versus Vulkan | 1.30667864648e-7 |
+| Scalar versus F32 CPU | 1.04784679909e-7 |
+| Scalar versus F32 Vulkan | 8.34281813208e-8 |
+| Quantized-input oracle versus Q8 CPU | 1.4024089929e-7 |
+| Scalar versus quantized-input oracle | 0.00127945581917 |
+| Scalar versus Q8 CPU | 0.00127947595217 |
+| Scalar versus Q8 Vulkan | 5.68286042261e-8 |
+
+Q8 CPU/Vulkan maximum absolute difference was0.122528076172.
+The independent CPU input-quantization control reproduces the discrepancy at
+this projection, while matched F32 CPU/Vulkan and Vulkan Q8 follow the scalar
+oracle much more closely. This demonstrates an activation-quantization
+contribution **at this boundary**. It does not explain all later layers or
+position37, establish native HC pack format, or establish quality parity.
+Original whole-model numerical gates remain failed and unchanged.
+
+## Single recommended next qualification
+
+Run one paired **existing frozen12-case answer screen** from
+`tools/validation-harness/quality.py` on the native reference and the functional
+portable model, using its existing template, tokenizer, gold answers and
+`correct()` rules unchanged. Do not substitute the100-case v2 suite or tune
+prompts after outputs. This is a small functional regression screen, not a
+broad evaluation framework or another attempt to calibrate numerical limits.
+It is the next recommendation, not a fleet dispatch from this task.
+
+Freeze the exact token IDs before either arm. Use serial requests with a fresh
+session/reset for each, max-new32 and context256 (existing screen admits at most
+224 prompt tokens). Preserve each product's existing stop semantics; record stop
+reason and IDs. Use the already qualified binaries: portable functional source
+`ae6489205c9eca5c072610dbacbc78c8489dffda`, binary SHA256
+`06831fc5743559190ce56ec148187aa16f09dd3360410667adad13f6f4589c0a`, and the
+retained02 native binary/settings. Keep both V340 dies, genuine CPU experts,
+host PLE and strict placement/host guards for the portable arm. Do not fold the
+separate PR43 optimization into this comparison before its independent proof.
+No new build, weights, archive or full-logit dump is needed. Keep only bounded
+IDs/decoded answers/scoring/runtime receipts; use existing shared tokenizer and
+semantic scorer, not the old single-expert participation predicate in the
+historical quality harness. Its transport/placement adapter is not automatically
+compatible with the full-model CLI, so those old campaign commands must not be
+run unmodified. Parent can reuse exact matching retained native case outputs if
+available; otherwise one baseline pass is needed.
+
+Decision outcomes fixed before running:
+
+- Native12/12 and portable12/12, with healthy strict execution: narrow functional
+  screen passes. Keep the full-model numerical parity failure explicitly open;
+  this is not broad model-quality equivalence or a tolerance waiver.
+- Native12/12 and any portable semantic/format failure: actual bounded task
+  regression. Stop expansion and retain the first failing prompt/IDs for one
+  targeted investigation; do not optimize or dismiss it as backend noise.
+- Native below12/12: inconclusive reference for this screen; report both scores
+  and per-case outcomes without declaring portable quality acceptance or changing
+  gold answers. A portable runtime/placement/guard failure is independently a
+  product failure regardless of answer score.
+
+The12-case screen distinguishes observable task regressions from the already
+measured vector discrepancy. It does not by itself classify the mathematical
+cause of every differing logit. Disk05 has16GiB free per parent; do not create
+new heavy artifacts. No run, new acceptance threshold or product code change
+was made in this documentation checkpoint.

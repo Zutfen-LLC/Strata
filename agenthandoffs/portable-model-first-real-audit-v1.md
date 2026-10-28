@@ -218,3 +218,10 @@ below1024, and run-level GPU/cache counters. These do not identify HC pack
 format or expert participation at position37. Keep them separate from the
 pending retained-row diagnostic and the unchanged failed numerical verdict.
 No runtime/product changes or new model execution were made for this check.
+
+The parent-supplied physical first-HC discriminator now demonstrates CPU
+activation quantization's contribution at that one real-weight boundary, with
+matched F32 relative L2 near1.3e-7 versus Q8 CPU/Vulkan0.00128030826017.
+The result, exact evidence/binary identity and a single recommended frozen12-case
+functional screen are recorded in `portable-hc-boundary-v1.md`. Whole-model
+numerical parity remains failed; no inference or tolerance change by this task.
