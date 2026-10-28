@@ -307,6 +307,7 @@ def main():
     p.add_argument('--expert-tensor-mib', default='2404,2404')
     p.add_argument('--expert-timings', action='store_true', help='coarse provider and per-device executor call timing')
     p.add_argument('--gdn-resident-weights', action='store_true', help='forward the opt-in GDN attention weight placement trial')
+    p.add_argument('--gdn-production', action='store_true', help='forward opt-in GDN production policy; requires fresh production references')
     p.add_argument('--gdn-resident-state', action='store_true', help='forward session-lifetime GDN state residency')
     p.add_argument('--dense-resident-weights', action='store_true', help='forward model-lifetime dense weight placement')
     p.add_argument('--plan', type=Path, action='append', required=True)
@@ -344,7 +345,7 @@ def main():
     binary=args.binary.resolve(strict=True)
     if Q.bundle.sha(binary)!=args.binary_sha256: raise ValueError('binary hash mismatch')
     args.out.mkdir(mode=0o700,exist_ok=False)
-    receipt=dict(status='STOP',binary_sha256=args.binary_sha256,prompt=tokens,max_new=args.max_new,
+    receipt=dict(gdn_policy='device_production' if args.gdn_production else 'eager_diagnostic', status='STOP',binary_sha256=args.binary_sha256,prompt=tokens,max_new=args.max_new,
                  excluded_warmups=1,measured_requests=3)
     if args.suite:
         receipt.update(mode='suite',suite=binding,reference_root=str(args.reference_root),
@@ -398,6 +399,7 @@ def main():
         if args.expert_timings: command += ['--expert-timings']
         if args.gdn_resident_weights: command += ['--gdn-resident-weights']
         if args.gdn_resident_state: command += ['--gdn-resident-state']
+        if args.gdn_production: command += ['--gdn-production']
         if args.dense_resident_weights: command += ['--dense-resident-weights']
         receipt['plan_sha256']=[Q.bundle.sha(plan) for plan in args.plan]
         Q.write(args.out/'argv.json',command)

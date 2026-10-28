@@ -2,6 +2,8 @@
 #include "ggml-cpu.h"
 #include "portable_graph.hpp"
 #include "portable_head_admission.hpp"
+#include "portable_logits_guard.hpp"
+#include "portable_gdn_finite.hpp"
 #include "strata/core/portable_model.hpp"
 #include <algorithm>
 #include <cmath>
@@ -26,12 +28,12 @@ struct PortableHead::Impl {
     Buffer buffer{nullptr, ggml_backend_buffer_free};
     portable_detail::Scheduler scheduler{nullptr, ggml_backend_sched_free};
     ggml_cgraph *graph = nullptr;
-    ggml_tensor *input = nullptr, *output = nullptr;
+    ggml_tensor *input = nullptr, *output = nullptr, *status = nullptr;
     std::vector<PortablePlacement> placement;
     size_t device_weights = 0;
     size_t weight_size = 0, graph_size = 0, device_bytes = 0, device_workspace = 0, device_conversion = 0;
     ggml_backend_t accelerator = nullptr;
-    Impl(PortableHeadGeometry geometry, const std::vector<PortableTensorView> &views, PortableFfnOptions opts)
+    Impl(PortableHeadGeometry geometry, const std::vector<PortableTensorView> &views, PortableFfnOptions opts, bool guard_logits)
         : g(geometry) {
         require(g.hidden > 0 && g.hidden <= 16384 && g.streams == 4 && g.rank > 0 && g.rank <= 4096 &&
                     g.vocabulary > 0 && g.vocabulary <= 1048576 && opts.threads > 0 && std::isfinite(g.epsilon) &&
@@ -89,6 +91,10 @@ struct PortableHead::Impl {
         ggml_set_output(output);
         graph = ggml_new_graph(c);
         ggml_build_forward_expand(graph, output);
+        if (guard_logits) {
+            status = portable_detail::logits_status(c, output);
+            ggml_build_forward_expand(graph, status);
+        }
         const size_t workspace = ggml_graph_plan(graph, opts.threads, nullptr).work_size;
         require(workspace <= opts.graph_budget, "portable head: CPU workspace budget");
         graph_size = workspace;
@@ -124,10 +130,10 @@ struct PortableHead::Impl {
 PortableHead::PortableHead(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 PortableHead::~PortableHead() = default;
 std::unique_ptr<PortableHead> PortableHead::create(PortableHeadGeometry g, const std::vector<PortableTensorView> &v,
-                                                   PortableFfnOptions o, std::string &error) {
+                                                   PortableFfnOptions o, std::string &error, bool guard_logits) {
     error.clear();
     try {
-        return std::unique_ptr<PortableHead>(new PortableHead(std::make_unique<Impl>(g, v, o)));
+        return std::unique_ptr<PortableHead>(new PortableHead(std::make_unique<Impl>(g, v, o, guard_logits)));
     } catch (const std::exception &e) {
         error = e.what();
         return nullptr;
@@ -145,6 +151,12 @@ bool PortableHead::run(const std::vector<float> &streams, std::vector<float> &lo
         ggml_backend_tensor_set(s.input, streams.data(), 0, streams.size() * sizeof(float));
         require(ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph) == GGML_STATUS_SUCCESS,
                 "portable head: compute failed");
+        if (s.status) {
+            std::vector<float> status(1);
+            ggml_backend_tensor_get(s.status, status.data(), 0, sizeof(float));
+            require(portable_detail::gdn_all_finite(status) && status[0] == 0,
+                    "portable head: nonfinite logits");
+        }
         std::vector<float> next(size_t(s.g.vocabulary));
         ggml_backend_tensor_get(s.output, next.data(), 0, next.size() * sizeof(float));
         for (float v : next)

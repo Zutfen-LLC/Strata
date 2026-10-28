@@ -1,6 +1,8 @@
 #include "gguf_fixture.hpp"
 #include "ggml-cpu.h"
+#include "ggml-backend-impl.h"
 #include "portable_gdn_fixture.hpp"
+#include "portable_gdn_production.hpp"
 #include "../../src/core/portable_gdn_finite.hpp"
 #include <chrono>
 #include <limits>
@@ -152,6 +154,31 @@ int main() {
         refused_state.resident_state_budget = 1;
         check(!PortableGdnLayer::create(0, f.views, refused_state, error) &&
               error.find("resident state budget") != std::string::npos, "state allocation admission refusal");
+        production_policy(f, trial_options);
+        {
+            auto opts = trial_options;
+            opts.policy = PortableGdnPolicy::device_production;
+            auto faulted = PortableGdnLayer::create(0, f.views, opts, error);
+            check(bool(faulted), error);
+            // Only the borrowed CPU test backend is changed. Restore the interface
+            // before any cleanup; no production injection flag or kernel is added.
+            const auto sync = selected->iface.synchronize;
+            selected->iface.synchronize = [](ggml_backend_t) { throw std::runtime_error("injected reset sync failure"); };
+            const bool reset_ok = faulted->reset(error);
+            selected->iface.synchronize = sync;
+            check(!reset_ok && faulted->poisoned() && error == "injected reset sync failure", "reset failure stays poisoned");
+            PortableRoute rejected;
+            check(!faulted->step(f.input(0), experts(), rejected, error) &&
+                  error.find("poisoned") != std::string::npos, "retry after failed reset refused");
+            check(faulted->reset(error) && !faulted->poisoned(), error);
+            const auto compute = selected->iface.graph_compute;
+            selected->iface.graph_compute = [](ggml_backend_t, ggml_cgraph *) { return GGML_STATUS_FAILED; };
+            const bool step_ok = faulted->step(f.input(0), experts(), rejected, error);
+            selected->iface.graph_compute = compute;
+            check(!step_ok && faulted->poisoned() && faulted->tokens() == 0 && rejected.ids.empty(),
+                  "backend compute failure poisons production");
+            check(faulted->reset(error) && faulted->step(f.input(0), experts(), rejected, error), error);
+        }
         PortableRoute route;
         PortableGdnTrace trace;
         PortableGdnWork host_work, resident_work;

@@ -1,6 +1,7 @@
 #include "ggml-backend.h"
 #include "strata/artifact/dequant.hpp"
 #include "strata/core/portable_model.hpp"
+#include "portable_logits_guard_test.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -35,6 +36,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("this build has no Vulkan backend");
 #endif
         }
+        std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> guard_cpu(ggml_backend_cpu_init(), ggml_backend_free);
+        logits_guard_test(backend ? backend.get() : guard_cpu.get());
         for (bool resident : {false, true}) {
             std::printf("dense weight fixture: resident=%d\n", int(resident));
             options.resident_dense_weights = resident;
@@ -66,6 +69,8 @@ int main(int argc, char **argv) {
             std::string error;
             auto head = PortableHead::create({H, HC, R, V, 1e-6f}, weights, options, error);
             check(bool(head), error);
+            auto guarded_head = PortableHead::create({H, HC, R, V, 1e-6f}, weights, options, error, true);
+            check(bool(guarded_head), error);
             auto mm = [&](size_t w, const std::vector<float> &x) {
                 std::vector<float> result(outputs[w]);
                 for (size_t r = 0; r < result.size(); ++r) {
@@ -100,6 +105,9 @@ int main(int argc, char **argv) {
                         mixed[i] += normalized[s * H + i] / (1 + std::exp(-gates[s * H + i])) * 0.25f;
                 const auto expected = mm(2, mixed);
                 check(head->run(input, logits, error), error);
+                std::vector<float> guarded_logits;
+                check(guarded_head->run(input, guarded_logits, error) && guarded_logits == logits,
+                      "guard must not change successful logits bytes");
                 for (size_t i = 0; i < V; ++i)
                     check(std::fabs(logits[i] - expected[i]) <= 0.012f * (1 + std::fabs(expected[i])),
                           "independent HC/head scalar reference");
@@ -128,14 +136,14 @@ int main(int argc, char **argv) {
             check(head->run(finite_edges, out, error) && out.size() == first_edges.size() &&
                   std::memcmp(out.data(), first_edges.data(), out.size() * sizeof(float)) == 0,
                   "head finite edge replay bytes");
-            {
+            for (bool guarded : {false, true}) {
                 auto invalid_weights = weights;
                 std::vector<float> invalid_output(H * V, 0.01f);
                 invalid_output.back() = std::numeric_limits<float>::quiet_NaN();
                 invalid_weights.back().type = 0;
                 invalid_weights.back().data = invalid_output.data();
                 invalid_weights.back().bytes = invalid_output.size() * sizeof(float);
-                auto bad = PortableHead::create({H, HC, R, V, 1e-6f}, invalid_weights, options, error);
+                auto bad = PortableHead::create({H, HC, R, V, 1e-6f}, invalid_weights, options, error, guarded);
                 check(bool(bad), error);
                 out = {1};
                 check(!bad->run(finite_edges, out, error) && out.empty() &&

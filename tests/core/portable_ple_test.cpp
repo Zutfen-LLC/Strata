@@ -1,6 +1,7 @@
 #include "gguf_fixture.hpp"
 #include "ggml-cpu.h"
 #include "portable_ple_fixture.hpp"
+#include "portable_gdn_production.hpp"
 #include <chrono>
 using namespace ple_fixture;
 namespace {
@@ -207,6 +208,7 @@ int main() {
         resident_options.resident_state = true;
         resident_options.execution.request_accelerator = true;
         resident_options.execution.accelerator = selected.get();
+        production_policy(f, resident_options, 1);
         auto resident_layer = PortableGdnLayer::create(1, f.views, resident_options, error);
         check(bool(resident_layer) && resident_layer->memory_usage().device_state > 0, "PLE resident state admission");
         exercise(*resident_layer, f);

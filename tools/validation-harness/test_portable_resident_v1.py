@@ -93,7 +93,7 @@ class HarnessTest(unittest.TestCase):
             r.tick=stop
             with self.assertRaisesRegex(ValueError,'guard STOP'): r.request([5],0,1)
         self.run_fake('ok',action)
-    def main_run(self,pressure,timings=False,resident_weights=False,dense_weights=False,state_resident=False,tensor_caps=None):
+    def main_run(self,pressure,timings=False,resident_weights=False,dense_weights=False,state_resident=False,tensor_caps=None,production=False):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); out=root/'out'; tokens=root/'tokens.json';tokens.write_text('[5,7]')
             plans=[root/'p0',root/'p1']
@@ -112,6 +112,7 @@ class HarnessTest(unittest.TestCase):
             if resident_weights: args+=['--gdn-resident-weights']
             if dense_weights: args+=['--dense-resident-weights']
             if state_resident: args+=['--gdn-resident-state']
+            if production: args+=['--gdn-production']
             with mock.patch.object(sys,'argv',args), mock.patch.object(M,'Resident',side_effect=runner), \
                  mock.patch.object(M.S,'host_memory',return_value=host), \
                  mock.patch.object(M.S,'model_working_set',return_value=dict(working_set_bound_bytes=0)), \
@@ -134,6 +135,8 @@ class HarnessTest(unittest.TestCase):
             self.assertEqual(commands[0].count('--gdn-resident-weights'),int(resident_weights))
             self.assertEqual(commands[0].count('--dense-resident-weights'),int(dense_weights))
             self.assertEqual(commands[0].count('--gdn-resident-state'),int(state_resident))
+            self.assertEqual(commands[0].count('--gdn-production'),int(production))
+            self.assertEqual(receipt['gdn_policy'],'device_production' if production else 'eager_diagnostic')
             self.assertEqual(commands[0][commands[0].index('--expert-tensor-mib')+1],tensor_caps or '2404,2404')
             if not pressure:
                 self.assertEqual(len(receipt['requests']),4)
@@ -149,6 +152,8 @@ class HarnessTest(unittest.TestCase):
     def test_main_explicit_default_tensor_caps(self): self.main_run(False,tensor_caps='2404,2404')
     def test_main_tensor_caps_with_state_and_dense(self):
         self.main_run(False,dense_weights=True,state_resident=True,tensor_caps='3606,3606')
+    def test_main_production_policy(self):
+        self.main_run(False,state_resident=True,production=True)
     def test_invalid_tensor_caps_before_launch(self):
         for caps in ('3606','3606,3606,1','0,3606','3606,0','-1,3606','8193,3606','3606,8193',
                      '3606.0,3606','3606,NaN','3606, 3606',',3606','3606,','3606,+1'):

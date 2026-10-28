@@ -9,6 +9,70 @@ The initial implementation supports one serial text sequence, all 48 layers,
 and context limits from 1 to 256 tokens. Defaults remain off. The existing
 CUDA production executable and allocations are separate.
 
+## GDN execution policy
+
+The default is `PortableGdnPolicy::eager_diagnostic`. It keeps the existing
+committed/candidate host state mirrors, intermediate finite checks, trace
+values and rejected-candidate rollback. `--gdn-resident-state` alone retains
+this policy. Native CUDA/HIP/SYCL defaults are unchanged.
+
+For qualification, add `--gdn-production --gdn-resident-state` to strict Vulkan
+execution. The API equivalent is `PortableModelOptions::gdn_production = true`;
+standalone layers select `PortableGdnPolicy::device_production` in their options.
+Production requires a selected backend, resident state and CPU fallback off.
+This is an opt-in implementation, pending Vulkan hardware qualification; it
+is not a feature-parity or performance result.
+
+Production reuses the resident allocation and cached GDN graph. It removes the
+recurrent, convolution and PLE-history host banks and their per-token downloads.
+It retains separate device commit copies after FFN, rather than adopting native
+CUDA's in-place commit. The pinned Vulkan copy API implements these as device
+buffer copies. The small attention residual and existing FFN host seam still
+transfer and validate results. PLE table gathers and token predecessor tracking
+stay on the host; PLE convolution history stays on the selected backend.
+
+`recurrent_state()`, `convolution_history()` and `ple_convolution_history()`
+throw in production, even before the first token. Traces require diagnostics;
+a production step requesting one fails and poisons the layer. No getter does
+hidden I/O. `token_history()`, `tokens()` and `last_residual()` describe the last
+successful layer step in both policies, including while poisoned. No snapshot
+API is provided in this slice.
+
+Any failed production step poisons the layer; a model step failure poisons the
+session, including when earlier layers already committed. No public position,
+route or logits are published for a failed model step. A caller must explicitly
+reset and replay token IDs. Reset marks state poisoned before work and clears
+poison only after all clearing succeeds; a recoverable reset failure stays
+poisoned. Reset does not repair invalid weights or a failed device. Backend
+process aborts cannot be recovered by this API.
+
+Production adds a head graph status reduction before logits download and token
+selection. The pinned public backend API has no external device-kernel hook,
+so this uses separate F32 `SUB(logits, logits)` and `SUM` operations: finite
+values give zero without overflow, while either infinity or NaN gives a
+nonfinite status. Only one status float is downloaded. The original logits
+are unchanged and retain the final host finite check. This differs from native
+Verifier's exponent-bit kernel and requires IEEE nonfinite propagation, with
+no fast-math rewrite. The head fixture tests finite extrema, signed zero,
+subnormals, both infinities and signed quiet/signaling NaNs at multiple lengths
+and positions. Run that fixture on each admitted Vulkan backend/driver before
+model qualification. A failed status clears logits and the session requires
+reset/replay. This guard does not provide exhaustive intermediate validation.
+
+Admission keeps actual device state, candidate graph buffers, weight placement,
+metadata and conservative backend-copy staging allowances. It subtracts only
+removed host mirror banks. The head guard's scratch is included in scheduler
+reservation and graph bounds. With timing capture enabled, each successful
+production GDN step records one explicit candidate read/finite check (residual),
+versus three in diagnostics or four with PLE. Commit counts remain one per
+successful layer. These are explicit API scopes, not driver traffic measurements.
+
+The quality and resident harnesses forward `--gdn-production`, record the policy
+and bind it in each reference command. Suite references must be generated fresh
+with the same binary, placement and policy; diagnostic references are rejected
+for production resident timing. Keep same-backend output comparisons, cross-
+backend numerical screens and task accuracy separate.
+
 ## Build and run
 
 Use the pinned llama.cpp dependency

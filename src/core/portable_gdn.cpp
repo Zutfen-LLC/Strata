@@ -112,16 +112,25 @@ struct PortableGdnLayer::Impl {
     size_t weights_size = 0, graphs_size = 0, attention_device_weights = 0;
     uint64_t count = 0;
 
+    bool production() const { return options.policy == PortableGdnPolicy::device_production; }
+    size_t host_state_bytes() const {
+        return HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
+            (options.ple_table ? PLE_STATE_BYTES - (production() ? 2 * PLE_HISTORY * sizeof(float) : 0) : 0);
+    }
+
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 != 3,
                 "portable GDN: expected a non-QSA layer in [0,47]");
         require(!options.ple_table || layer == 1,
                 "portable GDN: this model supports PLE only at layer 1");
+        require(!production() || (options.resident_state && options.execution.request_accelerator &&
+                    options.execution.accelerator && !options.execution.allow_cpu_fallback),
+                "portable GDN: production requires resident state and strict selected backend");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
         auto expected_shapes = shapes();
         if (options.ple_table)
             expected_shapes.insert(ple_shapes().begin(), ple_shapes().end());
-        require(options.state_budget >= HOST_STATE_BYTES + (options.ple_table ? PLE_STATE_BYTES : 0),
+        require(options.state_budget >= host_state_bytes(),
                 "portable GDN: host state budget exceeded");
         std::vector<PortableTensorView> fw, aw;
         for (const auto &t : tensors) {
@@ -279,8 +288,10 @@ struct PortableGdnLayer::Impl {
                 ggml_set_output(t);
                 ggml_build_forward_expand(graph, t);
             }
-            ple_history.assign(PLE_HISTORY, 0);
-            candidate_ple_history.resize(PLE_HISTORY);
+            if (!production()) {
+                ple_history.assign(PLE_HISTORY, 0);
+                candidate_ple_history.resize(PLE_HISTORY);
+            }
         }
         if (keep_state) {
             // Native session ownership: one committed state allocation per layer.
@@ -306,10 +317,12 @@ struct PortableGdnLayer::Impl {
             }
         }
         scheduler = portable_detail::schedule(graph, "gdn-attention", options.execution, cpu, placement, graphs_size);
-        state.assign(STATES, 0);
-        history.assign(HISTORY, 0);
-        candidate_state.resize(STATES);
-        candidate_history.resize(HISTORY);
+        if (!production()) {
+            state.assign(STATES, 0);
+            history.assign(HISTORY, 0);
+            candidate_state.resize(STATES);
+            candidate_history.resize(HISTORY);
+        }
     }
 };
 
@@ -398,6 +411,7 @@ std::unique_ptr<PortableGdnLayer> PortableGdnLayer::from_gguf(const GgufModel &m
 bool PortableGdnLayer::reset(std::string &error) {
     error.clear();
     try {
+        impl_->state_healthy = false;
         std::vector<float> zero(RESIDUAL, 0);
         require(impl_->ffn->reset(zero, error), error);
         if (impl_->state_buffer) {
@@ -414,6 +428,7 @@ bool PortableGdnLayer::reset(std::string &error) {
         impl_->previous = {{-1, -1}};
         impl_->last.clear();
         impl_->count = 0;
+        impl_->state_healthy = true;
         return true;
     } catch (const std::exception &e) {
         error = e.what();
@@ -433,6 +448,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
     try {
         auto &s = *impl_;
         require(s.state_healthy, "portable GDN: resident state poisoned; reset required");
+        require(!s.production() || !trace, "portable GDN: trace requires eager diagnostic policy");
         require(residual.size() == RESIDUAL && bool(dispatch), "portable GDN: residual/callback required");
         require(s.count < UINT64_MAX, "portable GDN: token counter exhausted");
         finite(residual);
@@ -469,10 +485,12 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
                 status = ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph);
             }
             require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
-            read_into(s.state_output, s.candidate_state, work);
-            read_into(s.history_output, s.candidate_history, work);
+            if (!s.production()) {
+                read_into(s.state_output, s.candidate_state, work);
+                read_into(s.history_output, s.candidate_history, work);
+            }
             next_residual = read(s.attn_residual, work);
-            if (s.options.ple_table)
+            if (s.options.ple_table && !s.production())
                 read_into(s.ple_hist_out, s.candidate_ple_history, work);
             if (trace) {
                 next_trace.qkv = read(s.qkv);
@@ -502,8 +520,9 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
             next_residual = s.ffn->residual(); // allocate before the no-throw public commit
         }
         if (s.state_buffer) {
-            // Synchronous backend copies run only after every candidate read,
-            // finite check, callback and potentially throwing host allocation.
+            // Retain separate synchronous copies on this backend API. Diagnostics
+            // validate full candidates; production only reads the FFN residual.
+            // Copies follow the callback and potentially throwing allocations.
             // A recoverable copy exception poisons device state until reset;
             // public mirrors still describe the last successful token.
             portable_detail::ScopedExpertTimer<> commit_timer(work != nullptr,
@@ -516,10 +535,12 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
             ggml_backend_synchronize(s.options.execution.accelerator);
             s.state_healthy = true;
         }
-        s.ple_history.swap(s.candidate_ple_history);
+        if (!s.production()) {
+            s.ple_history.swap(s.candidate_ple_history);
+            s.state.swap(s.candidate_state);
+            s.history.swap(s.candidate_history);
+        }
         s.previous = next_previous;
-        s.state.swap(s.candidate_state);
-        s.history.swap(s.candidate_history);
         s.last.swap(next_residual);
         ++s.count;
         route = std::move(candidate);
@@ -527,20 +548,38 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
             *trace = std::move(next_trace);
         return true;
     } catch (const std::exception &e) {
+        if (impl_->production())
+            impl_->state_healthy = false;
         error = e.what();
+        return false;
+    } catch (...) {
+        if (impl_->production())
+            impl_->state_healthy = false;
+        error = "portable GDN: unknown execution failure; reset required";
         return false;
     }
 }
-const std::vector<float> &PortableGdnLayer::ple_convolution_history() const { return impl_->ple_history; }
+bool PortableGdnLayer::poisoned() const { return !impl_->state_healthy; }
+PortableGdnPolicy PortableGdnLayer::policy() const { return impl_->options.policy; }
+const std::vector<float> &PortableGdnLayer::ple_convolution_history() const {
+    require(!impl_->production(), "portable GDN: state inspection requires eager diagnostic policy");
+    return impl_->ple_history;
+}
 const std::array<int32_t, 2> &PortableGdnLayer::token_history() const { return impl_->previous; }
-const std::vector<float> &PortableGdnLayer::recurrent_state() const { return impl_->state; }
-const std::vector<float> &PortableGdnLayer::convolution_history() const { return impl_->history; }
+const std::vector<float> &PortableGdnLayer::recurrent_state() const {
+    require(!impl_->production(), "portable GDN: state inspection requires eager diagnostic policy");
+    return impl_->state;
+}
+const std::vector<float> &PortableGdnLayer::convolution_history() const {
+    require(!impl_->production(), "portable GDN: state inspection requires eager diagnostic policy");
+    return impl_->history;
+}
 const std::vector<float> &PortableGdnLayer::last_residual() const { return impl_->last; }
 uint64_t PortableGdnLayer::tokens() const { return impl_->count; }
 const std::vector<PortablePlacement> &PortableGdnLayer::placements() const { return impl_->placement; }
 size_t PortableGdnLayer::weight_bytes() const { return impl_->weights_size; }
 size_t PortableGdnLayer::graph_bytes() const { return impl_->graphs_size; }
-size_t PortableGdnLayer::state_bytes() const { return HOST_STATE_BYTES + (impl_->options.ple_table ? PLE_STATE_BYTES : 0); }
+size_t PortableGdnLayer::state_bytes() const { return impl_->host_state_bytes(); }
 PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     const auto &s = *impl_;
     auto m = s.ffn->memory_usage();
