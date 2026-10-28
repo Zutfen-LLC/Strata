@@ -7,6 +7,12 @@ struct PortableGdnOptions {
     size_t state_budget = 16ull << 20;           // host committed/candidate state and residuals
     std::shared_ptr<PortablePleTable> ple_table; // enables configured layer-1 PLE; host only
 };
+// Cumulative host-call wall scopes. Compute is nested in attention/exchange;
+// full FFN includes the provider. Reset does not clear caller-owned totals.
+struct PortableGdnWork {
+    double attention_exchange_ms = 0, attention_compute_ms = 0, ffn_ms = 0;
+    uint64_t attention_exchange_calls = 0, attention_compute_calls = 0, ffn_calls = 0;
+};
 struct PortableGdnTrace {
     std::vector<float> qkv, convolution, query, key, value, decay, beta, attention;
     std::array<uint32_t, 16> ple_rows{};
@@ -28,12 +34,12 @@ class PortableGdnLayer {
     // A fresh token residual (four streams) is supplied on every call. Public
     // persistent state and last_residual commit together only after FFN success.
     bool step(const std::vector<float> &residual, const PortableExpertRows &dispatch, PortableRoute &route,
-              std::string &error, PortableGdnTrace *trace = nullptr);
+              std::string &error, PortableGdnTrace *trace = nullptr, PortableGdnWork *work = nullptr);
     // Token-aware entry for configured PLE. Supply the configured image token ID for
     // image positions. EOS cuts hash predecessors on subsequent tokens; it
     // does not clear recurrent/convolution state. reset() starts a new sequence.
     bool step(int32_t token, const std::vector<float> &residual, const PortableExpertRows &dispatch,
-              PortableRoute &route, std::string &error, PortableGdnTrace *trace = nullptr);
+              PortableRoute &route, std::string &error, PortableGdnTrace *trace = nullptr, PortableGdnWork *work = nullptr);
     const std::vector<float> &ple_convolution_history() const;
     const std::array<int32_t, 2> &token_history() const;
     const std::vector<float> &recurrent_state() const;

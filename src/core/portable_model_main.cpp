@@ -446,6 +446,20 @@ int main(int argc, char **argv) {
                 const double gdn=model_after.gdn_ms-model_before.gdn_ms;
                 const double qsa=model_after.qsa_ms-model_before.qsa_ms;
                 const double head=model_after.head_ms-model_before.head_ms;
+                const auto &ga=model_after.gdn_phases, &gb=model_before.gdn_phases;
+                const double attention=ga.attention_exchange_ms-gb.attention_exchange_ms;
+                const double compute=ga.attention_compute_ms-gb.attention_compute_ms;
+                const double ffn=ga.ffn_ms-gb.ffn_ms;
+                const double gp=model_after.gdn_provider_ms-model_before.gdn_provider_ms;
+                std::cout << ",\"gdn_attention_exchange_ms_delta\":" << attention
+                    << ",\"gdn_attention_compute_ms_delta\":" << compute
+                    << ",\"gdn_ffn_ms_delta\":" << ffn
+                    << ",\"gdn_attention_surrounding_ms_delta\":" << attention-compute
+                    << ",\"gdn_ffn_non_provider_ms_delta\":" << ffn-gp
+                    << ",\"gdn_outer_residual_ms_delta\":" << gdn-attention-ffn
+                    << ",\"gdn_attention_exchange_calls_delta\":" << ga.attention_exchange_calls-gb.attention_exchange_calls
+                    << ",\"gdn_attention_compute_calls_delta\":" << ga.attention_compute_calls-gb.attention_compute_calls
+                    << ",\"gdn_ffn_calls_delta\":" << ga.ffn_calls-gb.ffn_calls;
                 std::cout << ",\"model_step_ms_delta\":" << step
                     << ",\"gdn_layer_ms_delta\":" << gdn
                     << ",\"qsa_layer_ms_delta\":" << qsa

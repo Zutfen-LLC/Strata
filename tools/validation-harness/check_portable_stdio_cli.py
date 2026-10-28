@@ -7,7 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
-from portable_resident_v1 import Resident
+from portable_resident_v1 import Resident, model_phase_fields
 
 binary,model,manifest=sys.argv[1:]
 command=[binary,'--model',model,'--manifest',manifest,'--context','4','--stdio','--max-requests','8']
@@ -45,6 +45,7 @@ with tempfile.TemporaryDirectory() as d:
             assert math.isfinite(m['expert_provider_ms_delta']) and m['expert_provider_ms_delta']>=m['cpu_pool_elapsed_ms_delta']
             assert m['model_step_calls_delta']==len(result['rows']) and m['output_head_calls_delta']==len(result['rows'])
             assert m['gdn_layer_calls_delta']==36*len(result['rows']) and m['qsa_layer_calls_delta']==12*len(result['rows'])
+            model_phase_fields(m,len(result['rows']))
             assert m['model_residual_ms_delta']>=0
             assert abs(m['gdn_provider_ms_delta']+m['qsa_provider_ms_delta']-m['expert_provider_ms_delta'])<1e-6
             assert m['gdn_layer_ms_delta']>=m['gdn_provider_ms_delta'] and m['qsa_layer_ms_delta']>=m['qsa_provider_ms_delta']

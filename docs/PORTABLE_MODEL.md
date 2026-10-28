@@ -440,6 +440,28 @@ Current complete tokens call36 GDN layers,12 QSA layers and one output head.
 Failed attempts may leave partial totals; no successful done receipt is emitted,
 and the normal fail-closed/poison contract is unchanged.
 
+GDN refinement under the same opt-in adds three host-wall scopes:
+
+- `gdn_attention_exchange_ms_delta`: optional PLE gather, input/state/history
+  writes, attention scheduler call, candidate reads and finite checks. Explicit
+  trace reads, when a direct API caller requests them, are included too.
+- `gdn_attention_compute_ms_delta`: only the existing attention scheduler
+  graph-compute call, nested inside attention/exchange. It includes existing
+  backend waits and is not GPU kernel time or a measurement of PCIe traffic.
+- `gdn_ffn_ms_delta`: reset, complete FFN step (including shared expert, provider,
+  host merge and pre/post graphs) and residual copy.
+
+Each has a corresponding `_calls_delta` field. All three counts match the GDN
+layer count on a successful request. `gdn_outer_residual_ms_delta` equals GDN
+layer minus attention/exchange minus FFN. `gdn_attention_surrounding_ms_delta`
+equals attention/exchange minus compute; it includes transfers, finite checks,
+PLE and host work outside that scheduler call. `gdn_ffn_non_provider_ms_delta`
+equals full FFN minus the matched GDN provider delta. These are nested scopes and
+subtractions, never extra disjoint intervals to add to their parents. The harness
+checks finite nonnegative values, matching counts, containment and reconciliation.
+Direct GDN callers opt in by passing a caller-owned `PortableGdnWork` accumulator;
+null reads no clock. Failed calls can leave partial attempted-call counters.
+
 Static source inspection identifies candidates to measure, not demonstrated costs:
 QSA constructs/schedules a token-specific attention Phase and stages active
 histories; GDN/head retain their main graphs but transfer/read state and logits;

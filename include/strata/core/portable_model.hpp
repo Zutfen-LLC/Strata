@@ -74,6 +74,7 @@ struct PortableExpertWork {
 };
 // Optional whole-call wall totals. Layer totals include matched provider intervals.
 struct PortableModelWork {
+    PortableGdnWork gdn_phases; // nested GDN scopes; enabled only by expert_timings
     double step_ms = 0, gdn_ms = 0, qsa_ms = 0, head_ms = 0;
     double gdn_provider_ms = 0, qsa_provider_ms = 0;
     uint64_t step_calls = 0, gdn_calls = 0, qsa_calls = 0, head_calls = 0;
