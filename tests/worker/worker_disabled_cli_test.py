@@ -18,9 +18,13 @@ def main():
         absent = str(Path(directory) / "absent-model.gguf")
         pack = str(Path(directory) / "absent-pack")
         cases = (("--remote-cpu-experts", "127.0.0.1:1"),
+                 ("--remote-cpu-worker", "127.0.0.1:1"),
                  ("--remote-cpu-local-manifest", absent),
                  ("--remote-cpu-local-fallback",), ("--remote-cpu-resident",),
                  ("--remote-cpu-rpc-timing",),
+                 ("--remote-cpu-entry-rows",),
+                 ("--remote-cpu-regroup-diagnostic", "off"), ("--remote-cpu-regroup-diagnostic", "on"),
+                 ("--remote-cpu-regroup-diagnostic", "ordered"),
                  ("--remote-cpu-setup-ms", "600000"), ("--remote-cpu-deadline-ms", "10000"),
                  ("--remote-gpu-experts", "127.0.0.1:1"), ("--remote-gpu-plan", absent),
                  ("--remote-gpu-worker", "127.0.0.1:1", absent),

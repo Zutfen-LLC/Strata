@@ -20,6 +20,7 @@
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/worker/expert_wire.hpp"
 #include "strata/worker/rpc_timing.hpp"
+#include "strata/worker/packed_activation.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -41,6 +42,8 @@ struct WorkerOptions {
     bool residency_forever = false; ///< explicit service-owned residency; no idle expiry, never implicit at 0
     uint32_t upload_chunk_max = kUploadChunkMax;   ///< advertised data cap, 1..kUploadChunkMax
     bool accepted_tcp_nodelay = false; ///< opt-in checked TCP_NODELAY on CPU-worker accepted sockets only
+    std::string packed_qualification = default_packed_qualification(); // build-pair eligibility
+    bool packed_requests = true; // automatic for eligible peers; false forces raw
     bool rpc_timing = false; ///< opt-in fixed-memory aggregate timing; never logs individual RPCs
     std::string bind_ip = "127.0.0.1"; ///< numeric unicast IPv4 only; never wildcard or DNS
     std::vector<std::string> allow_peer_ips; ///< exact numeric IPv4 peers; required for non-loopback bind

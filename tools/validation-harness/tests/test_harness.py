@@ -48,6 +48,51 @@ class HarnessTests(unittest.TestCase):
             worker_bytes=1024, arms=[self.arm], final_worker='retain', failure_worker='retain',
             startup_seconds=5, worker_start_seconds=5, request_seconds=5, shutdown_seconds=5, cleanup_seconds=2)
 
+    def test_external_gpu_rows_are_narrowly_opted_in(self):
+        cfg=copy.deepcopy(self.cfg)
+        cfg.update(external_gpu_rows=True,cpu_route='group',attach_root=str(self.root))
+        cfg['argv']=['@engine','--remote-cpu-worker','127.0.0.1:27431',
+                     '--remote-cpu-entry-rows','--remote-cpu-resident',
+                     '--remote-gpu-worker','127.0.0.1:29431','/fixed.plan']
+        bundle.validate_network_gpu(cfg)
+        derived=driver.arm_config(cfg,self.arm)
+        self.assertTrue(derived['external_gpu_rows'])
+        for key,value in [('external_gpu_rows',False),('cpu_route','legacy'),('attach_root',''),('failure_worker','stop')]:
+            bad=copy.deepcopy(cfg);bad[key]=value
+            with self.assertRaises(ValueError):bundle.validate_network_gpu(bad)
+        for argv in [cfg['argv']+['--remote-cpu-local-fallback'],
+                     cfg['argv']+['--remote-gpu-worker','127.0.0.1:29431','/other.plan'],
+                     [a.replace('127.0.0.1:29431','192.0.2.1:29431') for a in cfg['argv']]]:
+            bad=copy.deepcopy(cfg);bad['argv']=argv
+            with self.assertRaises(ValueError):bundle.validate_network_gpu(bad)
+
+    def test_entry_row_startup_markers_match_actual_a0_and_b(self):
+        a0_argv=['@engine','--remote-cpu-worker','127.0.0.1:17431',
+                 '--remote-cpu-resident','--remote-cpu-entry-rows']
+        b_argv=a0_argv+['--remote-gpu-worker','127.0.0.1:29431','@gpu01']
+        group='strata generate: CPU group peers=1 READY group_request_wall_ms=0 caller_wait_ms=0 (peer timings overlap; do not sum as wall time) reply_mode=entry_rows row_reduce_ms=0'
+        a0='strata generate: CPU entry rows ready schema=1 reduction=CPU original-order\n'+group+'\ncache_hit=1 reused=116135731200 B\n'
+        b='strata generate: CPU entry rows ready schema=1 reduction=CPU+CUDA original-order union\n'+group+' execution_delegated=1 reduction=deferred\ncache_hit=1 reused=116135731200 B\n'
+        for argv,text,expected in [(a0_argv,a0,C.CPU_ROWS_ORDERED),(b_argv,b,C.CPU_ROWS_MIXED)]:
+            for marker in [C.CPU_ROWS_OLD,C.CPU_ROWS_PREFIX,C.CPU_ROWS_ORDERED,C.CPU_ROWS_MIXED]:
+                cfg=dict(argv=argv,placement_markers=[marker,'cache_hit=1 reused=116135731200 B'])
+                C.check_startup_markers(cfg,text)
+                self.assertEqual(C.startup_markers(argv,[marker]),[expected])
+                # Exercise the actual arm-config normalization as well as direct retained callers.
+                cfg=copy.deepcopy(self.cfg);cfg['argv']=argv
+                arm=copy.deepcopy(self.arm);arm['placement_markers']=[marker]
+                self.assertEqual(driver.arm_config(cfg,arm)['placement_markers'],[expected])
+        for argv,text in [(a0_argv,b),(b_argv,a0),(b_argv,b.replace(' execution_delegated=1 reduction=deferred','')),
+                          (a0_argv,a0.replace(group,group+' execution_delegated=1 reduction=deferred')),
+                          (a0_argv,a0.replace('strata generate: '+C.CPU_ROWS_ORDERED,'prefix strata generate: '+C.CPU_ROWS_ORDERED+' suffix')),
+                          (b_argv,b.replace('reply_mode=entry_rows','reply_mode=weighted'))]:
+            with self.assertRaises(RuntimeError):
+                C.check_startup_markers(dict(argv=argv,placement_markers=[C.CPU_ROWS_OLD]),text)
+        with self.assertRaisesRegex(RuntimeError,'missing placement marker: required-other-marker'):
+            C.check_startup_markers(dict(argv=a0_argv,placement_markers=[C.CPU_ROWS_OLD,'required-other-marker']),a0)
+        # Unrelated legacy modes keep their existing configured marker behavior.
+        C.check_startup_markers(dict(argv=['@engine'],placement_markers=['legacy-ready']),'legacy-ready')
+
     def cleanup_children(self):
         for child in self.children:
             if child.poll() is None: child.kill()
@@ -126,9 +171,257 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual([arm['name'] for arm in cfg['arms']], ['load', 'next'])
         self.assertEqual(original, (root / 'config.json').read_bytes())
 
+    def test_per_arm_packing_preserves_raw_argv_and_worker(self):
+        self.cfg['cpu_route'] = 'group'
+        self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')] = '--remote-cpu-worker'
+        packed = dict(self.arm, name='packed', restart=False, requests=[0],
+                      packed_qualification='abcdef0123456789')
+        self.cfg['arms'].append(packed)
+        root = self.stage()
+        cfg = json.loads((root / 'config.json').read_text())
+        raw, candidate = [driver.arm_config(cfg, arm) for arm in cfg['arms']]
+        self.assertEqual(raw['argv'], cfg['argv'])
+        self.assertEqual(candidate['argv'], raw['argv'] +
+                         ['--remote-cpu-packed-qualification', 'abcdef0123456789'])
+        self.assertEqual(raw['worker_argv'], candidate['worker_argv'])
+        self.assertNotIn('--remote-cpu-packed-qualification', cfg['argv'])
+
+    def test_per_arm_packing_rejects_bad_or_global_qualification(self):
+        self.arm['packed_qualification'] = '0000000000000000'
+        with self.assertRaisesRegex(ValueError, '16 nonzero'): self.stage()
+        self.arm['packed_qualification'] = 'abcdef0123456789'
+        with self.assertRaisesRegex(ValueError, 'group route'): self.stage()
+        self.cfg['cpu_route'] = 'group'
+        self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')] = '--remote-cpu-worker'
+        self.cfg['argv'] += ['--remote-cpu-packed-qualification', 'abcdef0123456789']
+        with self.assertRaisesRegex(ValueError, 'no global'): self.stage()
+
+    def test_first_logit_reference_requires_one_captured_request(self):
+        self.arm['first_logits_reference'] = 'logits'
+        with self.assertRaisesRegex(ValueError, 'capture'): self.stage()
+        self.cfg['capture_first_logits'] = True
+        self.arm['requests'] = [0]
+        self.arm['restart'] = False
+        self.cfg.update(attach_root=str(self.root), attached_worker_idle=True)
+        with self.assertRaisesRegex(ValueError, 'missing first-logit'): self.stage()
+        logits = self.root / 'logits'; logits.write_bytes(b'first logits')
+        self.cfg['assets']['logits'] = str(logits)
+        self.stage()
+
+    def test_first_logit_mismatch_prevents_next_arm(self):
+        reference = self.root / 'logits'; reference.write_bytes(b'expected')
+        self.cfg['assets']['logits'] = str(reference)
+        self.arm.update(name='raw', restart=False, requests=[0], first_logits_reference='logits')
+        self.cfg['arms'].append(dict(self.arm, name='packed'))
+        (self.root / 'raw-first-logits.0').write_bytes(b'different')
+        with patch.object(bundle, 'verify', return_value=self.cfg), \
+             patch.object(C, '__file__', str(self.root / 'campaign.py')), \
+             patch.object(C.worker_control, '__file__', str(self.root / 'worker_control.py')), \
+             patch.object(C, 'configure'), patch.object(driver, 'masks'), \
+             patch.object(C, 'run_arm', return_value={}) as execute:
+            with self.assertRaisesRegex(RuntimeError, 'first logits diverged'):
+                driver.run(self.root)
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(execute.call_args.args[0], 'raw')
+
+    def test_first_request_trace_staging_preserves_gen_env_and_unique_paths(self):
+        original = 'GEN 256 ' + ','.join(map(str, range(38)))
+        pathlib.Path(self.cfg['assets']['requests']).write_text(original+'\n')
+        self.cfg.update(capture_first_logits=True, attach_root=str(self.root), attached_worker_idle=True,
+                        cpu_route='group')
+        self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')] = '--remote-cpu-worker'
+        self.cfg['argv'] += ['--remote-cpu-entry-rows', '--remote-cpu-resident',
+                             '--prefill', '64', '--spec', '2', '--max-context', '1024']
+        self.arm.update(restart=False, requests=[0], placement_markers=[C.CPU_ROWS_OLD])
+        paths = []
+        for name in ('A0', 'B'):
+            self.arm['name'] = name
+            self.cfg['run_root'] = str(self.root/name)
+            self.cfg['env']['STRATA_FIRST_REQUEST_TRACE'] = str(self.root/name/(name+'.trace'))
+            if name == 'B':
+                self.cfg['external_gpu_rows'] = True
+                plan = self.root/'gpu.plan'; plan.write_text('synthetic plan')
+                self.cfg['assets']['gpu_plan'] = str(plan)
+                for port in range(29431, 29435):
+                    self.cfg['argv'] += ['--remote-gpu-worker', '127.0.0.1:'+str(port), '@gpu_plan']
+            with patch('subprocess.Popen') as spawn:
+                root = self.stage()
+            spawn.assert_not_called()
+            with patch.object(bundle.shutil, 'which', return_value='/synthetic/nvidia-smi'):
+                cfg = bundle.verify(root)
+            derived = driver.arm_config(cfg, cfg['arms'][0])
+            self.assertEqual(cfg['request_lines'], [original])
+            self.assertEqual(pathlib.Path(cfg['assets']['requests']).read_text(), original+'\n')
+            self.assertEqual(derived['argv'], cfg['argv'])
+            self.assertEqual(derived['env']['STRATA_FIRST_REQUEST_TRACE'], str(root/(name+'.trace')))
+            self.assertEqual(derived['env']['STRATA_DUMP_FIRST_LOGITS'], str(root/(name+'-first-logits')))
+            self.assertEqual(derived['max_requests'], 1)
+            self.assertFalse(pathlib.Path(derived['env']['STRATA_FIRST_REQUEST_TRACE']).exists())
+            expected = C.CPU_ROWS_ORDERED if name == 'A0' else C.CPU_ROWS_MIXED
+            self.assertEqual(derived['placement_markers'], [expected])
+            paths.append(derived['env']['STRATA_FIRST_REQUEST_TRACE'])
+        self.assertEqual(len(set(paths)), 2)
+
+    def test_first_request_trace_bad_config_refused_before_launch(self):
+        self.cfg.update(capture_first_logits=True, attach_root=str(self.root), attached_worker_idle=True)
+        self.arm.update(restart=False, requests=[0])
+        self.cfg['env']['STRATA_FIRST_REQUEST_TRACE'] = str(pathlib.Path(self.cfg['run_root'])/'A0.trace')
+        original = copy.deepcopy(self.cfg)
+        for fault in ('multiple-arms', 'no-capture', 'wrong-request', 'token-reference', 'relative-path', 'outside-root', 'existing'):
+            with self.subTest(fault=fault):
+                self.cfg = copy.deepcopy(original)
+                if fault == 'multiple-arms': self.cfg['arms'].append(dict(self.arm, name='B'))
+                elif fault == 'no-capture': self.cfg['capture_first_logits'] = False
+                elif fault == 'wrong-request': self.cfg['arms'][0]['requests'] = []
+                elif fault == 'token-reference': self.cfg['arms'][0]['reference'] = 'retained-reference'
+                elif fault == 'relative-path': self.cfg['env']['STRATA_FIRST_REQUEST_TRACE'] = 'A0.trace'
+                elif fault == 'outside-root': self.cfg['env']['STRATA_FIRST_REQUEST_TRACE'] = str(self.root/'outside.trace')
+                elif fault == 'existing':
+                    existing = pathlib.Path(self.cfg['run_root']); existing.mkdir()
+                    (existing/'A0.trace').write_text('preserve')
+                with patch('subprocess.Popen') as spawn, self.assertRaisesRegex(ValueError, 'first-request trace'):
+                    self.stage()
+                spawn.assert_not_called()
+        self.assertEqual((pathlib.Path(original['run_root'])/'A0.trace').read_text(), 'preserve')
+
+    def test_first_request_trace_real_broker_done_zero_and_original_gen(self):
+        root, config, cfg, name = self.fake_runtime()
+        original = 'GEN 256 ' + ','.join(map(str, range(38)))
+        cfg.update(request_lines=[original], max_requests=1, worker_count=1,
+                   placement_markers=[C.CPU_ROWS_OLD])
+        cfg['argv'] += ['--remote-cpu-worker', '127.0.0.1:27431', '--remote-cpu-entry-rows',
+                        '--prefill', '64', '--spec', '2', '--max-context', '1024']
+        cfg['env'] = dict(cfg['env'], STRATA_FIRST_REQUEST_TRACE=str(root/'A0.trace'),
+                          STRATA_DUMP_FIRST_LOGITS=str(root/'A0-first-logits'))
+        script = root/'child.py'
+        script.write_text("import json,os,pathlib,sys\n"
+            "print('strata generate: '+"+repr(C.CPU_ROWS_ORDERED)+",file=sys.stderr,flush=True)\n"
+            "print('strata generate: CPU group peers=1 READY reply_mode=entry_rows',file=sys.stderr,flush=True)\n"
+            "print('READY fixture',flush=True)\n"
+            "line=sys.stdin.readline().strip()\n"
+            "assert line=="+repr(original)+"\n"
+            "pathlib.Path('received-gen.json').write_text(json.dumps(line))\n"
+            "with open(os.environ['STRATA_FIRST_REQUEST_TRACE'],'xb') as f:f.write(b'synthetic trace')\n"
+            "with open(os.environ['STRATA_DUMP_FIRST_LOGITS']+'.0','xb') as f:f.write(b'synthetic logits')\n"
+            "print('DONE 0 38 1.0 1.0 trace 0 0 0 worker_entries=1',flush=True)\n"
+            "assert sys.stdin.readline().strip()=='QUIT'\n")
+        C.configure(root, cfg)
+        def cleanup_session():
+            for arm in list(C.SESSIONS): C.finish_session(arm, abort=True)
+        self.addCleanup(cleanup_session)
+        status = dict(complete=True, resident_bytes=cfg['worker_bytes'], session=0,
+                      loaded_bytes=cfg['worker_bytes'], verified_bytes=cfg['worker_bytes'], arena_allocations=1,
+                      network_weight_bytes=0, unloads=0, expirations=0, idle_remaining_ms=2**64-1)
+        def affinity(*args, **kwargs): return {'communication_threads': [{'tid': 123}]}
+        with patch.object(C, 'healthy'), patch.object(C, 'gpu_idle'), \
+             patch.object(C, 'wstatus', return_value={'status': status, 'legacy': {'failures': 0}}):
+            result = C.run_arm('A0', cfg, [0], affinity)
+        self.assertEqual(result['tokens_total'], 0)
+        self.assertEqual(result['requests'][0]['tokens'], [])
+        state = json.loads((root/'A0/state.json').read_text())
+        self.assertEqual(C.parse_done(state['done']['line'])['finish'], 'trace')
+        self.assertEqual((state['completed'], state['requests_sent'], state['exit_rc']), (1, 1, 0))
+        self.assertIsNone(state['failure'])
+        self.assertEqual(json.loads((root/'received-gen.json').read_text()), original)
+        launch = json.loads((root/'A0/launch.json').read_text())
+        self.assertEqual(launch['argv'], cfg['argv'])
+        for key in ('STRATA_FIRST_REQUEST_TRACE', 'STRATA_DUMP_FIRST_LOGITS'):
+            self.assertEqual(launch['env'][key], cfg['env'][key])
+        self.assertEqual((root/'A0.trace').read_bytes(), b'synthetic trace')
+        self.assertEqual((root/'A0-first-logits.0').read_bytes(), b'synthetic logits')
+        self.assertFalse(C.SESSIONS)
+
+    def test_first_request_trace_requires_expected_done_without_changing_normal_modes(self):
+        self.configure_control()
+        arm = self.root/'A0'; arm.mkdir()
+        (arm/'stdout.log').write_text('')
+        (arm/'stderr.log').write_text('')
+        base = dict(self.cfg, placement_markers=[])
+        C.ARM_LINES = ['GEN 256 '+','.join(map(str, range(38)))]
+        for enabled, finish, count, rejected in [(True,'length',0,True), (True,'trace',1,True),
+                                                  (False,'length',0,False)]:
+            with self.subTest(enabled=enabled, finish=finish, count=count):
+                configuration = dict(base, env={'STRATA_FIRST_REQUEST_TRACE': '/synthetic'} if enabled else {})
+                state = dict(active=False, requests_sent=1, completed=1,
+                             done={'line':f'DONE {count} 38 1 1 {finish} 0 0 0', 'mono':3})
+                def wait(*args):
+                    (arm/'stdout.log').write_text('T 1\n' if count else '')
+                    return state
+                C.SESSIONS['A0'] = object()
+                # Stop after the DONE acceptance boundary, without touching any worker.
+                class Accepted(Exception): pass
+                def affinity(session, io, **kw):
+                    if io: raise Accepted()
+                with patch.object(C,'healthy'), patch.object(C,'wstatus',return_value={}), \
+                     patch.object(C,'gpu_idle'), patch.object(C,'launch_session',return_value={'ready':{'mono':2},'started_mono':1}), \
+                     patch.object(C,'rpc',return_value={'sent':{'mono':2}}), patch.object(C,'wait_session',side_effect=wait):
+                    with self.assertRaisesRegex(RuntimeError,'requires DONE 0') if rejected else self.assertRaises(Accepted):
+                        C.run_arm('A0',configuration,[0],affinity)
+                C.SESSIONS.clear()
+
     def test_endpoint_mismatch_rejected(self):
         self.cfg['port'] += 1
         with self.assertRaisesRegex(ValueError, 'port mismatch'): self.stage()
+
+    def test_cpu_route_legacy_default_preserves_argv(self):
+        root = self.stage()
+        with patch.object(bundle.shutil, 'which', return_value='/synthetic/nvidia-smi'): cfg = bundle.verify(root)
+        self.assertNotIn('cpu_route', cfg)
+        derived = driver.arm_config(cfg, cfg['arms'][0])
+        self.assertEqual(derived['argv'], cfg['argv'])
+        self.assertEqual(derived['argv'].count('--remote-cpu-experts'), 1)
+        self.assertNotIn('--remote-cpu-worker', derived['argv'])
+        self.assertEqual(bundle.cpu_route_flag(dict(cfg, cpu_route='legacy')), '--remote-cpu-experts')
+
+    def test_cpu_route_single_group_survives_staging_and_arm_selection(self):
+        self.cfg['cpu_route'] = 'group'
+        self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')] = '--remote-cpu-worker'
+        with patch('subprocess.Popen') as spawn: root = self.stage()
+        spawn.assert_not_called()
+        with patch.object(bundle.shutil, 'which', return_value='/synthetic/nvidia-smi'): cfg = bundle.verify(root)
+        original = (root / 'config.json').read_bytes()
+        derived = driver.arm_config(cfg, cfg['arms'][0])
+        self.assertEqual(derived['cpu_route'], 'group')
+        self.assertEqual(derived['argv'], cfg['argv'])
+        self.assertEqual(derived['argv'].count('--remote-cpu-worker'), 1)
+        self.assertNotIn('--remote-cpu-experts', derived['argv'])
+        self.assertEqual(derived['argv'][derived['argv'].index('--remote-cpu-worker') + 1], '127.0.0.1:27431')
+        self.assertEqual(derived['argv'][derived['argv'].index('--remote-cpu-local-manifest') + 1], cfg['assets']['manifest'])
+        self.assertEqual(original, (root / 'config.json').read_bytes())
+
+    def test_cpu_route_invalid_conflicting_and_duplicate_flags_refused(self):
+        baseline = copy.deepcopy(self.cfg)
+        cases = [('unknown', 'other', ['--remote-cpu-experts']),
+                 ('wrong-legacy', 'legacy', ['--remote-cpu-worker']),
+                 ('wrong-group', 'group', ['--remote-cpu-experts']),
+                 ('both', 'group', ['--remote-cpu-worker', '--remote-cpu-experts']),
+                 ('duplicate', 'group', ['--remote-cpu-worker', '--remote-cpu-worker'])]
+        for name, route, flags in cases:
+            with self.subTest(name=name):
+                self.cfg = copy.deepcopy(baseline); self.cfg['cpu_route'] = route
+                index = self.cfg['argv'].index('--remote-cpu-experts')
+                del self.cfg['argv'][index:index + 2]
+                for flag in flags: self.cfg['argv'] += [flag, '127.0.0.1:27431']
+                with patch('subprocess.Popen') as spawn, self.assertRaises(ValueError): self.stage()
+                spawn.assert_not_called(); self.assertFalse(pathlib.Path(self.cfg['run_root']).exists())
+
+    def test_cpu_route_exact_endpoint_and_manifest_bindings(self):
+        baseline = copy.deepcopy(self.cfg)
+        for route in ('legacy', 'group'):
+            for fault in ('endpoint', 'engine-manifest', 'worker-manifest'):
+                with self.subTest(route=route, fault=fault):
+                    self.cfg = copy.deepcopy(baseline); self.cfg['cpu_route'] = route
+                    flag = bundle.cpu_route_flag(self.cfg)
+                    self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')] = flag
+                    if fault == 'endpoint':
+                        self.cfg['argv'][self.cfg['argv'].index(flag) + 1] = '127.0.0.1:27432'
+                    else:
+                        argv = self.cfg['argv'] if fault == 'engine-manifest' else self.cfg['worker_argv']
+                        manifest = '--remote-cpu-local-manifest' if fault == 'engine-manifest' else '--local-manifest'
+                        argv[argv.index(manifest) + 1] = '@requests'
+                    with patch('subprocess.Popen') as spawn, self.assertRaisesRegex(ValueError, 'binding mismatch|endpoint mismatch'):
+                        self.stage()
+                    spawn.assert_not_called(); self.assertFalse(pathlib.Path(self.cfg['run_root']).exists())
 
     def test_reserved_names_and_missing_monitor_path_fail_before_start(self):
         for name in ('assets', 'WORKER', 'WORKER-before-other'):

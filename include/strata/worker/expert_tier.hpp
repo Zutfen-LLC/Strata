@@ -16,6 +16,7 @@
 
 #include "strata/worker/expert_client.hpp"
 #include "strata/worker/rpc_timing.hpp"
+#include "strata/worker/packed_activation.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -27,6 +28,7 @@
 #include <vector>
 
 namespace strata::worker {
+class CpuCapture;
 
 /// The opt-in remote CPU-expert tier (inferswarm #349).  Default-off: the engine constructs it only for
 /// `--remote-cpu-experts`; with no tier attached the dispatch's worker hooks are dead branches and every
@@ -40,6 +42,12 @@ public:
         const LocalManifest *local = nullptr; // trusted reusable manifest, opt-in
         bool local_fallback = false;
         bool resident = false; // negotiate persistent cache; requires local manifest and worker TTL
+        bool resident_reuse_only = false; // refuse empty cache, never load/upload
+        bool diagnostic_regroup = false; // diagnostic: sequential virtual peers on the full cache
+        bool diagnostic_ordered = false; // diagnostic: shadow full reply, reconstruct rows, exact bit gate
+        std::string packed_qualification = default_packed_qualification(); // build-pair eligibility
+        bool packed_requests = true; // automatic for eligible peers; false forces raw
+        bool entry_rows = false; // opt-in batched rows; group performs the one ordered reduction
         int setup_ms = 600000;
         std::function<bool()> cancelled;
         int deadline_ms = 10000;          ///< per-frame deadline (setup, upload, infer)
@@ -79,7 +87,9 @@ public:
     /// entries not owned must not be marked or the worker refuses (`not-owned`) and the tier dies.
     /// Zero marked entries post nothing and return true - check `posted()`.
     bool post(int64_t layer, const float* x, const int32_t* ids, const float* weights, const uint8_t* owned,
-              int n_tok, int k, std::string& err);
+              int n_tok, int k, std::string& err,
+              std::shared_ptr<const PackedActivation> packed = {}, bool group_packed = false);
+    bool packed_enabled() const { return client_.packed_enabled(); }
     bool posted() const { return posted_; }
     /// Whether the LAST window sent a frame and finish() served its reply (a zero-work window: false,
     /// and `partials()` is then not this window's - the contribution reads as zero).
@@ -93,9 +103,15 @@ public:
     /// The last reply's already-weighted partials (n_tok * n_embd).  Valid only when the last post()
     /// returned true with `posted()` true and finish() then returned true.
     const float* partials() const { return reply_.partials.data(); }
+    const EntryRowsReply& entry_rows() const { return rows_reply_; } // only after successful finish
+    // Diagnostic only. Bound before inference, lifetime exceeds this tier; never touched by socket thread.
+    void set_capture(CpuCapture* p) { capture_=p; }
+    CpuCapture* capture() const { return capture_; }
 
     /// The last worker STATUS (false when unreachable; the tier then stays usable if it was not dead).
     bool status(WorkerStatusInfo& out, std::string& err);
+    // Group-owned idle probe. Skip an occupied slot; serialize the socket with post/status.
+    bool keepalive_if_idle(std::string& err);
 
     struct Stats {
         uint64_t setup_blobs = 0;          ///< owned blobs available (loaded/verified or reused)
@@ -105,9 +121,14 @@ public:
         uint64_t setup_network_bytes = 0, local_bytes = 0, local_hits = 0, local_misses = 0;
         double connect_setup_ms = 0, local_ms = 0, fetch_upload_ms = 0, ready_ms = 0;
         uint64_t local_read_ns = 0, local_verify_ns = 0;
-        uint64_t requests = 0;             ///< INFER frames sent (zero-work windows send none)
+        uint64_t packed_requests=0, raw_fallbacks=0, pack_calls=0, quantized_rows=0, pack_ns=0;
+        std::string packed_fallback_reason;
+        uint64_t requests = 0;             ///< nonempty INFER windows (normally one frame; diagnostic wire counts below)
         uint64_t entries = 0;              ///< routed (token, expert) entries this tier executed
         uint64_t failures = 0;
+        uint64_t regroup_peer_requests[2]{}; // diagnostic wire calls; requests above counts logical windows
+        uint64_t ordered_wire_requests=0, ordered_checked_windows=0;
+        uint64_t ordered_max_exchanges=0, ordered_peak_row_bytes=0;
         uint64_t communication_thread_id = 0; ///< OS thread id for affinity inspection (0 before first work)
         uint64_t communication_thread_starts = 0; ///< one for the tier's lifetime after first nonempty post
         double setup_ms = 0;               ///< open()'s wall time (connect + upload + ready), kept apart
@@ -135,7 +156,7 @@ private:
     size_t stride_ = 0;
     uint64_t model_id_ = 0, partition_id_ = 0;
     uint64_t sequence_ = 0;
-    uint64_t posted_ns_ = 0;
+    uint64_t posted_ns_ = 0, published_ns_ = 0;
     bool ready_ = false;
     std::atomic<bool> dead_{false};
     std::string dead_why_;
@@ -152,10 +173,18 @@ private:
     bool busy_ = false;
     InferRequest req_;
     InferReply reply_;
+    EntryRowsReply rows_reply_;
+    bool entry_rows_=false;
+    std::string packed_qualification_;
+    strata::kernels::cpu::NativeFmt packed_fmt_{};
     bool posted_ = false;
     bool served_ = false;
     Stats st_;
     RpcTimingCounters rpc_timing_;
+    CpuCapture* capture_=nullptr;
+    bool diagnostic_regroup_=false;
+    bool diagnostic_ordered_=false;
+    std::vector<int8_t> regroup_owners_;
 };
 
 }  // namespace strata::worker

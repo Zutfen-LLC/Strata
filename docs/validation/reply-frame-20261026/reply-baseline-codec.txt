@@ -1,0 +1,21 @@
+CPU_ROW_CODEC T=1 K=10 H=2560 entries=10 mode=weighted phase=encode warmup=64 measured=4096 bytes_per_iteration=10256 total_ns=504012 mean_ns=123.050 scratch_capacity_bytes=180374
+CPU_ROW_CODEC T=1 K=10 H=2560 entries=10 mode=weighted phase=frame_copy warmup=64 measured=4096 bytes_per_iteration=10272 total_ns=310361 mean_ns=75.772 scratch_capacity_bytes=180374
+CPU_ROW_CODEC T=1 K=10 H=2560 entries=10 mode=weighted phase=decode warmup=64 measured=4096 bytes_per_iteration=10256 total_ns=290415 mean_ns=70.902 scratch_capacity_bytes=180374
+CPU_ROW_CODEC T=1 K=10 H=2560 entries=10 mode=weighted phase=central_prepare_reduce warmup=64 measured=4096 bytes_per_iteration=10240 total_ns=3596409 mean_ns=878.030 scratch_capacity_bytes=180374
+CPU_ROW_CODEC T=1 K=10 H=2560 entries=10 mode=weighted phase=block_copy warmup=64 measured=4096 bytes_per_iteration=10272 total_ns=303350 mean_ns=74.060 scratch_capacity_bytes=180374
+CPU_ROW_CODEC T=1 K=10 H=2560 entries=10 mode=rows phase=encode warmup=64 measured=4096 bytes_per_iteration=102440 total_ns=40125557 mean_ns=9796.279 scratch_capacity_bytes=776494
+CPU_ROW_CODEC T=1 K=10 H=2560 entries=10 mode=rows phase=frame_copy warmup=64 measured=4096 bytes_per_iteration=102456 total_ns=10953936 mean_ns=2674.301 scratch_capacity_bytes=776494
+CPU_ROW_CODEC T=1 K=10 H=2560 entries=10 mode=rows phase=decode warmup=64 measured=4096 bytes_per_iteration=102440 total_ns=42523994 mean_ns=10381.834 scratch_capacity_bytes=776494
+CPU_ROW_CODEC T=1 K=10 H=2560 entries=10 mode=rows phase=central_prepare_reduce warmup=64 measured=4096 bytes_per_iteration=102400 total_ns=30043089 mean_ns=7334.739 scratch_capacity_bytes=776494
+CPU_ROW_CODEC T=1 K=10 H=2560 entries=10 mode=rows phase=block_copy warmup=64 measured=4096 bytes_per_iteration=102456 total_ns=9166238 mean_ns=2237.851 scratch_capacity_bytes=776494
+CPU_ROW_CODEC T=2 K=10 H=2560 entries=20 mode=weighted phase=encode warmup=64 measured=4096 bytes_per_iteration=20496 total_ns=1023520 mean_ns=249.883 scratch_capacity_bytes=360668
+CPU_ROW_CODEC T=2 K=10 H=2560 entries=20 mode=weighted phase=frame_copy warmup=64 measured=4096 bytes_per_iteration=20512 total_ns=638910 mean_ns=155.984 scratch_capacity_bytes=360668
+CPU_ROW_CODEC T=2 K=10 H=2560 entries=20 mode=weighted phase=decode warmup=64 measured=4096 bytes_per_iteration=20496 total_ns=581443 mean_ns=141.954 scratch_capacity_bytes=360668
+CPU_ROW_CODEC T=2 K=10 H=2560 entries=20 mode=weighted phase=central_prepare_reduce warmup=64 measured=4096 bytes_per_iteration=20480 total_ns=8611209 mean_ns=2102.346 scratch_capacity_bytes=360668
+CPU_ROW_CODEC T=2 K=10 H=2560 entries=20 mode=weighted phase=block_copy warmup=64 measured=4096 bytes_per_iteration=20512 total_ns=637435 mean_ns=155.624 scratch_capacity_bytes=360668
+CPU_ROW_CODEC T=2 K=10 H=2560 entries=20 mode=rows phase=encode warmup=64 measured=4096 bytes_per_iteration=204860 total_ns=90434293 mean_ns=22078.685 scratch_capacity_bytes=1552896
+CPU_ROW_CODEC T=2 K=10 H=2560 entries=20 mode=rows phase=frame_copy warmup=64 measured=4096 bytes_per_iteration=204876 total_ns=17173057 mean_ns=4192.641 scratch_capacity_bytes=1552896
+CPU_ROW_CODEC T=2 K=10 H=2560 entries=20 mode=rows phase=decode warmup=64 measured=4096 bytes_per_iteration=204860 total_ns=95366126 mean_ns=23282.746 scratch_capacity_bytes=1552896
+CPU_ROW_CODEC T=2 K=10 H=2560 entries=20 mode=rows phase=central_prepare_reduce warmup=64 measured=4096 bytes_per_iteration=204800 total_ns=63354364 mean_ns=15467.374 scratch_capacity_bytes=1552896
+CPU_ROW_CODEC T=2 K=10 H=2560 entries=20 mode=rows phase=block_copy warmup=64 measured=4096 bytes_per_iteration=204876 total_ns=16027062 mean_ns=3912.857 scratch_capacity_bytes=1552896
+CPU_ROW_CODEC_DONE ok=1 check_only=0 scratch_limit_bytes=16777216 deadline_seconds=30 model=0 sockets=0 expert_kernels=0 phases_independent=1

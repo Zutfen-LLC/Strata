@@ -881,6 +881,9 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 r += r1 - r0;
             }
         }
+        if (mode_ == 6 && readiness_)
+            readiness_->tasks[i].done_ns = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
         done_.fetch_add(1, std::memory_order_release);
     }
 }
@@ -956,7 +959,14 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
-void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n) {
+void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n,
+                                       NativeReadiness* diagnostic) {
+    if (diagnostic && (n <= 0 || n > kMaxSplitMulti))
+        throw std::invalid_argument("native readiness diagnostic needs one nonempty batch");
+    if (diagnostic) {
+        diagnostic->count = 0;
+        diagnostic->down_start_ns = diagnostic->down_done_ns = diagnostic->pool_done_ns = 0;
+    }
     if (n <= 0) return;
     const auto t0 = std::chrono::steady_clock::now();
     // more distinct experts than buffers: run them in batches
@@ -976,8 +986,17 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const auto c = std::chrono::steady_clock::now();
         mrows_ = (int64_t) nb * f.n_embd;
         mtasks_ = phase_tasks(mrows_);
+        if (diagnostic) {
+            diagnostic->count = mtasks_;
+            diagnostic->down_start_ns = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
+        readiness_ = diagnostic;
         run_phase(6, mtasks_);
+        readiness_ = nullptr;
         const auto d = std::chrono::steady_clock::now();
+        if (diagnostic) diagnostic->down_done_ns = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+            d.time_since_epoch()).count();
         ms_multi_gu += std::chrono::duration<double, std::milli>(b - a).count();
         ms_multi_q += std::chrono::duration<double, std::milli>(c - b).count();
         ms_multi_down += std::chrono::duration<double, std::milli>(d - c).count();
@@ -985,6 +1004,8 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
     multi_bytes += (int64_t) n * (int64_t) f.bytes;
     mode_ = 0;
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (diagnostic) diagnostic->pool_done_ns = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 void ExpertPool::run(ExpertJob* jobs, int n) {

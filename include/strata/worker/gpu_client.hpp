@@ -12,6 +12,7 @@ public:
         uint16_t port=7432;
         int deadline_ms=10000,setup_ms=600000;
         GpuPlan plan;
+        bool entry_rows=false; // negotiated; unsupported peers fail without weighted fallback
         std::function<bool(int64_t,int64_t,uint8_t*,uint32_t)> fetch;
         std::function<bool()> cancelled;
     };
@@ -31,6 +32,7 @@ public:
     bool served()const{return served_;}
     const float* partials()const{return reply_.partials.data();}
     size_t partial_count()const{return reply_.partials.size();}
+    const EntryRowsReply& entry_rows() const { return rows_reply_; }
     bool status(GpuCounters&,std::string&);
     void report(std::string&)const;
     struct Stats {
@@ -50,6 +52,8 @@ private:
     std::string why_;
     GpuPlan plan_;
     InferReply reply_;
+    EntryRowsReply rows_reply_;
+    bool rows_=false;
     Stats stats_;
     GpuCounters remote_;
 };

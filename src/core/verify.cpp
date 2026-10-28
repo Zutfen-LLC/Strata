@@ -4,6 +4,8 @@
 #include "strata/core/sm120_series.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/first_request_trace.hpp"
+#include "strata/core/first_request_trace_cuda.hpp"
 #include "strata/core/pin_budget.hpp"
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 #include "strata/core/host_graph_launch.hpp"
@@ -626,6 +628,7 @@ Verifier::~Verifier() {
     if (df_fork_) cudaEventDestroy(df_fork_);
     for (cudaEvent_t e : df_join_)
         if (e) cudaEventDestroy(e);
+    if (first_trace_device_) cudaFree(first_trace_device_);
     if (arena_) cudaFree(arena_);
     if (hcount_d_) cudaFree(hcount_d_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
@@ -716,6 +719,15 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
+    if (FirstRequestTrace::enabled()) {
+        first_trace_stride_ = FirstTraceShape{(size_t)T, (size_t)N, (size_t)g.n_expert, (size_t)K, (size_t)HC}.stride();
+        const uint64_t floats = first_trace_stride_ * (uint64_t)g.n_layers;
+        if (floats > FirstRequestTrace::limit / sizeof(float) ||
+            cudaMalloc((void**)&first_trace_device_, (size_t)floats * sizeof(float)) != cudaSuccess) {
+            err = "first-request trace: snapshot storage exceeds 64 MiB or allocation failed";
+            return false;
+        }
+    }
     const uint64_t C = (uint64_t) g.ssm_conv_channels, ZV = (uint64_t) g.ssm_value_dim, HV = (uint64_t) g.ssm_v_heads;
     const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
     const uint64_t IQ = (uint64_t) g.idx_q_heads, ID = (uint64_t) g.idx_key_dim;
@@ -1006,6 +1018,46 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
 }
 
 const float* Verifier::final_R(int t) const { return R_ + (size_t) t * (size_t) (g_->hc * g_->n_embd); }
+
+// Copy nodes are recorded on the SAME stream as the producing kernels. No host read of
+// graph buffers or stream synchronization while CPU doorbells are being served.
+bool Verifier::first_trace_copy(int64_t layer, int field, int tb, int rows, const void* src,
+                                cudaStream_t stream, std::string& err) {
+    if (!first_trace_device_) return true;
+    const FirstTraceShape shape{(size_t)max_t_, (size_t)g_->n_embd, (size_t)g_->n_expert,
+                                (size_t)ss_->k, (size_t)g_->hc};
+    if (!first_trace_snapshot(shape, first_trace_device_, (size_t)layer, field, (size_t)tb, (size_t)rows, src, stream)) {
+        err = "first-request trace: snapshot copy failed"; return false;
+    }
+    return true;
+}
+bool Verifier::first_trace_flush(int T, std::string& err) {
+    auto& trace = first_request_trace();
+    if (!trace.active()) return true;
+    const FirstTraceShape shape{(size_t)max_t_, (size_t)g_->n_embd, (size_t)g_->n_expert,
+                                (size_t)ss_->k, (size_t)g_->hc};
+    std::vector<float> host(first_trace_stride_); // One layer at a time; never a second whole-window image.
+    for (int64_t l=lb_; l<le_; ++l) {
+        if (cudaMemcpy(host.data(), first_trace_device_ + (size_t)l*first_trace_stride_,
+                       first_trace_stride_*4, cudaMemcpyDeviceToHost) != cudaSuccess) {
+            err = "first-request trace: snapshot read failed"; return false;
+        }
+        size_t offset = 0;
+        for (int f=0; f<7; ++f) {
+            // Residual channels are large: retain all channels only for the original
+            // final prompt token, in the first-logit window. Inputs/results cover ALL rows.
+            const int64_t target = trace.prompt_count - 1 - trace.position;
+            if (f < 5 || (target >= 0 && target < T)) {
+                const int64_t tb = f < 5 ? 0 : target;
+                if (!trace.record(2+f, l, tb, f<5 ? T : 1, (int64_t)shape.width(f), host.data()+offset+tb*shape.width(f))) {
+                    err = "first-request trace: incomplete write or 64 MiB output limit"; return false;
+                }
+            }
+            offset += shape.width(f) * (size_t)max_t_;
+        }
+    }
+    return true;
+}
 
 // ================================ THE WINDOW, AS CAPTURED ================================
 //
@@ -1833,6 +1885,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         stamp(l, 16, grp);
         const bool q8_ffn = gr_read_group(1, true, inj_, inj2_);   // true: nat_xq_ holds the MoE input's q8_1 (STRATA_QFUSE)
+        if (!first_trace_copy(l, 0, tb, n, mixed_ + tb*N, cs, err)) return false;
+        // R and inj2 are the residual BEFORE the pending MoE write (the next
+        // layer applies it). Copy here before the reusable buffers are overwritten.
+        if (!first_trace_copy(l, 5, tb, n, Rt(tb), cs, err) ||
+            !first_trace_copy(l, 6, tb, n, inj2_ + tb*HC, cs, err)) return false;
         stamp(l, 32, grp);   // the profile only: the FFN-side read ends here, the router starts
         // with CPU experts in the window the shared expert forks off once the doorbell is published (it no longer
         // competes with it for the GPU's first microseconds); STRATA_SH_FORK_LATE=0 forks at the top as before
@@ -1893,6 +1950,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                       rr_stats_ != nullptr ? rr_stats_ + (n <= 8 ? 4 : 0) : nullptr, cs);
             } catch (const std::exception& e) { err = "verify route-resident: " + std::string(e.what()); return false; }
         }
+        if (!first_trace_copy(l, 1, tb, n, logits_ + tb*NE, cs, err) ||
+            !first_trace_copy(l, 2, tb, n, ids_ + tb*K, cs, err) ||
+            !first_trace_copy(l, 3, tb, n, w_ + tb*K, cs, err)) return false;
         if (ar_on()) {
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                           hits_.cache_base, slot_off_d_, (long long) hits_.blob,
@@ -2111,6 +2171,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
+        if (!first_trace_copy(l, 4, tb, n, bo_ + tb*N, cs, err)) return false;
         stamp(l, 24, grp);
         if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
@@ -2701,8 +2762,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
-    // the overlapped split launched this stage's window already: keep the graph variant (#871) chosen for it then,
-    // or this thread would serve the window as the other variant
+    if (!first_request_trace().start_window(pos0, T, tokens)) {
+        err = "first-request trace: window limit or write failed"; return false;
+    }
+    // The overlapped split launched this stage already: keep its graph variant (#871).
     const bool pre = prelaunched_ == T;
     prelaunched_ = 0;
     if (!pre && pre_launch_ && !pre_launch_(cs_, err)) return false;   // (a prelaunched window's was served with the first stage's)
@@ -2861,6 +2924,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         set_plan_slot(grp);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
         progress_at("verify window: the CPU experts of layer", l);
+        if (first_request_trace().active()) first_request_trace().slice = tb;
         if (remote_opt_) remote_opt_->begin(h_w_ + (size_t) tb * ss.k, tb, n);
         if (pool != nullptr)
             pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
@@ -2962,6 +3026,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }
     if (h_bal_ != nullptr && !all_resident_ && !bal_paused_) pcie_balance_window(steps, G);
     if (prof_on_ && G == 1) collect_profile();   // the window's GPU stage stamps
+    if (!first_trace_flush(T, err)) return false;
     // ---- a sampled or penalized request: the head's sampling again, host-side so its parameters are this call's
     // own (a captured kernel would replay the same draws forever).  Row t's draw is Philox(seed, pos0 + t): tied to
     // the POSITION it samples, not to how the text was cut into windows, so a seed replays the same text whatever

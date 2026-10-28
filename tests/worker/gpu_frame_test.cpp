@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
 #include <thread>
@@ -147,6 +148,29 @@ InferRequest request(const GpuPlan& p,int T,uint64_t sequence) {
     for (size_t i=0;i<r.activations.size();++i) r.activations[i]=(float)(int(i%11)-5)*0.01f;
     return r;
 }
+void rows_transport() {
+    const auto p=plan();auto r=request(p,kMaxT,1);r.K=kMaxK;
+    r.mask.assign((size_t)r.T*r.K,1);
+    EntryRowsReply rows;rows.session=r.session;rows.sequence=r.sequence;
+    for(size_t i=0;i<r.mask.size();++i)rows.indices.push_back((uint16_t)i);
+    rows.rows.resize(rows.indices.size()*p.n_embd);
+    for(size_t i=0;i<rows.rows.size();++i)rows.rows[i]=i%7 ? (float)(int(i%31)-15)/128.f : -0.f;
+    const Digest128 digest{17,19};std::vector<uint8_t> wire;
+    require(gpu_codec::encode_rows_reply(p,digest,r,rows,wire),"maximal row reply encode");
+    require(wire.size()==64+kEntryRowsPayloadMax,"row operation cap exact maximum");
+    Pair pair;std::string error;bool sent=false;
+    std::thread sender([&]{sent=gpu_codec::send(pair.left.value,GPU_INFER_ROWS_ACK,ST_OK,wire,io_ms,{},error);});
+    Join join{sender};WireFrame frame;std::string why;
+    require(gpu_codec::receive(pair.right.value,frame,kGpuFrameMax,io_ms,{},why),why);
+    sender.join();require(sent,error);EntryRowsReply result;
+    require(frame.payload==wire && gpu_codec::decode_rows_reply(p,digest,r,frame.payload,result),"maximum rows cross actual socket");
+    require(result.indices==rows.indices && result.rows.size()==rows.rows.size() &&
+            !std::memcmp(result.rows.data(),rows.rows.data(),rows.rows.size()*sizeof(float)),"raw F32 row bytes and all original indices survive transport");
+    auto bad=wire;bad[48]^=1;
+    require(!gpu_codec::decode_rows_reply(p,digest,r,bad,result),"row request digest mismatch refused");
+    bad=wire;bad[32]^=1;
+    require(!gpu_codec::decode_rows_reply(p,digest,r,bad,result),"row placement mismatch refused");
+}
 std::vector<uint8_t> reply(const GpuPlan& p,const WireFrame& in) {
     if (in.msg==GPU_STATUS) {
         require(in.payload==gpu_codec::binding(123,p),"dummy status identity");
@@ -229,7 +253,7 @@ int main(int argc,char** argv) {
     if (::setrlimit(RLIMIT_AS,&memory) || ::setrlimit(RLIMIT_CPU,&cpu) || ::setrlimit(RLIMIT_FSIZE,&output)) return 2;
     ::alarm(60);
     try {
-        if (argc==1) { correctness(); return 0; }
+        if (argc==1) { correctness(); rows_transport(); return 0; }
         if (argc==2 && std::string(argv[1])=="--latency") {
             Fd listener; uint16_t bound=0; std::string error;
             require(sock::listen_loopback(bound,listener.value,error),error); std::exception_ptr failure;

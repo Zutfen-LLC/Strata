@@ -359,6 +359,13 @@ public:
     std::string profile_report();
 
 private:
+    // Allocated only for STRATA_FIRST_REQUEST_TRACE. Graph snapshots use fixed device addresses.
+    float* first_trace_device_ = nullptr;
+    size_t first_trace_stride_ = 0;
+    bool first_trace_copy(int64_t layer, int field, int tb, int rows, const void* src,
+                          cudaStream_t stream, std::string& err);
+    bool first_trace_flush(int T, std::string& err);
+
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
     // batch windows (see init_slots)

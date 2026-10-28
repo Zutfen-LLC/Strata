@@ -1,3 +1,4 @@
+#include "strata/core/first_request_trace.hpp"
 #include "strata/core/logit_bias.hpp"
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
@@ -24,8 +25,11 @@
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/worker/gpu_endpoint.hpp"
+#include "strata/worker/cpu_endpoint.hpp"
 #ifdef STRATA_NATIVE_EXPERTS
 #include "strata/worker/expert_tier.hpp"
+#include "strata/worker/cpu_capture.hpp"
+#include "strata/worker/cpu_group.hpp"
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
 #include "strata/worker/gpu_group.hpp"
@@ -563,7 +567,8 @@ struct Options {
     /// inferswarm #349: the opt-in remote CPU-expert worker (default OFF - without the flag every path
     /// below is untouched).  The worker holds the CPU-owned expert complement of another machine's RAM
     /// and computes its weighted partials; see docs/CPU_WORKER.md and worker/expert_tier.hpp.
-    bool remote_cpu_experts = false;
+    bool remote_cpu_experts = false, remote_cpu_legacy = false;
+    std::vector<strata::worker::CpuEndpoint> remote_cpu_workers;
     std::string remote_cpu_host = "127.0.0.1";   ///< the worker, or the local end of an owned SSH forward
     int remote_cpu_port = 7431;
     int remote_cpu_deadline_ms = 10000;
@@ -572,6 +577,10 @@ struct Options {
     bool remote_cpu_resident = false;
     int remote_cpu_setup_ms = 600000;
     bool remote_cpu_rpc_timing = false;
+    std::string remote_cpu_packed_qualification; // empty: inherit the build's qualification
+    bool remote_cpu_raw_requests = false;
+    bool remote_cpu_entry_rows = false;
+    int remote_cpu_regroup_diagnostic = -1; // absent: unchanged; 0/1/2: control/regroup/ordered
     bool remote_gpu_experts = false;
     bool remote_gpu_legacy = false;
     std::vector<strata::worker::GpuEndpoint> remote_gpu_workers;
@@ -1017,6 +1026,13 @@ void usage() {
                  "                       --short-read through the verify windows, and refuses the modes it\n"
                  "                       does not implement (batch slots, layer split, peer, pipeline,\n"
                  "                       adaptive tiers, resident RAM mirrors, tail skipping).\n"
+                 "  --remote-cpu-worker IPv4:PORT  opt-in fixed CPU group; repeat 1..2 times in ownership/merge order;\n"
+                 "                       alternates the frozen CPU complement; requires local manifest\n"
+                 "  --remote-cpu-regroup-diagnostic off|on|ordered  reuse-only control, split reduction or exact row reconstruction\n"
+                 "  --remote-cpu-packed-qualification 16_HEX  override verified build-pair record; default from build\n"
+                 "  --remote-cpu-raw-requests  force raw F32 requests; eligible peers otherwise select packed automatically\n"
+                 "  --remote-cpu-entry-rows  opt-in original-order rows; with network CUDA requires one resident CPU endpoint\n"
+                 "                       and no fallback; reuses full backing and reduces CPU+CUDA rows once\n"
                  "  --remote-cpu-local-manifest FILE  opt-in trusted slice manifest; needs configured local worker\n"
                  "  --remote-cpu-local-fallback  allow upload for absent local experts (worker must allow it)\n"
                  "  --remote-cpu-resident  opt-in persistent worker cache; needs local manifest and worker TTL\n"
@@ -1139,6 +1155,9 @@ struct Drive {
     strata::core::ExpertDispatch d;
     double cpu_ms = 0;
     int64_t calls = 0;
+#ifdef STRATA_NATIVE_EXPERTS
+    strata::worker::CpuCapture* capture = nullptr;
+#endif
     /// THE ROUTING TRACE, which is P0.S8 and a stated prerequisite of Phase 3.  `drive_pool` is called once
     /// per layer from the main loop - the workers live inside `expert_pool_dispatch` - so a single FILE* here
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
@@ -2260,6 +2279,10 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
 }
 
 int main(int argc, char** argv) {
+    const char* cpu_capture_path=std::getenv("STRATA_CPU_CAPTURE");
+#ifndef STRATA_NATIVE_EXPERTS
+    if(cpu_capture_path){std::fprintf(stderr,"CPU capture requires native experts\n");return 2;}
+#endif
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
@@ -2296,7 +2319,7 @@ int main(int argc, char** argv) {
         "--resident-budget-gib", "--model", "--ctx", "--chunk", "--n", "--force", "--emb",
         "--dump-full-logits", "--bench-pp", "--bench-tg", "--draft-vocab", "--expert-vram",
         "--cpu-threads", "--expert-slots", "--hybrid-rows",
-        "--remote-cpu-experts", "--remote-cpu-local-manifest", "--remote-cpu-setup-ms", "--remote-cpu-deadline-ms",
+        "--remote-cpu-packed-qualification", "--remote-cpu-experts", "--remote-cpu-worker", "--remote-cpu-local-manifest", "--remote-cpu-setup-ms", "--remote-cpu-deadline-ms", "--remote-cpu-regroup-diagnostic",
     };
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -2314,10 +2337,10 @@ int main(int argc, char** argv) {
 #endif
         }
 #ifndef STRATA_NATIVE_EXPERTS
-        if (a == "--remote-cpu-experts" || a == "--remote-cpu-local-manifest" ||
+        if (a == "--remote-cpu-raw-requests" || a == "--remote-cpu-packed-qualification" || a == "--remote-cpu-experts" || a == "--remote-cpu-worker" || a == "--remote-cpu-local-manifest" ||
             a == "--remote-cpu-local-fallback" || a == "--remote-cpu-resident" ||
             a == "--remote-cpu-setup-ms" || a == "--remote-cpu-deadline-ms" ||
-            a == "--remote-cpu-rpc-timing") {
+            a == "--remote-cpu-rpc-timing" || a == "--remote-cpu-regroup-diagnostic" || a == "--remote-cpu-entry-rows") {
             std::fprintf(stderr, "strata: %s requires STRATA_NATIVE_EXPERTS=ON; this build excludes the remote CPU-expert worker\n",
                          a.c_str());
             return 2;
@@ -2406,7 +2429,10 @@ int main(int argc, char** argv) {
         } catch (const std::exception&) {
             // not readable here: the normal path below reports it
         }
-        if (qwen35) return strata::qwen35::run(argc, argv);
+        if (qwen35) {
+            if(cpu_capture_path){std::fprintf(stderr,"CPU capture does not support this model family\n");return 2;}
+            return strata::qwen35::run(argc, argv);
+        }
         break;
     }
 #endif
@@ -2566,7 +2592,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--remote-expert-opt") o.remote_expert_opt = true;
         else if (a == "--remote-cpu-experts") {
-            o.remote_cpu_experts = true;
+            o.remote_cpu_experts = o.remote_cpu_legacy = true;
             const std::string v = next("--remote-cpu-experts");
             const size_t c = v.rfind(':');
             const int port = c == std::string::npos ? -1 : std::atoi(v.c_str() + c + 1);
@@ -2577,6 +2603,15 @@ int main(int argc, char** argv) {
             o.remote_cpu_host = v.substr(0, c);
             o.remote_cpu_port = port;
         }
+        else if (a == "--remote-cpu-worker") {
+            strata::worker::CpuEndpoint endpoint;
+            if (!strata::worker::parse_cpu_endpoint(next("--remote-cpu-worker"),endpoint) ||
+                o.remote_cpu_workers.size() >= strata::worker::kMaxCpuWorkers ||
+                std::any_of(o.remote_cpu_workers.begin(),o.remote_cpu_workers.end(),[&](const auto& e){return e.host==endpoint.host && e.port==endpoint.port;})) {
+                std::fprintf(stderr,"--remote-cpu-worker needs 1..2 numeric IPv4:PORT endpoints\n"); return 2;
+            }
+            o.remote_cpu_experts=true; o.remote_cpu_workers.push_back(std::move(endpoint));
+        }
         else if (a == "--remote-cpu-local-manifest") o.remote_cpu_local_manifest=next("--remote-cpu-local-manifest");
         else if (a == "--remote-cpu-local-fallback") o.remote_cpu_local_fallback=true;
         else if (a == "--remote-cpu-resident") o.remote_cpu_resident=true;
@@ -2584,6 +2619,16 @@ int main(int argc, char** argv) {
         else if (a == "--remote-cpu-deadline-ms")
             o.remote_cpu_deadline_ms = std::max(100, std::atoi(next("--remote-cpu-deadline-ms")));
         else if (a == "--remote-cpu-rpc-timing") o.remote_cpu_rpc_timing = true;
+        else if (a == "--remote-cpu-packed-qualification") o.remote_cpu_packed_qualification=next("--remote-cpu-packed-qualification");
+        else if (a == "--remote-cpu-raw-requests") o.remote_cpu_raw_requests = true;
+        else if (a == "--remote-cpu-entry-rows") o.remote_cpu_entry_rows = true;
+        else if (a == "--remote-cpu-regroup-diagnostic") {
+            const std::string value=next("--remote-cpu-regroup-diagnostic");
+            if(o.remote_cpu_regroup_diagnostic!=-1 || (value!="off" && value!="on" && value!="ordered")) {
+                std::fprintf(stderr,"--remote-cpu-regroup-diagnostic takes exactly one off|on|ordered\n");return 2;
+            }
+            o.remote_cpu_regroup_diagnostic=value=="ordered"?2:value=="on"?1:0;
+        }
         else if (a == "--remote-gpu-experts") {
             o.remote_gpu_experts = o.remote_gpu_legacy = true;
             const std::string v = next("--remote-gpu-experts");
@@ -3343,6 +3388,27 @@ int main(int argc, char** argv) {
     // inferswarm #349: the remote CPU-expert worker is a bounded, opt-in mode.  It refuses UP FRONT every
     // configuration whose execution path it does not implement, rather than silently running a different
     // one: the modes below are the ones the integration was framed for (see docs/CPU_WORKER.md).
+    const bool mixed_worker_rows=!o.remote_cpu_workers.empty() && o.remote_gpu_experts;
+    if (!o.remote_cpu_workers.empty() && (o.remote_cpu_legacy || o.remote_cpu_local_manifest.empty())) {
+        std::fprintf(stderr,"fixed CPU group needs its trusted local manifest and excludes legacy --remote-cpu-experts\n");return 2;
+    }
+    if(mixed_worker_rows && (o.remote_cpu_workers.size()!=1 || !o.remote_cpu_entry_rows ||
+        !o.remote_cpu_resident || o.remote_cpu_local_fallback || o.remote_cpu_regroup_diagnostic>=0 || cpu_capture_path)) {
+        std::fprintf(stderr,"mixed CPU/CUDA requires one resident CPU group endpoint, entry rows and no fallback/diagnostic/capture; setup is reuse-only\n");return 2;
+    }
+    if(o.remote_cpu_regroup_diagnostic>=0 && (o.remote_cpu_workers.size()!=1 || o.remote_cpu_legacy ||
+        !o.remote_cpu_resident || o.remote_cpu_local_manifest.empty() || o.remote_cpu_local_fallback ||
+        o.remote_gpu_experts || o.vision || cpu_capture_path)) {
+        std::fprintf(stderr,"regroup diagnostic requires one CPU group endpoint, trusted resident reuse, text, no fallback or capture\n");return 2;
+    }
+    if(!o.remote_cpu_packed_qualification.empty() && (o.remote_cpu_workers.empty() || o.remote_cpu_legacy ||
+        cpu_capture_path || o.remote_cpu_regroup_diagnostic>=0)) {
+        std::fprintf(stderr,"packed requests require CPU group and exclude legacy/capture/diagnostic modes\n");return 2;
+    }
+    if(o.remote_cpu_entry_rows && (o.remote_cpu_workers.empty() || o.remote_cpu_legacy ||
+        o.remote_cpu_local_manifest.empty() || cpu_capture_path || o.remote_cpu_regroup_diagnostic>=0)) {
+        std::fprintf(stderr,"entry rows require CPU group/local manifest and exclude legacy/capture/diagnostic modes\n");return 2;
+    }
     if ((!o.remote_cpu_local_manifest.empty() && !o.remote_cpu_experts) ||
         (o.remote_cpu_rpc_timing && !o.remote_cpu_experts) ||
         ((o.remote_cpu_local_fallback || o.remote_cpu_resident) && o.remote_cpu_local_manifest.empty()) || o.remote_cpu_setup_ms<=0) {
@@ -3360,6 +3426,22 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: network CUDA experts need --remote-cpu-experts, its trusted local manifest, "
                              "one legacy endpoint/plan or 1..8 --remote-gpu-worker pairs, and positive setup/deadline budgets\n");
         return 2;
+    }
+    if (strata::core::FirstRequestTrace::enabled()) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_GPU_METAL)
+        std::fprintf(stderr, "first-request trace currently requires CUDA\n"); return 2;
+#endif
+        if (!o.serve || !o.remote_cpu_experts || o.batch != 0 || !o.layer_split.empty() ||
+            o.pipeline_windows > 0 || o.vision || cpu_capture_path || o.remote_gpu_legacy ||
+            !std::getenv("STRATA_DUMP_FIRST_LOGITS")) {
+            std::fprintf(stderr, "first-request trace requires serial remote CPU text serve, "
+                                 "no split/pipeline and STRATA_DUMP_FIRST_LOGITS\n"); return 2;
+        }
+    }
+    if(cpu_capture_path && (!o.remote_cpu_legacy || !o.remote_cpu_workers.empty() ||
+        !o.remote_cpu_resident || o.remote_cpu_local_manifest.empty() || o.remote_gpu_experts ||
+        o.vision || !std::getenv("STRATA_DUMP_FIRST_LOGITS"))) {
+        std::fprintf(stderr,"CPU capture requires serial legacy CPU resident reuse, text, trusted manifest and first-logit dump\n");return 2;
     }
     if (o.remote_cpu_experts) {
         const char* why = !o.serve ? "it needs --serve"
@@ -6679,7 +6761,11 @@ int main(int argc, char** argv) {
     // blob-sized staging buffer (no local RAM mirror), and inference may not start before the worker has
     // verified the whole set (READY), which this open() waits for.
 #ifdef STRATA_NATIVE_EXPERTS
+    strata::worker::CpuCapture cpu_capture; // outlives tier; owns fixed diagnostic storage
     strata::worker::ExpertWorkerTier worker_tier;
+    strata::worker::ExpertWorkerGroup cpu_group;
+    const bool grouped_cpu=!o.remote_cpu_workers.empty();
+    auto cpu_stats=[&]() -> const strata::worker::ExpertWorkerTier::Stats& { return grouped_cpu ? cpu_group.stats() : worker_tier.stats(); };
 #ifdef STRATA_NETWORK_CUDA_WORKER
     strata::worker::GpuWorkerGroup gpu_worker_tier;
 #endif
@@ -6722,6 +6808,8 @@ int main(int argc, char** argv) {
                 } else {
                     partition[(size_t) l * stride + (size_t) e / 8] &= (uint8_t) ~(1u << (e % 8));
                 }
+        if(grouped_cpu && g.n_expert%8)for(int l=0;l<g.n_layers;++l)
+            partition[(size_t)l*stride+stride-1]&=(uint8_t)((1u<<(g.n_expert%8))-1u);
         std::fprintf(stderr, "strata generate: remote CPU experts: %llu of %lld experts are no GPU tier's "
                              "(%.2f GiB at Q8_0); the worker partition is frozen at setup\n",
                      (unsigned long long) owned, (long long) (g.n_layers * g.n_expert),
@@ -6731,6 +6819,14 @@ int main(int argc, char** argv) {
         wopen.port = (uint16_t) o.remote_cpu_port;
         wopen.deadline_ms = o.remote_cpu_deadline_ms;
         wopen.rpc_timing = o.remote_cpu_rpc_timing;
+        wopen.entry_rows = o.remote_cpu_entry_rows;
+        if(!o.remote_cpu_packed_qualification.empty())
+            wopen.packed_qualification = o.remote_cpu_packed_qualification;
+        wopen.packed_requests = !o.remote_cpu_raw_requests && !o.remote_cpu_workers.empty() &&
+            !cpu_capture_path && o.remote_cpu_regroup_diagnostic<0;
+        wopen.resident_reuse_only = mixed_worker_rows || cpu_capture_path != nullptr || o.remote_cpu_regroup_diagnostic>=0;
+        wopen.diagnostic_regroup = o.remote_cpu_regroup_diagnostic==1;
+        wopen.diagnostic_ordered = o.remote_cpu_regroup_diagnostic==2;
         wopen.model_name = o.pack.c_str();
         wopen.gu_type = 8;
         wopen.d_type = 8;
@@ -6757,13 +6853,14 @@ int main(int argc, char** argv) {
             wopen.resident=o.remote_cpu_resident;
             wopen.setup_ms=o.remote_cpu_setup_ms;
         }
+        std::vector<uint8_t> gpu_delegated; // execution only; never changes the full CPU setup bitmap
 #ifdef STRATA_NETWORK_CUDA_WORKER
         std::vector<strata::worker::GpuWorkerTier::Open> gpu_open;
         if (o.remote_gpu_experts) {
           auto endpoints=o.remote_gpu_workers;
           if(endpoints.empty())endpoints.push_back({o.remote_gpu_host,o.remote_gpu_plan,(uint16_t)o.remote_gpu_port});
           for(const auto& endpoint:endpoints) {
-            strata::worker::GpuWorkerTier::Open item;
+            strata::worker::GpuWorkerTier::Open item;item.entry_rows=mixed_worker_rows;
             item.host=endpoint.host;item.port=endpoint.port;item.deadline_ms=o.remote_gpu_deadline_ms;item.setup_ms=o.remote_gpu_setup_ms;
             auto& gpu_plan=item.plan;
             if (!strata::worker::read_gpu_plan(endpoint.plan, gpu_plan, err)) {
@@ -6793,26 +6890,61 @@ int main(int argc, char** argv) {
           if(!strata::worker::GpuWorkerGroup::validate(gpu_open,err)) {
             std::fprintf(stderr,"strata generate: network GPU group: %s\n",err.c_str());return 1;
           }
+          if(mixed_worker_rows) {
+            gpu_delegated.assign(wopen.partition.size(),0);
+            for(const auto& item:gpu_open)for(const auto& a:item.plan.assets)
+                gpu_delegated[(size_t)a.layer*stride+a.expert/8]|=(uint8_t)(1u<<(a.expert%8));
+          }
         }
 #endif
         const auto wt0 = Clock::now();
-        if (!worker_tier.open(wopen, err)) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-            return 1;
+        bool cpu_opened=false;
+        if(grouped_cpu) {
+            std::vector<strata::worker::ExpertWorkerTier::Open> peers(o.remote_cpu_workers.size(),wopen);
+            for(size_t p=0;p<peers.size();++p) {
+                peers[p].host=o.remote_cpu_workers[p].host;peers[p].port=o.remote_cpu_workers[p].port;
+                peers[p].partition.assign(wopen.partition.size(),0);
+            }
+            size_t ordinal=0;
+            for(int l=0;l<g.n_layers;++l)for(int e=0;e<g.n_expert;++e)
+                if(wopen.partition[(size_t)l*stride+e/8]&(1u<<(e%8))) {
+                    peers[ordinal++%peers.size()].partition[(size_t)l*stride+e/8]|=(uint8_t)(1u<<(e%8));
+                }
+            cpu_opened=cpu_group.open(peers,wopen.partition,err,gpu_delegated);
+        } else cpu_opened=worker_tier.open(wopen,err);
+        if(!cpu_opened) {std::fprintf(stderr,"strata generate: CPU setup: %s\n",err.c_str());return 1;}
+        if(o.remote_cpu_entry_rows)std::fprintf(stderr,"strata generate: CPU entry rows ready schema=1 reduction=%s\n",
+            mixed_worker_rows?"CPU+CUDA original-order union":"CPU original-order");
+        if(o.remote_cpu_regroup_diagnostic>=0)
+            std::fprintf(stderr,"strata generate: CPU regroup diagnostic=%s reuse_only=1 sequential=1\n",
+                         o.remote_cpu_regroup_diagnostic==2?"ordered":o.remote_cpu_regroup_diagnostic?"on":"off");
+        if(cpu_capture_path) {
+            strata::worker::SetupManifest m;
+            m.model_id=local_manifest.identity.a;m.gu_type=wopen.gu_type;m.d_type=wopen.d_type;
+            m.n_layers=wopen.n_layers;m.n_expert=wopen.n_expert;m.n_embd=wopen.n_embd;m.n_ff=wopen.n_ff;
+            m.partition=wopen.partition;m.partition_id=strata::worker::blob_digest(m.partition).a;
+            std::strcpy(m.quant_name,"Q8_0");std::strcpy(m.model_name,"cpu-capture");
+            if(!cpu_capture.prepare(m,local_manifest.identity,local_manifest.index_digest,cpu_capture_path,err)) {
+                std::fprintf(stderr,"CPU capture: %s\n",err.c_str());return 1;
+            }
+            worker_tier.set_capture(&cpu_capture);
         }
-        std::fprintf(stderr, "strata generate: remote CPU experts ready on %s:%d in %.1f s (%llu blobs, "
+        if(grouped_cpu)std::fprintf(stderr,"strata generate: fixed CPU group ready peers=%zu in %.1f s (%llu blobs, %.2f GiB verified)\n",
+            cpu_group.size(),std::chrono::duration<double>(Clock::now()-wt0).count(),
+            (unsigned long long)cpu_stats().setup_blobs,(double)cpu_stats().setup_weight_bytes/1073741824.0);
+        else std::fprintf(stderr, "strata generate: remote CPU experts ready on %s:%d in %.1f s (%llu blobs, "
                              "%.2f GiB verified)\n", o.remote_cpu_host.c_str(),
                      o.remote_cpu_port, std::chrono::duration<double>(Clock::now() - wt0).count(),
-                     (unsigned long long) worker_tier.stats().setup_blobs,
-                     (double) worker_tier.stats().setup_weight_bytes / 1073741824.0);
-        std::string setup_report; worker_tier.report(setup_report);
+                     (unsigned long long) cpu_stats().setup_blobs,
+                     (double) cpu_stats().setup_weight_bytes / 1073741824.0);
+        std::string setup_report; if(grouped_cpu)cpu_group.report(setup_report);else worker_tier.report(setup_report);
         std::fprintf(stderr,"strata generate: %s\n",setup_report.c_str());
 #ifdef STRATA_NETWORK_CUDA_WORKER
         if (o.remote_gpu_experts) {
             // The CPU worker above retains the identical full partition and arena. Only execution
             // ownership changes for this explicitly assigned subset; no CPU setup identity is rewritten.
             for (const auto& item : gpu_open) for (const auto& a : item.plan.assets)
-                if (!worker_tier.holds(a.layer, a.expert)) {
+                if (!(grouped_cpu ? cpu_group.holds(a.layer,a.expert) : worker_tier.holds(a.layer, a.expert))) {
                     std::fprintf(stderr, "strata generate: network GPU assignment is outside the frozen CPU partition\n");
                     return 1;
                 }
@@ -6834,11 +6966,13 @@ int main(int argc, char** argv) {
             }
             // Cold selective transfer may take minutes. Preserve the existing CPU connection's
             // receive deadline without changing its partition or extending its residency TTL.
-            strata::worker::CpuSetupKeepalive cpu_keepalive(worker_tier);
-            for(auto& gopen:gpu_open)gopen.cancelled=[&] {return cpu_keepalive.failed();};
+            // The group already has its keeper; never create a second owner of its CPU socket.
+            std::unique_ptr<strata::worker::CpuSetupKeepalive> cpu_keepalive;
+            if(!grouped_cpu)cpu_keepalive=std::make_unique<strata::worker::CpuSetupKeepalive>(worker_tier);
+            for(auto& gopen:gpu_open)gopen.cancelled=[&] {return grouped_cpu ? cpu_group.dead() : cpu_keepalive->failed();};
             const bool gpu_ready = gpu_worker_tier.open(gpu_open, err);
             std::string cpu_setup_error;
-            const bool cpu_still_ready = cpu_keepalive.finish(cpu_setup_error);
+            const bool cpu_still_ready = grouped_cpu ? cpu_group.probe_idle(cpu_setup_error) : cpu_keepalive->finish(cpu_setup_error);
             if (!cpu_still_ready) {
                 std::fprintf(stderr, "strata generate: %s\n", cpu_setup_error.c_str());
                 return 1;
@@ -6874,7 +7008,9 @@ int main(int argc, char** argv) {
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
 #ifdef STRATA_NATIVE_EXPERTS
-    drive.d.worker = o.remote_cpu_experts ? &worker_tier : nullptr;
+    drive.d.worker = o.remote_cpu_experts && !grouped_cpu ? &worker_tier : nullptr;
+    drive.capture = cpu_capture_path ? &cpu_capture : nullptr;
+    drive.d.cpu_group = grouped_cpu ? &cpu_group : nullptr;
 #ifdef STRATA_NETWORK_CUDA_WORKER
     drive.d.gpu_worker = o.remote_gpu_experts ? &gpu_worker_tier : nullptr;
 #endif
@@ -12335,7 +12471,7 @@ int main(int argc, char** argv) {
                 continue;
             }
             char* endp = nullptr;
-            const long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);
+            long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);
             // optional sampling keys between max_new and the ids: temperature=F, top_p=F, top_k=N, min_p=F,
             // penalty_last_n=N, penalty_repeat=F, penalty_freq=F, penalty_present=F, seed=N (text requests
             // only).  Absent keys keep today's behavior: greedy, no penalties.
@@ -12432,6 +12568,11 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
+#ifdef STRATA_NATIVE_EXPERTS
+            if(drive.capture && !drive.capture->request(line,ids,(uint64_t)max_new)) {
+                std::printf("ERR %s\n",drive.capture->error());return 1;
+            }
+#endif
             req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             if (geni || !mrope_identity) {
@@ -12551,6 +12692,19 @@ int main(int argc, char** argv) {
                 wait_before[(size_t) r] = remote_experts[(size_t) r].ms_wait();
             }
             cur = ids;
+            if (!strata::core::first_request_trace().begin(ids.data(), ids.size())) {
+                std::printf("ERR first-request trace: create failed or prompt exceeds 64 tokens\n"); return 1;
+            }
+            if (strata::core::first_request_trace().active()) {
+                if (max_new > INT32_MAX) { std::printf("ERR first-request trace: GEN length exceeds int32\n"); return 1; }
+                const int32_t binding[] = {(int32_t)max_new, (int32_t)o.prefill_chunk, o.spec, (int32_t)o.max_context,
+                                           (int32_t)g.n_layers, (int32_t)g.n_embd, (int32_t)g.n_expert,
+                                           (int32_t)ss.k, (int32_t)g.hc};
+                if (!strata::core::first_request_trace().record(10, -1, 0, 1, 9, binding)) {
+                    std::printf("ERR first-request trace: request binding write failed\n"); return 1;
+                }
+            }
+
             const Clock::time_point r0 = Clock::now();
             const int64_t streamed0 = sp.chain_experts_streamed();   // the DONE line's experts_streamed= is the difference
             // ---- where this request starts reading: the live session, or a checkpoint, whose tokens AND pictures are
@@ -12630,7 +12784,7 @@ int main(int argc, char** argv) {
             // counts the prompt's windows too, not only the decode's
 #ifdef STRATA_NATIVE_EXPERTS
             const int64_t worker_ent0 = drive.d.worker_entries;
-            const double worker_req_ms0 = worker_tier.stats().request_ms;
+            const double worker_req_ms0 = cpu_stats().request_ms;
 #endif
 #ifdef STRATA_NETWORK_CUDA_WORKER
             const int64_t gpu_worker_ent0 = drive.d.gpu_worker_entries;
@@ -13260,6 +13414,11 @@ int main(int argc, char** argv) {
                     drive.d.layers = 0;
                     drive.d.experts = 0;
                     drive.d.failed = false;
+#ifdef STRATA_NATIVE_EXPERTS
+                    if(drive.capture && !drive.capture->window((uint64_t)q,(uint32_t)T,1)) {
+                        e=drive.capture->error();return false;
+                    }
+#endif
                     if (!ver.run(T, win.data(), q, win_pool_fn, win_pool_user, outw.data(), e) || drive.d.failed) {
                         if (drive.d.failed && drive.d.fail) e = drive.d.fail;
                         return false;
@@ -15139,6 +15298,11 @@ int main(int argc, char** argv) {
                 // a suffix window and the lookup chain's tail are point masses and keep the exact-match rule
                 // (never on a first window: a merged one holds prompt tokens, not drafts)
                 if (use_mtp && mtp.prob() && !from_sfx && !first_window && T_mtp > 1) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
+#ifdef STRATA_NATIVE_EXPERTS
+                if(first_window && drive.capture && !drive.capture->window((uint64_t)p,(uint32_t)T,2)) {
+                    std::printf("ERR %s\n",drive.capture->error());return 1;
+                }
+#endif
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
@@ -15153,10 +15317,34 @@ int main(int argc, char** argv) {
                         std::vector<float> row((size_t) ver.vocab());
                         const std::string path = std::string(fl) + "." + std::to_string(fl_n++);
                         std::FILE* f = ver.copy_logits(merged ? T - 1 : 0, row.data()) ? std::fopen(path.c_str(), "wb") : nullptr;
-                        if (f == nullptr || std::fwrite(row.data(), sizeof(float), row.size(), f) != row.size())
+                        bool written=f && std::fwrite(row.data(), sizeof(float), row.size(), f)==row.size();
+                        if (!written)
                             std::fprintf(stderr, "strata serve: STRATA_DUMP_FIRST_LOGITS: cannot write %s\n", path.c_str());
-                        if (f) std::fclose(f);
+                        if (f && std::fclose(f)) written=false;
+                        if (!written && strata::core::first_request_trace().active()) {
+                            std::printf("ERR first-request trace: first-logit dump failed\n"); return 1;
+                        }
+#ifdef STRATA_NATIVE_EXPERTS
+                        if(drive.capture && drive.capture->active() &&
+                           (!written || !drive.capture->seal(row.data(),row.size()))) {
+                            std::printf("ERR CPU capture seal: %s\n",written?drive.capture->error():"first-logit write failed");return 1;
+                        }
+                        // Diagnostic request keeps the original GEN binding but ends after this first token.
+                        if(drive.capture) max_new=1;
+#endif
                     }
+                }
+                if (first_window && strata::core::first_request_trace().active()) {
+                    std::vector<float> first((size_t)ver.vocab());
+                    if (!ver.copy_logits(merged ? T-1 : 0, first.data()) ||
+                        !strata::core::first_request_trace().finish(first.data(), first.size())) {
+                        std::printf("ERR first-request trace: incomplete first logits\n"); return 1;
+                    }
+                    // Original GEN, prompt read and first verify have already run unchanged.
+                    // End before commit, draft, token emission or any continuation window.
+                    cancelled = true;
+                    finish = "trace";
+                    break;
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
@@ -15434,7 +15622,7 @@ int main(int argc, char** argv) {
             if (o.remote_cpu_experts) {
                 std::snprintf(worker_txt, sizeof worker_txt, " worker_entries=%lld worker_req_wall=%.1f",
                               (long long) (drive.d.worker_entries - worker_ent0),
-                              worker_tier.stats().request_ms - worker_req_ms0);
+                              cpu_stats().request_ms - worker_req_ms0);
             }
 #endif
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
@@ -15583,11 +15771,16 @@ int main(int argc, char** argv) {
 #ifdef STRATA_NATIVE_EXPERTS
             if (o.remote_cpu_experts) {   // #349: the request's remote CPU-expert evidence, cumulative tier stats
                 std::string wr;
-                worker_tier.report(wr);
+                if(grouped_cpu)cpu_group.report(wr);else worker_tier.report(wr);
                 std::fprintf(stderr, "strata serve: %s; this request executed %lld routed entries remotely\n", wr.c_str(),
                              (long long) (drive.d.worker_entries - worker_ent0));
                 strata::worker::WorkerStatusInfo wst;
-                if (worker_tier.status(wst, err))   // the worker's own counters: service time is ITS CPU time,
+                if(grouped_cpu) {
+                    for(size_t p=0;p<cpu_group.size();++p) if(cpu_group.peer_status(p,wst,err))
+                        std::fprintf(stderr,"CPU peer[%zu] status requests=%llu failures=%llu service_ns=%llu in=%llu out=%llu\n",p,
+                            (unsigned long long)wst.requests,(unsigned long long)wst.failures,(unsigned long long)wst.cpu_service_ns,
+                            (unsigned long long)wst.infer_in_bytes,(unsigned long long)wst.infer_out_bytes);
+                } else if (worker_tier.status(wst, err))   // the worker's own counters: service time is ITS CPU time,
                     std::fprintf(stderr, "                          worker status: %llu requests, %llu failures, "
                                          "%.1f s CPU service, %.2f MiB in / %.2f MiB out\n",
                                  (unsigned long long) wst.requests, (unsigned long long) wst.failures,

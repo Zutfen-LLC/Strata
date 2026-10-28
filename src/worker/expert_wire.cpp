@@ -1,5 +1,10 @@
 // src/worker/expert_wire.cpp - inferswarm #348: the frame codecs and the blob digest.
 #include "strata/worker/expert_wire.hpp"
+#include <algorithm>
+#include <bit>
+#include <cmath>
+#include <limits>
+#include <utility>
 
 namespace strata::worker {
 namespace {
@@ -16,6 +21,17 @@ void put_f32(std::vector<uint8_t>& o, float v) {
     uint32_t u;
     std::memcpy(&u, &v, 4);
     put_u32(o, u);
+}
+// Only float payload bytes use this path; headers/indices remain explicit little-endian fields.
+// memcpy tolerates the row schema's unaligned byte offsets and preserves every float bit.
+constexpr bool bulk_f32 = sizeof(float)==4 && std::numeric_limits<float>::is_iec559 &&
+                          std::endian::native==std::endian::little;
+void put_f32s(std::vector<uint8_t>& o,const float* values,size_t count) {
+    if constexpr(bulk_f32) {
+        if(!count)return;
+        const size_t at=o.size();o.resize(at+count*4);
+        std::memcpy(o.data()+at,values,count*4);
+    } else for(size_t i=0;i<count;++i)put_f32(o,values[i]);
 }
 
 struct Cursor {
@@ -39,13 +55,15 @@ struct Cursor {
     }
     float f32() { uint32_t u = u32(); float v; std::memcpy(&v, &u, 4); return v; }
     void bytes(void* dst, size_t k) { if (!take(k)) return; std::memcpy(dst, p + i, k); i += k; }
+    void f32s(float* dst,size_t count) {
+        if constexpr(bulk_f32) {if(count)bytes(dst,count*4);}
+        else for(size_t j=0;j<count;++j)dst[j]=f32();
+    }
 };
 
-}  // namespace
-
-void encode_frame(std::vector<uint8_t>& out, uint16_t msg, uint16_t status, const void* payload,
-                  size_t n) {
-    out.resize(kHeaderBytes + n);
+// The caller has reserved the header and finished appending the payload.
+void finish_frame(std::vector<uint8_t>& out, uint16_t msg, uint16_t status) {
+    const size_t n = out.size() - kHeaderBytes;
     out[0] = 'S';
     out[1] = 'E';
     out[2] = 'W';
@@ -55,6 +73,14 @@ void encode_frame(std::vector<uint8_t>& out, uint16_t msg, uint16_t status, cons
     out[6] = (uint8_t) status;
     out[7] = (uint8_t) (status >> 8);
     for (int b = 0; b < 8; ++b) out[8 + b] = (uint8_t) (n >> (8 * b));
+}
+
+}  // namespace
+
+void encode_frame(std::vector<uint8_t>& out, uint16_t msg, uint16_t status, const void* payload,
+                  size_t n) {
+    out.resize(kHeaderBytes + n);
+    finish_frame(out, msg, status);
     if (n > 0) std::memcpy(out.data() + kHeaderBytes, payload, n);
 }
 
@@ -115,12 +141,14 @@ bool decode_setup_begin(const uint8_t* p, size_t n, SetupManifest& m) {
     return true;
 }
 
-bool encode_infer(const InferRequest& r, uint16_t n_embd, std::vector<uint8_t>& out) {
+bool encode_infer(const InferRequest& r, uint16_t n_embd, std::vector<uint8_t>& out, bool packed) {
     if (r.T < 1 || r.T > kMaxT || r.K < 1 || r.K > kMaxK) return false;
     if (n_embd < 1 || n_embd > kMaxNEmbd) return false;
     const size_t n = (size_t) r.T * r.K;
     if (r.mask.size() != n || r.ids.size() != n || r.weights.size() != n) return false;
-    if (r.activations.size() != (size_t) r.T * n_embd) return false;
+    if (!packed && r.activations.size() != (size_t) r.T * n_embd) return false;
+    if (packed && (n_embd != 2560 || r.T > 2 || !r.packed || r.packed->T != r.T ||
+        r.packed->active.size() != r.T || r.packed->fields.size() != (size_t)r.T*kPackedRowBytes)) return false;
     out.clear();
     out.reserve(kInferFixed + n * 7 + r.activations.size() * 4);
     put_u64(out, r.session);
@@ -133,12 +161,26 @@ bool encode_infer(const InferRequest& r, uint16_t n_embd, std::vector<uint8_t>& 
     for (size_t i = 0; i < n; ++i) out.push_back(r.mask[i] != 0 ? 1 : 0);
     for (size_t i = 0; i < n; ++i) put_u16(out, r.ids[i]);
     for (size_t i = 0; i < n; ++i) put_f32(out, r.weights[i]);
-    for (size_t i = 0; i < r.activations.size(); ++i) put_f32(out, r.activations[i]);
+    if (!packed) {
+        for (size_t i = 0; i < r.activations.size(); ++i) put_f32(out, r.activations[i]);
+    } else {
+        put_u16(out,kPackedVersion);put_u16(out,8);put_u16(out,2560);put_u16(out,80);
+        for (size_t t=0;t<r.T;++t) {
+            bool active=false;
+            for (size_t j=0;j<r.K;++j) {if(r.mask[t*r.K+j]>1)return false;active |= r.mask[t*r.K+j]!=0;}
+            if (!active) continue;
+            if (r.packed->active[t]!=1) return false;
+            const auto* row=r.packed->fields.data()+t*kPackedRowBytes;
+            for(size_t b=0;b<80;++b)if((row[b*34+1]&0x7c)==0x7c)return false;
+            out.insert(out.end(),row,row+kPackedRowBytes);
+        }
+    }
     return out.size() <= kInferPayloadMax;
 }
 
 bool decode_infer(const uint8_t* p, size_t n, uint16_t n_layers, uint16_t n_expert, uint16_t n_embd,
-                  InferRequest& r) {
+                  InferRequest& r, bool packed) {
+    r.packed.reset();
     if (n < kInferFixed) return false;   // the fixed fields must be whole before any field is read
     Cursor c{p, n};
     r.session = c.u64();
@@ -150,7 +192,10 @@ bool decode_infer(const uint8_t* p, size_t n, uint16_t n_layers, uint16_t n_expe
     r.K = p[c.i++];
     if (r.T < 1 || r.T > kMaxT || r.K < 1 || r.K > kMaxK) return false;
     const size_t entries = (size_t) r.T * r.K;
-    if (n != kInferFixed + entries + entries * 2 + entries * 4 + (size_t) r.T * n_embd * 4) return false;
+    const size_t metadata=kInferFixed+entries*7;
+    if (!n_embd || n_embd>kMaxNEmbd || n<metadata || n>kInferPayloadMax) return false;
+    if (!packed && n != metadata + (size_t) r.T * n_embd * 4) return false;
+    if (packed && (n_embd!=2560 || r.T>2 || n<metadata+8))return false;
     if (!c.take(entries)) return false;
     r.mask.assign(p + c.i, p + c.i + entries);
     c.i += entries;
@@ -158,8 +203,24 @@ bool decode_infer(const uint8_t* p, size_t n, uint16_t n_layers, uint16_t n_expe
     for (size_t i = 0; i < entries; ++i) r.ids[i] = c.u16();
     r.weights.resize(entries);
     for (size_t i = 0; i < entries; ++i) r.weights[i] = c.f32();
-    r.activations.resize((size_t) r.T * n_embd);
-    for (size_t i = 0; i < r.activations.size(); ++i) r.activations[i] = c.f32();
+    if (!packed) {
+        r.activations.resize((size_t) r.T * n_embd);
+        for (size_t i = 0; i < r.activations.size(); ++i) r.activations[i] = c.f32();
+    } else {
+        r.activations.clear();
+        if(c.u16()!=kPackedVersion || c.u16()!=8 || c.u16()!=2560 || c.u16()!=80)return false;
+        auto a=std::make_shared<PackedActivation>();a->T=r.T;a->active.assign(r.T,0);
+        a->fields.assign((size_t)r.T*kPackedRowBytes,0);
+        for(size_t t=0;t<r.T;++t) {
+            for(size_t j=0;j<r.K;++j) {if(r.mask[t*r.K+j]>1)return false;a->active[t]|=r.mask[t*r.K+j];}
+            if(!a->active[t])continue;
+            if(!c.take(kPackedRowBytes))return false;
+            auto* row=a->fields.data()+t*kPackedRowBytes;c.bytes(row,kPackedRowBytes);
+            for(size_t b=0;b<80;++b)if((row[b*34+1]&0x7c)==0x7c)return false;
+        }
+        if(c.i!=n)return false;
+        r.packed=std::move(a);
+    }
     if (r.layer >= n_layers) return false;
     for (size_t i = 0; i < entries; ++i)
         if (r.ids[i] >= n_expert) return false;
@@ -172,12 +233,22 @@ std::vector<uint8_t> encode_infer_ack(const InferReply& r) {
     return o;
 }
 
-void encode_infer_ack(const InferReply& r, std::vector<uint8_t>& o) {
+namespace {
+void encode_ack(const InferReply& r, std::vector<uint8_t>& o, size_t prefix) {
     o.clear();
-    o.reserve(16 + r.partials.size() * 4);
+    o.reserve(prefix + 16 + r.partials.size() * 4);
+    o.resize(prefix);
     put_u64(o, r.session);
     put_u64(o, r.sequence);
-    for (size_t i = 0; i < r.partials.size(); ++i) put_f32(o, r.partials[i]);
+    put_f32s(o,r.partials.data(),r.partials.size());
+}
+
+}  // namespace
+
+void encode_infer_ack(const InferReply& r, std::vector<uint8_t>& o) { encode_ack(r, o, 0); }
+void encode_infer_ack_frame(const InferReply& r, std::vector<uint8_t>& o) {
+    encode_ack(r, o, kHeaderBytes);
+    finish_frame(o, MSG_INFER_ACK, ST_OK);
 }
 
 bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, InferReply& r) {
@@ -186,8 +257,56 @@ bool decode_infer_ack(const uint8_t* p, size_t n, uint16_t n_embd, uint8_t T, In
     r.sequence = c.u64();
     if (n != 16 + (size_t) T * n_embd * 4) return false;
     r.partials.resize((size_t) T * n_embd);
-    for (size_t i = 0; i < r.partials.size(); ++i) r.partials[i] = c.f32();
+    c.f32s(r.partials.data(),r.partials.size());
     return true;
+}
+
+namespace {
+bool encode_rows_ack(const InferRequest& q,uint16_t H,const float* rows,std::vector<uint8_t>& out,size_t prefix) {
+    out.clear();
+    const size_t entries=(size_t)q.T*q.K;
+    if(!H || H>kMaxNEmbd || !q.T || q.T>kMaxT || !q.K || q.K>kMaxK || q.mask.size()!=entries)return false;
+    const size_t count=std::count_if(q.mask.begin(),q.mask.end(),[](uint8_t v){return v!=0;});
+    if(count && !rows)return false;
+    out.reserve(prefix+20+count*(2+(size_t)H*4));
+    out.resize(prefix);
+    put_u64(out,q.session);put_u64(out,q.sequence);put_u16(out,kEntryRowsVersion);put_u16(out,(uint16_t)count);
+    for(size_t i=0;i<entries;++i) {
+        if(!q.mask[i])continue;
+        put_u16(out,(uint16_t)i);
+        const float* row=rows+i*H;
+        if(!std::all_of(row,row+H,[](float v){return std::isfinite(v);})) {out.clear();return false;}
+        put_f32s(out,row,H);
+    }
+    return true;
+}
+}  // namespace
+
+bool encode_infer_rows_ack(const InferRequest& q,uint16_t H,const float* rows,std::vector<uint8_t>& out) {
+    return encode_rows_ack(q,H,rows,out,0);
+}
+bool encode_infer_rows_ack_frame(const InferRequest& q,uint16_t H,const float* rows,std::vector<uint8_t>& out) {
+    if(!encode_rows_ack(q,H,rows,out,kHeaderBytes))return false;
+    finish_frame(out,MSG_INFER_ROWS_ACK,ST_OK);
+    return true;
+}
+bool decode_infer_rows_ack(const uint8_t* p,size_t n,uint16_t H,const InferRequest& q,EntryRowsReply& out) {
+    EntryRowsReply r;r.indices.swap(out.indices);r.rows.swap(out.rows);r.indices.clear();r.rows.clear();
+    const size_t entries=(size_t)q.T*q.K;
+    if(!H || H>kMaxNEmbd || !q.T || q.T>kMaxT || !q.K || q.K>kMaxK || q.mask.size()!=entries || n<20)return false;
+    Cursor c{p,n};r.session=c.u64();r.sequence=c.u64();
+    if(c.u16()!=kEntryRowsVersion)return false;
+    const size_t count=c.u16();
+    if(count!=size_t(std::count_if(q.mask.begin(),q.mask.end(),[](uint8_t v){return v!=0;})) || n!=20+count*(2+(size_t)H*4))return false;
+    r.indices.reserve(count);r.rows.reserve(count*H);
+    for(size_t i=0;i<entries;++i) {
+        if(!q.mask[i])continue;
+        if(c.u16()!=i)return false; // exact ascending set, not merely unique in-range indices
+        r.indices.push_back((uint16_t)i);
+        const size_t at=r.rows.size();r.rows.resize(at+H);c.f32s(r.rows.data()+at,H);
+        if(!std::all_of(r.rows.begin()+at,r.rows.end(),[](float v){return std::isfinite(v);}))return false;
+    }
+    out=std::move(r);return true;
 }
 
 const char* status_name(uint16_t s) {

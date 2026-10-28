@@ -1,4 +1,6 @@
 #include "strata/worker/gpu_group.hpp"
+#include "mixed_rows.hpp"
+#include "strata/worker/expert_worker.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -25,6 +27,7 @@ struct GpuWorkerGroup::Impl {
         int interval=50;
         Request request;
         std::vector<float> output;
+        EntryRowsReply rows;
         std::string error, report;
         std::thread thread;
     };
@@ -33,8 +36,11 @@ struct GpuWorkerGroup::Impl {
     std::vector<std::vector<uint8_t>> masks;
     std::vector<std::vector<float>> outputs;
     std::vector<uint8_t> active;
+    std::vector<EntryRowsReply> rows;
+    bool entry_rows=false;
     std::atomic<bool> failed{false};
-    bool ready=false, posted=false;
+    bool ready=false, posted=false, finished=false;
+    int T=0,K=0;
     int layers=0, experts=0, H=0;
     std::string reason;
 
@@ -58,13 +64,16 @@ struct GpuWorkerGroup::Impl {
             const bool job=p.pending;
             p.pending=false;
             lock.unlock();
-            bool ok=false; std::string why, line; std::vector<float> output;
+            bool ok=false; std::string why, line; std::vector<float> output; EntryRowsReply rows;
             try {
                 if (job) {
                     const auto& r=p.request;
                     ok=p.tier.post(r.layer,r.x.data(),r.ids.data(),r.weights.data(),r.mask.data(),r.T,r.K,why);
                     if (ok) ok=p.tier.finish(why);
-                    if (ok && p.tier.served()) output.assign(p.tier.partials(),p.tier.partials()+p.tier.partial_count());
+                    if (ok && p.tier.served()) {
+                        if(entry_rows) rows=p.tier.entry_rows();
+                        else output.assign(p.tier.partials(),p.tier.partials()+p.tier.partial_count());
+                    }
                     else if (ok) {ok=false;why="posted CUDA share was not served";}
                 } else {
                     GpuCounters status; ok=p.tier.status(status,why);
@@ -75,7 +84,7 @@ struct GpuWorkerGroup::Impl {
             lock.lock();
             p.report=std::move(line);
             if (!ok) {p.error=std::move(why);failed.store(true);}
-            if (job) {p.output=std::move(output);p.busy=false;p.wake.notify_all();}
+            if (job) {p.output=std::move(output);p.rows=std::move(rows);p.busy=false;p.wake.notify_all();}
             if (!ok) break;
         }
         // Failed peers stop every socket owner. An exchange already in progress
@@ -98,6 +107,7 @@ bool GpuWorkerGroup::validate(const std::vector<GpuWorkerTier::Open>& opts,std::
             if(err.empty())err="invalid/duplicate CUDA endpoint or deadline";return false;
         }
         const auto& p=o.plan;
+        if (o.entry_rows!=opts.front().entry_rows) {err="CUDA group reply modes differ";return false;}
         if (p.model_id!=first.model_id || p.layout_id!=first.layout_id || p.n_layers!=first.n_layers ||
             p.n_expert!=first.n_expert || p.n_embd!=first.n_embd || p.n_ff!=first.n_ff ||
             p.gu_type!=first.gu_type || p.d_type!=first.d_type) {
@@ -113,6 +123,7 @@ bool GpuWorkerGroup::open(const std::vector<GpuWorkerTier::Open>& opts,std::stri
     auto& d=*impl_;
     if(d.failed.load()) {err=d.error();return false;}
     if(d.ready || !validate(opts,err)) {if(err.empty())err="CUDA group already open";return false;}
+    d.entry_rows=opts[0].entry_rows;d.rows.resize(opts.size());
     d.layers=opts[0].plan.n_layers;d.experts=opts[0].plan.n_expert;d.H=opts[0].plan.n_embd;
     d.owners.assign((size_t)d.layers*d.experts,-1);
     d.masks.resize(opts.size());d.outputs.resize(opts.size());d.active.assign(opts.size(),0);
@@ -140,7 +151,7 @@ void GpuWorkerGroup::close() {
     auto& d=*impl_;
     for(auto& p:d.peers) {std::lock_guard<std::mutex> lock(p->mutex);p->stopping=true;p->wake.notify_all();}
     for(auto& p:d.peers) {if(p->thread.joinable())p->thread.join();p->tier.close();}
-    d.peers.clear();d.ready=d.posted=false;d.outputs.clear();d.masks.clear();d.active.clear();
+    d.peers.clear();d.ready=d.posted=d.finished=false;d.outputs.clear();d.rows.clear();d.masks.clear();d.active.clear();
 }
 bool GpuWorkerGroup::holds(int64_t l,int32_t e)const{return impl_->owner(l,e)>=0;}
 bool GpuWorkerGroup::dead()const{return impl_->failed.load();}
@@ -148,6 +159,7 @@ bool GpuWorkerGroup::ready()const{return impl_->ready && !dead();}
 size_t GpuWorkerGroup::size()const{return impl_->peers.size();}
 bool GpuWorkerGroup::active(size_t i)const{return i<impl_->active.size() && impl_->active[i];}
 const uint8_t* GpuWorkerGroup::mask(size_t i)const{return impl_->masks.at(i).data();}
+const EntryRowsReply& GpuWorkerGroup::entry_rows(size_t i)const{return impl_->rows.at(i);}
 const float* GpuWorkerGroup::partials(size_t i)const{return impl_->outputs.at(i).data();}
 bool GpuWorkerGroup::post(int64_t l,const float* x,const int32_t* ids,const float* weights,
                            const uint8_t* owned,int T,int K,std::string& err) {
@@ -156,6 +168,7 @@ bool GpuWorkerGroup::post(int64_t l,const float* x,const int32_t* ids,const floa
     if(d.failed.load()){err=d.error();close();return false;}
     if(!d.ready || d.posted || !x || !ids || !weights || !owned || l<0 || l>=d.layers || T<1 || T>kMaxT || K<1 || K>kMaxK)
         return refuse("invalid CUDA group post state or geometry");
+    d.finished=false;d.T=T;d.K=K;
     const size_t n=(size_t)T*K;
     for(size_t i=0;i<n;++i)if(ids[i]<0 || ids[i]>=d.experts || !std::isfinite(weights[i]) ||
         owned[i]!=(d.owner(l,ids[i])>=0))return refuse("CUDA group ownership/ids/weights mismatch");
@@ -165,7 +178,7 @@ bool GpuWorkerGroup::post(int64_t l,const float* x,const int32_t* ids,const floa
     for(size_t p=0;p<d.peers.size();++p) {
         auto& r=jobs[p];r.layer=l;r.T=T;r.K=K;r.mask.assign(n,0);
         for(size_t i=0;i<n;++i)r.mask[i]=d.owner(l,ids[i])==(int)p;
-        d.masks[p]=r.mask;d.outputs[p].clear();
+        d.masks[p]=r.mask;d.outputs[p].clear();d.rows[p]={};
         d.active[p]=std::find(r.mask.begin(),r.mask.end(),1)!=r.mask.end();
         if(d.active[p]) {r.x.assign(x,x+T*d.H);r.ids.assign(ids,ids+n);r.weights.assign(weights,weights+n);}
     }
@@ -184,9 +197,23 @@ bool GpuWorkerGroup::finish(std::string& err) {
     d.posted=false;
     if(d.failed.load()) {err=d.error();d.reason=err;close();return false;}
     for(size_t i=0;i<d.peers.size();++i)if(d.active[i]) {
-        std::lock_guard<std::mutex> lock(d.peers[i]->mutex);d.outputs[i]=d.peers[i]->output;
+        std::lock_guard<std::mutex> lock(d.peers[i]->mutex);d.outputs[i]=d.peers[i]->output;d.rows[i]=d.peers[i]->rows;
     }
-    return true;
+    d.finished=true;return true;
+}
+bool GpuWorkerGroup::row_mode()const{return impl_->entry_rows;}
+bool GpuWorkerGroup::reduce_rows(const std::vector<float>& cpu_rows,const std::vector<uint8_t>& cpu_mask,
+                                 const std::vector<uint8_t>& expected,const float* weights,int T,int K,
+                                 std::vector<float>& partials,std::string& err)const {
+    const auto& d=*impl_;partials.clear();
+    auto refuse=[&](const char* why){err=why;return false;};
+    const size_t n=(size_t)T*K;
+    if(!ready() || !d.entry_rows || !d.finished || T<1 || T>kMaxT || K<1 || K>kMaxK || T!=d.T || K!=d.K || !weights ||
+       expected.size()!=n || cpu_mask.size()!=n || cpu_rows.size()!=n*d.H)
+        return refuse("ordered mixed row state/shape mismatch");
+    std::vector<MixedRowsPeer> peers;
+    for(size_t p=0;p<d.rows.size();++p)if(d.active[p])peers.push_back({d.rows[p],d.masks[p]});
+    return reduce_mixed_rows(d.H,T,K,cpu_rows,cpu_mask,expected,weights,peers,partials,err);
 }
 void GpuWorkerGroup::report(std::string& out)const {
     std::ostringstream text;text<<"CUDA group workers="<<size()<<" "<<(dead()?"DEAD":"READY");

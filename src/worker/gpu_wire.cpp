@@ -62,7 +62,8 @@ bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
     case GPU_SETUP: operation_cap=kGpuPlanMax+8; break;
     case GPU_SETUP_ACK: operation_cap=52+(size_t)kMaxLayers*kMaxExperts; break;
     case GPU_UPLOAD: operation_cap=60+kUploadChunkMax; break;
-    case GPU_INFER: operation_cap=48+kInferPayloadMax; break;
+    case GPU_INFER: case GPU_INFER_ROWS: operation_cap=48+kInferPayloadMax; break;
+    case GPU_INFER_ROWS_ACK: operation_cap=64+kEntryRowsPayloadMax; break;
     case GPU_INFER_ACK: operation_cap=64+kReplyPayloadMax; break;
     case GPU_STATUS_ACK: operation_cap=256; break;
     case GPU_HELLO: case GPU_HELLO_ACK: case GPU_UPLOAD_ACK: case GPU_READY: case GPU_READY_ACK:
@@ -120,6 +121,36 @@ bool decode_reply(const GpuPlan& p, Digest128 request, const InferRequest& r,
         reply.session != r.session || reply.sequence != r.sequence) return false;
     for (float v : reply.partials) if (!std::isfinite(v)) return false;
     out = std::move(reply); return true;
+}
+bool encode_rows_reply(const GpuPlan& p, Digest128 request, const InferRequest& r,
+                       const EntryRowsReply& rows, std::vector<uint8_t>& out) {
+    out.clear();
+    if(!p.n_embd || p.n_embd>kMaxNEmbd || !r.T || r.T>kMaxT || !r.K || r.K>kMaxK ||
+       r.mask.size()!=(size_t)r.T*r.K || rows.indices.size()>kEntryRowsMax ||
+       rows.session!=r.session || rows.sequence!=r.sequence ||
+       rows.rows.size()!=rows.indices.size()*(size_t)p.n_embd) return false;
+    size_t j=0;
+    std::vector<float> dense(r.mask.size()*(size_t)p.n_embd);
+    for(size_t i=0;i<r.mask.size();++i) if(r.mask[i]) {
+        if(j>=rows.indices.size() || rows.indices[j]!=i) return false;
+        std::copy_n(rows.rows.data()+j*p.n_embd,p.n_embd,dense.data()+i*p.n_embd); ++j;
+    }
+    if(j!=rows.indices.size()) return false;
+    std::vector<uint8_t> body;
+    if(!encode_infer_rows_ack(r,p.n_embd,dense.data(),body)) return false;
+    out=binding(r.session,p); put(out,request.a); put(out,request.b);
+    out.insert(out.end(),body.begin(),body.end()); return true;
+}
+bool decode_rows_reply(const GpuPlan& p, Digest128 request, const InferRequest& r,
+                       const std::vector<uint8_t>& wire, EntryRowsReply& out) {
+    Cursor c{wire};
+    if(!binding(c,r.session,p)) return false;
+    const auto a=c.get(),b=c.get();
+    if(!c.ok || a!=request.a || b!=request.b) return false;
+    EntryRowsReply rows;
+    if(!decode_infer_rows_ack(wire.data()+c.i,wire.size()-c.i,p.n_embd,r,rows) ||
+       rows.session!=r.session || rows.sequence!=r.sequence) return false;
+    out=std::move(rows); return true;
 }
 std::vector<uint8_t> counters(const GpuCounters& c) {
     std::vector<uint8_t> p;

@@ -1,8 +1,9 @@
 // src/worker/wire_sock.hpp - inferswarm #348: the worker's TCP loopback plumbing (internal).
 //
-// Deliberately small: blocking sockets with a poll() total budget on every full send/recv, full-read/full-write or
+// Deliberately small: nonblocking operations with a total budget on every full send/recv, full-read/full-write or
 // failure, no partial-frame reuse.  A short read, EOF, a deadline or a malformed frame closes the
-// connection - the caller never continues on stale bytes. Loopback remains the default; the CPU worker
+// connection - the caller never continues on stale bytes. The default polls before each operation.
+// Loopback remains the default; the CPU worker
 // can explicitly select one unicast IPv4 address and exact source peers on a trusted LAN.
 #pragma once
 
@@ -60,6 +61,17 @@ bool send_all_controlled(sock_fd fd, const void *data, size_t n, int deadline_ms
                          const std::function<bool()> &cancel);
 bool recv_all_controlled(sock_fd fd, void *data, size_t n, int deadline_ms,
                          const std::function<bool()> &cancel);
+// Diagnostic only: explicitly selected per full-I/O call, never enabled by a process-global setting.
+// Counters belong to the calling I/O thread; read them only after that thread joins.
+struct IoCounts {
+    uint64_t polls = 0, sends = 0, receives = 0, would_block = 0, interrupted = 0;
+    uint64_t sent_bytes = 0, received_bytes = 0;
+};
+struct IoDiagnostic { bool operation_first = false; IoCounts* counts = nullptr; };
+bool send_all_diagnostic(sock_fd fd, const void* data, size_t n, int deadline_ms,
+                         const std::function<bool()>& cancel, IoDiagnostic diagnostic);
+bool recv_all_diagnostic(sock_fd fd, void* data, size_t n, int deadline_ms,
+                         const std::function<bool()>& cancel, IoDiagnostic diagnostic);
 bool connect_numeric_controlled(const std::string &host, uint16_t port, int deadline_ms,
                                 const std::function<bool()> &cancel, sock_fd &out, std::string &err);
 

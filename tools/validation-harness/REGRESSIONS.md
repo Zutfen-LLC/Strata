@@ -2,14 +2,14 @@
 
 The source witness is sanitized `27392d03`, not exact private runtime bytes. Its completed W13/W14
 driver waited the full 420 seconds on its own unreaped guardian. Its separate Popen proposal was
-explicitly unexercised. Hermes reports that the synthetic suite at `4916b4a4` ran 20 tests on controller
+explicitly unexercised. operator reports that the synthetic suite at `4916b4a4` ran 20 tests on controller
 Python 3.13.5: 19 passed, one reference-fixture error, 7.825 seconds, exit 1, clean cleanup. The fixture
 failed to select its registered asset after checking a missing binding; the later JSON/schema paths
-were not reached. Hermes reports that the fixture-only correction at `64383360` passed its focused
+were not reached. operator reports that the fixture-only correction at `64383360` passed its focused
 rerun: one test, 0.095 seconds, exit 0, all three subcases reached. A subsequent static review found
 the pre-listener startup-abort gap below; that additive lifecycle correction is pending the new
 focused selection in [HERMES.md](HERMES.md).
-These are supplied Hermes results, not locally executed checks. All executable desktop checks remain
+These are supplied operator results, not locally executed checks. All executable desktop checks remain
 **NOT RUN**; no historical model run validates these edits.
 
 Later live evidence supplied by the parent identified a harness affinity error: the worker had four
@@ -36,3 +36,11 @@ The phase correction and new synthetic cases remain **NOT RUN** locally.
 | Caller pinned before SETUP makes loader helpers inherit one CPU | Use configured caller/pool CPU union for setup; after owned idle READY, restore final masks before GEN; real child/thread inheritance and phase-boundary cases |
 
 No malformed-source corpus, unrelated backend suite, model campaign or new supervisor is added.
+
+## Fixed CPU group additions
+
+`tests/test_peers.py` adds synthetic second-host role staging, pre-START config/asset binding,
+non-default loopback readiness, fast STOP reconciliation, live owned abort/reaping, bounded transport
+stderr and explicit uncertainty when the acknowledgement channel is lost. `tests/test_numerics.py`
+covers fixed logit/probability comparison gates and malformed/non-finite inputs. These new cases are
+authored and **NOT RUN** on the coding desktop; see the fixed-group handoff for operator execution.

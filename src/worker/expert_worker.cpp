@@ -4,6 +4,7 @@
 // the wire contract before anything is allocated or executed, and every failure is a typed status plus a
 // counter bump - a rejected request lets the connection continue, a malformed frame closes it.
 #include "strata/worker/expert_worker.hpp"
+#include "strata/worker/packed_activation.hpp"
 
 #include "strata/worker/local_source.hpp"
 #include "local_loader.hpp"
@@ -152,6 +153,7 @@ struct ExpertWorkerService::Impl {
     SetupManifest manifest{};
     std::unique_ptr<LocalSource> local;
     bool local_mode = false, fallback = false;
+    bool entry_rows = false, packed = false;
     uint64_t local_start_ns = 0;
     std::vector<uint8_t> local_attempt; // 0 untried, 1 local hit, 2 absent, 3 invalid
     NativeFmt fmt{};
@@ -172,7 +174,7 @@ struct ExpertWorkerService::Impl {
     struct InferenceWorkspace {
         InferRequest request;
         InferReply reply;
-        std::vector<uint8_t> nact, payload;
+        std::vector<uint8_t> nact;
         std::vector<strata::kernels::cpu::ExpertJobMulti> jobs;
         std::vector<int16_t> job_of;
         std::vector<float> rows;
@@ -244,6 +246,8 @@ struct ExpertWorkerService::Impl {
         std::vector<uint8_t>().swap(send_buffer);
         state = State::Empty;
         local_mode = false;
+        entry_rows = false;
+        packed = false;
         local_attempt.clear();
         if (local)
             local->close_files();
@@ -263,6 +267,7 @@ struct ExpertWorkerService::Impl {
     // ---- frame io ----
     bool recv_frame(sock_fd fd, WireFrame& f, bool& malformed);
     bool send_frame(sock_fd fd, uint16_t msg, uint16_t status, const std::vector<uint8_t>& payload);
+    bool send_encoded_frame(sock_fd fd, uint16_t msg, uint16_t status);
 
     // ---- handlers: each replies once and returns false only to close the connection ----
     void on_setup_begin(sock_fd fd, const uint8_t *p, size_t n, bool use_local = false);
@@ -272,12 +277,12 @@ struct ExpertWorkerService::Impl {
     }
     void on_upload(sock_fd fd, const uint8_t* p, size_t n);
     void on_ready(sock_fd fd, const uint8_t* p, size_t n);
-    void on_infer(sock_fd fd, const uint8_t* p, size_t n, uint64_t request_start_ns);
+    void on_infer(sock_fd fd, const uint8_t* p, size_t n, uint64_t request_start_ns,bool rows=false,bool packed_request=false);
     void on_status(sock_fd fd);
     void on_cache_status(sock_fd fd);
     void serve_connection(sock_fd fd);
     struct ExecuteTiming { uint64_t prepare, pool, reduce; };
-    bool execute(const InferRequest& r, std::vector<float>& partials, std::string& err, ExecuteTiming* timing);
+    bool execute(const InferRequest& r, std::vector<float>& partials, std::string& err, ExecuteTiming* timing,bool rows=false);
 };
 
 bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malformed) {
@@ -306,7 +311,10 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
     case MSG_UPLOAD:
         cap = kUploadHeadBytes + opt.upload_chunk_max;
         break;
+    case MSG_INFER_PACKED:
+    case MSG_INFER_ROWS_PACKED:
     case MSG_INFER:
+    case MSG_INFER_ROWS:
         cap = kInferPayloadMax;
         break;
     case MSG_SETUP_ACK:
@@ -325,6 +333,9 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
     case MSG_INFER_ACK:
         cap = kReplyPayloadMax;
         break;
+    case MSG_INFER_ROWS_ACK:
+        cap = kEntryRowsPayloadMax;
+        break;
     case MSG_CACHE_STATUS:
     case MSG_UNLOAD:
         cap = 0;
@@ -341,7 +352,7 @@ bool ExpertWorkerService::Impl::recv_frame(sock_fd fd, WireFrame& f, bool& malfo
     }
     if (magic != kWireMagic || len > cap) { malformed = true; return false; }
     // Avoid geometric growth from a smaller upload buffer spilling over the retained inference cap.
-    if (f.msg == MSG_INFER) f.payload.reserve((size_t) len);
+    if (f.msg == MSG_INFER || f.msg==MSG_INFER_ROWS) f.payload.reserve((size_t) len);
     f.payload.resize((size_t) len);
     if (len > 0 && !sock::recv_all_controlled(fd, f.payload.data(), f.payload.size(), opt.deadline_ms, cancelled)) return false;
     return true;
@@ -351,10 +362,17 @@ bool ExpertWorkerService::Impl::send_frame(sock_fd fd, uint16_t msg, uint16_t st
                                            const std::vector<uint8_t>& payload) {
     if (payload.size() > kMaxFrameBytes) return false;
     auto& buf = send_buffer;
+    if(msg==MSG_INFER_ROWS_ACK)buf.reserve(kHeaderBytes+payload.size());
     encode_frame(buf, msg, status, payload.data(), payload.size());
+    return send_encoded_frame(fd, msg, status);
+}
+
+bool ExpertWorkerService::Impl::send_encoded_frame(sock_fd fd, uint16_t msg, uint16_t status) {
+    auto& buf = send_buffer;
+    if (buf.size() < kHeaderBytes || buf.size() - kHeaderBytes > kMaxFrameBytes) return false;
     // An admitted inference reply is active work: its existing I/O deadline still applies.
     // Telemetry/setup/refusal replies must not pin idle weights behind a slow reader.
-    const bool active_reply = msg == MSG_INFER_ACK && status == ST_OK;
+    const bool active_reply = (msg == MSG_INFER_ACK || msg==MSG_INFER_ROWS_ACK) && status == ST_OK;
     return sock::send_all_controlled(fd, buf.data(), buf.size(), opt.deadline_ms, [&] {
         return stopping.load(std::memory_order_acquire) || (!active_reply && resident_expired());
     });
@@ -366,11 +384,12 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, siz
     const uint16_t ack = use_local ? MSG_LOCAL_SETUP_ACK : MSG_SETUP_ACK;
     Digest128 identity{};
     bool want_fallback = false, want_resident = false;
+    bool want_rows=false;
     if (use_local) {
         Cur c{p, n};
         const auto version = c.u32(), flags = c.u32();
         identity = {c.u64(), c.u64()};
-        if (n < 24 || version != kLocalVersion || flags > 3 || !local ||
+        if (n < 24 || version != kLocalVersion || flags > 7 || !local ||
             ((flags & 1) && !opt.local_upload_fallback) ||
             ((flags & kLocalResident) && opt.residency_ms == 0 && !opt.residency_forever)) {
             fail(ST_LOCAL_UNAVAILABLE);
@@ -379,6 +398,7 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, siz
         }
         want_fallback = flags & 1;
         want_resident = flags & kLocalResident;
+        want_rows = flags & kLocalEntryRows;
         p += 24;
         n -= 24;
     }
@@ -436,6 +456,7 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, siz
     // a SETUP_BEGIN voids any previous session: a restart is a new session, old ids cannot continue
     void_session();
     local_mode = use_local;
+    entry_rows = want_rows;
     fallback = want_fallback;
     if (use_local) {
         local_start_ns = mono_ns();
@@ -494,6 +515,7 @@ void ExpertWorkerService::Impl::on_setup_begin(sock_fd fd, const uint8_t *p, siz
                  (unsigned long long)(cache_binding ? arena_bytes : 0),
                  (unsigned long long)arena_bytes, (unsigned long long)session);
         }
+        if(want_rows){put32(reply,kEntryRowsVersion);put32(reply,(uint32_t)kEntryRowsMax);}
     }
     send_frame(fd, ack, ST_OK, reply);
 }
@@ -856,7 +878,7 @@ void ExpertWorkerService::Impl::on_ready(sock_fd fd, const uint8_t* p, size_t n)
 }
 
 bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float>& partials,
-                                        std::string& err, ExecuteTiming* measured) {
+                                        std::string& err, ExecuteTiming* measured,bool rows_reply) {
     using strata::kernels::cpu::ExpertJobMulti;
     const uint64_t prepare_start = measured ? mono_ns() : 0;
     const int T = r.T, K = r.K, H = manifest.n_embd;
@@ -868,6 +890,9 @@ bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float
         return true;   // zero CPU work: the reply is a zero partial, not an error
     }
     auto& nact = scratch.nact;
+    if(r.packed) {
+        if(!restore_activation(fmt,*r.packed,nact)){err="invalid packed activation";return false;}
+    } else {
     nact.assign((size_t) T * strata::kernels::cpu::kNativeActBytes, 0);
     for (int t = 0; t < T; ++t) {
         bool tok = false;
@@ -875,6 +900,7 @@ bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float
         if (tok)
             strata::kernels::cpu::native_quant_act(fmt, r.activations.data() + (size_t) t * H,
                                                    nact.data() + (size_t) t * kNativeActBytes);
+    }
     }
     // distinct experts in first-appearance order; an expert's entries keep frame order (duplicates too)
     auto& jobs = scratch.jobs;
@@ -912,13 +938,13 @@ bool ExpertWorkerService::Impl::execute(const InferRequest& r, std::vector<float
     counters->cpu_service_ns += pool_ns;
     if (measured) measured->pool = pool_ns;
     const uint64_t reduce_start = measured ? mono_ns() : 0;
-    accumulate_partial(T, K, r.mask.data(), r.weights.data(), rows.data(), H, partials.data());
+    if(!rows_reply)accumulate_partial(T, K, r.mask.data(), r.weights.data(), rows.data(), H, partials.data());
     if (measured) measured->reduce = mono_ns() - reduce_start;
     return true;
 }
 
 void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
-                                         uint64_t request_start_ns) {
+                                         uint64_t request_start_ns,bool rows_reply,bool packed_request) {
     ++counters->requests;
     const bool measure = timing->enabled();
     const uint64_t decode_start = measure ? mono_ns() : 0;
@@ -931,31 +957,36 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
             decode_recorded = true;
         }
     };
-    // every reply path goes through here: status + payload, sent and counted as reply bytes
-    auto reply = [&](uint16_t status, const std::vector<uint8_t>& payload, uint64_t encode_start_ns = 0) {
+    // Every reply path sends and counts the completed contiguous frame here.
+    auto reply = [&](uint16_t status, uint64_t encode_start_ns = 0) {
         finish_decode();
         if (measure && !encode_start_ns) encode_start_ns = mono_ns();
-        counters->infer_out_bytes += kHeaderBytes + payload.size();
-        const bool sent = send_frame(fd, MSG_INFER_ACK, status, payload);
+        const uint16_t msg = rows_reply ? MSG_INFER_ROWS_ACK : MSG_INFER_ACK;
+        if (status != ST_OK) encode_frame(send_buffer, msg, status, nullptr, 0);
+        const size_t bytes = send_buffer.size();
+        counters->infer_out_bytes += bytes;
+        const bool sent = send_encoded_frame(fd, msg, status);
         if (measure) {
             timing->add_phase(RpcTimingPhase::WorkerEncodeSend, mono_ns() - encode_start_ns);
             timing->add_phase(RpcTimingPhase::WorkerRequest, mono_ns() - request_start_ns);
         }
         if (measure)
             timing->finish_call(tokens, entries, experts, kHeaderBytes + n,
-                                sent ? kHeaderBytes + payload.size() : 0, sent && status == ST_OK);
+                                sent ? bytes : 0, sent && status == ST_OK);
         if (sent && status == ST_OK && resident_complete)
             idle_since_ns = mono_ns(); // idle starts after the successful request's reply completes
     };
     if (state == State::Empty) {
         fail(ST_WRONG_STATE);
-        reply(ST_WRONG_STATE, {});
+        reply(ST_WRONG_STATE);
         return;
     }
+    if(rows_reply && !entry_rows){fail(ST_WRONG_STATE);reply(ST_WRONG_STATE);return;}
     auto& r = scratch.request;
-    if (!decode_infer(p, n, manifest.n_layers, manifest.n_expert, manifest.n_embd, r)) {
+    if(packed_request && !packed){fail(ST_WRONG_STATE);reply(ST_WRONG_STATE);return;}
+    if (!decode_infer(p, n, manifest.n_layers, manifest.n_expert, manifest.n_embd, r,packed_request)) {
         fail(ST_BAD_REQUEST);
-        reply(ST_BAD_REQUEST, {});
+        reply(ST_BAD_REQUEST);
         return;
     }
     if (measure) {
@@ -969,12 +1000,12 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
              (unsigned long long) r.session, (unsigned long long) r.model_id,
              (unsigned long long) r.partition_id);
         fail(ST_STALE_SESSION);
-        reply(ST_STALE_SESSION, {});
+        reply(ST_STALE_SESSION);
         return;
     }
     if (state != State::Ready) {
         fail(ST_NOT_READY);
-        reply(ST_NOT_READY, {});
+        reply(ST_NOT_READY);
         return;
     }
     if (have_sequence && r.sequence <= last_sequence) {
@@ -982,7 +1013,7 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
         logf("inference refused: sequence %llu is not past %llu", (unsigned long long) r.sequence,
              (unsigned long long) last_sequence);
         fail(ST_BAD_REQUEST);
-        reply(ST_BAD_REQUEST, {});
+        reply(ST_BAD_REQUEST);
         return;
     }
     for (size_t i = 0; i < r.mask.size(); ++i) {
@@ -990,7 +1021,7 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
         if (!manifest.owns(r.layer, r.ids[i])) {
             logf("inference refused: entry %zu names expert %u, owned by the GPU side", i, r.ids[i]);
             fail(ST_NOT_OWNED);
-            reply(ST_NOT_OWNED, {});
+            reply(ST_NOT_OWNED);
             return;
         }
     }
@@ -1014,25 +1045,25 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
                 logf("inference refused: expert %u appears more than %d times among the owned entries",
                      r.ids[i], kMaxT);
                 fail(ST_BAD_REQUEST);
-                reply(ST_BAD_REQUEST, {});
+                reply(ST_BAD_REQUEST);
                 return;
             }
         }
     }
     for (size_t i = 0; i < r.weights.size(); ++i)
-        if (!std::isfinite(r.weights[i])) { fail(ST_NONFINITE); reply(ST_NONFINITE, {}); return; }
+        if (!std::isfinite(r.weights[i])) { fail(ST_NONFINITE); reply(ST_NONFINITE); return; }
     for (size_t i = 0; i < r.activations.size(); ++i)
-        if (!std::isfinite(r.activations[i])) { fail(ST_NONFINITE); reply(ST_NONFINITE, {}); return; }
+        if (!std::isfinite(r.activations[i])) { fail(ST_NONFINITE); reply(ST_NONFINITE); return; }
 
     auto& rep = scratch.reply;
     std::string err;
     finish_decode();
     ExecuteTiming measured;
     if (measure) measured = {};
-    if (!execute(r, rep.partials, err, measure ? &measured : nullptr)) {
+    if (!execute(r, rep.partials, err, measure ? &measured : nullptr,rows_reply)) {
         logf("inference refused: %s", err.c_str());
         fail(ST_NOT_OWNED);
-        reply(ST_NOT_OWNED, {});
+        reply(ST_NOT_OWNED);
         return;
     }
     if (measure) {
@@ -1048,9 +1079,13 @@ void ExpertWorkerService::Impl::on_infer(sock_fd fd, const uint8_t* p, size_t n,
     rep.session = session;
     rep.sequence = r.sequence;
     const uint64_t encode_start = measure ? mono_ns() : 0;
-    auto& payload = scratch.payload;
-    encode_infer_ack(rep, payload);
-    reply(ST_OK, payload, encode_start);
+    auto& frame = send_buffer;
+    if(rows_reply) {
+        if(!encode_infer_rows_ack_frame(r,manifest.n_embd,scratch.rows.data(),frame)) {
+            fail(ST_NONFINITE);reply(ST_NONFINITE);return;
+        }
+    } else encode_infer_ack_frame(rep, frame);
+    reply(ST_OK, encode_start);
 }
 
 void ExpertWorkerService::Impl::on_status(sock_fd fd) {
@@ -1118,6 +1153,16 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
             counters->infer_in_bytes += kHeaderBytes + f.payload.size();
             on_infer(fd, f.payload.data(), f.payload.size(), timing->enabled() ? mono_ns() : 0);
             break;
+        case MSG_INFER_ROWS:
+            counters->infer_in_bytes += kHeaderBytes + f.payload.size();
+            on_infer(fd,f.payload.data(),f.payload.size(),timing->enabled()?mono_ns():0,true);
+            break;
+        case MSG_INFER_PACKED:
+        case MSG_INFER_ROWS_PACKED:
+            counters->infer_in_bytes+=kHeaderBytes+f.payload.size();
+            on_infer(fd,f.payload.data(),f.payload.size(),timing->enabled()?mono_ns():0,
+                     f.msg==MSG_INFER_ROWS_PACKED,true);
+            break;
         case MSG_CACHE_STATUS:
             on_cache_status(fd);
             break;
@@ -1128,6 +1173,20 @@ void ExpertWorkerService::Impl::serve_connection(sock_fd fd) {
             send_frame(fd, MSG_UNLOAD_ACK, ST_OK, {});
             break;
         case MSG_STATUS:
+            if(!f.payload.empty()) {
+                packed=false;
+                Cur c{f.payload.data(),f.payload.size()};
+                const auto sid=c.u64(), qualification=c.u64();
+                if(f.payload.size()!=16 || state!=State::Ready || sid!=session) {
+                    fail(ST_BAD_REQUEST);send_frame(fd,MSG_STATUS_ACK,ST_BAD_REQUEST,{});break;
+                }
+                if(!opt.packed_requests || !packed_qualification_valid(opt.packed_qualification) ||
+                   qualification!=std::stoull(opt.packed_qualification,nullptr,16) || !packed_format_supported(fmt)) {
+                    send_frame(fd,MSG_STATUS_ACK,ST_UNSUPPORTED_LAYOUT,{});break;
+                }
+                auto reply=f.payload;put32(reply,kPackedVersion);packed=true;
+                send_frame(fd,MSG_STATUS_ACK,ST_OK,reply);break;
+            }
             on_status(fd);
             break;
         case MSG_SHUTDOWN:

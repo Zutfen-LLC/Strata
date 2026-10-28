@@ -1,10 +1,10 @@
 # Retained runtime validation harness
 
-This is the small config-driven extraction of the existing Hermes runtime harness. It keeps the
+This is the small config-driven extraction of the existing operator runtime harness. It keeps the
 engine stdin broker, worker guardian, independent resource monitor, control codec and retained
 GEN/DONE parsing. One ordered config replaces per-experiment runtime wrappers; there is no automatic
 warmup, repeat, performance-based winner, restore arm or arm retry. Build/link drivers remain outside
-this runtime change. No engine, loader or inference algorithm changes are included; PR #6 is separate.
+the runtime sequence. The fixed CPU group extension below adds only its necessary per-host bindings.
 
 Source witness: clean sanitized commit
 [`27392d03bb75bf423e9e41a5db3ffe51b3b2b902`](https://github.com/Zutfen-LLC/Strata/tree/27392d03bb75bf423e9e41a5db3ffe51b3b2b902/tools/validation-harness).
@@ -13,7 +13,7 @@ omits `w13w14/README.md` and contains no content hashes; the extra README was ve
 sanitized source, not the exact private bytes. The superseded publication was not fetched or used.
 The as-run driver and its unexercised Popen proposal remain available at that immutable witness;
 historical campaign scripts, handwritten binary hashes and frequency-setting code are not imported
-into this branch. The new corrections are **NOT RUN** locally and are not claimed as tested Hermes code.
+into this branch. The new corrections are **NOT RUN** locally and are not claimed as tested operator code.
 
 ## Files and boundaries
 
@@ -26,10 +26,18 @@ into this branch. The new corrections are **NOT RUN** locally and are not claime
 | `harness/worker_control.py` | Existing SEW1 control codec, unchanged |
 | `harness/run.py` | Ordered load/warm entries extracted from W13/W14 and PR7, with config-only counts/masks/requests/assets |
 | `harness/bundle.py` | One exclusive staging operation; mechanical source/destination hashes and complete preflight before owners start |
+| `harness/peer.py` | Bounded command channel to the same second-host guardian; config/asset binding and explicit reap receipts |
 
-Linux and Python 3.9+ are required. The real monitor requires the existing `nvidia-smi` command; no
+Linux and Python 3.9+ are required. The engine-host monitor requires the existing `nvidia-smi` command; no
 packages, privileges or network access are installed. The harness runs locally on the selected runtime
 host, reached through the operator's existing authorized mechanism. It adds no SSH or fleet supervisor.
+
+For the opt-in fixed CPU group, [PEERS.md](PEERS.md) describes the two-host private configuration.
+The same ordered driver uses the existing worker guardian in a bounded command mode on the second
+host. That CPU role sets `monitor_gpu: false`, keeps CPU/process/memory monitoring, and stages only
+its worker and manifest. It requires an existing authorized control transport supplied in config;
+it does not discover hosts, grant access or establish tunnels. The existing local configuration still
+works without peer fields. See the [focused group handoff](../../docs/validation/CPU-FIXED-GROUP-20261025.md).
 
 ## Private configuration and staging
 
@@ -100,4 +108,4 @@ worker keeps its guardian and monitor alive. This is a harness process hierarchy
 Keep the private config, pins, per-entry configs, owner exit/stop receipts, outputs, failures and
 summary together. Do not commit private bindings, generated caches or raw campaign logs. Inspect the
 exact intended staged file list and diff before publication. See [regressions](REGRESSIONS.md) and
-[focused Hermes validation](HERMES.md). No desktop build, test or inference is authorized by this file.
+[focused operator validation](HERMES.md). No desktop build, test or inference is authorized by this file.

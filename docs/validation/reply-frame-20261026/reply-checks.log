@@ -1,0 +1,99 @@
+Test project TASK_ROOT/reply-build
+    Start 41: expert_worker_test
+1/5 Test #41: expert_worker_test ...............***Exception: SegFault  0.89 sec
+FAIL: ACK-control listener
+FAIL: listen: socket() failed
+FAIL: listen: socket() failed
+FAIL: listen: socket() failed
+FAIL: listen: socket() failed
+FAIL: listen: socket() failed
+FAIL: the service listens on loopback
+FAIL: the client connects
+FAIL: setup starts a session
+FAIL: the ack reports the layout's blob size
+FAIL: an owned blob uploads in bounded chunks
+FAIL: an owned blob uploads in bounded chunks
+FAIL: an owned blob uploads in bounded chunks
+FAIL: an owned blob uploads in bounded chunks
+FAIL: an owned blob uploads in bounded chunks
+FAIL: an owned blob uploads in bounded chunks
+FAIL: an owned blob uploads in bounded chunks
+FAIL: readiness after the full assigned set
+FAIL: T=1 mixed ownership: transported request served (ok)
+FAIL: T=1 mixed ownership: reply identity
+FAIL: T=1 mixed ownership: bitwise equality
+FAIL: T=4 repeated ids: transported request served (ok)
+FAIL: T=4 repeated ids: reply identity
+FAIL: T=4 repeated ids: bitwise equality
+FAIL: T=8 boundary mixed: transported request served (ok)
+FAIL: T=8 boundary mixed: reply identity
+FAIL: T=8 boundary mixed: bitwise equality
+FAIL: zero CPU work: transported request served (ok)
+FAIL: zero CPU work: reply identity
+FAIL: zero CPU work: bitwise equality
+FAIL: the two-token request serves
+
+    Start 42: cpu_row_codec_bench_check
+2/5 Test #42: cpu_row_codec_bench_check ........   Passed    0.00 sec
+    Start 46: worker_socket_test
+3/5 Test #46: worker_socket_test ...............***Failed    4.31 sec
+FAIL: full-cap frame survives backpressure
+FAIL: fragmented full-cap transfer preserves every byte
+FAIL: loopback listener for accepted option
+FAIL: explicit numeric listener binds selected address
+worker_socket_test: read=250ms write=0ms failures=4
+
+    Start 47: worker_socket_operation_test
+4/5 Test #47: worker_socket_operation_test .....***Failed    0.00 sec
+WORKER_SOCKET_OPERATION_TEST failure: ready send
+
+    Start 56: cpu_worker_group_test
+5/5 Test #56: cpu_worker_group_test ............***Failed    0.17 sec
+worker-manifest: layer 1/2; expert bytes read 10444800
+worker-manifest: layer 2/2; expert bytes read 20889600
+FAIL socket() failed
+PASS indexed row codec exact little-endian bytes including signed zero/nonzero mask normalization
+PASS direct sparse/empty/maximum row frame equals old path
+PASS exact requested row set/bits
+PASS malformed/nonfinite row reply rejected without output
+PASS malformed/nonfinite row reply rejected without output
+PASS malformed/nonfinite row reply rejected without output
+PASS malformed/nonfinite row reply rejected without output
+PASS malformed/nonfinite row reply rejected without output
+PASS malformed/nonfinite row reply rejected without output
+PASS malformed/nonfinite row reply rejected without output
+PASS legacy weighted reply bytes unchanged
+PASS direct weighted frame preserves signed zero bytes
+PASS direct sparse/empty/maximum row frame equals old path
+PASS empty reply cannot expose prior rows
+PASS direct sparse/empty/maximum row frame equals old path
+PASS strict maximum row payload/frame bytes
+PASS decoded row retention bounded after warmup
+PASS bulk row bytes equal independent scalar edge reference
+PASS direct row frame preserves all finite edge bits
+PASS unaligned row decoding preserves all finite edge bits
+PASS bulk row decoding still refuses infinity/NaN without output
+PASS bulk row encoding still refuses infinity/NaN
+PASS direct frame clears prior bytes on infinity/NaN
+PASS bulk row decoding still refuses infinity/NaN without output
+PASS bulk row encoding still refuses infinity/NaN
+PASS direct frame clears prior bytes on infinity/NaN
+PASS bulk row decoding still refuses infinity/NaN without output
+PASS bulk row encoding still refuses infinity/NaN
+PASS direct frame clears prior bytes on infinity/NaN
+PASS legacy reply edge bytes including permitted nonfinite payloads unchanged
+PASS legacy float edge payload bits unchanged
+PASS legacy truncated reply refused
+CPU_WORKER_GROUP failures=1 models=0
+
+
+20% tests passed, 4 tests failed out of 5
+
+Total Test time (real) =   5.39 sec
+
+The following tests FAILED:
+	 41 - expert_worker_test (SEGFAULT)
+	 46 - worker_socket_test (Failed)
+	 47 - worker_socket_operation_test (Failed)
+	 56 - cpu_worker_group_test (Failed)
+Errors while running CTest

@@ -56,18 +56,29 @@ std::vector<uint8_t> blob(uint32_t seed, const strata::kernels::cpu::NativeFmt &
 struct Fixture {
     fs::path root;
     strata::kernels::cpu::NativeFmt fmt;
-    std::array<std::vector<uint8_t>, 4> blobs;
+    std::vector<std::vector<uint8_t>> blobs;
+    int n_expert = 2;
     LocalManifest m;
     std::string index;
-    Fixture() {
+    explicit Fixture(int experts = 2, int paired_from = -1) {
+        require(experts >= 1 && experts <= 32, "bounded synthetic expert count");
+        require(paired_from == -1 || (paired_from >= 0 && paired_from < experts && paired_from % 2 == 0),
+                "paired synthetic range starts on an even expert");
+        n_expert = experts;
+        blobs.resize(2 * experts);
         char path[] = "/tmp/strata-worker-local-XXXXXX";
         const auto r = ::mkdtemp(path);
         require(r, "mkdtemp");
         root = r;
+        struct Construction {
+            fs::path root; bool complete = false;
+            ~Construction() { if (!complete) { std::error_code error; fs::remove_all(root, error); } }
+        } construction{root};
         std::string err;
         require(strata::kernels::cpu::native_fmt(8, 8, 2560, 640, fmt, err), err);
-        for (size_t i = 0; i < 4; ++i)
-            blobs[i] = blob(17 + i, fmt);
+        for (size_t i = 0; i < blobs.size(); ++i)
+            blobs[i] = paired_from >= 0 && i % 2 && int(i % n_expert) >= paired_from ?
+                blobs[i - 1] : blob(17 + i, fmt);
         struct Tensor {
             int l, r;
             uint64_t off;
@@ -89,12 +100,12 @@ struct Fixture {
             put<uint64_t>(header, 0);
             for (auto &t : ts) {
                 t.off = off;
-                off += 2 * per[t.r];
+                off += n_expert * per[t.r];
                 str(header, "blk." + std::to_string(t.l) + ".ffn_" + roles[t.r] + "_exps.weight");
                 put<uint32_t>(header, 3);
                 put<uint64_t>(header, t.r < 2 ? 2560 : 640);
                 put<uint64_t>(header, t.r < 2 ? 640 : 2560);
-                put<uint64_t>(header, 2);
+                put<uint64_t>(header, n_expert);
                 put<uint32_t>(header, 8);
                 put<uint64_t>(header, t.off);
             }
@@ -103,24 +114,26 @@ struct Fixture {
             out.write((const char *)header.data(), header.size());
             for (auto t : ts) {
                 offsets[t.l][t.r] = header.size() + t.off;
-                for (int e = 0; e < 2; ++e)
-                    out.write((const char *)blobs[t.l * 2 + e].data() + src[t.r], per[t.r]);
+                for (int e = 0; e < n_expert; ++e)
+                    out.write((const char *)blobs[t.l * n_expert + e].data() + src[t.r], per[t.r]);
             }
         }
         index =
-            "# strata native experts v4: fixture (n_expert 2, total " + std::to_string(4 * fmt.bytes) + ")\n";
+            "# strata native experts v4: fixture (n_expert " + std::to_string(n_expert) + ", total " +
+            std::to_string(blobs.size() * fmt.bytes) + ")\n";
         for (int l = 0; l < 2; ++l)
-            index += std::to_string(l) + " 8 8 " + std::to_string(l * 2 * fmt.bytes) + " " +
+            index += std::to_string(l) + " 8 8 " + std::to_string(l * n_expert * fmt.bytes) + " " +
                      std::to_string(fmt.bytes) + " " + std::to_string(offsets[l][0]) + " " +
                      std::to_string(offsets[l][1]) + " " + std::to_string(offsets[l][2]) +
                      (l == 0 ? "\n" : " b.gguf,b.gguf,c.gguf\n");
         std::ofstream(root / "native_experts.txt") << index;
-        require(prepare_local_manifest(root.string(), (root / "a.gguf").string(), 2, 2, m, err), err);
+        require(prepare_local_manifest(root.string(), (root / "a.gguf").string(), 2, n_expert, m, err), err);
         require(write_local_manifest((root / "local.manifest").string(), m, err), err);
         require(read_local_manifest((root / "local.manifest").string(), m, err), err);
         require(match_local_index(m, root.string(), (root / "a.gguf").string(),
                                   strata::kernels::cpu::expert_layout(), err),
                 err);
+        construction.complete = true;
     }
     ~Fixture() {
         if (std::getenv("STRATA_WORKER_FIXTURE_KEEP"))
@@ -134,11 +147,15 @@ struct Fixture {
         s.model_id = m.identity.a;
         std::strcpy(s.quant_name, "Q8_0");
         s.n_layers = 2;
-        s.n_expert = 2;
+        s.n_expert = n_expert;
         s.n_embd = 2560;
         s.n_ff = 640;
         s.gu_type = s.d_type = 8;
-        s.partition = {3, 3};
+        const size_t stride = (n_expert + 7) / 8;
+        s.partition.assign(2 * stride, 0);
+        for (int l = 0; l < 2; ++l)
+            for (int e = 0; e < n_expert; ++e)
+                s.partition[l * stride + e / 8] |= (uint8_t)(1u << (e % 8));
         s.partition_id = blob_digest(s.partition).a;
         return s;
     }
@@ -148,7 +165,7 @@ struct Fixture {
         o.local_root = root.string();
         o.local_manifest = (root / "local.manifest").string();
         o.local_upload_fallback = true;
-        o.memory_budget = 4 * fmt.bytes;
+        o.memory_budget = blobs.size() * fmt.bytes;
         return o;
     }
     void flip(const char *name, uint64_t offset) {
@@ -207,7 +224,7 @@ std::vector<float> infer(ExpertWorkerClient &c, const Fixture &f, int l, int T, 
     require(c.infer(r, reply, err), err);
     std::vector<const uint8_t *> pointers(T * 2);
     for (int i = 0; i < T * 2; ++i)
-        pointers[i] = f.blobs[l * 2 + i % 2].data();
+        pointers[i] = f.blobs[l * f.n_expert + i % 2].data();
     std::vector<float> direct;
     require(ExpertWorkerService::direct_native_partial(f.fmt, T, 2, r.mask.data(), r.weights.data(),
                                                        r.activations.data(), pointers.data(), direct, err),

@@ -26,7 +26,8 @@ struct Budget {
     }
 };
 
-bool wait_fd(sock_fd fd, bool write, const Budget &budget, const std::function<bool()> &cancel = {}) {
+bool wait_fd(sock_fd fd, bool write, const Budget &budget, const std::function<bool()> &cancel = {},
+             IoCounts* counts = nullptr) {
     for (;;) {
         if (cancel && cancel())
             return false;
@@ -34,6 +35,7 @@ bool wait_fd(sock_fd fd, bool write, const Budget &budget, const std::function<b
         if (cancel && (ms < 0 || ms > 50))
             ms = 50;
         if (ms == 0) return false;
+        if (counts) ++counts->polls;
 #ifdef _WIN32
         fd_set set;
         FD_ZERO(&set);
@@ -41,11 +43,11 @@ bool wait_fd(sock_fd fd, bool write, const Budget &budget, const std::function<b
         timeval tv{ms > 0 ? ms / 1000 : 0, ms > 0 ? (long) (ms % 1000) * 1000 : 0};
         const int r = ::select(0, write ? nullptr : &set, write ? &set : nullptr, nullptr,
                                ms < 0 ? nullptr : &tv);
-        if (r < 0 && WSAGetLastError() == WSAEINTR) continue;
+        if (r < 0 && WSAGetLastError() == WSAEINTR) { if (counts) ++counts->interrupted; continue; }
 #else
         struct pollfd p{fd, (int16_t) (write ? POLLOUT : POLLIN), 0};
         const int r = ::poll(&p, 1, ms);
-        if (r < 0 && errno == EINTR) continue;
+        if (r < 0 && errno == EINTR) { if (counts) ++counts->interrupted; continue; }
 #endif
         if (cancel && r == 0 && budget.remaining() != 0)
             continue;
@@ -72,6 +74,10 @@ bool send_all(sock_fd fd, const void *data, size_t n, int deadline_ms) {
 }
 bool send_all_controlled(sock_fd fd, const void *data, size_t n, int deadline_ms,
                          const std::function<bool()> &cancel) {
+    return send_all_diagnostic(fd, data, n, deadline_ms, cancel, {});
+}
+bool send_all_diagnostic(sock_fd fd, const void *data, size_t n, int deadline_ms,
+                         const std::function<bool()> &cancel, IoDiagnostic diagnostic) {
     const Budget budget(deadline_ms);
 #ifdef _WIN32
     if (!nonblocking(fd)) return false;
@@ -79,19 +85,32 @@ bool send_all_controlled(sock_fd fd, const void *data, size_t n, int deadline_ms
     const uint8_t* p = (const uint8_t*) data;
     size_t off = 0;
     while (off < n) {
-        if (!wait_fd(fd, true, budget, cancel))
-            return false;
+        if (diagnostic.operation_first) {
+            if ((cancel && cancel()) || budget.remaining() == 0) return false;
+        } else if (!wait_fd(fd, true, budget, cancel, diagnostic.counts)) return false;
+        if (diagnostic.counts) ++diagnostic.counts->sends;
 #ifdef _WIN32
         const int chunk = (int) (::send(fd, (const char*) (p + off), (int) (n - off), 0));
         const bool failed = chunk == SOCKET_ERROR;
-        if (failed && (WSAGetLastError() == WSAEINTR || WSAGetLastError() == WSAEWOULDBLOCK)) continue;
+        const int error = failed ? WSAGetLastError() : 0;
+        const bool interrupted = failed && error == WSAEINTR;
+        const bool again = failed && error == WSAEWOULDBLOCK;
 #else
         const ssize_t chunk = ::send(fd, p + off, n - off, MSG_NOSIGNAL | MSG_DONTWAIT);
-        const bool failed = chunk < 0 && errno != EINTR;
-        if (chunk < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        const bool failed = chunk < 0;
+        const int error = failed ? errno : 0;
+        const bool interrupted = failed && error == EINTR;
+        const bool again = failed && (error == EAGAIN || error == EWOULDBLOCK);
 #endif
+        if (interrupted) { if (diagnostic.counts) ++diagnostic.counts->interrupted; continue; }
+        if (again) {
+            if (diagnostic.counts) ++diagnostic.counts->would_block;
+            if (diagnostic.operation_first && !wait_fd(fd, true, budget, cancel, diagnostic.counts)) return false;
+            continue;
+        }
         if (failed || chunk == 0) return false;
         off += (size_t) chunk;
+        if (diagnostic.counts) diagnostic.counts->sent_bytes += (size_t) chunk;
     }
     return true;
 }
@@ -101,6 +120,10 @@ bool recv_all(sock_fd fd, void *data, size_t n, int deadline_ms) {
 }
 bool recv_all_controlled(sock_fd fd, void *data, size_t n, int deadline_ms,
                          const std::function<bool()> &cancel) {
+    return recv_all_diagnostic(fd, data, n, deadline_ms, cancel, {});
+}
+bool recv_all_diagnostic(sock_fd fd, void *data, size_t n, int deadline_ms,
+                         const std::function<bool()> &cancel, IoDiagnostic diagnostic) {
     const Budget budget(deadline_ms);
 #ifdef _WIN32
     if (!nonblocking(fd)) return false;
@@ -108,19 +131,32 @@ bool recv_all_controlled(sock_fd fd, void *data, size_t n, int deadline_ms,
     uint8_t* p = (uint8_t*) data;
     size_t off = 0;
     while (off < n) {
-        if (!wait_fd(fd, false, budget, cancel))
-            return false;
+        if (diagnostic.operation_first) {
+            if ((cancel && cancel()) || budget.remaining() == 0) return false;
+        } else if (!wait_fd(fd, false, budget, cancel, diagnostic.counts)) return false;
+        if (diagnostic.counts) ++diagnostic.counts->receives;
 #ifdef _WIN32
         const int chunk = (int) ::recv(fd, (char*) (p + off), (int) (n - off), 0);
         const bool failed = chunk == SOCKET_ERROR;
-        if (failed && (WSAGetLastError() == WSAEINTR || WSAGetLastError() == WSAEWOULDBLOCK)) continue;
+        const int error = failed ? WSAGetLastError() : 0;
+        const bool interrupted = failed && error == WSAEINTR;
+        const bool again = failed && error == WSAEWOULDBLOCK;
 #else
         const ssize_t chunk = ::recv(fd, p + off, n - off, MSG_DONTWAIT);
-        const bool failed = chunk < 0 && errno != EINTR;
-        if (chunk < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        const bool failed = chunk < 0;
+        const int error = failed ? errno : 0;
+        const bool interrupted = failed && error == EINTR;
+        const bool again = failed && (error == EAGAIN || error == EWOULDBLOCK);
 #endif
+        if (interrupted) { if (diagnostic.counts) ++diagnostic.counts->interrupted; continue; }
+        if (again) {
+            if (diagnostic.counts) ++diagnostic.counts->would_block;
+            if (diagnostic.operation_first && !wait_fd(fd, false, budget, cancel, diagnostic.counts)) return false;
+            continue;
+        }
         if (failed || chunk == 0) return false;      // error, or EOF before the frame was whole
         off += (size_t) chunk;
+        if (diagnostic.counts) diagnostic.counts->received_bytes += (size_t) chunk;
     }
     return true;
 }
