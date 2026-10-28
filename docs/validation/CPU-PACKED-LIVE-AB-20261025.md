@@ -1,6 +1,8 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Issue #14: one live raw / packed decision
 
-Hermes handoff; **fleet execution NOT RUN here**. Run only prompt index 0, once raw and once
+operator handoff; **fleet execution NOT RUN here**. Run only prompt index 0, once raw and once
 packed, on the established 02+05 1 Gb/s split with exact entry-row replies. No warmup or tuning.
 The existing runner needs only per-arm `packed_qualification` and `first_logits_reference`.
 Absent fields preserve its old argv/behavior. No product defaults change.
@@ -13,17 +15,17 @@ weights/files. Never load a half alongside the old full arena. The exact old PID
 ## Build only what this comparison uses
 
 Use the published handoff commit as `PIN`. Archive it into a fresh02 source root; do not change
-`/home/hermes/strata-pr10-9ed478e-src` or its CUDA cache. For example use
-`/home/hermes/strata-pr10-ab14-src`, `-cuda` and `-out` (all initially absent).
+`${PRIVATE_ARTIFACT_3BE6C563}` or its CUDA cache. For example use
+`${PRIVATE_ARTIFACT_B6039254}`, `-cuda` and `-out` (all initially absent).
 Seed the new CUDA cache from the **user cache entries** of
-`/home/hermes/strata-pr10-9ed478e-build-cuda/CMakeCache.txt`: retain its generator, compilers,
+`${PRIVATE_ARTIFACT_892A5D36}`: retain its generator, compilers,
 CUDA architectures, native/optimization/ISA options, linker options and existing ggml dependency
 binding. Relocate only source/build/output paths; enable tests and fully disconnected dependencies.
 Use its already corrected dependency prefix. Keep CUDA ON; no CPU-OFF/PIC repair is needed here.
 Do not copy a CMakeCache verbatim into a different build directory.
 
-On05 reuse the isolated successful `/home/hermes/strata-pr10-wire05-20261025-r1-build` and its
-`-src` product source. The retained role05 product source is unchanged by this harness-only patch.
+On05 reuse the isolated successful `${PRIVATE_ARTIFACT_9B855904}` and its
+`-src` product source. The retained validation host product source is unchanged by this harness-only patch.
 Build its actual receiver plus the two tiny qualification targets; no eight-test repeat.
 Use the current published helpers when staging the05 peer, so helper pins agree with02.
 
@@ -51,17 +53,17 @@ existing production proof (190-second outer guard per invocation):
 
 ```sh
 "$BIN02/cpu_packed_activation_proof" --pack "$CAP02" "$OUT02/activations.spa"
-"$BIN02/cpu_packed_activation_proof" --rows "$CAP02" "$MAN02" /srv/models/qwen38-q8 \
+"$BIN02/cpu_packed_activation_proof" --rows "$CAP02" "$MAN02" ${PRIVATE_ARTIFACT_E45E0609} \
   "$OUT02/activations.spa" "$OUT02/rows.sra"
 # Transfer only the small SPA1 through the existing channel; SPA02_ON05 names that copy.
 "$BIN05/cpu_packed_activation_proof" --pack "$CAP05" "$OUT05/activations.spa"
-"$BIN05/cpu_packed_activation_proof" --rows "$CAP05" /home/hermes/strata-wl-metadata/local.manifest \
-  /srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66 \
+"$BIN05/cpu_packed_activation_proof" --rows "$CAP05" ${PRIVATE_ARTIFACT_C2D77087} \
+  ${PRIVATE_ARTIFACT_9AA3D2B0} \
   "$SPA02_ON05" "$OUT05/rows.sra"
 ```
 
-`MAN02=/home/hermes/strata-pr10-split-opt-20261025-02/s1/L/assets/manifest`.
-`CAP05=/home/hermes/strata-pr10-micro-bc8e5754-20261025-05/cpu-capture.bin`; `CAP02` is the
+`MAN02=${PRIVATE_ARTIFACT_779B9D2E}`.
+`CAP05=${PRIVATE_ARTIFACT_573112EC}`; `CAP02` is the
 already relayed identical capture from the completed cross-host proof. Its exact retained02 path
 must be supplied, or copy this 37,544,692-byte capture once through the existing channel.
 Use the existing fixture admission (10 GiB available, 8 GiB active floor, 2 GiB owned limit,
@@ -92,14 +94,14 @@ Use exactly these four arms in one `run.py` invocation:
 | restore | true | [] | 02 / 116135731200 | none |
 
 Set both inference arms' `reference` to an asset containing the original
-`/home/hermes/strata-pr10-9ed478e-20261025-run/arm-A0-summary.json`, and
+`${PRIVATE_ARTIFACT_11E3E3B2}`, and
 `first_logits_reference` to an asset containing its `A0-first-logits.0`. Enable
 `capture_first_logits=true`. Exact token/entry and first-logit checks run after each arm;
 a mismatch prevents the next arm. Expected original prompt0: 213 tokens/102724 entries.
 The packed opt-in belongs only to its arm, never global engine argv. Keep cold loads separate.
 
 In peer config retain the exact forced `control_argv` and fixed peer root
-`/home/hermes/strata-pr10-9ed478e-20261025-05-peer`. Verify the retained approved worker route
+`${PRIVATE_ARTIFACT_8142DCE8}`. Verify the retained approved worker route
 27431 at current05 address10.0.0.123 from02 address10.0.0.180; preserve control restrictions.
 Do not append SSH commands, use fixture17531, or change firewall/keys. Stage current helpers and
 the05 worker there after identity-checked stopped-root archival, as in the existing split recipe.

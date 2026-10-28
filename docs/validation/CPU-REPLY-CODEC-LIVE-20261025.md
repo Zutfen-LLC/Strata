@@ -6,10 +6,10 @@ This local comparison is completed. Its named ownership/receipt blocks remain re
 Runtime source is **e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb** throughout. This handoff is
 documentation only; the later documentation SHA is not a new runtime candidate. Parent authorization
 covers the comparison, one controlled replacement/reload and bounded prelaunch staging corrections.
-The parent dispatches Hermes. No fleet operations, builds or executable checks occurred in this coding
+The parent dispatches operator. No fleet operations, builds or executable checks occurred in this coding
 thread. No merge, two-host campaign, new supervisor, protocol or runtime code is included.
 
-Supplied Hermes evidence at that source:3 focused CTests passed, benchmark source bit-identical to
+Supplied operator evidence at that source:3 focused CTests passed, benchmark source bit-identical to
 b9ab00c6,20 metrics/DONE passed with unchanged64/4096 counts and no resident contact. Row T1 encode/
 decode improved209560.4/74335.2 to26260.2/18712.5ns; T2 improved419738.4/146577.8 to44084/34839.8ns.
 Weighted T1 encode/decode27713.9/3454.1 to735.5/247.4ns; T2 41409.7/6986.8 to1316.4/906.1ns.
