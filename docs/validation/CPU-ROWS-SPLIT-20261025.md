@@ -7,7 +7,7 @@ only after fresh terminal/full-worker checks.
 
 Planning/handoff only. Runtime code remains e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb.
 No new implementation, build campaign or sequencer is introduced. Reuse the optimized engine/worker
-and passed CPU/CUDA/native-OFF gates from the completed local comparison. The parent dispatches Hermes;
+and passed CPU/CUDA/native-OFF gates from the completed local comparison. The parent dispatches operator;
 no fleet action or executable test was performed by the coding thread. No merge is included.
 
 Supplied optimized local result: both modes matched A0 first logits/213 tokens/102724 entries,11136

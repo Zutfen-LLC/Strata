@@ -1,11 +1,13 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Shared Vulkan executor: tiny NVIDIA smoke on03
 
 Handoff only; no NVIDIA run or install by this coding task. This is independent
-of AMD correctness/performance and makes no comparative claim. Hermes's read-only
+of AMD correctness/performance and makes no comparative claim. operator's read-only
 snapshot reports two RTX3060 devices, PCI01:00.0 and03:00.0, device10de:2504,
 NVIDIA driver615.71.09, no compute processes and1 MiB used per device. Vulkan
 loader/development headers/NVIDIA ICD exist; vulkaninfo also enumerates llvmpipe.
-[Readiness receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793164846282679).
+[Readiness receipt](PRIVATE_RECEIPT).
 
 ## Exact prerequisites and current blocker
 
@@ -26,7 +28,7 @@ Threads and Python3. Its Vulkan-enabled dependency explicitly requires:
 - Preserve the isolated build's default worker-TLS setting; its existing OpenSSL
   development package must resolve if TLS is enabled. No endpoint is started.
 
-Hermes confirmed glslc is absent from PATH; that is the definite missing tool.
+operator confirmed glslc is absent from PATH; that is the definite missing tool.
 A known existing SDK path can instead be passed as Vulkan_GLSLC_EXECUTABLE.
 SPIRV-Headers availability/version and03's distro/release remain unverified.
 Read `/etc/os-release` before selecting an official package; do not guess it.
@@ -43,7 +45,7 @@ is authorized by this handoff.
 
 ## Build only the shared probe
 
-Hermes resolves fresh SOURCE03/BUILD03/CHECKS03/EVIDENCE03 directories and the
+operator resolves fresh SOURCE03/BUILD03/CHECKS03/EVIDENCE03 directories and the
 exact retained GGML03 and GLSLC03 paths. Keep old source/build/results untouched.
 SPIRV_PREFIX03 is an existing compatible prefix if needed; empty uses system
 package discovery. No FetchContent downloads or CUDA build.

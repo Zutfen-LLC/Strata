@@ -55,7 +55,7 @@ placement and session identity, mTLS, zero failures and per-case entry deltas.
 
 ## Parent-only dispatch, no hardware execution in this change
 
-Parent dispatches Hermes only after the separately approved existing mTLS
+Parent dispatches operator only after the separately approved existing mTLS
 arrangement is available. Do not provision credentials, change trust/network or
 use plaintext/forwards. Reuse approved NODELAY options where the accepted launch
 receipt supports them. Do not install, download, merge, tune performance or disturb

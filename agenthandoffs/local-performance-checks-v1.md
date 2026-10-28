@@ -1,7 +1,7 @@
 # Local timing preparation checks
 
 Scope: c76d03c7 plus the CLI timing/benchmark changes in this commit. Local
-Valinor Linux x86_64, GCC16.2.1, retained CMake3.31.6. No fleet SSH, inference,
+validation host Linux x86_64, GCC16.2.1, retained CMake3.31.6. No fleet SSH, inference,
 clock operations, certificate operations or services. No performance result.
 
 Passed:
@@ -11,7 +11,7 @@ Passed:
   Native experts, portable MODEL/FFN/GDN/QSA and tests ON, CUDA/HIP/SYCL OFF,
   FetchContent disconnected, retained GGML dependency at the existing path
   `/tmp/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d`.
-  Vulkan additionally uses `/tmp/strata-spirv-headers-prefix` prefix/include flags.
+  Vulkan additionally uses `${BUILD_ARTIFACT_D2E5D17A}` prefix/include flags.
   As in the prior build, the local GGML source snapshot lacks Git metadata;
   its path identifies retained provenance, not a newly verified source commit.
 - `ctest --test-dir validation/cpu --output-on-failure -R '^portable_timing_cli_test$'`:
