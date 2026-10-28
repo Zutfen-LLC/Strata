@@ -1,6 +1,8 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Bounded local CUDA / Vulkan timing checkpoint
 
-**Completed by Hermes; historical recipe below is not a request to rerun.**
+**Completed by operator; historical recipe below is not a request to rerun.**
 See [physical results and narrow diagnosis](local-performance-results-v1.md).
 No fleet run by this coding task. Draft PR
 stacks on PR43 docs c76d03c7. Expert placement, reduction and precision are
@@ -12,8 +14,8 @@ Original logit-parity gates remain FAILED. Performance cannot waive them.
 ## Workload and limits
 
 Use the **existing** frozen twelve-case suite from the completed v2 screen:
-`/home/hermes/portable-quality-ac85ff3-v2/suite` on02 and
-`/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2/suite` on05.
+`${PRIVATE_ARTIFACT_0B0DB264}` on02 and
+`${PRIVATE_ARTIFACT_021ADBD1}` on05.
 The adapter revalidates all request, manifest, scorer and vocabulary bindings
 before selecting **case 1 only**: `Return only the integer: 17 * 23.`, with the
 unchanged template. It issues exactly four identical GEN32 requests per engine,
@@ -57,14 +59,14 @@ quality.py imports tools/strata_tokenizer.py and validation-harness/harness help
 Freeze the export SHA and its tar SHA in the receipt. No fleet Git/network needed.
 
 ```sh
-# Valinor, checkout containing the reviewed commit
+# validation host, checkout containing the reviewed commit
 REV=$(git rev-parse HEAD)
-git archive --format=tar "$REV" > /tmp/strata-local-performance-source.tar
-sha256sum /tmp/strata-local-performance-source.tar
+git archive --format=tar "$REV" > ${BUILD_ARTIFACT_13C802A7}
+sha256sum ${BUILD_ARTIFACT_13C802A7}
 ```
 
-Hermes uses fresh SOURCE05, BUILD05 and CHECKS05 directories below
-`/srv/models/inferswarm-artifacts/local-performance-v1/`. Abort if output roots
+operator uses fresh SOURCE05, BUILD05 and CHECKS05 directories below
+`${PRIVATE_ARTIFACT_C1427DE7}`. Abort if output roots
 already exist. Preserve the qualified PR43 binary at its original path and hash
 cb71b55bd7309320a81446c117728e493ea1d19c8f1ec0d54c7ef2836c8734c3.
 The candidate has a **new** SHA; do not label it the physically qualified binary.
@@ -102,35 +104,35 @@ early EOS. It compares timed/default stdout and every logit byte, and checks
 actual counts and finite nonnegative timers. A Vulkan-linked test is compilation
 and CPU-path evidence; it does not establish physical GPU correctness.
 
-## Fleet commands, parent/Hermes only
+## Fleet commands, parent/operator only
 
 Use existing PYTHON02/PYTHON05 with regex installed. SOURCE02 is the complete same
-export on02. RUN02 may be a fresh private `/home/hermes/local-performance-v1`;
-RUN05 must be fresh `/srv/models/inferswarm-artifacts/local-performance-v1/run`.
+export on02. RUN02 may be a fresh private `${PRIVATE_ARTIFACT_AF8C795A}`;
+RUN05 must be fresh `${PRIVATE_ARTIFACT_B67FA2E1}`.
 The adapter creates the output root with mode0700; do not precreate it. Hash both
 existing suite files on both hosts and confirm the same hashes before either arm.
 
 ```sh
 # 02: existing native engine and driver, no clock changes here
-export GGUF02=/srv/models/qwen38-q8/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf
-export SUITE02=/home/hermes/portable-quality-ac85ff3-v2/suite
+export GGUF02=${PRIVATE_ARTIFACT_38696482}
+export SUITE02=${PRIVATE_ARTIFACT_0B0DB264}
 sha256sum "$SUITE02/requests" "$SUITE02/quality_manifest"
 timeout --signal=TERM --kill-after=1320s 1800s \
   "$PYTHON02" -B "$SOURCE02/tools/validation-harness/portable_quality_v1.py" \
   --gguf "$GGUF02" native --benchmark \
-  --driver /home/hermes/strata-nd-repeat-20261027-run.driver5.py \
+  --driver ${PRIVATE_ARTIFACT_A27E9A14} \
   --suite "$SUITE02" --out "$RUN02"
 ```
 
 Native engine SHA931569c089a4f04114395a428c85f85227142c733f4fa0511243d05f97b46b89
 and driver SHAb5f1a5c10a0337d6254776ad01a19dd787076f41fd114538ea01f28708a1ae2f
 are enforced. Retained config inputs remain
-`/home/hermes/NDon-strata-ndab-20261026T161728Z.input-config.json` and
-`/home/hermes/strata-pr10-9ed478e-20261025-run/A0-load.config.json`.
+`${PRIVATE_ARTIFACT_D2184BFE}` and
+`${PRIVATE_ARTIFACT_4739C8B0}`.
 No driver main, distributed arm, historical comparison or certificate operation.
 Benchmark mode disables first-logit dumps on both engines.
 
-Immediately before05 inference, Hermes owns the **verified** clock operation and
+Immediately before05 inference, operator owns the **verified** clock operation and
 privilege. The two exact controls are
 `/sys/bus/pci/devices/0000:07:00.0/power_dpm_force_performance_level` and
 `/sys/bus/pci/devices/0000:0b:00.0/power_dpm_force_performance_level`.
@@ -143,11 +145,11 @@ idle300/945 is insufficient. There is no retained prior guard-script path.
 Do not broaden this to voltage, power limits or driver changes. If the verified
 guard is unavailable, STOP; do not run an unguarded replacement.
 
-Run this command **inside** Hermes's verified finite temperature/clock guard:
+Run this command **inside** operator's verified finite temperature/clock guard:
 
 ```sh
-export GGUF05=/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf
-export SUITE05=/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2/suite
+export GGUF05=${PRIVATE_ARTIFACT_ED0D8ADE}
+export SUITE05=${PRIVATE_ARTIFACT_021ADBD1}
 sha256sum "$SUITE05/requests" "$SUITE05/quality_manifest"
 BINARY_SHA05=$(sha256sum "$BUILD05/portable_model" | cut -d' ' -f1)
 timeout --signal=TERM --kill-after=15s 1250s \
@@ -206,7 +208,7 @@ Keep full small private per-trial receipts, stdout/stderr, argv, placements,
 raw DONE, hashes, source revision/export hash, build flags, clock/busy/temperature
 samples and cleanup/restoration result. Do not post decoded answers or private
 config/log payloads to Slack/Git. Record `du -sb` for source, build and results;
-new05 bulky artifacts stay on /srv/models,02 small receipts may use /home/hermes.
+new05 bulky artifacts stay on ${PRIVATE_ARTIFACT_10DA30EC},02 small receipts may use /home/hermes.
 No new weight copies, logits, resident cache archives or old-artifact deletions.
 Source and build may be discarded later only by a separate authorized cleanup;
 this task retains them. Parent receives the draft PR and exact revision for

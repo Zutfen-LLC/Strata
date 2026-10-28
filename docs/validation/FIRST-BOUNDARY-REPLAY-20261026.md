@@ -30,7 +30,7 @@ ctest --test-dir "$CUDA_BUILD" -R '^first_boundary_replay_check$' --output-on-fa
 On the host holding the traces, use its existing NumPy interpreter. The exporter
 uses the current trace reader and checks both complete sealed traces. `SRA1` must
 be the already accepted 8,110,340-byte cross-build artifact, whose SHA-256 is pinned
-in the exporter; it is not a newly generated substitute. The parent/Hermes has its
+in the exporter; it is not a newly generated substitute. The parent/operator has its
 known relay path and receipt. No broad search or regeneration belongs here.
 
 ```sh

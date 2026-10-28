@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Portable model: assembled CPU product checkpoint
 
 Continue the existing task-8/strata worktree and branch
@@ -42,18 +44,18 @@ Observed CPU evidence:
   The final rebuild/recheck after formatting, CLI integer validation and an
   additional 4MiB GDN metadata charge passed all seven in35.54s.
 - CPU CLI --help runs; default-OFF configure completed. Default target list
-  is `/tmp/portable-model-default-targets.log`.
+  is `${BUILD_ARTIFACT_6FF2683D}`.
 
-Build: `/tmp/strata-portable-model-build`, CMake
+Build: `${BUILD_ARTIFACT_83FD5685}`, CMake
 `/tmp/cmake-3.31.6-linux-x86_64/bin/cmake`, ggml checkout
 `/tmp/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 Logs:
-- `/tmp/portable-model-e2e.log` (first complete CPU result)
-- `/tmp/portable-head-ctest.log`
-- `/tmp/portable-model-checkpoint2-ctest.log` (seven passed)
-- `/tmp/portable-model-checkpoint2-final-build.log`
-- `/tmp/portable-model-checkpoint2-final-ctest.log`
-- `/tmp/portable-model-default-config.log`
+- `${BUILD_ARTIFACT_A2311B57}` (first complete CPU result)
+- `${BUILD_ARTIFACT_19B5E850}`
+- `${BUILD_ARTIFACT_8DAABEEB}` (seven passed)
+- `${BUILD_ARTIFACT_25D3B334}`
+- `${BUILD_ARTIFACT_90A058D2}`
+- `${BUILD_ARTIFACT_AC83AB99}`
 
 Remaining for the next bounded checkpoint/final draft publication:
 1. Read final complete diff; add rejection/memory checks where needed.
@@ -63,9 +65,9 @@ Remaining for the next bounded checkpoint/final draft publication:
    claim device or physical AMD success from this CPU evidence.
 3. Verify default target gating and unchanged CUDA defaults. No CUDA/HIP/SYCL
    code is linked or modified by this path.
-4. Produce versioned Hermes commands with the exact source head, retained
+4. Produce versioned operator commands with the exact source head, retained
    SWLOCAL1 manifest SHA and concrete model shard paths. Retained manifest:
-   `/home/hermes/strata-pr10-9ed478e-20261025-05-peer/assets/manifest`, SHA256
+   `${PRIVATE_ARTIFACT_32CC92CE}`, SHA256
    `8cc9a1ca01ded6b747628522f3fc896c6ca315583461e9c3826edda8b8f62318`.
    Its three file entries cover expert shards4–6, not all six. The parser and
    selected-expert digest path reuse that actual format and coverage.
@@ -82,7 +84,7 @@ Narrow parent inputs for final real-model recipe (not implementation blockers):
 
 Parent-supplied concrete runtime/reference inputs (verified elsewhere, not
 locally reverified by this task):
-- Root05: `/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66`.
+- Root05: `${PRIVATE_ARTIFACT_9AA3D2B0}`.
 - Shard basename `Qwen3.8-Flash-Next-Q8_0-0000N-of-00006.gguf`, N1..6.
   Stat sizes in order:10946624,682434912,54400261312,49446841216,
   49668930400,34015618784 bytes. No new payload hashes.
@@ -93,16 +95,16 @@ locally reverified by this task):
   Use context64 and a few generated tokens for the first smoke, not the
   original GEN256 request budget.
 - Reference logits02:
-  `/home/hermes/strata-nd-repeat-20261027-run5/local/local-first-logits.0`,
+  `${PRIVATE_ARTIFACT_91D2F803}`,
   993280 bytes, SHA256
   `4143957a612227b67ed3c47ce930365e5e8249d03ef77ee1442ca4722c33fa96`.
-  Parent/Hermes keeps logits host-local. Never upload them or weights to Git.
+  Parent/operator keeps logits host-local. Never upload them or weights to Git.
 - First16 retained generated IDs:
   `[71093,12305,198,1445,14856,1120,51425,1358,1005,43072,5287,1714,25,198,262,687]`.
 - Actual local argv is
-  `/home/hermes/strata-nd-repeat-20261027-run5/local/engine-argv.json`.
+  `${PRIVATE_ARTIFACT_8D7D2A05}`.
   NDon input config contains distributed options and is not the actual LOCAL
-  argv. Coordinator binary `/home/hermes/strata-mtls-fd35f803`, SHA256
+  argv. Coordinator binary `${PRIVATE_ARTIFACT_FA7549CC}`, SHA256
   `931569c089a4f04114395a428c85f85227142c733f4fa0511243d05f97b46b89`.
   Binary filename alone does not prove source identity.
 

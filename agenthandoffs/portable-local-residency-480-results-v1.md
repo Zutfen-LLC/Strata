@@ -1,10 +1,12 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Physical480-per-die local Vulkan result
 
-Hermes completed the resident token and one frozen answer case on05 using C++
+operator completed the resident token and one frozen answer case on05 using C++
 source `6d433cedc2435ea2aea7038ef62cef49a00a32b9`, binary SHA256
 `560507fa0b87a31206e03f172796fb3e60aae47ff5916aa45bd0de534bddae1b`.
 All five focused CTests passed sequentially before the physical run.
-[Primary result](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793165190231519).
+[Primary result](PRIVATE_RECEIPT).
 This coding task read that report; it did not SSH or run fleet inference.
 
 ## Admission and actual expert execution
@@ -60,7 +62,7 @@ returned to the8339456-byte baseline per die, and no owned model/guard remained.
 Both retained plan hashes and the earlier16-per-die binary hash still matched.
 
 Artifacts remain under
-`/srv/models/inferswarm-artifacts/portable-local-residency-large-v1`. Hermes
+`${PRIVATE_ARTIFACT_7FAB76FD}`. operator
 reported662937942 bytes total, including source72960636, build512201715,
 checks49259 and evidence864892 bytes; the listed subtrees are not a complete
 breakdown of that total. Keep the raw receipts and existing qualified artifacts.

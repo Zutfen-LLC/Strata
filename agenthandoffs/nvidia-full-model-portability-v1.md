@@ -1,11 +1,13 @@
-# Bounded NVIDIA full-model staging and NVIDIA02 mechanism receipt
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
+# Bounded NVIDIA full-model staging and validation host mechanism receipt
 
 This slice starts at PR45 `3d7e20e1f9c7e173b468191251826a5e49ab4a47`.
 It changes device observation/selection only. No numerical qualification is
 added: NVIDIA tiny resident probes do not qualify the full model. Intel has no
 validated telemetry adapter and stops with an explicit adapter requirement.
 
-The parent selected NVIDIA02 for the recorded smoke below. For any future run,
+The parent selected validation host for the recorded smoke below. For any future run,
 the parent selects the host after review; do not assume03 has weights.
 Use the existing six Q8 model shards and matching retained SWLOCAL1 manifest
 in place; no model copies. Put fresh source/build/receipts/evidence on a verified
@@ -15,14 +17,14 @@ unchanged loader/ICD environment. Build the candidate's `portable_model` with
 its existing portable FFN/GDN/QSA/model and Vulkan options, using already
 available dependencies. No package, driver, security or service changes.
 
-## Recorded NVIDIA02 mechanism smoke
+## Recorded validation host mechanism smoke
 
 The parent supplied this completed-run receipt and its
-[primary evidence](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793168735004679).
+[primary evidence](PRIVATE_RECEIPT).
 This documentation task did not execute or independently reproduce the run.
 
 - Source: `fb2ea3c92093eacc8663d2b90b88813ec2bc4076`.
-- Evidence root on 02: `/home/hermes/nvidia-full-model-fb2ea3c`.
+- Evidence root on 02: `${PRIVATE_ARTIFACT_7A6C4B63}`.
 - One full-model mechanism smoke: 210.3 seconds, exit 0, 38 prompt tokens,
   generated IDs `[71093, 12305, 198]`, stop `max_new`. No expert plans were used.
 - Logical Vulkan0: PCI `0000:02:00.0`, RTX3060Ti. Logical Vulkan1:
@@ -46,7 +48,7 @@ Retained SHA-256 identities:
 | Source archive | `8bdd2339f2d273b9e99a111f7cbafc2644a99a6987cce65bedbb92316d14af8b` |
 | GGML archive (commit `3cf03257f219afbe7334045ff7c6a06ac68c627d`) | `cb7b39ca7e6fc5b9adc79d0ae0f14367207b59ae6a859d9a46156d1a3c697889` |
 
-Result: **NVIDIA02 full-model mechanism smoke PASS at the source above**.
+Result: **validation host full-model mechanism smoke PASS at the source above**.
 The generated prefix agrees with the retained IDs. The single-row numerical
 gate below FAILS; full numerical and quality qualification remain unestablished. This run is not a speed comparison and
 does not qualify local expert residency or Intel. The memory peaks are sampled
@@ -54,11 +56,11 @@ aggregate observations, not exact transient peaks or per-process GPU accounting.
 
 ## Recorded position37 numerical comparison
 
-The parent supplied the [comparison receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793169060546039)
+The parent supplied the [comparison receipt](PRIVATE_RECEIPT)
 for the existing NVIDIA position37 logits versus the retained native reference.
 Each row contains 248320 F32 values; the baseline hash was verified. The retained
 receipt on 02 is
-`/home/hermes/nvidia-full-model-fb2ea3c/receipts/nvidia-native-pos37-comparison.json`.
+`${PRIVATE_ARTIFACT_9975B238}`.
 
 | Metric | Observed | Unchanged gate limit |
 | --- | ---: | ---: |
@@ -68,7 +70,7 @@ receipt on 02 is
 | KL(native → NVIDIA) | 0.000105791 | 0.00001 |
 
 Top1 is the same. Result: **single-row numerical gate FAIL**, distinct from
-**mechanism PASS**. The CLI requires three row pairs, so Hermes invoked the
+**mechanism PASS**. The CLI requires three row pairs, so operator invoked the
 same existing single-row comparator function once; rows were not duplicated.
 No new inference was performed and no gate was relaxed. This documentation
 task records the supplied evidence without independently reproducing it.

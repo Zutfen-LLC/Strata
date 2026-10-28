@@ -1,8 +1,10 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Physical V340 portable expert reuse receipt — v1
 
-Parent/Hermes reports PASS for the single bounded oracle/optimized pair on05
+Parent/operator reports PASS for the single bounded oracle/optimized pair on05
 at exact source `ac85ff3fdf0834c13437b69b1568d8704e9b0717`.
-Source: [Hermes receipt, October28,2026](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793155324615559).
+Source: [operator receipt, October28,2026](PRIVATE_RECEIPT).
 This coding task read that receipt through Slack; it did not access05,
 launch inference, or independently inspect the host-local raw artifacts.
 
@@ -52,8 +54,8 @@ No pair-owned processes remained; both GPU VRAM readings returned approximately
 to their pre-run baseline. The existing `nvtop` process was left untouched.
 Source, build and evidence remain on05's secondary2TB filesystem:
 
-- Root: `/srv/models/inferswarm-artifacts/portable-expert-ac85ff3/`
-- Pair: `/srv/models/inferswarm-artifacts/portable-expert-ac85ff3/pair/`
+- Root: `${PRIVATE_ARTIFACT_643493BE}`
+- Pair: `${PRIVATE_ARTIFACT_4CF25D31}`
 - Retained source: 85,897,216 bytes.
 - Retained build: 542,232,576 bytes.
 - Retained pair: 84,750,336 bytes.
