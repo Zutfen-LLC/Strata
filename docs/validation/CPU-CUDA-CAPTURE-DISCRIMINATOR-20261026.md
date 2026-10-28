@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Offline CPU/CUDA correctness discriminator
 
 Issue #18 now prioritizes correctness and model capacity. A slower distribution can
@@ -33,8 +35,8 @@ work. Reuse its existing CUDA/ggml configuration and build directory. No depende
 installation or fresh model setup is needed.
 
 ```sh
-build=/home/hermes/strata-cuda-rows-01539e99-20261026T035048Z/build
-diag=/home/hermes/strata-cpu-cuda-offline-diagnostic
+build=${PRIVATE_ARTIFACT_605BE27E}
+diag=${PRIVATE_ARTIFACT_2FD31438}
 cmake --build "$build" --target gpu_capture_replay_check gpu_capture_replay -j 2
 ctest --test-dir "$build" -R '^gpu_capture_replay_check$' --output-on-failure
 "$build/gpu_capture_replay" --select "$diag/cpu-capture.bin" "$diag"/B-*.plan
@@ -116,7 +118,7 @@ default, tolerance, resident, network access policy or model support is changed.
 
 ## Supplied first real-entry result at e275891d
 
-The parent supplied a completed Hermes replay on 03, not a private-artifact audit
+The parent supplied a completed operator replay on 03, not a private-artifact audit
 by this coding task. Record 0, entry 2, layer 0, token 0, expert 77 intersected the
 actual B peer 03b plan. Its 5,222,400-byte blob passed the assignment digest check.
 The actual replay took 0.615 s; the synthetic CTest also passed.

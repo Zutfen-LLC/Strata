@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Reply readiness: last bounded feasibility discriminator
 
 Issues #15/#16 remain deferred. Implementation pin:
@@ -74,14 +76,14 @@ savings remain an optimistic bound and do not authorize transport work.
 ```bash
 set -euo pipefail
 PIN=e280b317875064b46a16aafd542e921f9512941f
-GIT=/home/hermes/strata-pr10-compress-74ffe391-src
-SRC=/home/hermes/strata-pr10-readiness-e280b317-src
-BUILD=/home/hermes/strata-pr10-readiness-e280b317-build
-OUT=/home/hermes/strata-pr10-readiness-e280b317-out
-GGML=/home/hermes/strata-cand-66235df1-build-cpu/_deps/strata_llamacpp-src
-CAP=/home/hermes/strata-pr10-micro-bc8e5754-20261025-05/cpu-capture.bin
-MAN=/home/hermes/strata-wl-metadata/local.manifest
-MODEL=/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66
+GIT=${PRIVATE_ARTIFACT_ED09B531}
+SRC=${PRIVATE_ARTIFACT_31AC9B35}
+BUILD=${PRIVATE_ARTIFACT_46823945}
+OUT=${PRIVATE_ARTIFACT_2364544E}
+GGML=${PRIVATE_ARTIFACT_DFD8EAFF}
+CAP=${PRIVATE_ARTIFACT_573112EC}
+MAN=${PRIVATE_ARTIFACT_C2D77087}
+MODEL=${PRIVATE_ARTIFACT_9AA3D2B0}
 test ! -e "$SRC" && test ! -e "$BUILD" && test ! -e "$OUT"
 test "$(git -C "$GGML" rev-parse HEAD)" = 3cf03257f219afbe7334045ff7c6a06ac68c627d
 test -z "$(git -C "$GGML" status --porcelain)"
