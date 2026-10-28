@@ -14,14 +14,15 @@ int main() {
         check(bool(layer), error);
         // The trial flag alone preserves CPU allocation and CPU results.
         auto trial_options = options;
+        trial_options.resident_state = true;
         trial_options.resident_attention_weights = true;
         auto trial = PortableGdnLayer::create(0, f.views, trial_options, error);
-        check(bool(trial) && trial->memory_usage().device_weights == 0, "CPU trial keeps host weights");
+        check(bool(trial) && trial->memory_usage().device_state == 0 && trial->memory_usage().device_weights == 0, "CPU trial keeps host weights");
         auto fallback_options = trial_options;
         fallback_options.execution.request_accelerator = true;
         fallback_options.execution.allow_cpu_fallback = true;
         auto fallback = PortableGdnLayer::create(0, f.views, fallback_options, error);
-        check(bool(fallback) && fallback->memory_usage().device_weights == 0,
+        check(bool(fallback) && fallback->memory_usage().device_state == 0 && fallback->memory_usage().device_weights == 0,
               "missing requested backend preserves permitted CPU fallback");
         trial_options.execution.resident_dense_weights = true;
         // A borrowed CPU backend exercises the selected-backend allocation branch
@@ -33,6 +34,12 @@ int main() {
         check(bool(allocated) && allocated->memory_usage().device_weights > 0, "selected backend owns weights");
         check(allocated->memory_usage().host_weights + allocated->memory_usage().device_weights == allocated->weight_bytes(),
               "actual aligned weight ledger reconciliation");
+        check(allocated->memory_usage().device_state > 0 &&
+              allocated->memory_usage().device_state <= trial_options.resident_state_budget, "aligned state ledger");
+        auto refused_state = trial_options;
+        refused_state.resident_state_budget = 1;
+        check(!PortableGdnLayer::create(0, f.views, refused_state, error) &&
+              error.find("resident state budget") != std::string::npos, "state allocation admission refusal");
         PortableRoute route;
         PortableGdnTrace trace;
         for (int t = 0; t < 3; ++t) {
@@ -42,7 +49,12 @@ int main() {
             PortableRoute trial_route, allocated_route, fallback_route;
             check(fallback->step(f.input(t), experts(), fallback_route, error), error);
             check(trial->step(f.input(t), experts(), trial_route, error), error);
-            check(allocated->step(f.input(t), experts(), allocated_route, error), error);
+            PortableGdnTrace resident_trace;
+            check(allocated->step(f.input(t), experts(), allocated_route, error, &resident_trace), error);
+            for (auto member : {&PortableGdnTrace::qkv, &PortableGdnTrace::convolution, &PortableGdnTrace::query,
+                                &PortableGdnTrace::key, &PortableGdnTrace::value, &PortableGdnTrace::decay,
+                                &PortableGdnTrace::beta, &PortableGdnTrace::attention})
+                close(resident_trace.*member, trace.*member, 0, "resident state trace parity");
             close(fallback->last_residual(), layer->last_residual(), 0, "CPU fallback output unchanged");
             close(allocated_route.weights, route.weights, 0, "trial route weights unchanged");
             close(trial->last_residual(), layer->last_residual(), 0, "CPU trial output unchanged");
@@ -59,7 +71,24 @@ int main() {
               [](int64_t, const PortableRoute &, std::vector<float> &, std::string &) { return false; },
               route, error), "resident allocation rejects callback");
         close(allocated->recurrent_state(), allocated_state, 0, "resident allocation rollback");
+        for (int failure = 0; failure < 3; ++failure) {
+            check(!allocated->step(f.input(3),
+                [failure](int64_t, const PortableRoute &, std::vector<float> &rows, std::string &) -> bool {
+                    if (failure == 0) throw std::runtime_error("callback threw");
+                    if (failure == 1) return false;
+                    rows.assign(25600, std::numeric_limits<float>::quiet_NaN());
+                    return true;
+                }, route, error, &trace), "resident callback failure accepted");
+            check(allocated->recurrent_state() == state && allocated->convolution_history() == history &&
+                  allocated->last_residual() == residual && allocated->tokens() == 3 && trace.attention.empty(),
+                  "resident failure changed public state");
+        }
+        check(allocated->step(f.input(3), experts(), route, error, &trace), error);
+        const auto after_failure = allocated->last_residual();
         check(allocated->reset(error) && allocated->tokens() == 0, "resident allocation reset");
+        for (int t = 0; t < 4; ++t)
+            check(allocated->step(f.input(t), experts(), route, error, &trace), error);
+        close(allocated->last_residual(), after_failure, 0, "resident failure/reset replay");
         auto reject = [](int64_t, const PortableRoute &, std::vector<float> &, std::string &e) {
             e = "deliberate callback rejection";
             return false;
@@ -121,23 +150,24 @@ int main() {
         for (auto &view : invalid_views)
             if (view.name == "blk.0.ssm_a")
                 view.data = invalid_decay.data();
-        auto nonfinite_layer = PortableGdnLayer::create(0, invalid_views, options, error);
-        check(bool(nonfinite_layer), error);
-        const auto clean_state = nonfinite_layer->recurrent_state(),
-                   clean_history = nonfinite_layer->convolution_history();
-        bool nonfinite_dispatched = false;
-        check(!nonfinite_layer->step(f.input(0),
-            [&](int64_t, const PortableRoute &, std::vector<float> &, std::string &) {
-                nonfinite_dispatched = true;
-                return true;
-            }, route, error, &trace), "nonfinite attention candidate accepted");
-        check(error == "portable GDN: nonfinite input/result" && !nonfinite_dispatched,
-              "attention candidate finite guard or diagnostic changed: " + error);
-        check(nonfinite_layer->recurrent_state() == clean_state &&
-              nonfinite_layer->convolution_history() == clean_history &&
-              nonfinite_layer->last_residual().empty() && nonfinite_layer->tokens() == 0 &&
-              trace.attention.empty(), "nonfinite attention candidate changed committed state/trace");
-        nonfinite_layer.reset();
+        for (const auto &nonfinite_options : {options, trial_options}) {
+            auto nonfinite_layer = PortableGdnLayer::create(0, invalid_views, nonfinite_options, error);
+            check(bool(nonfinite_layer), error);
+            const auto clean_state = nonfinite_layer->recurrent_state(),
+                       clean_history = nonfinite_layer->convolution_history();
+            bool nonfinite_dispatched = false;
+            check(!nonfinite_layer->step(f.input(0),
+                [&](int64_t, const PortableRoute &, std::vector<float> &, std::string &) {
+                    nonfinite_dispatched = true;
+                    return true;
+                }, route, error, &trace), "nonfinite attention candidate accepted");
+            check(error == "portable GDN: nonfinite input/result" && !nonfinite_dispatched,
+                  "attention candidate finite guard or diagnostic changed: " + error);
+            check(nonfinite_layer->recurrent_state() == clean_state &&
+                  nonfinite_layer->convolution_history() == clean_history &&
+                  nonfinite_layer->last_residual().empty() && nonfinite_layer->tokens() == 0 &&
+                  trace.attention.empty(), "nonfinite attention candidate changed committed state/trace");
+        } // finite guard stays active with state OFF and ON
         check(layer->step(f.input(3), experts(), route, error, &trace), error);
         reference(f, state, history, trace, *layer);
         check(layer->reset(error), error);

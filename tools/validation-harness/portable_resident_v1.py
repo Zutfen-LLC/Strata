@@ -161,14 +161,19 @@ def main():
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--tokens-file', type=Path, required=True, help='frozen JSON array of token IDs')
     p.add_argument('--max-new', type=int, required=True)
+    p.add_argument('--expert-tensor-mib', default='2404,2404')
     p.add_argument('--expert-timings', action='store_true', help='coarse provider and per-device executor call timing')
     p.add_argument('--gdn-resident-weights', action='store_true', help='forward the opt-in GDN attention weight placement trial')
+    p.add_argument('--gdn-resident-state', action='store_true', help='forward session-lifetime GDN state residency')
     p.add_argument('--dense-resident-weights', action='store_true', help='forward model-lifetime dense weight placement')
     p.add_argument('--plan', type=Path, action='append', required=True)
     S.device_arguments(p)
     args=p.parse_args()
     selected,physical=S.device_selection(p,args)
     if len(args.plan)!=2 or args.max_new not in range(257): p.error('two plans and bounded max-new required')
+    caps=args.expert_tensor_mib.split(',')
+    if len(caps)!=2 or any(not c.isdecimal() or not 0<int(c)<=8192 for c in caps):
+        p.error('two positive bounded expert tensor caps required')
     tokens=json.loads(args.tokens_file.read_text())
     if not isinstance(tokens,list) or not 1<=len(tokens)<=256 or any(type(t)!=int or t<0 or t>2147483647 for t in tokens):
         p.error('bounded nonempty token IDs required')
@@ -217,11 +222,12 @@ def main():
                  '--manifest',args.manifest,'--stdio','--max-requests','5','--context','256','--threads','4',
                  '--expert-workers','12','--host-cap-mib','32768','--vulkan',args.devices,
                  '--device-cap-mib',','.join([str(args.device_cap_mib)]*2),'--split',str(args.split),
-                 '--expert-tensor-mib','2404,2404','--expert-workspace-mib','128,128',
+                 '--expert-tensor-mib',args.expert_tensor_mib,'--expert-workspace-mib','128,128',
                  '--expert-free-reserve-mib','512,512','--placements',str(args.out/'placements.tsv')]
         for i,plan in enumerate(args.plan): command+=['--expert-plan',f'{i}:{plan.resolve(strict=True)}']
         if args.expert_timings: command += ['--expert-timings']
         if args.gdn_resident_weights: command += ['--gdn-resident-weights']
+        if args.gdn_resident_state: command += ['--gdn-resident-state']
         if args.dense_resident_weights: command += ['--dense-resident-weights']
         receipt['plan_sha256']=[Q.bundle.sha(plan) for plan in args.plan]
         Q.write(args.out/'argv.json',command)

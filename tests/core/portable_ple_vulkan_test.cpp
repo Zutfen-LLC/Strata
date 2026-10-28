@@ -26,12 +26,16 @@ int main(int argc, char **argv) {
                                                                            ggml_backend_free);
         check(bool(device) && !ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "distinct Vulkan buffers");
-        for (int mode : {0, 1, 2}) {
+        for (int trial : {0, 1, 2, 3, 4, 5}) {
+            const int mode = trial % 3;
+            const bool state_resident = trial >= 3;
+            std::printf("state residency=%d\n", int(state_resident));
             const bool resident = mode != 0;
             std::printf("dense weight fixture: mode=%d (default=0 GDN-only=1 dense=2)\n", mode);
             std::string error;
             Fixture f;
             PortableGdnOptions options;
+            options.resident_state = state_resident;
             options.resident_attention_weights = mode == 1;
             options.execution.resident_dense_weights = mode == 2;
             options.ple_table = small_table(error);
@@ -42,6 +46,7 @@ int main(int argc, char **argv) {
             options.execution.request_accelerator = true;
             auto layer = PortableGdnLayer::create(1, f.views, options, error);
             check(bool(layer), error);
+            check((layer->memory_usage().device_state > 0) == state_resident, "resident state ledger");
             check((layer->memory_usage().device_weights > 0) == resident, "resident weight ledger");
             check(layer->memory_usage().host_weights + layer->memory_usage().device_weights == layer->weight_bytes(),
                   "host/device weight allocation reconciliation");
@@ -64,7 +69,7 @@ int main(int argc, char **argv) {
                         "SSM_CONV=%zu strict execution, 10 tokens, independent scalar "
                         "PLE/GDN, CPU parity, EOS/reset/rollback passed\n",
                         description, ggml_backend_name(device.get()), mat, gdn, conv);
-        } // exercise both streamed and resident weight placement
+        } // state OFF/ON crossed with all three weight placements
         return 0;
     } catch (const std::exception &e) {
         std::fprintf(stderr, "%s\n", e.what());

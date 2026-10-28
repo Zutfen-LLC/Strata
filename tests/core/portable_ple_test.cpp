@@ -1,4 +1,5 @@
 #include "gguf_fixture.hpp"
+#include "ggml-cpu.h"
 #include "portable_ple_fixture.hpp"
 #include <chrono>
 using namespace ple_fixture;
@@ -201,6 +202,16 @@ int main() {
         auto layer = PortableGdnLayer::create(1, f.views, options, error);
         check(bool(layer), error);
         exercise(*layer, f);
+        std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> selected(ggml_backend_cpu_init(), ggml_backend_free);
+        auto resident_options = options;
+        resident_options.resident_state = true;
+        resident_options.execution.request_accelerator = true;
+        resident_options.execution.accelerator = selected.get();
+        auto resident_layer = PortableGdnLayer::create(1, f.views, resident_options, error);
+        check(bool(resident_layer) && resident_layer->memory_usage().device_state > 0, "PLE resident state admission");
+        exercise(*resident_layer, f);
+        resident_options.resident_state_budget = resident_layer->memory_usage().device_state - 1;
+        check(!PortableGdnLayer::create(1, f.views, resident_options, error), "PLE aligned state cap refusal");
         // Upstream permits flattened norm tensors and retains F16 conv weights.
         auto reshaped = f.views;
         std::vector<uint16_t> half_conv(40960);

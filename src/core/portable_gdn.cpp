@@ -69,6 +69,10 @@ struct PortableGdnLayer::Impl {
     PortableGdnOptions options;
     portable_detail::Backend cpu{nullptr, ggml_backend_free};
     Context weights_ctx{nullptr, ggml_free}, ctx{nullptr, ggml_free};
+    Context state_ctx{nullptr, ggml_free};
+    Buffer state_buffer{nullptr, ggml_backend_buffer_free};
+    size_t device_state_size = 0;
+    bool state_healthy = true;
     Buffer weights_buffer{nullptr, ggml_backend_buffer_free};
     portable_detail::Scheduler scheduler{nullptr, ggml_backend_sched_free};
     std::unique_ptr<PortableFfn> ffn;
@@ -154,14 +158,19 @@ struct PortableGdnLayer::Impl {
         weights_size = ffn->weight_bytes() + actual_weights;
         auto *c = ctx.get();
         input = ggml_new_tensor_3d(c, GGML_TYPE_F32, H, HC, 1);
-        state_input = ggml_new_tensor_4d(c, GGML_TYPE_F32, D, D, HV, 1);
-        history_input = ggml_new_tensor_3d(c, GGML_TYPE_F32, 3, CHANNELS, 1);
+        const bool keep_state = options.resident_state && options.execution.request_accelerator &&
+                                options.execution.accelerator;
+        if (keep_state)
+            state_ctx = context();
+        auto *sc = keep_state ? state_ctx.get() : c;
+        state_input = ggml_new_tensor_4d(sc, GGML_TYPE_F32, D, D, HV, 1);
+        history_input = ggml_new_tensor_3d(sc, GGML_TYPE_F32, 3, CHANNELS, 1);
         for (auto *t : {input, state_input, history_input})
             ggml_set_input(t);
         auto *hidden = input;
         if (options.ple_table) {
             ple_emb = ggml_new_tensor_2d(c, GGML_TYPE_F32, H, 1);
-            ple_hist = ggml_new_tensor_2d(c, GGML_TYPE_F32, 9, RESIDUAL);
+            ple_hist = ggml_new_tensor_2d(sc, GGML_TYPE_F32, 9, RESIDUAL);
             ggml_set_input(ple_emb);
             ggml_set_input(ple_hist);
             auto grouped = [&](ggml_tensor *x, const char *name) {
@@ -249,6 +258,29 @@ struct PortableGdnLayer::Impl {
                 ggml_build_forward_expand(graph, t);
             }
             ple_history.assign(PLE_HISTORY, 0);
+        }
+        if (keep_state) {
+            // Native session ownership: one committed state allocation per layer.
+            // Candidate graph outputs remain separate until attention AND FFN pass.
+            auto *backend = options.execution.accelerator;
+            const size_t bound = ggml_backend_alloc_ctx_tensors_from_buft_size(
+                state_ctx.get(), ggml_backend_get_default_buffer_type(backend));
+            require(bound <= options.resident_state_budget, "portable GDN: resident state budget exceeded");
+            state_buffer.reset(ggml_backend_alloc_ctx_tensors(state_ctx.get(), backend));
+            require(bool(state_buffer), "portable GDN: resident state allocation failed");
+            device_state_size = ggml_backend_buffer_get_size(state_buffer.get());
+            require(device_state_size <= options.resident_state_budget,
+                    "portable GDN: actual resident state budget exceeded");
+            ggml_backend_buffer_clear(state_buffer.get(), 0);
+            ggml_backend_synchronize(backend);
+            // The copy API requires identical layouts. These are metadata-only
+            // views of the unchanged candidate bytes, allocated before scheduling.
+            state_output = ggml_reshape_4d(c, state_output, D, D, HV, 1);
+            history_output = ggml_reshape_3d(c, history_output, 3, CHANNELS, 1);
+            for (auto *t : {state_output, history_output}) {
+                ggml_set_output(t);
+                ggml_build_forward_expand(graph, t);
+            }
         }
         scheduler = portable_detail::schedule(graph, "gdn-attention", options.execution, cpu, placement, graphs_size);
         state.assign(STATES, 0);
@@ -343,6 +375,12 @@ bool PortableGdnLayer::reset(std::string &error) {
     try {
         std::vector<float> zero(RESIDUAL, 0);
         require(impl_->ffn->reset(zero, error), error);
+        if (impl_->state_buffer) {
+            impl_->state_healthy = false;
+            ggml_backend_buffer_clear(impl_->state_buffer.get(), 0);
+            ggml_backend_synchronize(impl_->options.execution.accelerator);
+            impl_->state_healthy = true;
+        }
         std::fill(impl_->state.begin(), impl_->state.end(), 0);
         std::fill(impl_->history.begin(), impl_->history.end(), 0);
         std::fill(impl_->ple_history.begin(), impl_->ple_history.end(), 0);
@@ -367,6 +405,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         *trace = {};
     try {
         auto &s = *impl_;
+        require(s.state_healthy, "portable GDN: resident state poisoned; reset required");
         require(residual.size() == RESIDUAL && bool(dispatch), "portable GDN: residual/callback required");
         require(s.count < UINT64_MAX, "portable GDN: token counter exhausted");
         finite(residual);
@@ -383,7 +422,8 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
                 std::array<uint32_t, 16> rows{};
                 require(s.options.ple_table->gather(token, s.previous, rows, embedding, error), error);
                 write(s.ple_emb, embedding);
-                write(s.ple_hist, s.ple_history);
+                if (!s.state_buffer)
+                    write(s.ple_hist, s.ple_history);
                 next_previous = {{s.previous[1], token}};
                 if (trace) {
                     next_trace.ple_rows = rows;
@@ -391,8 +431,10 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
                 }
             }
             write(s.input, residual);
-            write(s.state_input, s.state);
-            write(s.history_input, s.history);
+            if (!s.state_buffer) {
+                write(s.state_input, s.state);
+                write(s.history_input, s.history);
+            }
             ggml_status status;
             {
                 portable_detail::ScopedExpertTimer<> compute_timer(work != nullptr,
@@ -431,6 +473,19 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
             require(ok, error);
             next_residual = s.ffn->residual(); // allocate before the no-throw public commit
         }
+        if (s.state_buffer) {
+            // Synchronous backend copies run only after every candidate read,
+            // finite check, callback and potentially throwing host allocation.
+            // A recoverable copy exception poisons device state until reset;
+            // public mirrors still describe the last successful token.
+            s.state_healthy = false;
+            ggml_backend_tensor_copy(s.state_output, s.state_input);
+            ggml_backend_tensor_copy(s.history_output, s.history_input);
+            if (s.options.ple_table)
+                ggml_backend_tensor_copy(s.ple_hist_out, s.ple_hist);
+            ggml_backend_synchronize(s.options.execution.accelerator);
+            s.state_healthy = true;
+        }
         s.ple_history.swap(next_ple_history);
         s.previous = next_previous;
         s.state.swap(next_state);
@@ -459,6 +514,10 @@ size_t PortableGdnLayer::state_bytes() const { return HOST_STATE_BYTES + (impl_-
 PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     const auto &s = *impl_;
     auto m = s.ffn->memory_usage();
+    m.device_state += s.device_state_size;
+    // Extra metadata context plus the copy API's bounded host staging fallback.
+    if (s.state_buffer)
+        m.host_extra_bound += (4u << 20) + STATES * sizeof(float);
     m.device_weights += s.attention_device_weights;
     m.host_weights = s.weights_size - m.device_weights;
     m.host_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());

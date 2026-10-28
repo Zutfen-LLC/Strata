@@ -6,6 +6,8 @@ struct PortableGdnOptions {
     PortableFfnOptions execution;
     size_t state_budget = 16ull << 20;           // host committed/candidate state and residuals
     std::shared_ptr<PortablePleTable> ple_table; // enables configured layer-1 PLE; host only
+    bool resident_state = false; // session-lifetime GDN/PLE state; host mirrors stay validated
+    size_t resident_state_budget = 4ull << 20; // aligned persistent backend inputs, separate from graphs
     bool resident_attention_weights = false; // opt-in; CPU execution retains CPU allocation
 };
 // Cumulative host-call wall scopes. Compute is nested in attention/exchange;
