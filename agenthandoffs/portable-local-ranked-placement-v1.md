@@ -25,14 +25,23 @@ starts inference, reconstructs CUDA/helper ownership or changes routing.
 
 Known candidate source on02:
 `/home/hermes/strata-local-q8-20261023T152939Z/expert-profile.bin`.
-Its actual SHA256, size, header and origin are **pending Hermes's read-only
-report**, not supplied or inferred here. Obtain the complete original file,
-not a prefix, text conversion, regenerated profile or CUDA/helper complement.
-Pin its independently reported SHA before export; record its original path,
-producer/source revision, generation command or retained origin receipt and
-whether it was shipped, trace-ranked or learned. A complete unique 48x512 writer
-profile is 196632 bytes; partial rankings have size 98328 + 4 * n_ranked. These
-are format expectations, not observations of the candidate.
+Hermes's [read-only evidence](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793165687914299),
+relayed by parent, reports 196632 bytes, SHA256
+`8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf`,
+STRP version 1, 48 layers, 512 experts, 24576 unique in-range ranked pairs and
+a consistent inverse-rank table. Adjacent receipts show the file was copied
+from `inferswarm03:/home/hermes/strata-trial-17ecafc/data/expert-profile.bin`
+and later used on02 local Q8 with per-layer primary placement and six coding
+requests. **The original generation trace is unknown.** This establishes a
+valid candidate order, not measured workload heat or how the order was built.
+This coding task has not fetched the raw profile or independently inspected it.
+
+Obtain the complete original file on02/05, not a prefix, text conversion,
+regenerated profile or CUDA/helper complement. Preserve the original path and
+origin receipt beside it. The runtime exporter validates the independently
+supplied hash and full format before writing assignments; no raw profile is
+needed on Valinor. Partial writer rankings have size 98328 + 4 * n_ranked;
+this candidate's reported 196632-byte size matches its complete ranking.
 
 The format supports ordered placement but does not establish current workload
 heat. `rank_learned_profile` may put current residents first, then heat/prior;
@@ -77,7 +86,7 @@ set -eu
 : "${ROOT:?fresh secondary-disk artifact root}"
 : "${PYTHON05:?existing Python}"
 : "${PROFILE:?complete exported original profile under ROOT}"
-: "${PROFILE_SHA:?Hermes independent original SHA256}"
+PROFILE_SHA=8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf
 : "${PLAN_TOOL:?existing strata-gpu-manifest absolute path}"
 : "${PLAN_TOOL_SHA:?independent retained executable SHA256}"
 SOURCE="$ROOT/source"
