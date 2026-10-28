@@ -74,7 +74,6 @@ struct PortableGdnLayer::Impl {
     ggml_tensor *input = nullptr, *state_input = nullptr, *history_input = nullptr, *attn_residual = nullptr;
     ggml_tensor *state_output = nullptr, *history_output = nullptr, *qkv = nullptr, *conv = nullptr, *q = nullptr,
                 *k = nullptr, *v = nullptr, *g = nullptr, *beta = nullptr, *attention = nullptr;
-    int64_t layer_id = 0;
     ggml_tensor *ple_emb = nullptr, *ple_hist = nullptr, *ple_hist_out = nullptr, *ple_key = nullptr,
                 *ple_value = nullptr, *ple_gate = nullptr, *ple_norm = nullptr, *ple_conv = nullptr,
                 *ple_result = nullptr;
@@ -86,16 +85,15 @@ struct PortableGdnLayer::Impl {
     uint64_t count = 0;
 
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
-        require(layer == 0 || layer == 1, "portable GDN: only layers 0/1 implemented; QSA and other layers "
-                                          "rejected");
-        layer_id = layer;
-        require((layer == 1) == bool(options.ple_table),
-                "portable GDN: layer 1 requires PLE table; layer 0 forbids it");
+        require(layer >= 0 && layer < 48 && layer % 4 != 3,
+                "portable GDN: expected a non-QSA layer in [0,47]");
+        require(!options.ple_table || layer == 1,
+                "portable GDN: this model supports PLE only at layer 1");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
         auto expected_shapes = shapes();
-        if (layer == 1)
+        if (options.ple_table)
             expected_shapes.insert(ple_shapes().begin(), ple_shapes().end());
-        require(options.state_budget >= HOST_STATE_BYTES + (layer == 1 ? PLE_STATE_BYTES : 0),
+        require(options.state_budget >= HOST_STATE_BYTES + (options.ple_table ? PLE_STATE_BYTES : 0),
                 "portable GDN: host state budget exceeded");
         std::vector<PortableTensorView> fw, aw;
         for (const auto &t : tensors) {
@@ -151,7 +149,7 @@ struct PortableGdnLayer::Impl {
         for (auto *t : {input, state_input, history_input})
             ggml_set_input(t);
         auto *hidden = input;
-        if (layer == 1) {
+        if (options.ple_table) {
             ple_emb = ggml_new_tensor_2d(c, GGML_TYPE_F32, H, 1);
             ple_hist = ggml_new_tensor_2d(c, GGML_TYPE_F32, 9, RESIDUAL);
             ggml_set_input(ple_emb);
@@ -189,6 +187,7 @@ struct PortableGdnLayer::Impl {
             }
             ple_conv = ggml_reshape_3d(c, ggml_silu(c, sum), H, HC, 1);
             ple_result = ggml_add(c, input, ggml_add(c, gated_value, ple_conv));
+            ggml_set_name(ple_result, "ple_residual");
             hidden = ple_result;
         }
         auto *norm =
@@ -234,7 +233,7 @@ struct PortableGdnLayer::Impl {
             ggml_set_output(t);
             ggml_build_forward_expand(graph, t);
         }
-        if (layer == 1) {
+        if (options.ple_table) {
             for (auto *t : {ple_hist_out, ple_key, ple_value, ple_gate, ple_norm, ple_conv, ple_result}) {
                 ggml_set_output(t);
                 ggml_build_forward_expand(graph, t);
@@ -264,21 +263,29 @@ std::unique_ptr<PortableGdnLayer> PortableGdnLayer::from_gguf(const GgufModel &m
                                                               PortableGdnOptions options, std::string &error) {
     error.clear();
     try {
-        require(layer == 0 || layer == 1, "portable GDN: only layers 0/1 implemented; QSA rejected");
+        require(layer >= 0 && layer < 48 && layer % 4 != 3,
+                "portable GDN: expected a non-QSA layer in [0,47]");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
-        if (layer == 1) {
-            options.ple_table = PortablePleTable::from_gguf(model, error);
-            require(bool(options.ple_table), error);
-        }
         const auto *arch = model.meta().get("general.architecture");
         require(arch && arch->s == "qwen4exp", "portable GDN: requires general.architecture=qwen4exp");
         const auto geometry_error = check_architecture(model.meta());
         require(geometry_error.empty(), "portable GDN: " + geometry_error);
         const auto *ple = model.meta().get("qwen4exp.ple.layers");
-        require(ple && ple->type == MetaType::ARRAY && ple->items.size() == 1 && ple->items[0].is_num() &&
-                    ple->items[0].u == 1,
-                "portable GDN: expected PLE only at layer 1; configured PLE at "
-                "layer 0 is unsupported");
+        bool configured_ple = false;
+        if (ple) {
+            require(ple->type == MetaType::ARRAY && ple->items.size() <= 1,
+                    "portable GDN: malformed/unsupported PLE layer list");
+            for (const auto &v : ple->items) {
+                require(v.is_num() && v.u == 1, "portable GDN: supports PLE only at layer 1");
+                configured_ple = layer == 1;
+            }
+        }
+        require(!options.ple_table || configured_ple,
+                "portable GDN: PLE table supplied for a layer without configured PLE");
+        if (configured_ple) {
+            options.ple_table = PortablePleTable::from_gguf(model, error);
+            require(bool(options.ple_table), error);
+        }
         for (auto pair : {std::pair<const char *, uint64_t>{"embedding_length", H},
                           {"block_count", 48},
                           {"ssm.state_size", D},
@@ -302,7 +309,7 @@ std::unique_ptr<PortableGdnLayer> PortableGdnLayer::from_gguf(const GgufModel &m
                 if (t.name.rfind(prefix, 0) != 0)
                     continue;
                 const auto suffix = t.name.substr(prefix.size());
-                if (!shapes().count(suffix) && !(layer == 1 && ple_shapes().count(suffix)) &&
+                if (!shapes().count(suffix) && suffix.rfind("ple_", 0) != 0 &&
                     suffix.rfind("hc_ffn_", 0) != 0 &&
                     (suffix.rfind("ffn_", 0) != 0 || suffix.find("_exps") != std::string::npos))
                     continue;
@@ -355,7 +362,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         finite(residual);
         PortableGdnTrace next_trace;
         auto next_previous = s.previous;
-        if (s.layer_id == 1) {
+        if (s.options.ple_table) {
             std::vector<float> embedding;
             std::array<uint32_t, 16> rows{};
             require(s.options.ple_table->gather(token, s.previous, rows, embedding, error), error);
@@ -374,7 +381,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
                 "portable GDN: attention graph failed");
         auto next_state = read(s.state_output), next_history = read(s.history_output),
              next_residual = read(s.attn_residual);
-        auto next_ple_history = s.layer_id == 1 ? read(s.ple_hist_out) : std::vector<float>{};
+        auto next_ple_history = s.options.ple_table ? read(s.ple_hist_out) : std::vector<float>{};
         if (trace) {
             next_trace.qkv = read(s.qkv);
             next_trace.convolution = read(s.conv);
@@ -384,7 +391,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
             next_trace.decay = read(s.g);
             next_trace.beta = read(s.beta);
             next_trace.attention = read(s.attention);
-            if (s.layer_id == 1) {
+            if (s.options.ple_table) {
                 next_trace.ple_key = read(s.ple_key);
                 next_trace.ple_value = read(s.ple_value);
                 next_trace.ple_gate = read(s.ple_gate);
@@ -422,5 +429,20 @@ uint64_t PortableGdnLayer::tokens() const { return impl_->count; }
 const std::vector<PortablePlacement> &PortableGdnLayer::placements() const { return impl_->placement; }
 size_t PortableGdnLayer::weight_bytes() const { return impl_->weights_size; }
 size_t PortableGdnLayer::graph_bytes() const { return impl_->graphs_size; }
-size_t PortableGdnLayer::state_bytes() const { return HOST_STATE_BYTES + (impl_->layer_id == 1 ? PLE_STATE_BYTES : 0); }
+size_t PortableGdnLayer::state_bytes() const { return HOST_STATE_BYTES + (impl_->options.ple_table ? PLE_STATE_BYTES : 0); }
+PortableMemoryUsage PortableGdnLayer::memory_usage() const {
+    const auto &s = *impl_;
+    auto m = s.ffn->memory_usage();
+    m.host_weights = s.weights_size;
+    m.host_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
+    if (s.options.execution.accelerator && s.options.execution.request_accelerator)
+        m.device_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.options.execution.accelerator);
+    const size_t buffers = m.host_graph + m.device_graph;
+    const size_t allowance = s.graphs_size > buffers ? s.graphs_size - buffers : 0;
+    m.host_extra_bound += state_bytes() + (8u << 20) + allowance +
+                          ggml_graph_plan(s.graph, s.options.execution.threads, nullptr).work_size;
+    if (s.options.execution.request_accelerator)
+        m.device_extra_bound += allowance + size_t(H * CHANNELS) * sizeof(float) + (8u << 20);
+    return m;
+}
 } // namespace strata::core

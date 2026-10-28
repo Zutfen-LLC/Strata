@@ -139,7 +139,7 @@ inline void exercise(PortableGdnLayer &layer, const Fixture &f, PortableGdnLayer
     std::string error;
     PortableRoute route;
     PortableGdnTrace trace;
-    const int32_t tokens[] = {0, 19, 248044, 42, 248056, 71, 93, 15, 26, 37};
+    const int32_t tokens[] = {0, 19, 248044, 42, 248056, 248046, 93, 15, 26, 37};
     std::vector<float> first;
     std::array<int32_t, 2> previous_tokens{{-1, -1}};
     for (size_t t = 0; t < 10; ++t) {

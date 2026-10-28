@@ -19,8 +19,9 @@ struct PortableFfnGeometry {
     float epsilon = 1e-6f;
 };
 
-// GGUF layout: dimension zero varies fastest. Only F32 (0) and Q8_0 (8)
-// are accepted. Payloads are copied at construction; views need not outlive it.
+// GGUF layout: dimension zero varies fastest. FFN accepts F32 (0)/Q8_0 (8).
+// QSA additionally accepts BF16 (30) only for indexer Q/K projections and
+// widens them exactly to F32. Payloads are copied at construction.
 struct PortableTensorView {
     std::string name;
     std::vector<int64_t> shape;
@@ -43,6 +44,13 @@ struct PortablePlacement {
     std::string phase, operation, tensor, type, backend, fallback_reason;
     std::vector<int64_t> shape;
     bool metadata_only = false; // reshape/view/permute/transpose alias storage
+    int64_t layer = -1; // model report: 0..47, 48 for global head
+};
+
+struct PortableMemoryUsage {
+    size_t host_weights = 0, host_graph = 0, device_graph = 0;
+    // Conservative admission for backend workspaces, metadata and host state.
+    size_t host_extra_bound = 0, device_extra_bound = 0;
 };
 
 struct PortableRoute {
@@ -76,6 +84,7 @@ public:
     const std::vector<PortablePlacement>& placements() const;
     size_t weight_bytes() const;
     size_t graph_bytes() const;
+    PortableMemoryUsage memory_usage() const;
 
 private:
     struct Impl;

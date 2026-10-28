@@ -15,7 +15,7 @@ struct PortableQsaTrace {
     std::vector<float> query, key, value, gate, index_query, index_raw_key;
     std::vector<float> pooled_key, cell_scores, selected, attention, gated_attention, attention_residual;
 };
-// Opt-in complete qwen4exp layer 3, one text sequence, one token per call.
+// Opt-in complete qwen4exp QSA layers 3/7/.../47, one text sequence, one token per call.
 // Positions must be contiguous starting at zero. K/V retain the CUDA FP16
 // storage policy; raw indexer tail and normalized/rotated pooled keys are F32.
 class PortableQsaLayer {
@@ -45,6 +45,7 @@ class PortableQsaLayer {
     size_t weight_bytes() const;
     // Scheduler allocations plus admitted workspace allowances, not total RSS/VRAM.
     size_t graph_bytes() const;
+    PortableMemoryUsage memory_usage() const;
     size_t state_bytes() const;
 
   private:

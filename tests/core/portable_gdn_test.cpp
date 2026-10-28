@@ -68,8 +68,31 @@ int main() {
         check(layer->step(f.input(0), experts(), route, error, &trace), error);
         reference(f, state, history, trace, *layer);
         const auto first_output = layer->last_residual();
-        check(!PortableGdnLayer::create(1, f.views, options, error), "PLE layer rejection");
+        check(!PortableGdnLayer::create(1, f.views, options, error), "mismatched layer prefix rejection");
         check(!PortableGdnLayer::create(3, f.views, options, error), "QSA layer rejection");
+        // Rebinding identical weights to a late layer must preserve the math
+        // and pass the actual ID to the expert provider (two-digit prefixes).
+        for (int target : {1, 46}) {
+            auto late_views = f.views;
+            for (auto &v : late_views)
+                v.name = "blk." + std::to_string(target) + "." + v.name.substr(6);
+            auto late = PortableGdnLayer::create(target, late_views, options, error);
+            check(bool(late), error);
+            check(late->step(f.input(0),
+                [&](int64_t id, const PortableRoute &r, std::vector<float> &rows, std::string &e) {
+                    check(id == target, "rebound GDN dispatch ID");
+                    return experts()(0, r, rows, e);
+                }, route, error), error);
+            close(late->last_residual(), first_output, 0, "GDN rebinding without PLE");
+            check(late->ple_convolution_history().empty(), "unconfigured PLE has no history");
+        }
+        for (int id = 0; id < 48; ++id)
+            if (id % 4 != 3)
+                check(!PortableGdnLayer::create(id, {}, options, error) &&
+                      error.find("missing/extra") != std::string::npos, "all GDN IDs admitted");
+        for (int id : {-1, 3, 7, 47, 48})
+            check(!PortableGdnLayer::create(id, {}, options, error) &&
+                  error.find("non-QSA") != std::string::npos, "GDN layer family guard");
         options.state_budget = 1;
         check(!PortableGdnLayer::create(0, f.views, options, error), "state budget");
         options = {};

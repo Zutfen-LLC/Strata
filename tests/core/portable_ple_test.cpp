@@ -145,11 +145,13 @@ int main() {
         check(bool(table), error);
         const auto bytes = table_bytes(272);
         const auto config = small_config();
-        for (auto token : {0, 7, 248044, 248056, INT32_MAX})
+        for (auto token : {0, 7, 248044, 248046, 248056, INT32_MAX})
             for (auto prev : {std::array<int32_t, 2>{{-1, -1}},
                               {{5, 0}},
                               {{248044, 9}},
                               {{11, 248044}},
+                              {{11, 248046}},
+                              {{248046, 9}},
                               {{-1, 8}},
                               {{INT32_MAX, INT32_MAX}}}) {
                 std::array<uint32_t, 16> rows{};
@@ -162,6 +164,16 @@ int main() {
                         ->to_float(bytes.data() + size_t(rows[h]) * 170, reference.data() + h * 160, 160);
                 close(emb, reference, 0, "pinned ggml Q8 row decoder/head layout");
             }
+        {
+            std::array<uint32_t,16> boundary{}, fresh{}, tokenizer_eos{};
+            std::vector<float> embedding;
+            check(table->gather(7, {{11,248044}}, boundary, embedding, error), error);
+            check(table->gather(7, {{-1,-1}}, fresh, embedding, error), error);
+            check(boundary == fresh, "PLE EOS cuts predecessor history");
+            check(table->gather(7, {{11,248046}}, tokenizer_eos, embedding, error), error);
+            check(tokenizer_eos == oracle(7, {{11,248046}}, config) && tokenizer_eos != fresh,
+                  "tokenizer EOS is an ordinary PLE predecessor and must not cut history");
+        }
         PortableTensorView tv{"per_layer_token_embd.weight", {160, 272}, 8, bytes.data(), bytes.size()};
         check(!PortablePleTable::copy(tv, config, 1, error), "copy budget");
         auto bad = config;

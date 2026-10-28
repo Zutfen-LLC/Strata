@@ -1,5 +1,5 @@
 #include "gguf_fixture.hpp"
-#include "portable_qsa_fixture.hpp"
+#include "portable_qsa_bf16_fixture.hpp"
 #include <chrono>
 using namespace qsa_fixture;
 namespace {
@@ -116,6 +116,37 @@ int main() {
         check(control->step(0, f.input(0), experts(), expected, error), error);
         close(bound->last_residual(), control->last_residual(), 0, "GGUF owned binding survives model close");
         check(bound->keys() == control->keys() && route.ids == expected.ids, "GGUF exact binding");
+        auto late_views = f.views;
+        for (auto &v : late_views)
+            v.name = "blk.47." + v.name.substr(6);
+        model_file(path, kv, late_views);
+        {
+            auto model = strata::GgufModel::open(path.string());
+            auto late = PortableQsaLayer::from_gguf(model, 47, options, error);
+            check(bool(late), error);
+            check(late->step(0, f.input(0),
+                [&](int64_t id, const PortableRoute &r, std::vector<float> &rows, std::string &e) {
+                    check(id == 47, "GGUF late QSA dispatch ID");
+                    return experts()(3, r, rows, e);
+                }, route, error), error);
+            close(late->last_residual(), control->last_residual(), 0, "GGUF late QSA binding");
+        }
+        {
+            Bf16Fixture mixed;
+            model_file(path, kv, mixed.views);
+            std::unique_ptr<PortableQsaLayer> widened;
+            {
+                auto model = strata::GgufModel::open(path.string());
+                widened = PortableQsaLayer::from_gguf(model, 3, options, error);
+                check(bool(widened), error);
+            }
+            auto f32 = PortableQsaLayer::create(3, mixed.f32_views, options, error);
+            check(bool(f32), error);
+            for (auto &data : mixed.bf16) { data.clear(); data.shrink_to_fit(); }
+            check(widened->step(0, mixed.base.input(0), experts(), route, error), error);
+            check(f32->step(0, mixed.base.input(0), experts(), expected, error), error);
+            close(widened->last_residual(), f32->last_residual(), 0, "BF16 GGUF binding survives closed mapping/source lifetime");
+        }
         auto rejection = [&](const std::vector<fixture::Kv> &bad, const char *label) {
             model_file(path, bad, {});
             auto model = strata::GgufModel::open(path.string());
