@@ -46,6 +46,9 @@ with tempfile.TemporaryDirectory() as d:
             assert m['model_step_calls_delta']==len(result['rows']) and m['output_head_calls_delta']==len(result['rows'])
             assert m['gdn_layer_calls_delta']==36*len(result['rows']) and m['qsa_layer_calls_delta']==12*len(result['rows'])
             model_phase_fields(m,len(result['rows']))
+            assert m['gdn_candidate_readback_calls_delta'] == 109*len(result['rows'])
+            assert m['gdn_candidate_finite_calls_delta'] == 109*len(result['rows'])
+            assert m['gdn_state_commit_calls_delta'] == 0 and m['gdn_state_commit_ms_delta'] == 0
             assert m['model_residual_ms_delta']>=0
             assert abs(m['gdn_provider_ms_delta']+m['qsa_provider_ms_delta']-m['expert_provider_ms_delta'])<1e-6
             assert m['gdn_layer_ms_delta']>=m['gdn_provider_ms_delta'] and m['qsa_layer_ms_delta']>=m['qsa_provider_ms_delta']

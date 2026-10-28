@@ -48,6 +48,10 @@ int main() {
                   untimed.gdn_phases.ffn_ms==0 && untimed.gdn_phases.attention_exchange_calls==0 &&
                   untimed.gdn_phases.attention_compute_calls==0 && untimed.gdn_phases.ffn_calls==0,
                   "default disables GDN subphase capture");
+            check(untimed.gdn_phases.candidate_readback_ms == 0 && untimed.gdn_phases.candidate_finite_ms == 0 &&
+                  untimed.gdn_phases.state_commit_ms == 0 && untimed.gdn_phases.candidate_readback_calls == 0 &&
+                  untimed.gdn_phases.candidate_finite_calls == 0 && untimed.gdn_phases.state_commit_calls == 0,
+                  "default disables candidate read/finite/commit capture");
             check(untimed.step_ms==0 && untimed.gdn_ms==0 && untimed.qsa_ms==0 && untimed.head_ms==0 &&
                   untimed.step_calls==0 && untimed.gdn_calls==0 && untimed.qsa_calls==0 && untimed.head_calls==0,
                   "default model path has no new timing capture");
@@ -107,7 +111,18 @@ int main() {
             check(ga.attention_exchange_calls==gb.attention_exchange_calls+36 &&
                   ga.attention_compute_calls==gb.attention_compute_calls+36 && ga.ffn_calls==gb.ffn_calls+36,
                   "matched GDN subphase counts");
-            for (double value : {ga.attention_exchange_ms,ga.attention_compute_ms,ga.ffn_ms})
+            check(ga.candidate_readback_calls == gb.candidate_readback_calls + 109 &&
+                  ga.candidate_finite_calls == gb.candidate_finite_calls + 109 && ga.state_commit_calls == 0,
+                  "36 layers * three candidate reads, plus layer-1 PLE; no CPU device commit");
+            check(ga.candidate_readback_ms + ga.candidate_finite_ms + ga.attention_compute_ms <=
+                      ga.attention_exchange_ms + 1e-6, "disjoint candidate scopes contained in attention");
+            check(phase_before.gdn_phases.candidate_readback_ms == gb.candidate_readback_ms &&
+                  phase_before.gdn_phases.candidate_finite_ms == gb.candidate_finite_ms &&
+                  phase_before.gdn_phases.candidate_readback_calls == gb.candidate_readback_calls &&
+                  phase_before.gdn_phases.candidate_finite_calls == gb.candidate_finite_calls,
+                  "reset preserves candidate timing totals");
+            for (double value : {ga.candidate_readback_ms,ga.candidate_finite_ms,ga.state_commit_ms,
+                                 ga.attention_exchange_ms,ga.attention_compute_ms,ga.ffn_ms})
                 check(std::isfinite(value) && value>=0, "finite nonnegative GDN timing");
             check(ga.attention_compute_ms<=ga.attention_exchange_ms &&
                   ga.attention_exchange_ms+ga.ffn_ms<=phase_after.gdn_ms &&

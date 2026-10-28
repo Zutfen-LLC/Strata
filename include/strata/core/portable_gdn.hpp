@@ -14,6 +14,11 @@ struct PortableGdnOptions {
 // full FFN includes the provider. Reset does not clear caller-owned totals.
 struct PortableGdnWork {
     double attention_exchange_ms = 0, attention_compute_ms = 0, ffn_ms = 0;
+    // Candidate-only reads (state, convolution history, residual, optional PLE
+    // history). Readback and finite scopes are disjoint within exchange; trace
+    // reads are excluded. Commit encloses existing device copies and wait, after FFN.
+    double candidate_readback_ms = 0, candidate_finite_ms = 0, state_commit_ms = 0;
+    uint64_t candidate_readback_calls = 0, candidate_finite_calls = 0, state_commit_calls = 0;
     uint64_t attention_exchange_calls = 0, attention_compute_calls = 0, ffn_calls = 0;
 };
 struct PortableGdnTrace {

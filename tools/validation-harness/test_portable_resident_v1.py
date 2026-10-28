@@ -36,6 +36,21 @@ class HarnessTest(unittest.TestCase):
                model_step_ms_delta=18.,gdn_layer_ms_delta=10.,qsa_layer_ms_delta=5.,output_head_ms_delta=2.,
                gdn_attention_exchange_ms_delta=3.,gdn_attention_compute_ms_delta=2.,gdn_ffn_ms_delta=6.,gdn_outer_residual_ms_delta=1.,gdn_attention_surrounding_ms_delta=1.,gdn_ffn_non_provider_ms_delta=1.,gdn_attention_exchange_calls_delta=72,gdn_attention_compute_calls_delta=72,gdn_ffn_calls_delta=72,model_residual_ms_delta=1.,gdn_provider_ms_delta=5.,qsa_provider_ms_delta=2.5,expert_provider_ms_delta=7.5)
         M.model_phase_fields(m,2)
+        detailed=dict(m,gdn_candidate_readback_ms_delta=.2,gdn_candidate_finite_ms_delta=.3,
+                      gdn_state_commit_ms_delta=.5,gdn_candidate_readback_calls_delta=218,
+                      gdn_candidate_finite_calls_delta=218,gdn_state_commit_calls_delta=72)
+        M.model_phase_fields(detailed,2)
+        M.model_phase_fields(dict(detailed,gdn_state_commit_ms_delta=0,gdn_state_commit_calls_delta=0),2)
+        for key,value in [('gdn_candidate_readback_ms_delta',float('nan')),
+                          ('gdn_candidate_finite_ms_delta',-1),('gdn_state_commit_ms_delta',float('inf')),
+                          ('gdn_candidate_readback_ms_delta',.8),('gdn_candidate_finite_ms_delta',.9),
+                          ('gdn_state_commit_ms_delta',1.1),('gdn_candidate_readback_calls_delta',217),
+                          ('gdn_candidate_finite_calls_delta',True),('gdn_state_commit_calls_delta',1),
+                          ('gdn_state_commit_calls_delta',0)]:
+            with self.subTest(candidate=key),self.assertRaises(ValueError):
+                M.model_phase_fields(dict(detailed,**{key:value}),2)
+        del detailed['gdn_candidate_finite_calls_delta']
+        with self.assertRaisesRegex(ValueError,'incomplete GDN'): M.model_phase_fields(detailed,2)
         for key,value in [('gdn_attention_exchange_calls_delta',71),('gdn_attention_compute_calls_delta',71),('gdn_ffn_calls_delta',71),
                           ('gdn_attention_exchange_ms_delta',float('inf')),('gdn_attention_compute_ms_delta',4.),
                           ('gdn_ffn_ms_delta',4.),('gdn_attention_exchange_ms_delta',5.),

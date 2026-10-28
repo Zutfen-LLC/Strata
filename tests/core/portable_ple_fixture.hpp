@@ -148,7 +148,9 @@ inline void exercise(PortableGdnLayer &layer, const Fixture &f, PortableGdnLayer
     for (size_t t = 0; t < 10; ++t) {
         auto history = layer.ple_convolution_history(), state = layer.recurrent_state(),
              gdn_history = layer.convolution_history();
-        check(layer.step(tokens[t], f.input(int(t)), experts(), route, error, &trace), error);
+        PortableGdnWork work;
+        check(layer.step(tokens[t], f.input(int(t)), experts(), route, error, &trace, &work), error);
+        gdn_fixture::candidate_work(work, 1, layer.memory_usage().device_state ? 1 : 0, true);
         if(t==0) {
             state1=layer.recurrent_state().data();history1=layer.convolution_history().data();
             ple1=layer.ple_convolution_history().data();
@@ -195,6 +197,7 @@ inline void exercise(PortableGdnLayer &layer, const Fixture &f, PortableGdnLayer
         auto last = layer.last_residual();
         const auto *committed_state=layer.recurrent_state().data(), *committed_ple=layer.ple_convolution_history().data();
         for (int failure = 0; failure < 3; ++failure) {
+            PortableGdnWork rejected;
             check(!layer.step(
                       999, f.input(10),
                       [failure](int64_t, const PortableRoute &, std::vector<float> &rows, std::string &e) {
@@ -207,8 +210,9 @@ inline void exercise(PortableGdnLayer &layer, const Fixture &f, PortableGdnLayer
                           e = "injected failure";
                           return false;
                       },
-                      route, error, &trace),
+                      route, error, &trace, &rejected),
                   "injected callback failure");
+            gdn_fixture::candidate_work(rejected, 1, 0, true);
             check(layer.token_history() == previous && layer.tokens() == t + 1, "token rollback");
             close(layer.ple_convolution_history(), history, 0, "PLE rollback");
             close(layer.recurrent_state(), state, 0, "GDN rollback");
