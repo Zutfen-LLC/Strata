@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <limits>
 #ifdef STRATA_PORTABLE_MODEL_VULKAN
 #include "ggml-vulkan.h"
 #endif
@@ -104,6 +105,42 @@ int main(int argc, char **argv) {
         }
         std::vector<float> out;
         check(!head->run({}, out, error) && out.empty(), "head input rejection");
+        std::vector<float> finite_edges(H * HC, 0.125f);
+        finite_edges[0] = 0.0f;
+        finite_edges[1] = -0.0f;
+        finite_edges[finite_edges.size() / 2] = std::numeric_limits<float>::min();
+        finite_edges.back() = std::numeric_limits<float>::denorm_min();
+        for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                              std::numeric_limits<float>::infinity(),
+                              -std::numeric_limits<float>::infinity()})
+            for (size_t at : {size_t(0), finite_edges.size() / 2, finite_edges.size() - 1}) {
+                auto bad = finite_edges;
+                bad[at] = invalid;
+                out = {1};
+                check(!head->run(bad, out, error) && out.empty() &&
+                      error == "portable head: nonfinite residual", "head input finite diagnostic/output clear");
+            }
+        check(head->run(finite_edges, out, error), error);
+        const auto first_edges = out;
+        check(head->run(finite_edges, out, error) && out.size() == first_edges.size() &&
+              std::memcmp(out.data(), first_edges.data(), out.size() * sizeof(float)) == 0,
+              "head finite edge replay bytes");
+        {
+            auto invalid_weights = weights;
+            std::vector<float> invalid_output(H * V, 0.01f);
+            invalid_output.back() = std::numeric_limits<float>::quiet_NaN();
+            invalid_weights.back().type = 0;
+            invalid_weights.back().data = invalid_output.data();
+            invalid_weights.back().bytes = invalid_output.size() * sizeof(float);
+            auto bad = PortableHead::create({H, HC, R, V, 1e-6f}, invalid_weights, options, error);
+            check(bool(bad), error);
+            out = {1};
+            check(!bad->run(finite_edges, out, error) && out.empty() &&
+                  error == "portable head: nonfinite logits", "head output finite diagnostic/output clear");
+            check(head->run(finite_edges, out, error) && out.size() == first_edges.size() &&
+                  std::memcmp(out.data(), first_edges.data(), out.size() * sizeof(float)) == 0,
+                  "head recovery after invalid calls");
+        }
         auto small = PortableFfnOptions{};
         small.weight_budget = 1;
         check(!PortableHead::create({H, HC, R, V, 1e-6f}, weights, small, error), "head weight cap");

@@ -16,7 +16,9 @@ namespace strata::core {
 namespace {
 void require(bool ok, const std::string& message) { if (!ok) throw std::runtime_error(message); }
 void finite(const std::vector<float>& x) {
-    for (float v : x) require(std::isfinite(v), "portable FFN: nonfinite activation/result");
+    for (float v : x)
+        if (!std::isfinite(v))
+            require(false, "portable FFN: nonfinite activation/result");
 }
 using Context = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
 using Buffer = std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)>;
