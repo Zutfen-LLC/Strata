@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Larger local Vulkan residency: conditional handoff
 
 **The480-per-die token and single-case stages completed successfully.** See
@@ -22,8 +24,8 @@ expert-count flag. Only discovery chooses 16 experts per die. Smoke accepts the
 supplied plan's count and forwards its caps. A focused host test verifies this.
 
 Existing retained plan pairs may be reused from the completed campaigns rooted
-at `/home/hermes/amd-1152-20261027` (1152 per die) or
-`/home/hermes/amd-quality-pr37-split` (480 per die). Hermes supplies exact plan
+at `${PRIVATE_ARTIFACT_BDB6E423}` (1152 per die) or
+`${PRIVATE_ARTIFACT_D29325FE}` (480 per die). operator supplies exact plan
 filenames and hashes; none are invented here. Deleted cache payloads need not be
 restored. The local loader reads only the plans and original mapped GGUF ranges.
 
@@ -52,8 +54,8 @@ allowance on die1. This is based on the supplied padded allocation/admission
 receipts, not an assumed observed peak. Verify exact retained inputs:
 
 ```sh
-PLAN0=/home/hermes/amd-quality-pr37-split/plan-die0.plan
-PLAN1=/home/hermes/amd-quality-pr37-split/plan-die1.plan
+PLAN0=${PRIVATE_ARTIFACT_07F8412C}
+PLAN1=${PRIVATE_ARTIFACT_730CE699}
 TENSOR_MIB=2404,2404
 COUNT=480
 printf '%s  %s\n' \
@@ -62,7 +64,7 @@ printf '%s  %s\n' \
   | sha256sum -c -
 ```
 
-Retained1152 plans are `/home/hermes/amd-1152-20261027/plan-die0.plan` with SHA
+Retained1152 plans are `${PRIVATE_ARTIFACT_50ACCE11}` with SHA
 21f25e49aa488a3dc1c215ff1fee5ffa0581345964db5cca198d346a49906434 and plan-die1.plan
 in that same directory with SHA35598853921b0d41aca724e3a744ef433339369e1be380aa2b37512088d697a5.
 Do not launch that pair under the current conservative head bound.
@@ -91,13 +93,13 @@ regenerate caches or alter plans/caps to get a pass.
 ## One larger resident token
 
 Fresh output directories under the secondary disk only. Set ROOT to a new private
-parent below `/srv/models/inferswarm-artifacts/portable-local-residency-large-v1`.
+parent below `${PRIVATE_ARTIFACT_7FAB76FD}`.
 SOURCE is the complete latest source export; BINARY is the freshly rebuilt
 portable_model with the corrected ledger. Record BINARY_SHA from that build and
 verify it before launch. No cache/archive recreation.
 
 ```sh
-: "${PLAN0:?Hermes verified exact filename}" "${PLAN1:?matching plan filename}"
+: "${PLAN0:?operator verified exact filename}" "${PLAN1:?matching plan filename}"
 : "${TENSOR_MIB:?derived separate caps}" "${ROOT:?fresh evidence parent}"
 : "${BINARY_SHA:?new corrected-build binary SHA}"
 sha256sum "$BINARY" "$PLAN0" "$PLAN1"
@@ -122,11 +124,11 @@ substituted here. The new option is portable-only and does not change existing
 default or benchmark semantics. It needs the latest Python export only.
 
 ```sh
-GGUF05=/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf
+GGUF05=${PRIVATE_ARTIFACT_ED0D8ADE}
 timeout --signal=TERM --kill-after=15s 325s \
   "$PYTHON05" -B "$SOURCE/tools/validation-harness/portable_quality_v1.py" \
   --gguf "$GGUF05" portable --single-case --binary "$BINARY" --binary-sha256 "$BINARY_SHA" \
-  --suite /srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2/suite \
+  --suite ${PRIVATE_ARTIFACT_021ADBD1} \
   --expert-plan "0:$PLAN0" --expert-plan "1:$PLAN1" --expert-tensor-mib "$TENSOR_MIB" \
   --expert-workspace-mib 128,128 --expert-free-reserve-mib 512,512 --out "$ROOT/case1"
 ```
@@ -167,7 +169,7 @@ raise SystemExit(0 if correct else 1)
 PY
 ```
 
-Hermes owns any verified high profile, sensors, active-clock samples and auto
+operator owns any verified high profile, sensors, active-clock samples and auto
 restoration. The two commands have external bounds 650 s plus 30 s cleanup total,
 inside the existing 30-minute guard; build and metadata checks occur outside it.
 Do not claim active-clock coverage on a die without nonzero-busy samples.

@@ -1,9 +1,11 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Issue #12: bounded 1 Gb/s LAN handoff
 
-Status: **Hermes LAN campaign terminal PASS; no clear latency winner**. The canonical result
-and checked LAN execution acceptance are in [issue #12's Hermes report](https://github.com/Zutfen-LLC/Strata/issues/12#issuecomment-6403447145).
+Status: **operator LAN campaign terminal PASS; no clear latency winner**. The canonical result
+and checked LAN execution acceptance are in [issue #12's operator report](https://github.com/Zutfen-LLC/Strata/issues/12#issuecomment-6403447145).
 Do not repeat the completed campaign. No fleet commands or executable tests ran on the coding desktop.
-The following results were supplied by the parent/Hermes; this thread did not independently audit
+The following results were supplied by the parent/operator; this thread did not independently audit
 private raw receipts.
 
 All 15 shapes × 2 policies passed exact bytes/counts and cleanup on the existing 1 Gb/s link.
@@ -29,10 +31,10 @@ Example exact RTT p50 values, microseconds:
 | T2 N11 | 1876 | 1878 |
 | T2 N14 | 2014 | 1976 |
 
-Hermes confirmed all temporary tagged rules absent, INPUT baseline restored, and zero fixture
+operator confirmed all temporary tagged rules absent, INPUT baseline restored, and zero fixture
 listeners/replay processes. Resident worker 809314 on 02 at loopback port 17431 remained alive
 and untouched. Controller evidence root:
-`/home/zutfen/.hermes/cache/scratch/strata-try-io-lan-20261025-results/`.
+`${PRIVATE_ARTIFACT_67F107B5}`.
 No failed arm was reported; repeat tests and live TPS measurement were not run in this closeout.
 
 ## Retained executable handoff (completed; do not rerun)
@@ -49,21 +51,21 @@ Full replay SHA-256, supplied as verified against both manifest and live file:
 The earlier abbreviated `3f2cafc9` report was erroneous; do not use it.
 
 Use the existing e5685da112f9e75262176635743b0790586d88c3 replay ELF at
-`/home/hermes/strata-pr10-try-io-e5685da1-20261025-05/bin/cpu_rpc_replay`.
+`${PRIVATE_ARTIFACT_E3C971DE}`.
 The same root holds `shapes.tsv`, `binaries.sha256` and successful loopback receipts.
 Transfer that exact ELF and shapes through the existing controller relay to a fresh private 02
 root; no host-to-host SSH assumption, rebuild, dependency change or repeated loopback gates.
 Verify the entire SHA-256 on both hosts against the retained manifest before starting.
 
-Bindings are source 02 `10.0.0.180`, destination 05 `10.0.0.123`, interface `eno1` on both,
+Bindings are source 02 `192.0.2.181`, destination 05 `192.0.2.124`, interface `eno1` on both,
 1000 Mb/s full duplex, fixture TCP `17531`. Retain current route/link receipts; require 02's
-route to 10.0.0.123 to select eno1 and source 10.0.0.180. The client CLI has no source-bind
+route to 192.0.2.124 to select eno1 and source 192.0.2.181. The client CLI has no source-bind
 option; the server checks the actual accepted source. Never contact or signal resident worker
 809314 at 127.0.0.1:17431, replace it, or change shared e145df6e runtime, NIC, route, buffers,
 IRQ or unrelated services. No merge, deployment or production socket-default change.
 
 The user approved only a temporary restriction of this fixture tuple to source 02, removed after
-execution. The rule below drops other sources only on eno1 to 10.0.0.123:17531. It preserves
+execution. The rule below drops other sources only on eno1 to 192.0.2.124:17531. It preserves
 other rules and is never persisted. Its unique comment and captured handle identify only our rule.
 
 ## Controller sequence
@@ -135,7 +137,7 @@ test ! -s "$D/listeners.before"
 sudo -n nft -a list chain "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" > "$D/chain.before"
 test -z "$(find_handle)"
 sudo -n nft insert rule "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" \
-  iifname eno1 ip daddr 10.0.0.123 tcp dport 17531 ip saddr != 10.0.0.180 \
+  iifname eno1 ip daddr 192.0.2.124 tcp dport 17531 ip saddr != 192.0.2.181 \
   counter drop comment "$TAG"
 HANDLE=$(find_handle)
 [[ $HANDLE =~ ^[0-9]+$ ]]
@@ -143,7 +145,7 @@ printf '%s\n' "$HANDLE" > "$D/rule.handle"
 flags=(); [[ $POLICY = poll ]] || flags+=(--operation-first)
 ( ulimit -v 2097152
   exec timeout --signal=TERM --kill-after=5s 15s "$BIN" --serve 17531 \
-    --route direct-lan --bind-ip 10.0.0.123 --allow-peer-ip 10.0.0.180 \
+    --route direct-lan --bind-ip 192.0.2.124 --allow-peer-ip 192.0.2.181 \
     --tokens "$T" --row-entries "$N" --accepted-nodelay --exact-rtt \
     --warmup 64 --exchanges 1024 --deadline-ms 2000 "${flags[@]}"
 ) > "$D/server.log" 2>&1 &
@@ -176,7 +178,7 @@ read -r -t 180 go
 test "$go" = GO
 flags=(); [[ $POLICY = poll ]] || flags+=(--operation-first)
 ( ulimit -v 2097152
-  exec timeout --signal=TERM --kill-after=5s 15s "$BIN" --connect 10.0.0.123 17531 \
+  exec timeout --signal=TERM --kill-after=5s 15s "$BIN" --connect 192.0.2.124 17531 \
     --route direct-lan --tokens "$T" --row-entries "$N" --accepted-nodelay --exact-rtt \
     --warmup 64 --exchanges 1024 --deadline-ms 2000 "${flags[@]}"
 ) > "$D/client.log" 2>&1
@@ -205,7 +207,7 @@ execution route is reported as uncertain with its PID, for reconciliation by the
 import base64, csv, json, os, pathlib, re, selectors, shlex, signal, subprocess, time
 E = dict(os.environ)
 E.update(ELF_SHA256='696d26871fcca8ce17a103b90646d8894d7ea191f7d51fc9eef47fd455689706',
-         BIN05='/home/hermes/strata-pr10-try-io-e5685da1-20261025-05/bin/cpu_rpc_replay',
+         BIN05='${PRIVATE_ARTIFACT_E3C971DE}',
          NFT_FAMILY='ip', NFT_TABLE='filter', NFT_CHAIN='INPUT')
 out = pathlib.Path(E['OUT']); out.mkdir(mode=0o700)
 blocks = re.findall(r'^```bash\n(.*?)^```$', pathlib.Path(E['HANDOFF']).read_text(), re.S | re.M)
@@ -299,10 +301,10 @@ def gate(rows, t, n, policy):
     v = one(rows,'CPU_RPC_REPLAY_EXACT',role='client',phase='measure',operation_first=flag,samples=1024)
     vals = [int(v[k]) for k in ('p50_ns','p95_ns','p99_ns','max_ns')]
     assert vals == sorted(vals) and vals[0]>=0
-    one(rows,'CPU_RPC_REPLAY_LISTENING_V1',address='10.0.0.123',port=17531,
-        allowed_peer='10.0.0.180',route='direct-lan',accepted_nodelay=1)
-    one(rows,'CPU_RPC_REPLAY_ACCEPTED_V1',peer='10.0.0.180',allowed_peer='10.0.0.180',route='direct-lan')
-    one(rows,'CPU_RPC_REPLAY_CONNECTED_V1',host='10.0.0.123',port=17531,route='direct-lan')
+    one(rows,'CPU_RPC_REPLAY_LISTENING_V1',address='192.0.2.124',port=17531,
+        allowed_peer='192.0.2.181',route='direct-lan',accepted_nodelay=1)
+    one(rows,'CPU_RPC_REPLAY_ACCEPTED_V1',peer='192.0.2.181',allowed_peer='192.0.2.181',route='direct-lan')
+    one(rows,'CPU_RPC_REPLAY_CONNECTED_V1',host='192.0.2.124',port=17531,route='direct-lan')
 def interrupted(sig, frame): raise InterruptedError('controller signal '+str(sig))
 for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP): signal.signal(sig,interrupted)
 results = []
@@ -313,7 +315,7 @@ try:
             c = start('02', blocks[1], t,n,policy)
             until_line(c,b'CLIENT_READY',label+'-02')
             s = start('05', blocks[0], t,n,policy)
-            until_line(s,b'CPU_RPC_REPLAY_LISTENING_V1 address=10.0.0.123 port=17531 ',label+'-05')
+            until_line(s,b'CPU_RPC_REPLAY_LISTENING_V1 address=192.0.2.124 port=17531 ',label+'-05')
             c.stdin.write(b'GO\n'); c.stdin.flush(); c.stdin.close(); c.stdin=None
             drain_wait(c,label+'-02'); drain_wait(s,label+'-05')
             rows = []
@@ -365,8 +367,8 @@ finally:
 
 Relay each server arm directory into the corresponding client arm directory, preserving files.
 For every arm require both statuses zero, `cleanup.ok`, no residual fixture listener and no tagged
-rule. Require LISTENING at 10.0.0.123:17531 with allowed peer 10.0.0.180 and accepted NODELAY 1,
-ACCEPTED actual/allowed peer 10.0.0.180, and CONNECTED host 10.0.0.123 port 17531, route direct-lan.
+rule. Require LISTENING at 192.0.2.124:17531 with allowed peer 192.0.2.181 and accepted NODELAY 1,
+ACCEPTED actual/allowed peer 192.0.2.181, and CONNECTED host 192.0.2.124 port 17531, route direct-lan.
 The controller keeps host subdirectories and distinct server/client status files; no receipt is overwritten.
 
 Parse the existing key=value records. Require exactly one warmup RTT client and handler server

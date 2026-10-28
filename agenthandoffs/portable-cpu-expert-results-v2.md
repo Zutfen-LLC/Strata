@@ -21,7 +21,7 @@ prior build setup, not a fresh independent Git provenance check.
 Both clean configurations used Release, STRATA_NATIVE_EXPERTS,
 STRATA_PORTABLE_MODEL/FFN/GDN/QSA and STRATA_BUILD_TESTS ON; CUDA/HIP/SYCL
 OFF. CPU used GGML_VULKAN OFF; Vulkan used GGML_VULKAN ON plus existing
-`/tmp/strata-spirv-headers-prefix` include/prefix settings. Each build used
+`${BUILD_ARTIFACT_D2E5D17A}` include/prefix settings. Each build used
 two jobs and actual CMake targets:
 
 ```text
@@ -93,7 +93,7 @@ missing-PLE manual link failure remains recorded in v1 and was not hidden.
 
 Not run by this coding task: physical V340, real model, clean CUDA/HIP/SYCL
 builds or timing comparison. This task made no fleet access, deployment, model
-modification or real-model inference launch. Parent/Hermes subsequently supplied
+modification or real-model inference launch. Parent/operator subsequently supplied
 PASS for the exact ac85ff3 physical pair; see the attributed
 [physical receipt](portable-cpu-expert-physical-results-v1.md), including all
 41 byte-identical logit rows, unchanged native work and timing caveats.

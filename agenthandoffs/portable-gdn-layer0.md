@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Parent-dispatched actual-dimension GDN layer-0 check
 
 This is a new slice stacked on PR #38 at `11a5a3f`. Preserve the accepted PR #38
@@ -6,7 +8,7 @@ reconfigure the accepted old AMD expert-worker build or reuse its output paths.
 Run only after parent dispatch confirms previous tests are cleaned up.
 
 Use the new PR's exact source head and a new isolated build. Existing ggml stays
-at `/home/hermes/vulkan-q8-screen-20261026/src`, commit
+at `${PRIVATE_ARTIFACT_9CA76AB8}`, commit
 `3cf03257f219afbe7334045ff7c6a06ac68c627d`. Reuse known compiler/header-prefix
 settings discovered from the accepted PR #38 candidate build if necessary.
 Do not install/download anything, alter access/clocks/drivers, start workers or
@@ -20,7 +22,7 @@ set -eu
 : "${GDN_EVIDENCE05:?new evidence directory path}"
 : "${DIE0:?verified ggml index of first V340 die}"
 : "${DIE1:?verified ggml index of second V340 die}"
-GGML_SRC05=/home/hermes/vulkan-q8-screen-20261026/src
+GGML_SRC05=${PRIVATE_ARTIFACT_9CA76AB8}
 if test -e "$GDN_SRC05/.git"; then
   test "$(git -C "$GDN_SRC05" rev-parse HEAD)" = "$EXPECTED_GDN_HEAD"
 fi

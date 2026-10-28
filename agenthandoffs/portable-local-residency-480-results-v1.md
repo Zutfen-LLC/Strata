@@ -1,10 +1,12 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Physical480-per-die local Vulkan result
 
-Hermes completed the resident token and one frozen answer case on05 using C++
+operator completed the resident token and one frozen answer case on05 using C++
 source `6d433cedc2435ea2aea7038ef62cef49a00a32b9`, binary SHA256
 `560507fa0b87a31206e03f172796fb3e60aae47ff5916aa45bd0de534bddae1b`.
 All five focused CTests passed sequentially before the physical run.
-[Primary result](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793165190231519).
+[Primary result](PRIVATE_RECEIPT).
 This coding task read that report; it did not SSH or run fleet inference.
 
 ## Admission and actual expert execution
@@ -60,7 +62,7 @@ returned to the8339456-byte baseline per die, and no owned model/guard remained.
 Both retained plan hashes and the earlier16-per-die binary hash still matched.
 
 Artifacts remain under
-`/srv/models/inferswarm-artifacts/portable-local-residency-large-v1`. Hermes
+`${PRIVATE_ARTIFACT_7FAB76FD}`. operator
 reported662937942 bytes total, including source72960636, build512201715,
 checks49259 and evidence864892 bytes; the listed subtrees are not a complete
 breakdown of that total. Keep the raw receipts and existing qualified artifacts.
@@ -76,9 +78,9 @@ existing temperature, sensor-failure, owned cleanup and auto-restoration rules
 remain unchanged. This is a specific parent-authorized extension for that screen,
 not a general relaxation of previous30-minute recipe limits.
 
-Hermes subsequently completed that screen with the same retained 480-per-die
+operator subsequently completed that screen with the same retained 480-per-die
 plans. This coding task checked the
-[primary completion receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793167106820019).
+[primary completion receipt](PRIVATE_RECEIPT).
 The unchanged scorer returned `inconclusive-baseline`: native 10/12 and portable
 10/12, both missing cases 9 and 12. Output token sequences were identical in all
 12 cases, with 61 generated tokens total. The scorer's exit 1 denotes the
@@ -98,15 +100,15 @@ temperature was 68 C. Both controls returned to `auto`, VRAM returned to
 hashes and the retained native-summary hash still matched.
 
 The first offline scorer invocation failed to import `gguf_reader` because it
-used an incomplete older source export. That failure was preserved. Hermes
+used an incomplete older source export. That failure was preserved. operator
 rescored the saved outputs using the previously successful complete export and
 scoring environment; **no inference was repeated**.
 
 The 05 outputs remain in
-`/srv/models/inferswarm-artifacts/portable-local-residency-large-v1/quality-v1`,
+`${PRIVATE_ARTIFACT_7D324FAB}`,
 with guard/launch receipts in sibling `quality-control`. The score and both
 scorer receipts remain on 02 at
-`/home/hermes/portable-quality-480-local-6d433ced-v1`. The full 05 task root was
+`${PRIVATE_ARTIFACT_E1D13142}`. The full 05 task root was
 668958767 bytes at completion. No artifacts were deleted by this update.
 The separate PR46 ranked-plan test is a new task; these retained plans were
 unchanged throughout this screen. This completion update changes documentation

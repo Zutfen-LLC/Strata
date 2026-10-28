@@ -1,10 +1,12 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Shared Vulkan executor: tiny NVIDIA smoke on03
 
 ## Physical result: both RTX3060 devices passed
 
-Hermes completed the bounded synthetic probe once per GPU, sequentially.
-[Primary receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793166423091349).
-This coding task checked that receipt and records Hermes's execution; it did not
+operator completed the bounded synthetic probe once per GPU, sequentially.
+[Primary receipt](PRIVATE_RECEIPT).
+This coding task checked that receipt and records operator's execution; it did not
 run the probes itself. This proves synthetic shared-executor residency, returned
 row order and release on NVIDIA Vulkan. Full-model loading, routing, answer
 quality and performance remain untested by this probe. It makes no AMD/NVIDIA
@@ -49,8 +51,8 @@ wrapper, listener, clock, service or driver change occurred.
 | Evidence bundle | c8d32aa8ff33777d00470f4c796e4132d930969916875e4aeddad882aff2f4c7 |
 
 Source, build, evidence and synthetic fixtures remain on 03 under
-`/home/hermes/nvidia-vulkan-smoke-v1`. The control-side bundle/report remain under
-`/home/zutfen/.hermes/cache/scratch/nvidia-vulkan-smoke-v1-control`.
+`${PRIVATE_ARTIFACT_65C26400}`. The control-side bundle/report remain under
+`${PRIVATE_ARTIFACT_99209715}`.
 No run-owned or NVIDIA compute processes remained; both GPUs returned to 1 MiB
 used. No further fleet run or code change accompanies this report.
 
@@ -59,11 +61,11 @@ used. No further fleet run or code change accompanies this report.
 The following recipe predates the successful physical result above. Its missing
 prerequisites were resolved for that run; they are not current blockers.
 No NVIDIA run or install was performed by this coding task. This is independent
-of AMD correctness/performance and makes no comparative claim. Hermes's read-only
+of AMD correctness/performance and makes no comparative claim. operator's read-only
 snapshot reports two RTX3060 devices, PCI01:00.0 and03:00.0, device10de:2504,
 NVIDIA driver615.71.09, no compute processes and1 MiB used per device. Vulkan
 loader/development headers/NVIDIA ICD exist; vulkaninfo also enumerates llvmpipe.
-[Readiness receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793164846282679).
+[Readiness receipt](PRIVATE_RECEIPT).
 
 ## Exact prerequisites at handoff
 
@@ -84,7 +86,7 @@ Threads and Python3. Its Vulkan-enabled dependency explicitly requires:
 - Preserve the isolated build's default worker-TLS setting; its existing OpenSSL
   development package must resolve if TLS is enabled. No endpoint is started.
 
-Hermes confirmed glslc is absent from PATH; that is the definite missing tool.
+operator confirmed glslc is absent from PATH; that is the definite missing tool.
 A known existing SDK path can instead be passed as Vulkan_GLSLC_EXECUTABLE.
 SPIRV-Headers availability/version and03's distro/release remain unverified.
 Read `/etc/os-release` before selecting an official package; do not guess it.
@@ -101,7 +103,7 @@ is authorized by this handoff.
 
 ## Build only the shared probe
 
-Hermes resolves fresh SOURCE03/BUILD03/CHECKS03/EVIDENCE03 directories and the
+operator resolves fresh SOURCE03/BUILD03/CHECKS03/EVIDENCE03 directories and the
 exact retained GGML03 and GLSLC03 paths. Keep old source/build/results untouched.
 SPIRV_PREFIX03 is an existing compatible prefix if needed; empty uses system
 package discovery. No FetchContent downloads or CUDA build.
@@ -191,5 +193,5 @@ network inference, full-model wrapper, clock change or service is involved.
 The actual CLI and resource/order/release assertions above were checked against
 the handoff source. At handoff, this coding task had not performed03 compilation,
 package resolution/install or NVIDIA execution; usable glslc and SPIRV-Headers
-configuration were pending. Hermes subsequently resolved these and completed
+configuration were pending. operator subsequently resolved these and completed
 the physical probe as recorded at the top of this document.

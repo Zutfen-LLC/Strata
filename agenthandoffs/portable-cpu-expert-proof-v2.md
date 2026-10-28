@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Matched portable CPU expert proof — v2
 
 Supersedes v1's publication checkpoint. Provider code is unchanged from
@@ -5,7 +7,7 @@ Supersedes v1's publication checkpoint. Provider code is unchanged from
 `59ce0bc5aae81b8cd4f3f17924e8b1cbb16a243d`. The additive supervisor flag
 now forwards `--expert-dispatch-oracle`; all existing runtime guards remain.
 Clean local build/test receipts are in `portable-cpu-expert-results-v2.md`.
-Parent/Hermes completed this recipe at exact
+Parent/operator completed this recipe at exact
 `ac85ff3fdf0834c13437b69b1568d8704e9b0717`; the attributed PASS and timing
 limitations are in `portable-cpu-expert-physical-results-v1.md`. The recipe is
 preserved for reproduction; this update requests no additional run.
@@ -60,9 +62,9 @@ sha256sum "$BUILD/portable_model" > "$CHECKS/binary.sha256"
 Stop if any command fails; no rerun-until-pass. Actual before/after inference
 requires the next explicit parent dispatch after review, not this document.
 
-## Exactly one bounded pair, parent/Hermes only
+## Exactly one bounded pair, parent/operator only
 
-Preserve `/home/hermes/portable-model-pr42-ae64892-real` and prior failures.
+Preserve `${PRIVATE_ARTIFACT_0EBCDC73}` and prior failures.
 Reuse v4's retained manifest SHA256, six-shard sizes and device-identity
 preflight. Neither arm edits source files, model files or metadata. Model
 files must stay immutable throughout both sessions and every dispatch.
