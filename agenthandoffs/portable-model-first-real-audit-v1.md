@@ -126,3 +126,65 @@ on every selected expert and no verification cache. Digest work adds reads.
 This makes current timing unsuitable as an AMD performance benchmark. It is
 not evidence explaining the numerical discrepancy, and no optimization is
 included in this audit.
+
+## Retained LOCAL policy clarification and row diagnostic — additive checkpoint
+
+Read-only Slack artifact `F0CCQEZN54Z` (`strata-run5-resolved-nonsecret.json`)
+confirms LOCAL argv uses `--native`, `--pack
+/home/hermes/strata-local-q8-20261023T152939Z/native-pack`, `--prefill 64`,
+`--expert-cache 960`, `--expert-cache-per-layer`, and
+`--expert-cache-device1 1378`. Its explicit resolved environment contains no
+`STRATA_HC_Q8`. The current harness `harness/owner.py` constructs
+`ENV = dict(CFG['env'])` and passes `env=ENV` to `Popen`; it does not inherit
+ambient variables. This corroborates the parent's driver5 evidence, without
+claiming current harness source alone proves the retained binary's source.
+
+Current `native_dense.cpp::hc_q8_env` returns false on CUDA when unset;
+`lm_head_mix` consumes canonical BF16 down/up projections. Portable uses the
+actual GGUF Q8 HC matrices. Thus HC storage/activation arithmetic is a concrete
+confounder to resolve from the retained runtime HC/pack-mode lines. It is **not**
+a demonstrated explanation of the observed final logits. The pack's actual
+conversion history and runtime read path still matter. The retained argv now
+also establishes configured batched prefill; whether all requested work used
+each intended path should be checked against existing startup/runtime evidence.
+The two cache capacities do not establish which selected experts ran on GPU.
+No additional inference is requested by this clarification.
+
+The small read-only helper is `portable-model-logit-diagnostic-v1.py` alongside
+this document, outside the product/runtime path. It uses the existing bounded
+F32 reader and unchanged comparator. JSON includes the original gate/limits,
+means, population standard deviations, centered delta RMS and relative L2,
+Pearson correlation, least-squares candidate-from-reference slope/intercept
+and centered-reference-normalized residual, top10 IDs/logits/probabilities,
+winning margins, overlap and reference-winner rank. Constant-row correlation
+and unidentifiable affine fits are JSON null. Ties use ascending token ID.
+It prints no full arrays. Successful script exit means analysis completed;
+`original_gate.numeric_pass` retains the original acceptance result.
+
+Exact versioned command, on an already authorized host with both retained rows
+accessible (no transfer, new inference, build or install):
+
+```sh
+# Use the published audit-only PR42 source head reported with this checkpoint.
+# SOURCE is an existing checkout/extracted archive, not the deployed model build.
+: "${SOURCE:?existing audit source checkout}"
+: "${REFERENCE_LOCAL:?already accessible retained02 local-first-logits.0}"
+python3 -B "$SOURCE/agenthandoffs/portable-model-logit-diagnostic-v1.py" \
+  --reference "$REFERENCE_LOCAL" \
+  --candidate /home/hermes/portable-model-pr42-ae64892-real/logits/pos-37.f32
+```
+
+Verify the helper SHA256 is
+`956f790e3e2b468fd8e1caa5ddab4f0e5ef0a95171d4d48e9549c1d71f0663af`
+and the unchanged comparator SHA256 is
+`734151b743b82af61bdee09a4b236901ea788ca099c9c795fb5cc601537b2b45`.
+Both implementation hashes appear in the output. Both actual rows are expected
+to contain248320 finite F32 values; confirm output vocabulary248320. Return only
+the small JSON internally; raw arrays stay host-local. No new pass criteria.
+
+Local checks: five synthetic unit tests passed (identity; constant offset with
+unchanged gate failure; affine/structured residual; degenerate ties/singleton;
+invalid rows). CLI controls passed for parseable JSON with original gate failure
+and centered zero error, implementation hashes, and malformed file refusal.
+`git diff --check` passed. No real retained arrays were analyzed in this task;
+no runtime code, tolerance, inference or optimization changed.
