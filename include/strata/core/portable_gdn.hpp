@@ -1,17 +1,20 @@
 #pragma once
-#include "strata/core/portable_ffn.hpp"
+#include "strata/core/portable_ple.hpp"
 
 namespace strata::core {
 struct PortableGdnOptions {
     PortableFfnOptions execution;
-    size_t state_budget = 16ull << 20; // host committed/candidate state and residuals
+    size_t state_budget = 16ull << 20;           // host committed/candidate state and residuals
+    std::shared_ptr<PortablePleTable> ple_table; // required for create(layer=1); host only
 };
 struct PortableGdnTrace {
     std::vector<float> qkv, convolution, query, key, value, decay, beta, attention;
+    std::array<uint32_t, 16> ple_rows{};
+    std::vector<float> ple_embedding, ple_key, ple_value, ple_gate, ple_normalized, ple_convolution, ple_residual;
 };
 
-// Complete qwen4exp layer 0, T=1: HC/GDN attention followed by PortableFfn.
-// Exact fleet geometry only. Other layers (including PLE/QSA) are rejected.
+// Complete qwen4exp layers 0/1, T=1: optional configured PLE, HC/GDN,
+// PortableFfn. Exact fleet geometry only. QSA and other layers are rejected.
 class PortableGdnLayer {
   public:
     static std::unique_ptr<PortableGdnLayer> create(int64_t layer, const std::vector<PortableTensorView> &tensors,
@@ -26,6 +29,13 @@ class PortableGdnLayer {
     // persistent state and last_residual commit together only after FFN success.
     bool step(const std::vector<float> &residual, const PortableExpertRows &dispatch, PortableRoute &route,
               std::string &error, PortableGdnTrace *trace = nullptr);
+    // Token-aware entry for layer 1. Supply the configured image token ID for
+    // image positions. EOS cuts hash predecessors on subsequent tokens; it
+    // does not clear recurrent/convolution state. reset() starts a new sequence.
+    bool step(int32_t token, const std::vector<float> &residual, const PortableExpertRows &dispatch,
+              PortableRoute &route, std::string &error, PortableGdnTrace *trace = nullptr);
+    const std::vector<float> &ple_convolution_history() const;
+    const std::array<int32_t, 2> &token_history() const;
     const std::vector<float> &recurrent_state() const;
     const std::vector<float> &convolution_history() const;
     const std::vector<float> &last_residual() const;
