@@ -1,9 +1,11 @@
-# AMD05 existing CPU pool phase result
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
 
-Hermes reported completed receipts for source
+# validation host existing CPU pool phase result
+
+operator reported completed receipts for source
 `f8deab2d97baf8534b4737d23b401d9de85c7f4d`, binary SHA256
 `09d982bb1c8ad83093233ec2b60bc804aa6ea0d4f03b2e113fee60ddd5c96298`.
-[Primary report](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793187295876749).
+[Primary report](PRIVATE_RECEIPT).
 This documentation task read that report; it did not run fleet commands.
 
 All four token/greedy rows were identical. Each request recorded170/235 GPU
@@ -11,7 +13,7 @@ entries and13515 CPU entries with the retained480 plans. All three measured
 requests had zero verification/copy/digest/invalidation deltas. All pool fields
 were present, finite/nonnegative, and phase sums were below enclosing elapsed.
 
-All table values are MEASURED milliseconds, as reported by Hermes:
+All table values are MEASURED milliseconds, as reported by operator:
 
 | Request | Prompt wall | Decode wall | Pool gate/up | Pool quant | Pool down | Pool enclosing elapsed |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -32,12 +34,12 @@ or isolate individual causes of warming.
 Both dies had active1500MHz core/945MHz memory samples; maximum sensors were
 50°C/62°C. Exit was0, child reaped, no owned model or guard remained, and both
 dies returned to auto, idle, at8339456B VRAM baseline. Receipts remain under
-`/srv/models/inferswarm-artifacts/portable-pool-f8deab2d`, notably
+`${PRIVATE_ARTIFACT_94EFBC04}`, notably
 `run/summary.json` and `checks/final-verification.json`. Preserve raw receipts and
 prior binaries/evidence. No full resident quality/parity or ISA-parity claim follows.
 
 The [next bounded recipe](portable-expert-boundary-hermes-v1.md) adds only opt-in
 whole-provider and per-device executor host-call timing, to locate time inside
-versus outside the provider. It remains pending parent review/Hermes dispatch;
+versus outside the provider. It remains pending parent review/operator dispatch;
 this result authorizes no extra run or optimization. The separately pinned
 head-admission physical job and NVIDIA45513fd8 run are unchanged.

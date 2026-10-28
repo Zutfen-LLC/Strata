@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Portable CPU expert reuse proof — v1
 
 Code base: PR42 documentation commit `59ce0bc5aae81b8cd4f3f17924e8b1cbb16a243d`;
@@ -9,7 +11,7 @@ screen remains failed and belongs to the separate numerical investigation.
 
 The changed `portable_model.cpp` compiled with GCC, C++20, `-O2` and native
 experts enabled. The new row test and enhanced model test linked against the
-existing `/tmp/strata-portable-model-build` native CPU libraries, using retained
+existing `${BUILD_ARTIFACT_83FD5685}` native CPU libraries, using retained
 GGML source `3cf03257f219afbe7334045ff7c6a06ac68c627d`. No dependency or other
 worktree was modified. This incremental check is not a fresh all-backend build.
 The first row-test link omitted the PLE library and failed with undefined
@@ -45,9 +47,9 @@ ctest --test-dir "$BUILD" -R '^portable_(cpu_experts|model)_test$' --output-on-f
 
 ## One matched real-model comparison, parent dispatched
 
-This document does not dispatch a run. Parent/Hermes supplies the exact reviewed
+This document does not dispatch a run. Parent/operator supplies the exact reviewed
 candidate SHA, fresh source/build/evidence paths and explicit one-pair runtime
-authority. Preserve `/home/hermes/portable-model-pr42-ae64892-real` and every
+authority. Preserve `${PRIVATE_ARTIFACT_0EBCDC73}` and every
 previous failure. Never overwrite raw rows, binaries, models or prior logs.
 Use the existing host/swap/per-die supervisor unchanged for each arm.
 

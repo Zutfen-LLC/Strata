@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Guarded Vulkan output-head admission correction
 
 This narrow correction starts at PR49
@@ -22,7 +24,7 @@ MMVQ/integer-dot selection can convert Y, not the full contiguous X matrix.
 An unavailable matvec pipeline asserts instead of selecting a full-X-dequant
 fallback. These are pinned-source conclusions, not new measured GPU results.
 
-The parent's [hardware receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793186078592419)
+The parent's [hardware receipt](PRIVATE_RECEIPT)
 reports `maxStorageBufferRange=4294967295` bytes for both RADV VEGA10 V340 dies,
 PCI `0000:07:00.0` and `0000:0b:00.0`, from existing vulkaninfo output. This
 coding task did not query those hosts; admission uses a fresh runtime property,
@@ -99,10 +101,10 @@ Builds use `/tmp/cmake-3.31.6-linux-x86_64/bin/cmake`, existing pinned GGML at
 `/tmp/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d`,
 `FETCHCONTENT_FULLY_DISCONNECTED=ON`, Release, CUDA off, tests/native experts and
 portable FFN/GDN/QSA/model on, worker TLS off, GGML OpenMP off. CPU build:
-`/tmp/strata-head-admission-cpu`. Vulkan build:
-`/tmp/strata-head-admission-vulkan`, additionally Vulkan on, existing
-`/usr/bin/glslc`, prefix `/tmp/strata-spirv-headers-prefix`, and CXX include flag
-`-I/tmp/strata-spirv-headers-prefix/include`. No dependency install or pinned
+`${BUILD_ARTIFACT_A1B29033}`. Vulkan build:
+`${BUILD_ARTIFACT_5D35094C}`, additionally Vulkan on, existing
+`/usr/bin/glslc`, prefix `${BUILD_ARTIFACT_D2E5D17A}`, and CXX include flag
+`-I${BUILD_ARTIFACT_A3EFA7CB}`. No dependency install or pinned
 source modification. The first Vulkan build failed to find
 `spirv/unified1/spirv.hpp`; adding that existing retained include path corrected
 the isolated build configuration.
@@ -118,13 +120,13 @@ HC and other workspace, shared-ledger arithmetic, QSA peak overlap and additive
 expert terms/cap refusal. Portable supervisor tests:
 `python -m unittest discover -s tools/validation-harness -p 'test_portable*.py'`.
 
-Observed results on Valinor: CPU and Vulkan target builds PASS; focused C++
+Observed results on validation host: CPU and Vulkan target builds PASS; focused C++
 tests 4/4 PASS in each build; portable supervisor tests 52/52 PASS; diff whitespace
 check PASS. Build logs are retained locally as
-`/tmp/head-admission-cpu-build2.log` and
-`/tmp/head-admission-vulkan-build2.log`; configure logs use the matching
-`/tmp/head-admission-*-configure.log`/`*-reconfigure.log` names. Initial failed
-Vulkan build: `/tmp/head-admission-vulkan-build.log` (missing retained SPIRV
+`${BUILD_ARTIFACT_5E4B717F}` and
+`${BUILD_ARTIFACT_F7AAA1D3}`; configure logs use the matching
+`${BUILD_ARTIFACT_73B86B46}`/`*-reconfigure.log` names. Initial failed
+Vulkan build: `${BUILD_ARTIFACT_52E493FA}` (missing retained SPIRV
 include path, corrected as described above). No hardware execution or numerical
 comparison was attempted. No unresolved local build/test blocker remains;
 actual PCI query/guard activation and 1152 admission on the selected hardware

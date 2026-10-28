@@ -6,7 +6,7 @@ compression integration, worker replacement or GEN is included. Consumer 1 Gb/s 
 
 ## Supplied terminal loopback result
 
-Hermes reports PASS at `e5685da112f9e75262176635743b0790586d88c3`: five focused tests in 1.89 seconds,
+operator reports PASS at `e5685da112f9e75262176635743b0790586d88c3`: five focused tests in 1.89 seconds,
 15 retained shapes, both policies, 1024 measured exchanges per shape/policy, all bytes and counts exact.
 Try-first RTT p50 improved in 14 of 15 shapes by 1.6–30.0 microseconds; T2-N12 regressed by
 1.4 microseconds. The median ACROSS the 15 shape-specific p50 values was 111.0 microseconds poll-first
@@ -24,7 +24,7 @@ The path exchanges some polls for additional nonblocking receive attempts; it do
 all readiness waits. Counters exclude connection setup and warmup, and are not system-wide tracing.
 One pair per shape establishes no noise band, LAN result or live TPS benefit. Production defaults
 remain poll-first. The shared e145df6e runtime and resident worker were untouched. These are supplied
-Hermes results, not execution or independent private raw-receipt auditing by this coding thread.
+operator results, not execution or independent private raw-receipt auditing by this coding thread.
 The loopback recipe below is retained evidence; do not repeat its successful gates.
 
 Existing production socket entrypoints still select poll-first. An explicit per-call diagnostic policy
@@ -186,9 +186,9 @@ CPU build; the entire replay set has a 180-second external ceiling and each arm 
 The current bounded handoff is [CPU-TRY-IO-LAN-20261025.md](CPU-TRY-IO-LAN-20261025.md).
 It supersedes the older LAN boundary and stale address/permission examples in
 `docs/cpu-rpc-replay/HERMES.md` for issue #12 only. The supplied current tuple is
-02 10.0.0.180 to 05 10.0.0.123 over eno1, TCP 17531. The user approved a temporary
+02 192.0.2.181 to 05 192.0.2.124 over eno1, TCP 17531. The user approved a temporary
 restriction of that fixture tuple to source 02, followed by removal. The parent supplied the exact
-firewall chain binding and retained ELF hash in the linked handoff. Hermes subsequently reported
+firewall chain binding and retained ELF hash in the linked handoff. operator subsequently reported
 LAN terminal PASS for all 15 shapes × 2 policies and complete fixture cleanup. Try-first won
 p50 in 8/15 shapes and poll-first in 7/15, with a median delta about zero: no clear LAN latency
 winner. See the linked handoff and [canonical issue report](https://github.com/Zutfen-LLC/Strata/issues/12#issuecomment-6403447145).

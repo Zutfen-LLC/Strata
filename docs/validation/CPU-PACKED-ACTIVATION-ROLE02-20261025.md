@@ -1,10 +1,12 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Packed activation proof: second-role relay and native settings
 
 **Terminal result: PASS; this handoff is archived.** The parent reports exact flags across all
 five native targets with zero warning waivers, nine ggml-base objects rebuilt, original ELF
 preserved, focused check/pack PASS and exact cross-role SPA1/SRA1 comparisons. See the
 [terminal result and coverage limits](CPU-PACKED-ACTIVATION-PROOF-20261025.md#terminal-offline-result-pass-focused-session-complete)
-and [Hermes receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1792968628095089).
+and [operator receipt](PRIVATE_RECEIPT).
 The wrapper hash typo started no rows stage; final cross-reference rows ran once per role. All
 original failed gates and private evidence remain preserved. No command below should be rerun as
 part of this completed proof session. Transport work requires a fresh bounded session.
@@ -28,7 +30,7 @@ The parent keeps their full receipts privately.
 The initial inventory incorrectly reported no pinned dependency source on02. A later verified
 retained prefix is available; use the continuation below for the already compiled attempt. There
 is no intact CPU-only cache on02. Use the real CUDA
-cache as `CPU_BUILD`, not the role05 cache. Disabling CUDA/HIP/SYCL for this offline proof is an
+cache as `CPU_BUILD`, not the validation host cache. Disabling CUDA/HIP/SYCL for this offline proof is an
 intentional recorded configuration difference. Compiler, native ISA, C/C++ flags, IPO and linker
 settings remain inherited from02. The shared build block now accepts ROLE02's CUDA-ON input and an
 explicit fresh dependency relay path. It compares retained versus new effective native flags for
@@ -165,7 +167,7 @@ PY
 # END PACKED_RELAY_IMPORT02
 ```
 
-## Build role02 from its own retained CUDA cache
+## Build validation host from its own retained CUDA cache
 
 Keep `GGML_RELAY_SRC` exported. Set `ROLE=02`, `BASE_SRC` to the verified retained02 source,
 `BASE_PIN=e145df6ec79f3d57c5c48215c4f9a9d0ed1e33eb`, `CPU_BUILD` to its actual CUDA cache,
@@ -175,7 +177,7 @@ Keep `GGML_RELAY_SRC` exported. Set `ROLE=02`, `BASE_SRC` to the verified retain
 consumed05 paths. The source fetch below is for this Strata candidate only; dependency network
 fetches stay disabled and the restored ggml source is the sole dependency binding.
 
-Use this fail-closed wrapper in place of the role05 extraction example. Only candidate project
+Use this fail-closed wrapper in place of the validation host extraction example. Only candidate project
 source is fetched from the existing project's origin, into a fresh private object store. This is
 not a dependency fetch. Retained source/cache/Git metadata stay read-only.
 
@@ -231,7 +233,7 @@ model GEN, service query, reload, firewall change, new package or deployment fol
 The parent reports that02 compiled/linked at `0dd834ba`, then stopped at the native-flags gate.
 CTest, pack and rows did **not** run. Retain that failure and all existing outputs. The corrected
 inventory found the original pinned dependency under another verified prefix on02; no relay or
-source copy needs repeating. The parent also reports GNU time1.9-0.2 was installed by Hermes after
+source copy needs repeating. The parent also reports GNU time1.9-0.2 was installed by operator after
 Eric explicitly authorized it. This continuation requests no installation.
 
 The PIC difference has a specific cause: `CMakeLists.txt:2108` sets

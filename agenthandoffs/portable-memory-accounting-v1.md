@@ -67,7 +67,7 @@ allowance128 MiB/die, free reserve512 MiB/die; host admission is unchanged.
 
 ## Supported larger count from the supplied smoke
 
-Original smoke fields from parent/Hermes: each16-expert plan owns84008960 padded
+Original smoke fields from parent/operator: each16-expert plan owns84008960 padded
 tensor bytes. Thus480 experts need2520268800 bytes and a rounded2404 MiB cap;
 1152 need6048645120 bytes and5769 MiB. No extrapolation from raw weights alone.
 

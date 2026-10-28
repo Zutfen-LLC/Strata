@@ -2,7 +2,7 @@
 
 Candidate is stacked on PR40 head `c3625a290066a50e397a32cdab8040038acc0b62`
 (`codex/portable-ple-layer`). Use the new PR's exact full head and manifest,
-not the earlier implementation checkpoint. Parent/Hermes owns physical testing.
+not the earlier implementation checkpoint. Parent/operator owns physical testing.
 This recipe supersedes v1 after the moving-spare correctness fix. The old
 head f1cdabda passed the original physical fixtures, but those did not catch
 this defect. Corrected physical validation is pending.
