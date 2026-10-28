@@ -300,5 +300,13 @@ isolate verification from other warming effects or compare against a matched
 CUDA configuration. No full resident quality screen or cross-backend numerical
 parity is established. The original strict parity failure remains unchanged.
 The [NVIDIA02 recipe](../agenthandoffs/portable-resident-nvidia02-v1.md) reuses the
-same runtime source and explicit local paths/PCI selection; it remains pending
-parent review/dispatch. This documentation update authorizes no additional run.
+same runtime source and explicit local paths/PCI selection. Hermes subsequently
+[reported NVIDIA02 PASS](../agenthandoffs/portable-resident-nvidia02-results-v1.md):
+one process completed all four matching token/greedy-row results, GPU entries
+173/239 per request, and zero verification/copy/digest/invalidation deltas on
+requests2–4. All six focused CTests and six harness tests passed; exit0/reaped,
+no child swap/new swap-out, baseline9MiB/1MiB VRAM and no owned process remained.
+This is same-backend lifecycle success, not cross-backend parity or performance
+evidence. No clocks, models or network services were changed. This documentation
+update authorizes no additional run and leaves PR49 runtime/pinned AMD execution
+unchanged.

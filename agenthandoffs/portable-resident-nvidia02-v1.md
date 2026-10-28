@@ -1,7 +1,9 @@
 # NVIDIA02 resident checkpoint — no code change
 
-The AMD resident checkpoint [passed](portable-resident-amd-results-v1.md).
-NVIDIA02 dispatch remains pending parent review. Reuse PR48 runtime commit
+The AMD resident checkpoint [passed](portable-resident-amd-results-v1.md), and
+Hermes subsequently [reported NVIDIA02 PASS](portable-resident-nvidia02-results-v1.md).
+The original reviewed recipe follows as provenance, not a new run authorization.
+It used PR48 runtime commit
 `45513fd885babcf81d252b73804a14d2a751a74a`, not a rebuilt/moved branch head.
 The existing adapter supports all required explicit paths/device options.
 No fleet action was performed while preparing this recipe. No clock changes,
@@ -76,7 +78,7 @@ physical PCI telemetry; NVIDIA management indices are not Vulkan indices.
 
 ## Exactly one model process; one excluded warmup and three measured GENs
 
-After parent review, and after the tests pass, run once at the existing NVIDIA
+Original reviewed instruction: after parent review and passing tests, run once at the existing NVIDIA
 clock settings. Preserve PR47's idle/model-writer and health checks. This starts
 no service and changes no clocks, cgroups, drivers, credentials or other processes.
 
@@ -129,4 +131,4 @@ Genuine inputs still needed on02: transferred small plans with the hashes above;
 verified case1 tokens hash/binding (or a locally verified existing suite); retained
 PR47 toolchain/include/loader settings; current idle headroom and exact PCI mapping.
 The full02 model path and manifest identity are supplied by parent, not inferred
-from05 paths. Parent owns review and Hermes dispatch after the AMD result.
+from05 paths. That reviewed dispatch completed; see the result linked above. No further run is authorized here.

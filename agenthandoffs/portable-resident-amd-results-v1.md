@@ -67,6 +67,6 @@ matched CUDA comparison or generalized speedup is established. Observation,
 acceptance and execution authority remain distinct.
 
 The [NVIDIA02 variant](portable-resident-nvidia02-v1.md) uses the same pinned runtime
-source and the existing explicit model-root/manifest/device/PCI options. It is
-published for parent review and Hermes dispatch; no NVIDIA resident run or new
-hardware authorization is claimed by this documentation update.
+source and the existing explicit model-root/manifest/device/PCI options. Hermes subsequently [reported the NVIDIA02 checkpoint PASS](portable-resident-nvidia02-results-v1.md).
+That separate same-backend observation establishes no cross-backend parity or
+performance comparison and authorizes no new hardware run.
