@@ -62,8 +62,10 @@ def completion(records, prompt, vocabulary):
     return generated, stop
 
 
-def benchmark_prompts(prompts, binding, enabled):
+def benchmark_prompts(prompts, binding, enabled, single=False):
     # Freeze/verify all twelve as before, then predeclare only case 1 repeated.
+    if single:
+        return [prompts[0]], dict(binding, benchmark_case=1, excluded_warmup=0, measured_trials=1)
     if not enabled:
         return prompts, binding
     return [prompts[0]] * 4, dict(binding, benchmark_case=1, excluded_warmup=1, measured_trials=3)
@@ -79,21 +81,24 @@ def timing_fields(row, prompt, ids):
 
 
 def benchmark_receipt(args, summary):
-    if not getattr(args, 'benchmark', False):
+    if not (getattr(args, 'benchmark', False) or getattr(args, 'single_case', False)):
         return
     rows = summary['requests']
     for i, row in enumerate(rows):
-        row['excluded_warmup'] = i == 0
+        row['excluded_warmup'] = i == 0 and not getattr(args, 'single_case', False)
     summary['numerical_parity'] = 'FAILED; performance does not waive logit gates'
-    summary['cache_policy'] = 'fresh engine per trial; one excluded warmup; OS/file caches not flushed; no KV reuse'
+    summary['cache_policy'] = ('fresh engine; no excluded warmup; OS/file caches not flushed; no KV reuse'
+        if getattr(args, 'single_case', False) else
+        'fresh engine per trial; one excluded warmup; OS/file caches not flushed; no KV reuse')
     # Raw individual trials are authoritative; deliberately no pooled TPS.
     Q.write(args.out / 'benchmark.json', summary)
 
 
 def run_portable(args, tok):
     prompts, binding = frozen(tok, args.suite)
-    benchmark = getattr(args, 'benchmark', False)
-    prompts, binding = benchmark_prompts(prompts, binding, benchmark)
+    single = getattr(args, 'single_case', False)
+    benchmark = getattr(args, 'benchmark', False) or single
+    prompts, binding = benchmark_prompts(prompts, binding, benchmark, single)
     binary = args.binary.resolve(strict=True)
     if Q.bundle.sha(binary) != args.binary_sha256:
         raise ValueError('portable binary digest mismatch')
@@ -361,6 +366,7 @@ def main():
     p.add_argument('--expert-workspace-mib', default='128,128')
     p.add_argument('--expert-free-reserve-mib', default='512,512')
     p.add_argument('--expert-check-rows', action='store_true')
+    p.add_argument('--single-case', action='store_true', help='only frozen case 1 once, timed; no warmup or scoring')
     p.add_argument('--suite', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True)
     p = commands.add_parser('native')
@@ -377,6 +383,8 @@ def main():
     p.add_argument('--native-sha256', required=True)
     p.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
+    if getattr(args,'single_case',False) and getattr(args,'benchmark',False):
+        parser.error('--single-case excludes --benchmark')
     tok = Q.tokenizer(args.gguf)
     if args.command == 'native':
         run_native(args, tok)

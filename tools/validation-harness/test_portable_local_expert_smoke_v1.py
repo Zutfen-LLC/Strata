@@ -20,6 +20,24 @@ class LocalSmoke(unittest.TestCase):
         self.assertEqual(M.devices(log,'token-complete')[0]['entries'],'1')
         with self.assertRaises(ValueError):M.devices(log.replace('backend=Vulkan0','backend=CPU'),'token-complete')
 
+    def test_existing_smoke_forwards_larger_plans_and_separate_caps(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);binary=root/'binary';binary.write_bytes(b'mocked')
+            plans=[root/'retained0',root/'retained1']
+            for plan in plans:plan.write_bytes(b'engine validates plan metadata')
+            argv=['smoke','--binary',str(binary),'--binary-sha256',M.Q.bundle.sha(binary),
+                  '--out',str(root/'out'),'--phase','smoke','--plan',str(plans[0]),'--plan',str(plans[1]),
+                  '--tensor-mib','5800,5810','--workspace-mib','128,128','--free-reserve-mib','512,512']
+            with patch('sys.argv',argv),patch.object(M.S,'host_memory',side_effect=ValueError('prelaunch stop')), \
+                 patch.object(M.subprocess,'Popen') as launch:
+                with self.assertRaisesRegex(ValueError,'prelaunch stop'):M.main()
+                launch.assert_not_called()
+            command=json.loads((root/'out/argv.json').read_text())
+            self.assertEqual(command[command.index('--expert-tensor-mib')+1],'5800,5810')
+            self.assertEqual(command[command.index('--expert-workspace-mib')+1],'128,128')
+            self.assertEqual(command[command.index('--expert-free-reserve-mib')+1],'512,512')
+            self.assertEqual(command.count('--expert-plan'),2)
+
     def test_pressure_failure_retains_stop_and_reaps_owned_child(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);binary=root/'binary';binary.write_bytes(b'mocked child')

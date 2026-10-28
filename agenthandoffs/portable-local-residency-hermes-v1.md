@@ -1,6 +1,8 @@
 # Portable local Vulkan expert residency: bounded handoff
 
-Draft implementation, for parent review and Hermes dispatch. No fleet run by
+The initial physical smoke passed; see [its receipt](portable-local-residency-physical-v1.md)
+and [the conditional larger-placement recipe](portable-local-residency-large-v1.md).
+Historical initial instructions follow, for parent review and Hermes dispatch. No fleet run by
 this coding task. Stacked on PR44. This is a product capability slice, not a
 CUDA-versus-Vulkan performance verdict. No CUDA de-offload work.
 

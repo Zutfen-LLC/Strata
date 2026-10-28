@@ -145,6 +145,20 @@ class BenchmarkControls(unittest.TestCase):
         self.assertEqual(binding['measured_trials'], 3)
         self.assertEqual(binding['sha'], 'frozen')
 
+    def test_single_case_has_one_measured_request_and_no_warmup(self):
+        prompts,binding=P.benchmark_prompts([[1,2],[3]],{'sha':'frozen'},True,single=True)
+        self.assertEqual(prompts,[[1,2]])
+        self.assertEqual(binding['excluded_warmup'],0)
+        self.assertEqual(binding['measured_trials'],1)
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            args=SimpleNamespace(out=Path(d),benchmark=False,single_case=True)
+            result=dict(status='complete',requests=[dict(index=1)])
+            P.benchmark_receipt(args,result)
+            saved=json.loads((Path(d)/'benchmark.json').read_text())
+            self.assertFalse(saved['requests'][0]['excluded_warmup'])
+            self.assertIn('no excluded warmup',saved['cache_policy'])
+
     def test_reject_nonfinite_and_mismatched_counts(self):
         good = dict(setup_ms=1., prompt_ms=2., decode_ms=3., prompt_count=2, output_count=1)
         self.assertEqual(P.timing_fields(good, [1, 2], [3]), good)

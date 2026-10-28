@@ -66,3 +66,11 @@ baselines/last snapshots, sampled VRAM/host/process/swap extrema and final reape
 child exit_code on STOP as well as success. The focused pressure-failure test
 checks that the failing sample and -15 reaped result survive. All30 Python tests
 pass after the change. No C++ source changed or rebuild was required.
+
+Physical follow-up: the bounded 16-expert-per-die smoke passed; see the linked
+physical receipt and larger-placement handoff. The wrapper already accepts larger
+plan/cap inputs; an additional forwarding test confirms this. Portable-only
+--single-case now runs exactly the first frozen case once with timings and no
+warmup, filling the previous four-request --benchmark cardinality gap. The
+original default/benchmark selections remain unchanged. All 32 Python tests pass;
+no C++ source changed and the physical source05601aba binary remains reusable.
