@@ -64,6 +64,15 @@ forcing uses `--max-new 0`. These rows work with the existing
 the reference owner interpret failures. Matching a few greedy tokens does
 not establish full-model quality.
 
+The first parent-dispatched real run at `ae6489205c9eca5c072610dbacbc78c8489dffda`
+completed all48 layers and the head on the two V340 dies with genuine CPU experts.
+Three generated IDs matched the retained CUDA prefix, but the unchanged full-vocabulary
+numerical screen at position37 failed (relative logit L2 `0.0717160202`,
+KL `0.0001161040`). This is execution evidence, not a quality pass. See the
+[versioned result and numerical-policy audit](../agenthandoffs/portable-model-first-real-audit-v1.md)
+for all metrics, resource observations, conditional native policies and the proposed
+retained-output diagnostic. No rerun or optimization was performed for that audit.
+
 ## Ownership and token semantics
 
 `PortableModelSession` owns the six-shard `GgufModel` for the session's lifetime.
