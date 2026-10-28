@@ -12,20 +12,20 @@ import portable_model_smoke_v1 as S
 import quality as Q
 
 
-def devices(log, stage):
+def devices(log, stage, selected=(0, 1)):
     out = {}
     for line in log.splitlines():
         if not line.startswith('expert_device stage='+stage+' '):
             continue
         fields = dict(part.split('=', 1) for part in line.split()[1:])
         slot = int(fields['slot'])
-        if slot not in (0, 1) or fields['backend'] != f'Vulkan{slot}' or fields['numerics'] != 'VULKAN_HYBRID_Q8':
+        if slot not in (0, 1) or fields['backend'] != f'Vulkan{selected[slot]}' or fields['numerics'] != 'VULKAN_HYBRID_Q8':
             raise ValueError('unexpected expert device/backend contract')
         out[slot] = fields
     return out
 
 
-def assignments(log):
+def assignments(log, split=32):
     pools = [set(), set()]
     for line in log.splitlines():
         match = re.fullmatch(r'expert_route position=0 layer=(\d+) ids=([\d,]+)', line)
@@ -35,7 +35,7 @@ def assignments(log):
             ids = list(map(int, match[2].split(',')))
             if len(ids) != 10 or len(set(ids)) != 10 or any(i not in range(512) for i in ids):
                 raise ValueError('invalid route IDs')
-            pools[int(layer >= 32)].update((layer, expert) for expert in ids)
+            pools[int(layer >= split)].update((layer, expert) for expert in ids)
     if any(len(pool) < 16 for pool in pools): raise ValueError('incomplete route discovery')
     return [sorted(pool)[:16] for pool in pools]
 
@@ -50,16 +50,19 @@ def main():
     p.add_argument('--tensor-mib', default='256,256')
     p.add_argument('--workspace-mib', default='128,128')
     p.add_argument('--free-reserve-mib', default='512,512')
+    S.device_arguments(p)
     args = p.parse_args()
+    selected, physical = S.device_selection(p, args)
+    cap = args.device_cap_mib << 20
     if len(args.plan) != (2 if args.phase == 'smoke' else 0): p.error('smoke requires exactly two plans; discover has none')
     binary = args.binary.resolve(strict=True)
     if Q.bundle.sha(binary) != args.binary_sha256: raise ValueError('binary hash mismatch')
     args.out.mkdir(mode=0o700, exist_ok=False)
     summary = dict(status='STOP', phase=args.phase, binary_sha256=args.binary_sha256, prompt=[S.PROMPT[0]], max_new=0)
-    command = [str(binary), '--model', str(S.MODEL_ROOT/'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
-               '--manifest', S.MANIFEST, '--tokens', str(S.PROMPT[0]), '--context', '256', '--max-new', '0',
+    command = [str(binary), '--model', str((args.model_root or S.MODEL_ROOT)/'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
+               '--manifest', args.manifest, '--tokens', str(S.PROMPT[0]), '--context', '256', '--max-new', '0',
                '--threads', '4', '--expert-workers', '12', '--host-cap-mib', '32768',
-               '--vulkan', '0,1', '--device-cap-mib', '7680,7680', '--split', '32',
+               '--vulkan', args.devices, '--device-cap-mib', ','.join([str(args.device_cap_mib)]*2), '--split', str(args.split),
                '--placements', str(args.out/'placements.tsv')]
     if args.phase == 'discover': command += ['--expert-record-routes']
     else:
@@ -69,11 +72,14 @@ def main():
     Q.write(args.out/'argv.json', command)
     child = None
     try:
-        baseline = S.host_memory(); work = S.model_working_set()
+        baseline = S.host_memory()
+        work = S.model_working_set() if args.model_root is None else S.model_working_set(args.model_root)
         summary['baseline_host'] = baseline
         summary['minimum_effective_available'] = baseline['effective_available']
         summary['host_admission'] = S.admit_host(baseline, work['working_set_bound_bytes'])
-        initial = [S.vram(pci) for pci in S.PCI]
+        mapping = S.verified_devices(binary, selected, physical)
+        summary['selected_devices'] = mapping
+        initial = S.sample_vram(physical)
         summary['baseline_vram'] = initial
         summary['sampled_peak_vram'] = [v['used'] for v in initial]
         summary['minimum_vram_free'] = [v['total']-v['used'] for v in initial]
@@ -81,13 +87,13 @@ def main():
         summary['peak_process'] = dict(VmRSS=0, VmHWM=0, VmSwap=0)
         summary['peak_swap_used'] = baseline.get('SwapUsed', 0)
         summary['maximum_swap_out_pages_delta'] = 0
-        if any(v['total']-v['used'] < 7680 << 20 for v in initial): raise ValueError('per-die free admission')
+        S.admit_vram(initial, mapping, cap)
         start = time.monotonic()
         with (args.out/'stdout.jsonl').open('x') as stdout, (args.out/'stderr.log').open('x') as stderr:
             child = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
             while True:
                 host, process = S.host_memory(), S.rss(child.pid)
-                sample = [S.vram(pci) for pci in S.PCI]
+                sample = S.sample_vram(physical, initial)
                 # Save the failing sample too; compact extrema stay bounded in size.
                 summary['sample_count'] += 1
                 summary['last_host'], summary['last_process'], summary['last_vram'] = host, process, sample
@@ -102,7 +108,7 @@ def main():
                 summary['sampled_peak_growth'] = [summary['sampled_peak_vram'][i]-initial[i]['used'] for i in range(2)]
                 S.guard_host(host, baseline, process)
                 for die, value in enumerate(sample):
-                    if value['used']-initial[die]['used'] > 7680 << 20: raise ValueError('per-die growth cap')
+                    if value['used']-initial[die]['used'] > cap: raise ValueError('per-die growth cap')
                 if time.monotonic()-start > 300: raise TimeoutError('one-token case budget 300s; no retry')
                 if any((args.out/name).stat().st_size > 16 << 20 for name in ('stdout.jsonl','stderr.log')):
                     raise ValueError('output log cap')
@@ -114,13 +120,13 @@ def main():
         rows = [json.loads(line) for line in (args.out/'stdout.jsonl').read_text().splitlines()]
         if len(rows) != 2 or rows[0]['token'] != S.PROMPT[0] or rows[0]['generated'] or rows[0]['position'] != 0 or rows[-1] != dict(stop='max_new', position=1):
             raise ValueError('one-token output contract')
-        S.placements(args.out/'placements.tsv', [0,1], 32)
+        S.placements(args.out/'placements.tsv', selected, args.split)
         log = (args.out/'stderr.log').read_text()
         if args.phase == 'discover':
-            for slot, pairs in enumerate(assignments(log)):
+            for slot, pairs in enumerate(assignments(log, args.split)):
                 (args.out/f'assignments-{slot}.txt').write_text(''.join(f'{l} {e}\n' for l,e in pairs))
         else:
-            report = devices(log, 'token-complete')
+            report = devices(log, 'token-complete', selected)
             if set(report) != {0,1} or any(int(d['entries']) <= 0 or int(d['row_checks']) != int(d['entries']) for d in report.values()):
                 raise ValueError('actual expert hits and row diagnostics required on both dies')
             summary['expert_devices'] = report

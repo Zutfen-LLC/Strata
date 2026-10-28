@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import time
@@ -21,10 +22,11 @@ HOST_ANONYMOUS_CAP = 32 << 30
 HOST_RESERVE = 8 << 30
 
 
-def model_working_set():
+def model_working_set(root=None):
+    root = MODEL_ROOT if root is None else root
     files, identities = [], set()
     for number in range(1, 7):
-        path = MODEL_ROOT / f"Qwen3.8-Flash-Next-Q8_0-0000{number}-of-00006.gguf"
+        path = root / f"Qwen3.8-Flash-Next-Q8_0-0000{number}-of-00006.gguf"
         stat = path.stat()
         identity = (stat.st_dev, stat.st_ino)
         if identity in identities:
@@ -120,10 +122,97 @@ def guard_host(memory, baseline, process):
         raise ValueError("owned child VmSwap grew from zero baseline")
 
 
+def pci_id(text):
+    match = re.fullmatch(r"([0-9a-fA-F]{4,8}):([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-7])", text)
+    if not match or int(match[1], 16) > 65535:
+        raise ValueError(f"invalid PCI identity: {text}")
+    return f"{int(match[1],16):04x}:{match[2].lower()}:{match[3].lower()}.{match[4]}"
+
+
+def observation(pci, used, total):
+    if total <= 0 or used < 0 or used > total:
+        raise ValueError(f"invalid VRAM telemetry for {pci}: used={used} total={total}")
+    return dict(pci=pci, used=used, total=total)
+
+
 def vram(pci):
     root = pathlib.Path("/sys/bus/pci/devices") / pci
-    return {"pci": pci, "used": int((root / "mem_info_vram_used").read_text()),
-            "total": int((root / "mem_info_vram_total").read_text())}
+    vendor = int((root / "vendor").read_text().strip(), 16)
+    if vendor == 0x1002:
+        return observation(pci, int((root / "mem_info_vram_used").read_text()),
+                           int((root / "mem_info_vram_total").read_text()))
+    if vendor == 0x10de:
+        # Query by physical bus identity, never by NVIDIA's unrelated index.
+        result = subprocess.run(["nvidia-smi", "--id=" + pci,
+                                 "--query-gpu=pci.bus_id,memory.used,memory.total",
+                                 "--format=csv,noheader,nounits"], check=True, capture_output=True,
+                                text=True, timeout=5)
+        rows = list(csv.reader(result.stdout.splitlines()))
+        if len(rows) != 1 or len(rows[0]) != 3 or pci_id(rows[0][0].strip()) != pci:
+            raise ValueError("NVIDIA telemetry PCI identity mismatch")
+        return observation(pci, int(rows[0][1]) << 20, int(rows[0][2]) << 20)
+    raise ValueError(f"unsupported guarded VRAM telemetry vendor {vendor:#x} at {pci}; adapter required")
+
+
+def device_arguments(parser):
+    parser.add_argument("--devices", default="0,1")
+    parser.add_argument("--pci", default=",".join(PCI), help="ordered physical PCI IDs for selected logical Vulkan indices")
+    parser.add_argument("--split", type=int, default=32)
+    parser.add_argument("--device-cap-mib", type=int, default=7680)
+    parser.add_argument("--model-root", type=pathlib.Path, default=None)
+    parser.add_argument("--manifest", default=MANIFEST)
+
+
+def device_selection(parser, args):
+    try:
+        indices = [int(value) for value in args.devices.split(",")]
+        physical = [pci_id(value) for value in args.pci.split(",")]
+    except ValueError as error:
+        parser.error(str(error))
+    if (len(indices) != 2 or len(set(indices)) != 2 or min(indices) < 0 or
+            len(physical) != 2 or len(set(physical)) != 2):
+        parser.error("two distinct Vulkan indices and two distinct ordered PCI identities required")
+    if not 0 < args.split < 48 or not 0 < args.device_cap_mib <= 8192:
+        parser.error("invalid split/cap; cap must be in [1,8192] MiB")
+    return indices, physical
+
+
+def verified_devices(binary, indices, physical):
+    result = subprocess.run([str(binary), "--list-vulkan"], check=True, capture_output=True,
+                            text=True, timeout=30)
+    found = {}
+    for line in result.stdout.splitlines():
+        index, pci, free, total, description = line.split("\t", 4)
+        index = int(index)
+        if index in found:
+            raise ValueError("duplicate logical Vulkan identity")
+        found[index] = dict(pci=pci, free=int(free), total=int(total), description=description)
+    selected = []
+    for index, pci in zip(indices, physical):
+        item = found.get(index)
+        if (item is None or item['pci'] == '-' or pci_id(item['pci']) != pci or
+                any(word in item['description'].lower() for word in ('llvmpipe', 'lavapipe', 'software'))):
+            raise ValueError(f"Vulkan{index} physical PCI mapping missing/mismatched or software driver: {pci}")
+        root = pathlib.Path('/sys/bus/pci/devices') / pci
+        if int((root / 'class').read_text().strip(), 16) >> 16 != 3:
+            raise ValueError(f"selected PCI device is not a physical display controller: {pci}")
+        if not 0 <= item['free'] <= item['total'] or item['total'] <= 0:
+            raise ValueError("invalid Vulkan physical memory capacity")
+        selected.append(dict(index=index, **item))
+    return selected
+
+
+def admit_vram(initial, mapping, cap):
+    for item, device in zip(initial, mapping):
+        if cap > device['total'] or cap > item['total'] or item['total'] - item['used'] < cap:
+            raise ValueError(f"selected physical capacity/free memory cannot admit cap: {item}")
+
+
+def sample_vram(physical, initial=None):
+    sample = [vram(pci) for pci in physical]
+    if initial is not None and any(a['total'] != b['total'] for a, b in zip(sample, initial)):
+        raise ValueError("physical VRAM capacity changed during run")
+    return sample
 
 
 def rss(pid):
@@ -188,25 +277,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=pathlib.Path, required=True)
     parser.add_argument("--evidence", type=pathlib.Path, required=True)
-    parser.add_argument("--devices", default="0,1")
-    parser.add_argument("--split", type=int, default=32)
-    parser.add_argument("--device-cap-mib", type=int, default=7680)
+    device_arguments(parser)
     parser.add_argument("--timeout-seconds", type=int, required=True)
     parser.add_argument("--expert-dispatch-oracle", action="store_true",
                         help="comparison only: copy and verify experts on every dispatch")
     args = parser.parse_args()
-    devices = [int(value) for value in args.devices.split(",")]
-    if len(devices) != 2 or len(set(devices)) != 2 or min(devices) < 0:
-        parser.error("two distinct nonnegative Vulkan indices are required")
-    if not 0 < args.split < 48 or not 0 < args.device_cap_mib <= 8192 or not 0 < args.timeout_seconds <= 1800:
-        parser.error("invalid split/cap or timeout outside [1,1800]")
+    devices, physical = device_selection(parser, args)
+    if not 0 < args.timeout_seconds <= 1800:
+        parser.error("timeout outside [1,1800]")
     # An existing evidence path is never overwritten. A failed run is retained.
     args.evidence.mkdir(parents=False, exist_ok=False)
     evidence = args.evidence
     (evidence / "logits").mkdir()
     binary = args.binary.resolve(strict=True)
-    command = [str(binary), "--model", str(MODEL_ROOT / "Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf"),
-               "--manifest", MANIFEST, "--tokens", ",".join(map(str, PROMPT)),
+    command = [str(binary), "--model", str((args.model_root or MODEL_ROOT) / "Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf"),
+               "--manifest", args.manifest, "--tokens", ",".join(map(str, PROMPT)),
                "--context", "64", "--max-new", "3", "--threads", "4", "--expert-workers", "12",
                "--host-cap-mib", str(HOST_ANONYMOUS_CAP >> 20),
                "--vulkan", args.devices, "--device-cap-mib", ",".join([str(args.device_cap_mib)] * 2),
@@ -222,18 +307,18 @@ def main():
                "memory_scope": "sampled aggregate per-PCI VRAM, including other users; not an exact transient peak"}
     process = None
     try:
-        working_set = model_working_set()
+        working_set = model_working_set() if args.model_root is None else model_working_set(args.model_root)
         summary["model_file_working_set"] = working_set
         baseline_host = host_memory()
         summary["baseline_host"] = baseline_host
         summary["host_admission"] = host_admission_terms(working_set["working_set_bound_bytes"])
         admit_host(baseline_host, working_set["working_set_bound_bytes"])
         summary["minimum_effective_available"] = baseline_host["effective_available"]
-        initial = [vram(pci) for pci in PCI]
+        mapping = verified_devices(binary, devices, physical)
+        summary["selected_devices"] = mapping
+        initial = sample_vram(physical)
         summary["baseline_vram"] = initial
-        for item in initial:
-            if item["total"] - item["used"] < cap:
-                raise ValueError(f"per-die free memory cannot admit cap with headroom: {item}")
+        admit_vram(initial, mapping, cap)
         peak = [item["used"] for item in initial]
         start = time.monotonic()
         with (evidence / "stdout.jsonl").open("w") as stdout, (evidence / "stderr.log").open("w") as stderr, \
@@ -244,7 +329,7 @@ def main():
             guard_host(baseline_host, baseline_host, summary["baseline_process"])
             while True:
                 now = time.monotonic()
-                sample = [vram(pci) for pci in PCI]
+                sample = sample_vram(physical, initial)
                 host = host_memory()
                 child = rss(process.pid)
                 memory.write(json.dumps({"seconds": now-start, "vram": sample, "host": host, "process": child}) + "\n")
@@ -307,4 +392,6 @@ def main():
 
 
 if __name__ == "__main__":
+    def terminate(_sig, _frame): raise SystemExit("termination requested; owned cleanup")
+    signal.signal(signal.SIGTERM, terminate)
     main()

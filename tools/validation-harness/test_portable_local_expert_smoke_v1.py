@@ -50,6 +50,7 @@ class LocalSmoke(unittest.TestCase):
                  patch.object(M.S,'model_working_set',return_value={'working_set_bound_bytes':0}), \
                  patch.object(M.S,'vram',side_effect=[{'used':0,'total':8<<30}, {'used':0,'total':8<<30},
                      {'used':100,'total':8<<30}, {'used':200,'total':8<<30}]), \
+                 patch.object(M.S,'verified_devices',return_value=[{'total':8<<30}]*2), \
                  patch.object(M.S,'rss',return_value=dict(VmRSS=1000,VmHWM=2000,VmSwap=30)), \
                  patch.object(M.S,'guard_host',side_effect=ValueError('pressure')), \
                  patch.object(M.subprocess,'Popen',return_value=child),patch.object(M.os,'killpg') as kill:

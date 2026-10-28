@@ -46,8 +46,26 @@ int main(int argc, char **argv) {
         };
         for (int i = 1; i < argc; ++i) {
             const std::string key = argv[i];
+            if (key == "--list-vulkan") {
+                if (argc != 2) throw std::runtime_error("--list-vulkan must be used alone");
+#ifdef STRATA_PORTABLE_MODEL_VULKAN
+                auto reg = ggml_backend_vk_reg();
+                for (size_t index = 0; index < ggml_backend_reg_dev_count(reg); ++index) {
+                    ggml_backend_dev_props props{};
+                    ggml_backend_dev_get_props(ggml_backend_reg_dev_get(reg, index), &props);
+                    // Same logical enumeration and PCI extension as the model backend.
+                    std::cout << index << '\t' << (props.device_id ? props.device_id : "-")
+                              << '\t' << props.memory_free << '\t' << props.memory_total
+                              << '\t' << props.description << '\n';
+                }
+                return 0;
+#else
+                throw std::runtime_error("this build has no Vulkan backend");
+#endif
+            }
             if (key == "--help") {
-                std::cout << "portable_model --model ANY_SHARD --manifest SWLOCAL1 --tokens ID,ID,...\n"
+                std::cout << "portable_model --list-vulkan (read-only logical index/PCI/free/total/description TSV)\n"
+                             "portable_model --model ANY_SHARD --manifest SWLOCAL1 --tokens ID,ID,...\n"
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback]\n"
