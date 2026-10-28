@@ -2,7 +2,7 @@
 
 ## Supplied terminal result
 
-Hermes reports build and focused check PASS at `74ffe391b6ec32f3e61aab6ce5386d779f0cf007`.
+operator reports build and focused check PASS at `74ffe391b6ec32f3e61aab6ce5386d779f0cf007`.
 The benchmark took 5.91 seconds with peak RSS 76 MiB, zero worker/socket/GEN contact, all 16
 independent reconstructed-record reference gates passing, and all 160 frame/codec combinations
 round-tripping exact bytes across 32 peer payloads and five codecs. These are results supplied through
@@ -63,7 +63,7 @@ supplied byte-reduction summary; its precise header/denominator convention was n
 recomputed from private metrics here. The executable has no aggregate percentile: each printed p50/p95
 is nearest-rank over 64 timings for ONE frame/codec. The fixed selector adds that frame's encode p95
 and decode p95; this is a conservative screening statistic, not a measured end-to-end p95 or a pooled
-percentile. Hermes clarified that its timing table used the median across 32 frame-specific p50s/p95s,
+percentile. operator clarified that its timing table used the median across 32 frame-specific p50s/p95s,
 not a pooled percentile. The cost totals above instead SUM the corresponding per-frame encode and
 decode statistics. Neither operation reconstructs the pooled 2048 individual timing observations.
 
