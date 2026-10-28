@@ -2,7 +2,7 @@
 
 Candidate is stacked on PR40 head `c3625a290066a50e397a32cdab8040038acc0b62`
 (`codex/portable-ple-layer`). Use the new PR's exact full head and manifest,
-not the earlier implementation checkpoint. Parent/Hermes owns physical testing.
+not the earlier implementation checkpoint. Parent/operator owns physical testing.
 No physical QSA result is claimed here.
 
 The bounded test creates actual H2560 Q8_0/F32 weights, runs the complete

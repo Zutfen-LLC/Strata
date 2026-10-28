@@ -1,7 +1,9 @@
-# NVIDIA02 resident checkpoint — no code change
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
+# validation host resident checkpoint — no code change
 
 The AMD resident checkpoint [passed](portable-resident-amd-results-v1.md), and
-Hermes subsequently [reported NVIDIA02 PASS](portable-resident-nvidia02-results-v1.md).
+operator subsequently [reported validation host PASS](portable-resident-validation host-results-v1.md).
 The original reviewed recipe follows as provenance, not a new run authorization.
 It used PR48 runtime commit
 `45513fd885babcf81d252b73804a14d2a751a74a`, not a rebuilt/moved branch head.
@@ -9,8 +11,8 @@ The existing adapter supports all required explicit paths/device options.
 No fleet action was performed while preparing this recipe. No clock changes,
 new placement, model copy, native rerun or retries.
 
-Hermes stages the existing complete source archive and small metadata only under
-`/home/hermes/nvidia-resident-45513fd8`: source.tar/source.commit, the two retained
+operator stages the existing complete source archive and small metadata only under
+`${PRIVATE_ARTIFACT_BABCDE0A}`: source.tar/source.commit, the two retained
 480 plans renamed plan-die0.plan/plan-die1.plan, and the **verified AMD run's**
 tokens.json plus its frozen-binding/max-new receipt. Copy the tokens hash from
 that reviewed receipt into TOKENS_SHA256; do not guess/re-tokenize a different
@@ -21,16 +23,16 @@ suite with `portable_quality_v1.frozen` using the local02 model and take prompts
 
 Use the exact retained CMAKE, LLAMA_SRC, prefix/include flags and loader/ICD
 environment from the passing PR47 build under
-`/home/hermes/nvidia-full-model-fb2ea3c`. Resolve these host-local paths from its
+`${PRIVATE_ARTIFACT_7A6C4B63}`. Resolve these host-local paths from its
 retained configuration; do not install/download dependencies or change drivers.
 The variables below must be actual retained paths/settings, not05 paths.
 
 ```sh
 set -euo pipefail
 umask 077
-ROOT=/home/hermes/nvidia-resident-45513fd8
-MODEL_ROOT=/srv/models/qwen38-q8
-MANIFEST=/home/hermes/strata-fanout-live-982ea405/B-recovery/assets/manifest
+ROOT=${PRIVATE_ARTIFACT_BABCDE0A}
+MODEL_ROOT=${PRIVATE_ARTIFACT_E45E0609}
+MANIFEST=${PRIVATE_ARTIFACT_3B7D17F7}
 EXPECTED_SHA=45513fd885babcf81d252b73804a14d2a751a74a
 : "${CMAKE:?retained PR47 CMake executable on02}"
 : "${LLAMA_SRC:?retained pinned GGML source on02}"
@@ -89,8 +91,8 @@ BINARY_SHA=$(cut -d' ' -f1 checks/binary.sha256)
 timeout --signal=TERM --kill-after=15s 1000s "$PYTHON02" -B \
   source/tools/validation-harness/portable_resident_v1.py \
   --binary "$ROOT/build/portable_model" --binary-sha256 "$BINARY_SHA" \
-  --model-root /srv/models/qwen38-q8 \
-  --manifest /home/hermes/strata-fanout-live-982ea405/B-recovery/assets/manifest \
+  --model-root ${PRIVATE_ARTIFACT_E45E0609} \
+  --manifest ${PRIVATE_ARTIFACT_3B7D17F7} \
   --tokens-file "$ROOT/tokens.json" --max-new 32 \
   --plan "$ROOT/plan-die0.plan" --plan "$ROOT/plan-die1.plan" \
   --devices 0,1 --pci 0000:02:00.0,0000:03:00.0 \

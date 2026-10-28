@@ -1,9 +1,11 @@
-# NVIDIA02 resident sequential-request result
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
 
-Hermes reported **PASS** for the bounded NVIDIA02 resident checkpoint at runtime
+# validation host resident sequential-request result
+
+operator reported **PASS** for the bounded validation host resident checkpoint at runtime
 source `45513fd885babcf81d252b73804a14d2a751a74a`, binary SHA256
 `34b1e8ac188b39fcf511faf94999ef1896aaaad5654ff6fb4bd5c07526e70597`.
-[Primary Hermes report](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793186598876119).
+[Primary operator report](PRIVATE_RECEIPT).
 This documentation task read that report; it did not run fleet commands.
 All six sequential focused CTests and all six harness tests passed.
 
@@ -18,7 +20,7 @@ without reloading between requests.
 
 Vulkan0 mapped to PCI0000:02:00.0 and Vulkan1 to0000:03:00.0, the existing
 RTX3060Ti/RTX3060 selection. The unchanged480-per-device plans and caps were used;
-no new placement/ranking was introduced. The [reviewed recipe](portable-resident-nvidia02-v1.md)
+no new placement/ranking was introduced. The [reviewed recipe](portable-resident-validation host-v1.md)
 records the exact source/input identities and explicit local02 model/manifest paths.
 
 ## Resources, cleanup and retained evidence
@@ -28,7 +30,7 @@ to its9MiB/1MiB baseline, and no owned process remained. At the report time neit
 the build/tests nor the four-request process was active. The prior PR47 binary
 hash also verified unchanged.
 
-Evidence remains under `/home/hermes/nvidia-resident-45513fd8`. Preserve source,
+Evidence remains under `${PRIVATE_ARTIFACT_BABCDE0A}`. Preserve source,
 binary, input-plan/token identities, tests, four request receipts, resource/exit/
 cleanup records and the prior qualified artifacts. The report does not supply
 per-stage latency or peak-memory values; none are invented here.

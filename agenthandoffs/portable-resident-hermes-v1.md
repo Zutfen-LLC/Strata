@@ -1,9 +1,11 @@
-# Portable resident requests: exact-source Hermes handoff
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
+# Portable resident requests: exact-source operator handoff
 
 The AMD checkpoint completed; see the [physical result](portable-resident-amd-results-v1.md).
 The original reviewed recipe follows as provenance, not a new run authorization.
-The [NVIDIA02 variant](portable-resident-nvidia02-v1.md) also completed; see its
-[physical result](portable-resident-nvidia02-results-v1.md). This slice is stacked on PR47 source `fb2ea3c92093eacc8663d2b90b88813ec2bc4076` in
+The [validation host variant](portable-resident-validation host-v1.md) also completed; see its
+[physical result](portable-resident-validation host-results-v1.md). This slice is stacked on PR47 source `fb2ea3c92093eacc8663d2b90b88813ec2bc4076` in
 Zutfen-LLC/Strata. The final handoff supplies the exact candidate commit SHA.
 No fleet execution, clock operation, model copy or placement retuning occurred
 in this coding task. Original strict numerical parity remains FAILED.
@@ -21,8 +23,8 @@ sha256sum source.tar > source.tar.sha256
 printf '%s\n' "$EXPECTED_SHA" > source.commit
 ```
 
-Hermes stages that archive, checksum and source.commit on05 under a fresh
-`/srv/models/inferswarm-artifacts/portable-resident-<SHA>` directory. Preserve old
+operator stages that archive, checksum and source.commit on05 under a fresh
+`${PRIVATE_ARTIFACT_0484E002}<SHA>` directory. Preserve old
 binaries and all evidence. Verify archive SHA256 after transfer and require
 source.commit equals EXPECTED_SHA. Extract only into a fresh source subdirectory;
 retain the archive and receipts. This full source archive plus the existing
@@ -31,7 +33,7 @@ pinned dependency is the complete build input; do not download or install.
 ```sh
 set -euo pipefail
 umask 077
-: "${ROOT:?fresh /srv/models/inferswarm-artifacts/portable-resident-SHA}"
+: "${ROOT:?fresh ${PRIVATE_ARTIFACT_E30793D2}"
 : "${EXPECTED_SHA:?reviewed exact candidate SHA}" "${CMAKE:?retained executable}"
 : "${LLAMA_SRC:?retained pinned llama.cpp}" "${PYTHON05:?existing qualified Python}"
 cd "$ROOT"
@@ -76,19 +78,19 @@ import portable_quality_v1 as P
 root=Path(sys.argv[1])
 gguf=P.S.MODEL_ROOT/'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'
 tok=P.Q.tokenizer(gguf)
-prompts,binding=P.frozen(tok,Path('/srv/models/inferswarm-artifacts/portable-quality-ac85ff3-v2/suite'))
+prompts,binding=P.frozen(tok,Path('${PRIVATE_ARTIFACT_021ADBD1}'))
 (root/'tokens.json').write_text(json.dumps(prompts[0])+'\n')
 (root/'checks/frozen-binding.json').write_text(json.dumps(binding,sort_keys=True)+'\n')
 (root/'checks/max-new').write_text(str(P.Q.MAX_NEW)+'\n')
 PY
 sha256sum tokens.json \
-  /home/hermes/amd-quality-pr37-split/plan-die0.plan \
-  /home/hermes/amd-quality-pr37-split/plan-die1.plan > checks/inputs.sha256
+  ${PRIVATE_ARTIFACT_07F8412C} \
+  ${PRIVATE_ARTIFACT_730CE699} > checks/inputs.sha256
 ```
 
 ## One guarded process, then stop
 
-Hermes uses the existing verified finite high-clock/temperature guard unchanged,
+operator uses the existing verified finite high-clock/temperature guard unchanged,
 covering the **whole** supervisor/model process from load through cleanup. Retain
 sensor-failure and temperature STOP, active-clock samples on both dies and auto
 restoration. No voltage/power/driver changes. Keep the prior 30-minute outer guard;
@@ -96,7 +98,7 @@ this run has a 960 s model-process cap, 180 s load cap, 180 s/request cap, 15 s
 normal-exit cap, plus at most10 s forced owned cleanup. The command below has a
 1000 s outer timeout and fits that guard. No sleeps between GENs, no retries, no
 native rerun or full twelve-case campaign. Build and checks above are outside the
-clock window. The guard's already verified host-local invocation remains Hermes's
+clock window. The guard's already verified host-local invocation remains operator's
 responsibility; do not invent a replacement or run the command unguarded.
 
 ```sh
@@ -108,8 +110,8 @@ timeout --signal=TERM --kill-after=15s 1000s "$PYTHON05" -B \
   source/tools/validation-harness/portable_resident_v1.py \
   --binary "$ROOT/build/portable_model" --binary-sha256 "$BINARY_SHA" \
   --tokens-file "$ROOT/tokens.json" --max-new "$(cat checks/max-new)" \
-  --plan /home/hermes/amd-quality-pr37-split/plan-die0.plan \
-  --plan /home/hermes/amd-quality-pr37-split/plan-die1.plan \
+  --plan ${PRIVATE_ARTIFACT_07F8412C} \
+  --plan ${PRIVATE_ARTIFACT_730CE699} \
   --devices 0,1 --pci 0000:07:00.0,0000:0b:00.0 --split 32 \
   --device-cap-mib 7680 --out "$ROOT/run" > checks/supervisor.log 2>&1
 ```

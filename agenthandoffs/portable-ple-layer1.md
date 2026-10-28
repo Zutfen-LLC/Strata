@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Portable configured PLE layer 1 validation — v1
 
 Stacked on PR39 `a06902e452257824e454e1d00e00928161a3ef79`.
@@ -51,7 +53,7 @@ set -eu
 : "${PLE_EVIDENCE05:?new evidence directory}"
 : "${DIE0:?verified ggml device index for first physical die}"
 : "${DIE1:?verified ggml device index for second physical die}"
-GGML_SRC05=/home/hermes/vulkan-q8-screen-20261026/src
+GGML_SRC05=${PRIVATE_ARTIFACT_9CA76AB8}
 test "$(git -C "$PLE_SRC05" rev-parse HEAD)" = "$EXPECTED_PLE_HEAD"
 (cd "$PLE_SRC05" && sha256sum -c agenthandoffs/portable-ple-source.sha256)
 test "$(git -C "$GGML_SRC05" rev-parse HEAD)" = 3cf03257f219afbe7334045ff7c6a06ac68c627d

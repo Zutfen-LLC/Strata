@@ -44,7 +44,7 @@ from the actual free memory and leave measured headroom for the driver and
 other users. Each V340 die has its own 8 GiB; caps are never pooled. The CLI records
 Vulkan memory snapshots before model loading and after every token; placement
 TSV rows carry layer IDs. For the exact parent-dispatched real-model stages,
-use [the versioned Hermes recipe](../agenthandoffs/portable-model-hermes-v4.md),
+use [the versioned operator recipe](../agenthandoffs/portable-model-hermes-v4.md),
 which also samples aggregate VRAM for both PCI devices during the run.
 
 Repeated Vulkan indices are rejected before initialization. Session admission
@@ -154,7 +154,7 @@ indices bound to validated role layout and the owned model; no global cache
 or F32 expert expansion exists. Cache metadata fits within the existing
 32 MiB manifest/index/state allowance. Staging and host admission caps remain
 unchanged. See `agenthandoffs/portable-cpu-expert-proof-v2.md` for the matched
-comparison recipe. Parent/Hermes reports all 41 raw logit rows and stdout
+comparison recipe. Parent/operator reports all 41 raw logit rows and stdout
 byte-identical in the physical V340 pair at `ac85ff3`, with fewer copy/digest
 bytes and unchanged native batch counts. The fixed oracle-first timing is
 order-biased and does not establish a general speedup. See
@@ -277,7 +277,7 @@ metadata. Do not edit source files while the process is open.
 and three identical measured requests. It retains all four receipts and requires
 same-backend token/row repeatability, no later CPU re-verification/copy and GPU
 entries on both dies for every request. See the
-[Hermes recipe](../agenthandoffs/portable-resident-hermes-v1.md). Local sparse and
+[operator recipe](../agenthandoffs/portable-resident-hermes-v1.md). Local sparse and
 fake-process tests establish lifecycle behavior, not real-model quality, AMD
 performance, or cross-backend bit identity. The existing strict numerical parity
 failure remains unchanged. Unequal process lifecycles are an unmeasured confounder;
@@ -286,7 +286,7 @@ this capability alone does not explain the full native/portable latency gap.
 
 ### Physical resident checkpoint on05
 
-Hermes [reported a successful AMD resident checkpoint](../agenthandoffs/portable-resident-amd-results-v1.md)
+operator [reported a successful AMD resident checkpoint](../agenthandoffs/portable-resident-amd-results-v1.md)
 at runtime source `45513fd885babcf81d252b73804a14d2a751a74a`: one loaded process,
 four identical token/greedy-row results, four output tokens each, unchanged
 480-per-die plans. Requests2–4 had zero CPU verification/copy/digest/invalidation
@@ -299,9 +299,9 @@ This measures first-use versus warm behavior in that one process. It does not
 isolate verification from other warming effects or compare against a matched
 CUDA configuration. No full resident quality screen or cross-backend numerical
 parity is established. The original strict parity failure remains unchanged.
-The [NVIDIA02 recipe](../agenthandoffs/portable-resident-nvidia02-v1.md) reuses the
-same runtime source and explicit local paths/PCI selection. Hermes subsequently
-[reported NVIDIA02 PASS](../agenthandoffs/portable-resident-nvidia02-results-v1.md):
+The [validation host recipe](../agenthandoffs/portable-resident-validation host-v1.md) reuses the
+same runtime source and explicit local paths/PCI selection. operator subsequently
+[reported validation host PASS](../agenthandoffs/portable-resident-validation host-results-v1.md):
 one process completed all four matching token/greedy-row results, GPU entries
 173/239 per request, and zero verification/copy/digest/invalidation deltas on
 requests2–4. All six focused CTests and six harness tests passed; exit0/reaped,

@@ -1,8 +1,10 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Issue #14: opt-in packed activation request contract
 
-## Terminal role05 offline result: PASS; implementation session stopped
+## Terminal validation host offline result: PASS; implementation session stopped
 
-The parent reports PASS in the [canonical Hermes receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1792971990345319),
+The parent reports PASS in the [canonical operator receipt](PRIVATE_RECEIPT),
 which was read for this update. These are supplied execution results, not desktop execution or an
 independent audit of private artifacts. Product source remained
 `fa39c2f60d0e3b6c3154469b40b569dcd43f8479` (implementation
@@ -107,26 +109,26 @@ The parent reports that the first attempt passed configuration gates, then stopp
 build monitor's process-disappearance race. For the existing r1 roots, use the exact resume
 below. Do not rerun this fresh-root block or discard the preserved attempt.
 
-Run only this marked block for the first useful result. It contains the full role05 source,
+Run only this marked block for the first useful result. It contains the full validation host source,
 configuration, build, per-test guards and production-codec capture comparison. It does not
 invoke the old setup/relay recipes. Role02 and CUDA/HIP/SYCL compilation remain separate
 later gates; they do not block this first-role CPU result. Live A/B remains separately scoped.
 
-The bindings are the verified successful role05 proof archive/cache and existing ggml source.
+The bindings are the verified successful validation host proof archive/cache and existing ggml source.
 The block never treats the proof archive as a git checkout, changes its cache, installs a
 package, launches a model worker or contacts a retained service. It fetches the exact `PIN`
 only into the verified clean compression git source, then creates a fresh source archive.
 Do not execute this block from the desktop.
 
 Export the full published commit containing this document as `PIN`. The three default fresh
-paths are `/home/hermes/strata-pr10-wire05-20261025-r1-src`, the matching `-build`, and `-out`.
+paths are `${PRIVATE_ARTIFACT_1192B385}`, the matching `-build`, and `-out`.
 They may be explicitly rebound before extraction; all must be absent with existing parents.
 An occupied path is a stop, not permission to delete, resume or invent another attempt.
 Extract between the exact BEGIN/END markers into a fresh private file and run it with bash.
 
-Configuration comes from `/home/hermes/strata-pr10-packed-06bbd809-build/CMakeCache.txt`,
+Configuration comes from `${PRIVATE_ARTIFACT_0F2C08F4}`,
 whose source is the retained proof archive. No global or target PIC correction is added:
-role05 already succeeded. Native flags, source-specific flags/defines and compiler identity
+validation host already succeeded. Native flags, source-specific flags/defines and compiler identity
 must match all five retained targets before building. The only permitted effective flag
 difference is the new worker codec's `third_party/ggml` include directory. Warning waivers
 are zero. All cache differences are saved explicitly, including source/build/output relocation,
@@ -149,23 +151,23 @@ set -euo pipefail
 umask 077
 : "${PIN:?export the full published commit containing this block}"
 export PIN
-export NEW_SRC="${NEW_SRC:-/home/hermes/strata-pr10-wire05-20261025-r1-src}"
-export NEW_BUILD="${NEW_BUILD:-/home/hermes/strata-pr10-wire05-20261025-r1-build}"
-export RUN_ROOT="${RUN_ROOT:-/home/hermes/strata-pr10-wire05-20261025-r1-out}"
+export NEW_SRC="${NEW_SRC:-${PRIVATE_ARTIFACT_F6C8594A}"
+export NEW_BUILD="${NEW_BUILD:-${PRIVATE_ARTIFACT_4BCFDB20}"
+export RUN_ROOT="${RUN_ROOT:-${PRIVATE_ARTIFACT_3A257F93}"
 export GIT_OPTIONAL_LOCKS=0
 python3 -B - <<'PY'
 import hashlib,json,os,pathlib,re,resource,shlex,signal,subprocess,time
 P=pathlib.Path; env=os.environ; pin=env['PIN']
 assert re.fullmatch('[0-9a-f]{40}',pin), 'full commit PIN required'
-git=P('/home/hermes/strata-pr10-compress-74ffe391-src')
+git=P('${PRIVATE_ARTIFACT_ED09B531}')
 base_pin='e5685da112f9e75262176635743b0790586d88c3'
-oldsrc=P('/home/hermes/strata-pr10-packed-06bbd809-src') # archive, never use git here
-old=P('/home/hermes/strata-pr10-packed-06bbd809-build')
-ggml=P('/home/hermes/strata-cand-66235df1-build-cpu/_deps/strata_llamacpp-src')
-cap=P('/home/hermes/strata-pr10-micro-bc8e5754-20261025-05/cpu-capture.bin')
-manifest=P('/home/hermes/strata-wl-metadata/local.manifest')
-model=P('/srv/models/issue300-qwen38-q8-38bb39ee97821de2c9009abb7e93950eec396e66')
-retained=P('/home/hermes/strata-pr10-packed-06bbd809-20261025-05')
+oldsrc=P('${PRIVATE_ARTIFACT_FC4E2ED4}') # archive, never use git here
+old=P('${PRIVATE_ARTIFACT_CFEAAE0E}')
+ggml=P('${PRIVATE_ARTIFACT_DFD8EAFF}')
+cap=P('${PRIVATE_ARTIFACT_573112EC}')
+manifest=P('${PRIVATE_ARTIFACT_C2D77087}')
+model=P('${PRIVATE_ARTIFACT_9AA3D2B0}')
+retained=P('${PRIVATE_ARTIFACT_FBEB9CE0}')
 src,build,out=(P(env[k]) for k in ('NEW_SRC','NEW_BUILD','RUN_ROOT'))
 for p in (src,build,out):
     assert p.is_absolute() and p.parent.is_dir() and not p.exists() and not p.is_symlink(), 'fresh absolute paths required'
@@ -410,14 +412,14 @@ assert not output(['git','-C',ggml,'status','--porcelain'])
 save('terminal-result.json',{'pin':pin,'role':'05','tests':tests,'production_codec_retained_pack_cmp':True,
     'production_codec_retained_rows_cmp':True,'artifact_hashes':{n:digest(out/n) for n in ('activations.spa','rows-same-build.sra')},
     'native_flags_equal_after_declared_include_delta':True,'warning_waivers':0,
-    'role02':'NOT RUN','backend_compilation':'NOT RUN','live_AB':'NOT RUN'})
+    'validation host':'NOT RUN','backend_compilation':'NOT RUN','live_AB':'NOT RUN'})
 print('PACKED_WIRE_ROLE05 PASS pin='+pin+' evidence='+str(out),flush=True)
 PY
 # END PACKED_WIRE_ROLE05
 ```
 
-A terminal role05 PASS establishes this build's focused CPU wire/default regressions and exact
-production-codec agreement with its retained SPA1/SRA1 artifacts. It does not establish role02
+A terminal validation host PASS establishes this build's focused CPU wire/default regressions and exact
+production-codec agreement with its retained SPA1/SRA1 artifacts. It does not establish validation host
 wire compatibility, universal native equivalence, long decode, LAN latency or TPS. Keep the
 `PACKED_PLACEMENT` and `PACKED_WIRE_COST` lines as offline cost samples with their workload
 and build provenance; packing is included in opt-in wall time. No speedup follows from byte
@@ -427,7 +429,7 @@ resource receipts and artifact hashes to the parent. Do not proceed to another r
 Desktop checks remain static: whitespace, block syntax and focused review. No block, compiler,
 test executable or fleet command has been run here.
 
-## Resume role05 after the compiler-child disappearance race
+## Resume validation host after the compiler-child disappearance race
 
 Parent-supplied result: fetch, archive, configuration, all five native-flag comparisons and both
 compiler-identity gates passed at `fa39c2f60d0e3b6c3154469b40b569dcd43f8479`. The build monitor
@@ -458,7 +460,7 @@ python3 -B - <<'PY'
 import ast,hashlib,json,os,pathlib,re,subprocess
 P=pathlib.Path; correction=os.environ['RESUME_PIN']
 assert re.fullmatch('[0-9a-f]{40}',correction), 'full correction PIN required'
-git=P('/home/hermes/strata-pr10-compress-74ffe391-src')
+git=P('${PRIVATE_ARTIFACT_ED09B531}')
 assert subprocess.check_output(['git','-C',str(git),'rev-parse','HEAD'],text=True).strip()=='e5685da112f9e75262176635743b0790586d88c3'
 assert not subprocess.check_output(['git','-C',str(git),'status','--porcelain'],text=True).strip()
 subprocess.run(['git','-C',str(git),'fetch','origin',correction],check=True,timeout=90)
@@ -485,9 +487,9 @@ tail=tail.replace("text=(out/(name+'.log')).read_text()","text=(out/('resume1-'+
 tail=tail.replace("(out/'pack.log').read_text()","(out/'resume1-pack.log').read_text()")
 tail=tail.replace("(out/'rows.log').read_text()","(out/'resume1-rows.log').read_text()")
 os.environ.update(PIN='fa39c2f60d0e3b6c3154469b40b569dcd43f8479',
-    NEW_SRC='/home/hermes/strata-pr10-wire05-20261025-r1-src',
-    NEW_BUILD='/home/hermes/strata-pr10-wire05-20261025-r1-build',
-    RUN_ROOT='/home/hermes/strata-pr10-wire05-20261025-r1-out')
+    NEW_SRC='${PRIVATE_ARTIFACT_1192B385}',
+    NEW_BUILD='${PRIVATE_ARTIFACT_9B855904}',
+    RUN_ROOT='${PRIVATE_ARTIFACT_72A665E0}')
 checks=r'''
 assert all(p.is_dir() for p in (src,build,out)), 'existing configured r1 roots required'
 prior=['configuration-inputs.json','configuration-differences.json','native-flags-comparison.json',
@@ -573,6 +575,6 @@ PY
 ```
 
 The resume is **NOT RUN** on this desktop. Static syntax/extraction and focused review are separate
-from Hermes execution. Report the old monitor failure and the resume outcome separately. Retain
+from operator execution. Report the old monitor failure and the resume outcome separately. Retain
 `resume1-command.py`, `resume1-provenance.json`, all `resume1-*.log`/receipts and unchanged artifact
-gates. No automatic second resume, role02, backend campaign or live A/B follows.
+gates. No automatic second resume, validation host, backend campaign or live A/B follows.
