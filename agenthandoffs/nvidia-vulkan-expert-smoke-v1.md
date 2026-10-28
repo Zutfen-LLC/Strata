@@ -1,13 +1,71 @@
 # Shared Vulkan executor: tiny NVIDIA smoke on03
 
-Handoff only; no NVIDIA run or install by this coding task. This is independent
+## Physical result: both RTX3060 devices passed
+
+Hermes completed the bounded synthetic probe once per GPU, sequentially.
+[Primary receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793166423091349).
+This coding task checked that receipt and records Hermes's execution; it did not
+run the probes itself. This proves synthetic shared-executor residency, returned
+row order and release on NVIDIA Vulkan. Full-model loading, routing, answer
+quality and performance remain untested by this probe. It makes no AMD/NVIDIA
+comparison and does not change the status of the separate AMD quality run.
+
+The physical mapping was:
+
+| Raw Vulkan index | PCI | UUID | Selected logical device |
+| --- | --- | --- | --- |
+| 0 | 01:00.0 | e1f2f90c-49ab-2689-0cf1-e5d9da520176 | 0 |
+| 1 | 03:00.0 | a57bd3fb-c072-67ed-166c-ce52cf504ac0 | 0 |
+
+Both devices were NVIDIA 10de:2504. llvmpipe at raw index 2 was excluded.
+Each probe exited 0 and produced RESIDENT_ACCEPTED, RESIDENT_COMPLETED and final
+COMPLETED. Each returned two experts, indices 0,2 in order 3,1, row_bytes 20480,
+with bit_differences 0 against its same-device direct-hybrid reference. Owned
+tensor bytes 10501120 were below the 16777216-byte tensor cap; final
+released_bytes 0/live_allocations 0 and all 28 metric rows per GPU were finite.
+The cap covers executor tensors, not all reference/backend/driver allocations.
+
+Native CPU diagnostics were identical on both GPUs and were not bit-exact:
+
+| Stage | Differing values | Maximum absolute error | Relative L2 |
+| --- | ---: | ---: | ---: |
+| Gate | 479 | 1.34110451e-7 | 1.27911482e-7 |
+| Up | 489 | 1.19209290e-7 | 1.25771106e-7 |
+| Hidden | 563 | 5.96046448e-8 | 2.01668318e-7 |
+| Output | 467 | 5.58793545e-9 | 5.06116380e-8 |
+
+The complete pinned source was built with disconnected fetching, only the probe
+target and parallelism 2, using GGML pin 3cf03257f219afbe7334045ff7c6a06ac68c627d.
+The Strata archive hash below identifies the exact exported source artifact.
+Debian installed glslc 2025.2-1, libshaderc1 at the same version and
+spirv-headers 1.6.1+1.4.309.0-1. No packages were upgraded or removed. No model,
+wrapper, listener, clock, service or driver change occurred.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Strata source archive | 592d9b7b670eab1b582c2b496fb37dc5667a0804213973b217802d60839712de |
+| Pinned llama.cpp/GGML archive | cb7b39ca7e6fc5b9adc79d0ae0f14367207b59ae6a859d9a46156d1a3c697889 |
+| Probe binary | a3aad410b23f366ebf06daac612faf8123a73788822ded340f331a9b5438bd42 |
+| Evidence bundle | c8d32aa8ff33777d00470f4c796e4132d930969916875e4aeddad882aff2f4c7 |
+
+Source, build, evidence and synthetic fixtures remain on 03 under
+`/home/hermes/nvidia-vulkan-smoke-v1`. The control-side bundle/report remain under
+`/home/zutfen/.hermes/cache/scratch/nvidia-vulkan-smoke-v1-control`.
+No run-owned or NVIDIA compute processes remained; both GPUs returned to 1 MiB
+used. No further fleet run or code change accompanies this report.
+
+## Original pre-run handoff (historical)
+
+The following recipe predates the successful physical result above. Its missing
+prerequisites were resolved for that run; they are not current blockers.
+No NVIDIA run or install was performed by this coding task. This is independent
 of AMD correctness/performance and makes no comparative claim. Hermes's read-only
 snapshot reports two RTX3060 devices, PCI01:00.0 and03:00.0, device10de:2504,
 NVIDIA driver615.71.09, no compute processes and1 MiB used per device. Vulkan
 loader/development headers/NVIDIA ICD exist; vulkaninfo also enumerates llvmpipe.
 [Readiness receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793164846282679).
 
-## Exact prerequisites and current blocker
+## Exact prerequisites at handoff
 
 Use a **complete export of the current PR45 head**, with exact commit/archive
 SHA recorded across transfer, and the same GGML pin
@@ -113,10 +171,10 @@ and hybrid quantization/SwiGLU, not an alternative selected backend. Vulkan
 software drivers are prevented by the verified preflight selection; the CLI
 itself does not prove a PCI identity from the device name alone.
 
-Require RESIDENT_ACCEPTED with experts2, indices0,2, expert_order3,1,
-row_bytes20480, bit_differences0, tensor_budget16777216 and owned_tensor_bytes
+Require RESIDENT_ACCEPTED with experts2, indices 0,2, expert_order 3,1,
+row_bytes 20480, bit_differences 0, tensor_budget16777216 and owned_tensor_bytes
 no greater than that cap. Require RESIDENT_COMPLETED and final COMPLETED files,
-resident_manifest.txt released_bytes0/live_allocations0, and finite metrics.
+resident_manifest.txt released_bytes 0/live_allocations 0, and finite metrics.
 Both returned rows must match the same-device direct-hybrid references exactly;
 report native CPU max-absolute/relative-L2/bit differences separately, without a
 universal CPU bit-parity or model-quality pass.
@@ -131,7 +189,7 @@ retain before/after device usage and process-cleanup observations. No listener,
 network inference, full-model wrapper, clock change or service is involved.
 
 The actual CLI and resource/order/release assertions above were checked against
-current source. No03 compilation, package resolution/install or NVIDIA execution
-was performed here. The first concrete prerequisite remains usable glslc; exact
-distro package applicability and SPIRV-Headers configuration must be confirmed
-before parent dispatches the build.
+the handoff source. At handoff, this coding task had not performed03 compilation,
+package resolution/install or NVIDIA execution; usable glslc and SPIRV-Headers
+configuration were pending. Hermes subsequently resolved these and completed
+the physical probe as recorded at the top of this document.
