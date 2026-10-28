@@ -33,6 +33,18 @@ int main() {
         PortableModelOptions opts;
         opts.context = 3;
         std::string error;
+        std::vector<std::vector<float>> reference;
+        opts.expert_dispatch_oracle = true;
+        {
+            auto baseline = PortableModelSession::open(fixture.paths, (fixture.root / "manifest").string(), opts, error);
+            check(bool(baseline), error);
+            for (int32_t token : {5, 6}) {
+                std::vector<float> logits;
+                check(baseline->step(token, logits, error), error);
+                reference.push_back(std::move(logits));
+            }
+        }
+        opts.expert_dispatch_oracle = false;
         auto session = PortableModelSession::open(fixture.paths, (fixture.root / "manifest").string(), opts, error);
         check(bool(session), error);
         check(session->position() == 0 && !session->poisoned() && !session->ended(), "fresh session");
@@ -44,6 +56,13 @@ int main() {
         std::vector<float> logits;
         check(session->step(5, logits, error), error);
         logits_reference(logits, 5);
+        check(std::memcmp(logits.data(), reference[0].data(), logits.size() * sizeof(float)) == 0,
+              "cold model logits byte identical to former staging provider");
+        check(session->step(6, logits, error), error);
+        check(std::memcmp(logits.data(), reference[1].data(), logits.size() * sizeof(float)) == 0,
+              "repeated expert model logits byte identical to former staging provider");
+        check(session->expert_work().hits == 480, "all-layer second token hits");
+        check(session->reset(error) && session->step(5, logits, error), error);
         check(session->position() == 1, "successful position commit");
         // Corrupt a selected expert in layer 10 after construction: layers
         // 0..9 commit before the digest error. The same token cannot retry.

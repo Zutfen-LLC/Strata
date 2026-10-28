@@ -39,7 +39,13 @@ struct PortableModelOptions {
     size_t host_cap = 32ull << 30;
     size_t layer_weight_cap = 256ull << 20, layer_graph_cap = 256ull << 20;
     size_t head_weight_cap = 1ull << 30, head_graph_cap = 4ull << 30;
+    // Comparison oracle only: preserve the former copy/digest on every dispatch.
+    bool expert_dispatch_oracle = false;
     size_t expert_staging_cap = 64ull << 20;
+};
+struct PortableExpertWork {
+    uint64_t hits = 0, verifications = 0, copied_bytes = 0, digest_bytes = 0;
+    uint64_t native_batches = 0, source_invalidations = 0;
 };
 struct PortableModelReport {
     // Unique mapped shard file bytes; PLE may alias the same backing file.
@@ -48,7 +54,7 @@ struct PortableModelReport {
     size_t host_scheduler = 0;
     std::vector<size_t> device_scheduler, device_workspace_bound, device_admission;
     uint64_t retained_manifest_identity_a = 0, retained_manifest_identity_b = 0;
-    // Header/range checks plus selected expert digest verification; no new
+    // Header/range checks plus first-use selected expert digests; no new
     // whole-file hash campaign. PLE mapping is file-backed, not an arena.
     std::string identity_evidence;
 };
@@ -58,6 +64,7 @@ struct PortableGeneration {
     std::vector<int32_t> tokens;
     PortableStop stop = PortableStop::none;
 };
+// Model source files must remain immutable while open (see docs/PORTABLE_MODEL.md).
 // One serial text session and its lifetime-owned six-shard model. Errors during
 // step poison the session, including failures after earlier layers committed.
 // reset() is the only way to recover; caller explicitly replays its token IDs.
@@ -78,6 +85,8 @@ class PortableModelSession {
     bool poisoned() const;
     bool ended() const;
     int32_t eos() const;
+    // Cumulative across reset; digest_bytes counts input bytes, two FNV passes.
+    PortableExpertWork expert_work() const;
     const PortableModelReport &report() const;
     const std::vector<PortablePlacement> &placements() const;
 

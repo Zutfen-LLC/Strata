@@ -46,10 +46,15 @@ int main(int argc, char **argv) {
                 std::cout << "portable_model --model ANY_SHARD --manifest SWLOCAL1 --tokens ID,ID,...\n"
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
-                             " [--allow-cpu-fallback] [--dump-logits DIRECTORY] [--placements FILE]\n"
+                             " [--expert-dispatch-oracle] [--allow-cpu-fallback]\n"
+                             " [--dump-logits DIRECTORY] [--placements FILE]\n"
                              "T=1 serial text; all 48 layers; fresh embedding per token; CPU experts/host PLE.\n"
                              "Every consumed prompt/generated token can dump its full vocabulary as pos-N.f32.\n";
                 return 0;
+            }
+            if (key == "--expert-dispatch-oracle") {
+                opts.expert_dispatch_oracle = true;
+                continue;
             }
             if (key == "--allow-cpu-fallback") {
                 opts.allow_cpu_fallback = true;
@@ -175,6 +180,11 @@ int main(int argc, char **argv) {
                                          : strata::core::PortableTokenKind::input))
                 throw std::runtime_error(error);
             device_memory("token-complete", pos);
+            const auto work = session->expert_work();
+            std::cerr << "expert_work position=" << pos << " hits=" << work.hits
+                      << " verifications=" << work.verifications << " copied_bytes=" << work.copied_bytes
+                      << " digest_bytes=" << work.digest_bytes << " native_batches=" << work.native_batches
+                      << " source_invalidations=" << work.source_invalidations << '\n';
             if (!dump.empty()) {
                 // compare_logits.py consumes little-endian raw F32. This CLI is
                 // for the existing little-endian x86 CPU/Vulkan execution path.
