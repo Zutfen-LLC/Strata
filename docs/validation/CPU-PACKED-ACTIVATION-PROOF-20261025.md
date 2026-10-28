@@ -1,3 +1,5 @@
+> Machine locations below are portable placeholders for retained artifacts. Detailed operator receipts are preserved privately with original source hashes. Historical public commits remain public.
+
 # Packed native activation equivalence: bounded offline proof
 
 Tracks [#14](https://github.com/Zutfen-LLC/Strata/issues/14). The small Linux target
@@ -8,8 +10,8 @@ rereviewed with no remaining blocking finding. Static review is not compiler or 
 
 ## Terminal offline result: PASS, focused session complete
 
-The parent reports terminal PASS in the [Hermes receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1792968628095089).
-The receipt was read for this summary. These are supplied Hermes results, not desktop execution or
+The parent reports terminal PASS in the [operator receipt](PRIVATE_RECEIPT).
+The receipt was read for this summary. These are supplied operator results, not desktop execution or
 an independent audit of the private raw artifacts. The proof C++ is at
 `06bbd80930f6b1a3b19656e924d1e5c76cc348f1`. Role02 used the
 `0dd834bad7fabd6266ff3bd95147c9f0f4ca4937` archive, targeted ggml-base PIC correction from
@@ -20,14 +22,14 @@ an independent audit of the private raw artifacts. The proof C++ is at
 | --- | --- |
 | Role02 native configuration | All five native targets matched retained effective flags exactly; C/C++ compiler identity equal; `warning_only=0` |
 | Role02 incremental build | Only ggml-base recompiled, nine objects; corrected ELF in the continuation directory; original ELF preserved |
-| Focused checks | Role05 1/1 Passed (0.30 s); role02 1/1 Passed (0.36 s) |
+| Focused checks | Role05 1/1 Passed (0.30 s); validation host 1/1 Passed (0.36 s) |
 | Packed bytes | 16 records per role; SPA1 92884 bytes; controller exact `cmp` rc0, and both in-block reference comparisons passed |
 | Native rows and ordered partials | Each cross-reference run passed every local row/ordered-partial/retained-full-capture gate; 48 full/peer comparisons per role |
-| Cross-role row artifact | Both SRA1 files 8110340 bytes; controller exact `cmp` rc0; also identical to role05 same-build SRA1 |
+| Cross-role row artifact | Both SRA1 files 8110340 bytes; controller exact `cmp` rc0; also identical to validation host same-build SRA1 |
 
 Both SPA1 SHA256 values are
 `531d113d5d110fa4a53fa464ca8e504f913945d8af233113040f2d0dd6af2e0a`.
-Both cross-reference SRA1 SHA256 values, and role05's same-build SRA1 SHA256, are
+Both cross-reference SRA1 SHA256 values, and validation host's same-build SRA1 SHA256, are
 `0aaeb0762418bc150d7c4ca2e6c168e38b5069fb2df825cb94dd75312a6d727d`.
 The controller relayed distinct producer artifacts and verified hashes at both hops before exact
 comparison. `cross_build_rows=REQUIRES_CMP` in each executable's output is now satisfied by that
@@ -41,7 +43,7 @@ No worker/socket/GEN contact occurred; the retained resident worker was reported
 
 Earlier failed compiler, prefix/PIC and warning-equality gates remain preserved. A temporary wrapper
 hash transcription error stopped before any rows stage; the final cross-reference rows executed
-once per role. Raw role05, role02-continuation and controller evidence roots remain private with the
+once per role. Raw validation host, validation host-continuation and controller evidence roots remain private with the
 parent. No failed attempt was counted as a numerical result or silently discarded.
 
 Coverage is **two retained native builds, one capture, 16 selected records at layers 0/12/24/47,
@@ -124,7 +126,7 @@ for every activation, architecture or future compiler, and cover first-logit/pre
 A format/capability contract, raw fallback, placement cost and live latency remain outside this task.
 No protocol adoption or follow-on model run is automatically authorized by a pass.
 
-## Retained parent bindings and bounded Hermes commands
+## Retained parent bindings and bounded operator commands
 
 This desktop authors and publishes only. The parent dispatches. No worker contact, GEN, resident
 reload, firewall change, package installation, compression sweep or shared runtime mutation.
@@ -139,8 +141,8 @@ manifest SHA256 is `8cc9a1ca01ded6b747628522f3fc896c6ca315583461e9c3826edda8b8f6
 Export `BASE_SRC`, `BASE_PIN`, `CPU_BUILD`, exact published `PIN`, `CAPTURE`, and fresh absolute
 `NEW_SRC`, `NEW_BUILD`, `RUN_ROOT` (all absent, existing parents). Export `ROLE=05` for provenance.
 Role02 uses its real retained Release CUDA cache, with GPU backends deliberately disabled only
-for the offline proof. See [the separate role02 relay/build handoff](CPU-PACKED-ACTIVATION-ROLE02-20261025.md).
-Do not substitute role05 native settings, guess dependency paths or use the resident's port. For arithmetic it also needs verified
+for the offline proof. See [the separate validation host relay/build handoff](CPU-PACKED-ACTIVATION-ROLE02-20261025.md).
+Do not substitute validation host native settings, guess dependency paths or use the resident's port. For arithmetic it also needs verified
 `MANIFEST` and `LOCAL_ROOT` bindings. Missing other-role bindings block cross-build evidence only.
 
 Fetch the exact PIN into an existing isolated source through GitHub, without checking it out there.

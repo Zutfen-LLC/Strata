@@ -23,7 +23,7 @@ cmake --build build-worker --target strata-expert-worker
 No CUDA/HIP/SYCL toolkit is involved; the target links only `strata_kernels_cpu` (and ggml-cpu). The
 listener binds **127.0.0.1 by default**. To reach it through an authenticated, encrypted connection,
 forward a port over an SSH tunnel you own (for example
-`ssh -L 7431:127.0.0.1:7431 inferswarm05`) and point the client at the tunnel's local end.
+`ssh -L 7431:127.0.0.1:7431 validation host`) and point the client at the tunnel's local end.
 
 For an operator-controlled trusted LAN, explicitly select a local address with `--bind-ip IPv4` and
 repeat `--allow-peer-ip IPv4` for each permitted source. A non-loopback bind without peers is refused.
@@ -40,7 +40,7 @@ credentials. Use this mode only on a trusted LAN with an operator-managed firewa
 interface, port and source peers. Strata never installs firewall rules. An allowed host, any process on
 it, or a host able to impersonate its address can send inference and destructive unload/stop controls.
 Keep the SSH route when that boundary is insufficient. See the [LAN and NIC operator guide](cpu-worker-lan/README.md)
-and the [Hermes handoff](cpu-worker-lan/HERMES.md).
+and the [operator handoff](cpu-worker-lan/HERMES.md).
 
 Options: `--port P` (0 picks a free port and prints it), `--memory-budget-mib N` (default 131072),
 `--workers N` (CPU expert-pool worker threads; 0 = the pool's default plan for the machine),
@@ -225,7 +225,7 @@ The latency diagnostic is also default-off. Start only the CPU worker with `--tc
 latency histograms. The flags are independent, so socket behavior can be compared without timing overhead.
 The engine reports client-side aggregates with its existing worker report. The worker reports its aggregate
 only when it stops cleanly; stopping or replacing a worker unloads its arena and must be a separate approved
-operation. Use [the current Hermes handoff](cpu-worker-lan/HERMES.md) for validation of this branch.
+operation. Use [the current operator handoff](cpu-worker-lan/HERMES.md) for validation of this branch.
 The [earlier latency handoff](cpu-worker-rpc-latency/HERMES.md) preserves its revision-specific evidence.
 
 The model-free [representative RPC replay handoff](cpu-rpc-replay/HERMES.md) uses the same CPU wire frame
@@ -272,11 +272,11 @@ The evidence it reports: a startup line with the frozen partition (blob count, G
 the tier's cumulative counters plus the worker's own STATUS (requests, failures, CPU service seconds -
 the worker's kernel time, never the client's wait - and inference bytes in/out).
 
-## The two-host recipe (inferswarm05 + inferswarm03)
+## The two-host recipe (validation host + validation host)
 
-A self-contained Hermes recipe for the first bounded run lives in
-**[CPU_WORKER_RECIPE.md](CPU_WORKER_RECIPE.md)**.  Its shape: build the CPU-only worker on **inferswarm05**
-(`build-worker`, no GPU toolkit involved) and a CUDA `sm_86` engine on **inferswarm03** (NOT the default
+A self-contained operator recipe for the first bounded run lives in
+**[CPU_WORKER_RECIPE.md](CPU_WORKER_RECIPE.md)**.  Its shape: build the CPU-only worker on **validation host**
+(`build-worker`, no GPU toolkit involved) and a CUDA `sm_86` engine on **validation host** (NOT the default
 `sm_120` default), forward the worker's loopback port through controller-owned SSH connections, and
 start the engine with `--serve --remote-cpu-experts 127.0.0.1:7431`, fixed placement
 (`--adapt-every 0`, `--pcie-frac 0`, `STRATA_ROUTE_TAIL_SKIP=0`), short prompts (`--short-read`), and one
@@ -295,7 +295,7 @@ inference frames retain their separate bound. No physical network or full-model 
 
 The negotiated local setup candidate can read assigned experts from an operator-configured copy of
 the GGUF shards. See [the local source contract](cpu-worker-local/README.md) and
-[the Hermes controller recipe](cpu-worker-local/HERMES.md). The default upload path is unchanged.
+[the operator controller recipe](cpu-worker-local/HERMES.md). The default upload path is unchanged.
 
 ## Session-independent residency (default off)
 
@@ -305,12 +305,12 @@ For service-owned retention without idle expiry, explicitly select worker
 `--remote-cpu-resident`. Zero/omitted TTL still means session-scoped weights.
 See [durable residency, status and explicit stop](network-gpu-worker/README.md#explicit-durable-cpu-residency).
 See [the lifecycle and compatibility contract](cpu-worker-residency/README.md) and
-[the ready-to-use Hermes recipe](cpu-worker-residency/HERMES.md). Without the new flags, the
+[the ready-to-use operator recipe](cpu-worker-residency/HERMES.md). Without the new flags, the
 session-scoped behavior described above remains in force.
 
 A `STRATA_NATIVE_EXPERTS=OFF` engine excludes the CPU worker integration and refuses its remote-worker
 CLI options before resource setup. See the [native-OFF correction and regression handoff](cpu-worker-residency/NATIVE_OFF_HERMES.md).
-The [16d065e Hermes receipt](cpu-worker-residency/evidence/hermes-16d065e-receipt.md) is user-attributed;
+The [16d065e operator receipt](cpu-worker-residency/evidence/hermes-16d065e-receipt.md) is user-attributed;
 its runtime results do not validate the later correction head. HIP is unvalidated and SYCL uses separate
 migrated sources; this worker feature is not claimed for SYCL.
 
