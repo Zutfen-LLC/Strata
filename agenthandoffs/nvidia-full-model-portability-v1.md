@@ -47,10 +47,36 @@ Retained SHA-256 identities:
 | GGML archive (commit `3cf03257f219afbe7334045ff7c6a06ac68c627d`) | `cb7b39ca7e6fc5b9adc79d0ae0f14367207b59ae6a859d9a46156d1a3c697889` |
 
 Result: **NVIDIA02 full-model mechanism smoke PASS at the source above**.
-The generated prefix agrees with the retained IDs, but full numerical and
-quality qualification remain pending. This run is not a speed comparison and
+The generated prefix agrees with the retained IDs. The single-row numerical
+gate below FAILS; full numerical and quality qualification remain unestablished. This run is not a speed comparison and
 does not qualify local expert residency or Intel. The memory peaks are sampled
 aggregate observations, not exact transient peaks or per-process GPU accounting.
+
+## Recorded position37 numerical comparison
+
+The parent supplied the [comparison receipt](https://zutfen.slack.com/archives/C0C5MK91H3L/p1793169060546039)
+for the existing NVIDIA position37 logits versus the retained native reference.
+Each row contains 248320 F32 values; the baseline hash was verified. The retained
+receipt on 02 is
+`/home/hermes/nvidia-full-model-fb2ea3c/receipts/nvidia-native-pos37-comparison.json`.
+
+| Metric | Observed | Unchanged gate limit |
+| --- | ---: | ---: |
+| Maximum absolute difference | 0.7987542 | 0.0122971 |
+| Relative L2 | 0.0764017 | 0.0001 |
+| Maximum probability delta | 0.00122716 | 0.001 |
+| KL(native → NVIDIA) | 0.000105791 | 0.00001 |
+
+Top1 is the same. Result: **single-row numerical gate FAIL**, distinct from
+**mechanism PASS**. The CLI requires three row pairs, so Hermes invoked the
+same existing single-row comparator function once; rows were not duplicated.
+No new inference was performed and no gate was relaxed. This documentation
+task records the supplied evidence without independently reproducing it.
+
+Expert placement and lifecycle differ between the candidate and retained native
+reference. This comparison does not isolate a backend cause and must not be
+attributed to AMD or Vulkan. Full numerical and quality qualification remain
+unestablished; matching top1 does not override the numerical FAIL.
 
 ## Preflight and single smoke recipe (no new run authorized)
 
@@ -112,9 +138,9 @@ slot placement; this change does not generate or reinterpret plans.
 
 Retain the complete STOP or mechanism report, argv, placement report, memory
 samples, stderr, logits, exit and cleanup observations. A mechanism pass remains
-`numerical/quality verdict pending`; compare against the retained numerical
-reference separately. The NVIDIA02 run above establishes only that recorded
-mechanism result. Intel full-model execution remains unvalidated.
+`numerical/quality verdict pending` in the original mechanism summary. The
+subsequent single-row comparison above records numerical FAIL; the mechanism
+PASS does not override it. Intel full-model execution remains unvalidated.
 
 For any future run, prerequisites remain: a reviewed exact candidate built on the chosen host,
 verified GGML-to-PCI mapping with VK_EXT_pci_bus_info, working NVIDIA memory
