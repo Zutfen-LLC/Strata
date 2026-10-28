@@ -50,7 +50,8 @@ Context context() {
 }
 void finite(const std::vector<float> &x) {
     for (float f : x)
-        require(std::isfinite(f), "portable GDN: nonfinite input/result");
+        if (!std::isfinite(f))
+            require(false, "portable GDN: nonfinite input/result");
 }
 std::vector<float> read(ggml_tensor *t) {
     std::vector<float> out(size_t(ggml_nelements(t)));
