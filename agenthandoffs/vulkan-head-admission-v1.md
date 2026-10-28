@@ -4,8 +4,26 @@ This narrow correction starts at PR49
 `f8deab2d97baf8534b4737d23b401d9de85c7f4d`. It does not change a model graph,
 precision, routing, merge order, expert plans, device caps, free reserve or
 runtime defaults. No fleet run or enlarged plan was dispatched. Neither pinned
-running test was touched. Parent review precedes any 1152-experts/die admission
-revalidation; this checkpoint does not claim that 1152 now fits.
+running test was touched. Independent pinned-source review returned GO, but
+unchanged 1152-experts/die plans must not be dispatched: the projected die0
+ledger exceeds its existing cap, as recorded below.
+
+## Plan qualification after source review
+
+The parent supplied these projections from the retained actual 480 ledgers;
+these are admission arithmetic, not a new runtime result:
+
+| Device | Projected 1152 admission (bytes) | Existing cap (bytes) | Result |
+| --- | ---: | ---: | --- |
+| Die0 | 8180726368 | 8053063680 | Exceeds cap by 127662688 bytes |
+| Die1 | 7973270624 | 8053063680 | Fits arithmetically, 79793056 bytes remain |
+
+Therefore source-review GO does not permit dispatch of the unchanged 1152/die
+plans. Keep all caps and reserves. First revalidate runtime head credit using
+the old 480 plans; then choose a meaningful count that fits both dies using
+exact padded-tensor arithmetic. No code change or cap relaxation is needed.
+The parent is waiting for the current PR49 timing run to finish before any
+inferswarm05 build or inference. This documentation update starts neither.
 
 ## Pinned-source justification
 
@@ -127,5 +145,5 @@ check PASS. Build logs are retained locally as
 Vulkan build: `/tmp/head-admission-vulkan-build.log` (missing retained SPIRV
 include path, corrected as described above). No hardware execution or numerical
 comparison was attempted. No unresolved local build/test blocker remains;
-actual PCI query/guard activation and 1152 admission on the selected hardware
-remain unvalidated pending parent review.
+actual PCI query/guard activation with the old 480 plans remains unvalidated.
+Unchanged 1152/die plans are excluded by the cap arithmetic above.
