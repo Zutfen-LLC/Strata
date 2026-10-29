@@ -152,4 +152,84 @@ bool LocalExperts::run(int64_t layer,const PortableRoute& route,std::vector<floa
         rows=std::move(result); return true;
     } catch(const std::exception& e) { rows.clear(); error=e.what(); return false; }
 }
+bool LocalExperts::run_batch(int64_t layer,const std::vector<PortableRoute>& routes,std::vector<float>& rows,std::string& error) {
+    rows.clear(); error.clear();
+    try {
+        sources();
+        const size_t T=routes.size(), entries=T*K;
+        require(layer>=0 && layer<int64_t(L) && T>=1 && T<=8,"resident batch shape mismatch");
+        std::vector<int32_t> ids_flat;
+        std::vector<float> weights_flat, activations;
+        for(const auto& route:routes) {
+            require(route.ids.size()==K && route.weights.size()==K && route.activation.size()==H,
+                    "resident route shape mismatch");
+            finite(route.activation,"resident activation"); finite(route.weights,"resident routing weights");
+            std::set<int32_t> ids;
+            for(auto id:route.ids)
+                require(id>=0 && id<int32_t(NE) && ids.insert(id).second,"invalid resident expert IDs");
+            ids_flat.insert(ids_flat.end(),route.ids.begin(),route.ids.end());
+            weights_flat.insert(weights_flat.end(),route.weights.begin(),route.weights.end());
+            activations.insert(activations.end(),route.activation.begin(),route.activation.end());
+        }
+        require(sequence_<UINT64_MAX,"resident request sequence exhausted");
+        const uint64_t sequence=++sequence_;
+        std::vector<std::array<bool,K>> cold(T);
+        for(auto& token:cold) token.fill(true);
+        std::vector<float> result(entries*H,0);
+        for(size_t die=0;die<devices_.size();++die) {
+            auto& d=devices_[die]; auto& report=report_[die];
+            worker::InferRequest req;
+            req.model_id=d.plan.model_id; req.partition_id=d.plan.placement_id.a;
+            req.session=1; req.sequence=sequence; req.layer=uint16_t(layer); req.T=uint16_t(T); req.K=K;
+            req.ids.assign(ids_flat.begin(),ids_flat.end()); req.weights=weights_flat; req.activations=activations; req.mask.assign(entries,0);
+            size_t count=0;
+            for(size_t slot=0;slot<entries;++slot) if(d.plan.owns(int(layer),ids_flat[slot])) {
+                req.mask[slot]=1; cold[slot/K][slot%K]=false; ++count;
+            }
+            if(!count) continue;
+            guard(die);
+            worker::EntryRowsReply reply;
+            {
+                ScopedExpertTimer<> timer(timings_, report.infer_rows_ms, report.infer_rows_calls);
+                require(d.executor->infer_rows(d.plan,req,reply,error),error);
+            }
+            guard(die);
+            require(reply.session==req.session && reply.sequence==sequence && reply.indices.size()==count &&
+                    reply.rows.size()==count*H,"resident reply identity/shape mismatch");
+            finite(reply.rows,"resident expert output");
+            std::vector<bool> seen(entries,false);
+            for(size_t n=0;n<count;++n) {
+                const size_t slot=reply.indices[n];
+                if (!(slot<entries && req.mask[slot] && !seen[slot]))
+                    require(false,"resident reply duplicate/unowned slot");
+                seen[slot]=true;
+                std::copy_n(reply.rows.begin()+n*H,H,result.begin()+slot*H);
+            }
+            if (check_rows_) {
+                std::vector<std::array<bool,K>> active(T);
+                for(size_t slot=0;slot<entries;++slot) active[slot/K][slot%K]=req.mask[slot]!=0;
+                std::vector<float> reference;
+                require(cpu_.run_batch(layer,routes,reference,error,&active),error);
+                for(size_t n=0;n<count;++n) {
+                    const size_t slot=reply.indices[n];
+                    double square=0,norm=0,maximum=0;
+                    for(size_t h=0;h<H;++h) {
+                        const double ref=reference[slot*H+h], delta=double(reply.rows[n*H+h])-ref;
+                        square+=delta*delta; norm+=ref*ref; maximum=std::max(maximum,std::abs(delta));
+                    }
+                    ++report.row_checks;
+                    report.row_max_abs=std::max(report.row_max_abs,maximum);
+                    report.row_relative_l2=std::max(report.row_relative_l2,std::sqrt(square/(norm+1e-30)));
+                }
+            }
+            ++report.requests; report.entries+=count; gpu_entries_+=count;
+        }
+        std::vector<float> cpu_rows;
+        require(cpu_.run_batch(layer,routes,cpu_rows,error,&cold),error);
+        for(size_t slot=0;slot<entries;++slot) if(cold[slot/K][slot%K]) {
+            std::copy_n(cpu_rows.begin()+slot*H,H,result.begin()+slot*H); ++cpu_entries_;
+        }
+        rows=std::move(result); return true;
+    } catch(const std::exception& e) { rows.clear(); error=e.what(); return false; }
+}
 } // namespace

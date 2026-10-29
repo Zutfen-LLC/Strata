@@ -74,6 +74,8 @@ struct PortableModelOptions {
 struct PortableExpertWork {
     uint64_t hits = 0, verifications = 0, copied_bytes = 0, digest_bytes = 0;
     uint64_t native_batches = 0, source_invalidations = 0;
+    // Explicit batch adapter receipts; jobs count distinct experts, not tokens.
+    uint64_t batch_logical_rows = 0, batch_native_jobs = 0, batch_max_nt = 0;
     uint64_t gpu_entries = 0, cpu_entries = 0;
     // Existing ExpertPool host-wall accumulators; phases include synchronization.
     // elapsed encloses the three native phases: never add it to their sum.

@@ -12,7 +12,7 @@ namespace strata { class GgufModel; }
 
 namespace strata::core {
 
-// Opt-in T=1 qwen4exp FFN coordinator. This is the after-attention sublayer,
+// Opt-in fixed-shape T=1..8 qwen4exp FFN coordinator. This is the after-attention sublayer,
 // not a complete layer/model/session. No CUDA runtime or graph capture is used.
 struct PortableFfnGeometry {
     int64_t hidden = 0, streams = 4, rank = 0, shared_ff = 0, experts = 0, selected = 0;
@@ -75,14 +75,23 @@ struct PortableRoute {
 using PortableExpertRows = std::function<bool(int64_t layer, const PortableRoute& route,
                                              std::vector<float>& rows, std::string& error)>;
 
+// Token-major routes and unweighted [token,original slot,hidden] output rows.
+// One invocation covers the complete chunk. Providers must preserve slot order.
+using PortableExpertRowsBatch = std::function<bool(int64_t layer, const std::vector<PortableRoute>& routes,
+                                                  std::vector<float>& rows, std::string& error)>;
+struct PortableFfnWork {
+    uint64_t logical_rows = 0, completed_chunks = 0;
+    uint64_t pre_graph_calls = 0, provider_calls = 0, post_graph_calls = 0;
+};
+
 class PortableFfn {
 public:
     static std::unique_ptr<PortableFfn> create(PortableFfnGeometry geometry, int64_t layer,
-        const std::vector<PortableTensorView>& weights, PortableFfnOptions options, std::string& error);
+        const std::vector<PortableTensorView>& weights, PortableFfnOptions options, std::string& error, int64_t tokens = 1);
     // Maps existing split GGUFs and copies only this sublayer's nine tensors.
     // Does not touch routed expert payloads, the PLE table, or attention weights.
     static std::unique_ptr<PortableFfn> from_gguf(const GgufModel& model, int64_t layer,
-        PortableFfnOptions options, std::string& error);
+        PortableFfnOptions options, std::string& error, int64_t tokens = 1);
     ~PortableFfn();
     PortableFfn(const PortableFfn&) = delete;
     PortableFfn& operator=(const PortableFfn&) = delete;
@@ -90,6 +99,12 @@ public:
     bool reset(const std::vector<float>& residual, std::string& error);
     // Transactional residual: dispatch/validation failure leaves it unchanged.
     bool step(const PortableExpertRows& dispatch, PortableRoute& route, std::string& error);
+    // reset takes [hidden,streams,tokens], with dimension zero fastest.
+    // Transactional publication; a failed batch clears routes and keeps residual.
+    // This FFN has no recurrent state. Its enclosing model must poison on failure.
+    bool step_batch(const PortableExpertRowsBatch& dispatch, std::vector<PortableRoute>& routes, std::string& error);
+    int64_t tokens() const;
+    PortableFfnWork work() const;
     const std::vector<float>& residual() const;
     const std::vector<PortablePlacement>& placements() const;
     size_t weight_bytes() const;

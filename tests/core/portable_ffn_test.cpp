@@ -1,4 +1,4 @@
-#include "portable_ffn_fixture.hpp"
+#include "portable_ffn_batch_fixture.hpp"
 #include "ggml-backend-impl.h"
 #include "ggml-cpu.h"
 #include "gguf_fixture.hpp"
@@ -8,6 +8,7 @@
 
 int main() {
     try {
+        ffn_batch_fixture({});
         Fixture f;
         std::string error;
         PortableFfnOptions options;

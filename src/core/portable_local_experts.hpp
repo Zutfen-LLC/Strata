@@ -11,6 +11,8 @@ public:
     LocalExperts(const GgufModel&, CpuExperts&, const PortableModelOptions&, Factory, Memory);
     ~LocalExperts();
     bool run(int64_t, const PortableRoute&, std::vector<float>&, std::string&);
+    // Flatten T x K entries per die; executor remains single-row per entry.
+    bool run_batch(int64_t, const std::vector<PortableRoute>&, std::vector<float>&, std::string&);
     const std::vector<PortableExpertDeviceReport>& report() const { return report_; }
     uint64_t gpu_entries() const { return gpu_entries_; }
     uint64_t cpu_entries() const { return cpu_entries_; }

@@ -68,7 +68,8 @@ void route_logits(const std::vector<float>& logits, int64_t k, PortableRoute& ro
 
 struct PortableFfn::Impl {
     PortableFfnGeometry g;
-    int64_t layer;
+    int64_t layer, tokens;
+    PortableFfnWork work;
     PortableFfnOptions options;
     Backend cpu{nullptr, ggml_backend_free};
     Context weights_ctx{nullptr, ggml_free}, pre_ctx{nullptr, ggml_free}, post_ctx{nullptr, ggml_free};
@@ -84,10 +85,10 @@ struct PortableFfn::Impl {
 
 
     Impl(PortableFfnGeometry geometry, int64_t index, const std::vector<PortableTensorView>& weights,
-         PortableFfnOptions opts) : g(geometry), layer(index), options(opts) {
+         PortableFfnOptions opts, int64_t count) : g(geometry), layer(index), tokens(count), options(opts) {
         require(g.hidden > 0 && g.hidden <= 16384 && g.streams == 4 && g.rank > 0 && g.rank <= 4096 &&
                 g.shared_ff > 0 && g.shared_ff <= 65536 && g.experts > 0 && g.experts <= 4096 &&
-                g.selected > 0 && g.selected <= g.experts && g.selected <= 64 && layer >= 0 &&
+                tokens >= 1 && tokens <= 8 && g.selected > 0 && g.selected <= g.experts && g.selected <= 64 && layer >= 0 &&
                 std::isfinite(g.epsilon) && g.epsilon > 0 && options.threads > 0,
                 "portable FFN: invalid geometry/options");
         cpu.reset(ggml_backend_cpu_init());
@@ -137,15 +138,25 @@ struct PortableFfn::Impl {
         device_weights = weight_backend != cpu.get() ? weights_size : 0;
 
         auto* c = pre_ctx.get();
-        input = named(ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, 1), "residual");
+        input = named(ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, tokens), "residual");
         ggml_set_input(input);
-        auto* norm = ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, input, g.epsilon), width, 1), w.at("hc_ffn_norm.weight"));
+        auto* norm = ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, input, g.epsilon), width, tokens), w.at("hc_ffn_norm.weight"));
         auto* low = ggml_silu(c, ggml_scale(c, ggml_mul_mat(c, w.at("hc_ffn_down.weight"), norm), 1.0f / float(g.streams)));
         auto* gate = ggml_sigmoid(c, ggml_mul_mat(c, w.at("hc_ffn_up.weight"), low));
-        auto* gated = ggml_reshape_2d(c, ggml_mul(c, norm, gate), g.hidden, g.streams);
-        mixed = ggml_cont(c, ggml_view_1d(c, gated, g.hidden, 0));
-        for (int64_t s = 1; s < g.streams; ++s)
-            mixed = ggml_add(c, mixed, ggml_view_1d(c, gated, g.hidden, size_t(s * g.hidden) * sizeof(float)));
+        // RMS stays on dimension H before flattening HC, independently for
+        // every stream/token. Preserve the four ordered stream additions.
+        auto* gated = ggml_mul(c, norm, gate);
+        if (tokens == 1) {
+            gated = ggml_reshape_2d(c, gated, g.hidden, g.streams);
+            mixed = ggml_cont(c, ggml_view_1d(c, gated, g.hidden, 0));
+            for (int64_t s = 1; s < g.streams; ++s)
+                mixed = ggml_add(c, mixed, ggml_view_1d(c, gated, g.hidden, size_t(s * g.hidden) * sizeof(float)));
+        } else {
+            mixed = ggml_cont(c, ggml_view_2d(c, gated, g.hidden, tokens, size_t(width)*sizeof(float), 0));
+            for (int64_t s = 1; s < g.streams; ++s)
+                mixed = ggml_add(c, mixed, ggml_view_2d(c, gated, g.hidden, tokens,
+                    size_t(width)*sizeof(float), size_t(s*g.hidden)*sizeof(float)));
+        }
         mixed = named(ggml_scale(c, mixed, 1.0f / float(g.streams)), "mixed");
         inject = named(ggml_mul_mat(c, w.at("hc_ffn_inject.weight"), norm), "inject");
         logits = named(ggml_mul_mat(c, w.at("ffn_gate_inp.weight"), mixed), "router_logits");
@@ -158,31 +169,33 @@ struct PortableFfn::Impl {
         pre_sched = portable_detail::schedule(pre, "pre-experts", options, cpu, placement, graphs_size);
 
         c = post_ctx.get();
-        post_input = ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, 1);
-        post_inject = ggml_new_tensor_1d(c, GGML_TYPE_F32, g.streams);
-        post_block = ggml_new_tensor_1d(c, GGML_TYPE_F32, g.hidden);
+        post_input = ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, tokens);
+        post_inject = tokens == 1 ? ggml_new_tensor_1d(c, GGML_TYPE_F32, g.streams)
+                                  : ggml_new_tensor_2d(c, GGML_TYPE_F32, g.streams, tokens);
+        post_block = tokens == 1 ? ggml_new_tensor_1d(c, GGML_TYPE_F32, g.hidden)
+                                 : ggml_new_tensor_2d(c, GGML_TYPE_F32, g.hidden, tokens);
         for (auto* t : {post_input, post_inject, post_block}) ggml_set_input(t);
-        auto* scatter = ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, post_inject, 1.0f / float(g.streams))), 2.0f), 1, g.streams, 1);
-        auto* block = ggml_repeat_4d(c, ggml_reshape_3d(c, post_block, g.hidden, 1, 1), g.hidden, g.streams, 1, 1);
+        auto* scatter = ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, post_inject, 1.0f / float(g.streams))), 2.0f), 1, g.streams, tokens);
+        auto* block = ggml_repeat_4d(c, ggml_reshape_3d(c, post_block, g.hidden, 1, tokens), g.hidden, g.streams, tokens, 1);
         output = named(ggml_add(c, post_input, ggml_mul(c, block, scatter)), "residual_out");
         ggml_set_output(output);
         post = ggml_new_graph(c); ggml_build_forward_expand(post, output);
         post_sched = portable_detail::schedule(post, "post-experts", options, cpu, placement, graphs_size);
-        placement.push_back({"host", "ROUTE_AND_MERGE", "indexed expert boundary", "F32", "CPU", "", {g.hidden, g.selected}});
+        placement.push_back({"host", "ROUTE_AND_MERGE", "indexed expert boundary", "F32", "CPU", "", tokens == 1 ? std::vector<int64_t>{g.hidden, g.selected} : std::vector<int64_t>{g.hidden, g.selected, tokens}});
     }
 };
 
 PortableFfn::PortableFfn(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 PortableFfn::~PortableFfn() = default;
 std::unique_ptr<PortableFfn> PortableFfn::create(PortableFfnGeometry g, int64_t layer,
-    const std::vector<PortableTensorView>& weights, PortableFfnOptions options, std::string& error) {
+    const std::vector<PortableTensorView>& weights, PortableFfnOptions options, std::string& error, int64_t tokens) {
     error.clear();
-    try { return std::unique_ptr<PortableFfn>(new PortableFfn(std::make_unique<Impl>(g, layer, weights, options))); }
+    try { return std::unique_ptr<PortableFfn>(new PortableFfn(std::make_unique<Impl>(g, layer, weights, options, tokens))); }
     catch (const std::exception& e) { error = e.what(); return nullptr; }
 }
 
 std::unique_ptr<PortableFfn> PortableFfn::from_gguf(const GgufModel& model, int64_t layer,
-    PortableFfnOptions options, std::string& error) {
+    PortableFfnOptions options, std::string& error, int64_t tokens) {
     error.clear();
     try {
         ModelGeometry g;
@@ -203,14 +216,14 @@ std::unique_ptr<PortableFfn> PortableFfn::from_gguf(const GgufModel& model, int6
         }
         // read_geometry checks that routed and shared widths agree; its legacy
         // qwen4exp result stores that width in n_ff.
-        return create({g.n_embd, g.hc, g.hc_lr, g.n_ff, g.n_expert, g.n_expert_used, float(g.rms_eps)}, layer, views, options, error);
+        return create({g.n_embd, g.hc, g.hc_lr, g.n_ff, g.n_expert, g.n_expert_used, float(g.rms_eps)}, layer, views, options, error, tokens);
     } catch (const std::exception& e) { error = e.what(); return nullptr; }
 }
 
 bool PortableFfn::reset(const std::vector<float>& residual, std::string& error) {
     error.clear();
     try {
-        require(residual.size() == size_t(impl_->g.hidden * impl_->g.streams), "portable FFN: residual size mismatch");
+        require(residual.size() == size_t(impl_->g.hidden * impl_->g.streams * impl_->tokens), "portable FFN: residual size mismatch");
         finite(residual); impl_->state = residual; impl_->initialized = true; return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
@@ -218,13 +231,16 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
     error.clear(); route = {};
     try {
         auto& s = *impl_;
+        require(s.tokens == 1, "portable FFN: multirow graph requires batch dispatch");
         require(s.initialized && bool(dispatch), "portable FFN: reset and expert callback required");
         write(s.input, s.state);
+        ++s.work.pre_graph_calls;
         require(ggml_backend_sched_graph_compute(s.pre_sched.get(), s.pre) == GGML_STATUS_SUCCESS, "portable FFN: pre graph failed");
         PortableRoute candidate;
         candidate.activation = read(s.mixed);
         route_logits(read(s.logits), s.g.selected, candidate);
         std::vector<float> rows;
+        ++s.work.provider_calls;
         const bool dispatched = dispatch(s.layer, candidate, rows, error);
         require(dispatched, error.empty() ? "portable FFN: expert dispatch failed" : error);
         require(rows.size() == size_t(s.g.hidden * s.g.selected), "portable FFN: indexed expert row count mismatch");
@@ -237,11 +253,58 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         }
         finite(block);
         write(s.post_input, s.state); write(s.post_inject, read(s.inject)); write(s.post_block, block);
+        ++s.work.post_graph_calls;
         require(ggml_backend_sched_graph_compute(s.post_sched.get(), s.post) == GGML_STATUS_SUCCESS, "portable FFN: post graph failed");
         auto next = read(s.output);
+        ++s.work.logical_rows; ++s.work.completed_chunks;
         s.state = std::move(next); route = std::move(candidate); error.clear(); return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
+bool PortableFfn::step_batch(const PortableExpertRowsBatch& dispatch,
+                             std::vector<PortableRoute>& routes, std::string& error) {
+    error.clear(); routes.clear();
+    try {
+        auto& s = *impl_;
+        require(s.initialized && bool(dispatch), "portable FFN: reset and expert callback required");
+        write(s.input, s.state);
+        ++s.work.pre_graph_calls;
+        require(ggml_backend_sched_graph_compute(s.pre_sched.get(), s.pre) == GGML_STATUS_SUCCESS,
+                "portable FFN: pre graph failed");
+        const auto mixed = read(s.mixed), logits = read(s.logits);
+        std::vector<PortableRoute> candidate(size_t(s.tokens));
+        for (size_t t = 0; t < size_t(s.tokens); ++t) {
+            candidate[t].activation.assign(mixed.begin() + t*s.g.hidden, mixed.begin() + (t+1)*s.g.hidden);
+            route_logits({logits.begin() + t*s.g.experts, logits.begin() + (t+1)*s.g.experts},
+                         s.g.selected, candidate[t]);
+        }
+        std::vector<float> rows;
+        ++s.work.provider_calls;
+        const bool ok = dispatch(s.layer, candidate, rows, error);
+        require(ok, error.empty() ? "portable FFN: expert dispatch failed" : error);
+        require(rows.size() == size_t(s.tokens*s.g.selected*s.g.hidden),
+                "portable FFN: indexed expert row count mismatch");
+        finite(rows);
+        auto block = read(s.shared);
+        for (size_t t = 0; t < size_t(s.tokens); ++t)
+            for (int64_t h = 0; h < s.g.hidden; ++h) {
+                float routed = 0;
+                for (int64_t k = 0; k < s.g.selected; ++k)
+                    routed += rows[(t*s.g.selected + k)*s.g.hidden + h]*candidate[t].weights[size_t(k)];
+                block[t*s.g.hidden + h] += routed;
+            }
+        finite(block);
+        write(s.post_input, s.state); write(s.post_inject, read(s.inject)); write(s.post_block, block);
+        ++s.work.post_graph_calls;
+        require(ggml_backend_sched_graph_compute(s.post_sched.get(), s.post) == GGML_STATUS_SUCCESS,
+                "portable FFN: post graph failed");
+        auto next = read(s.output);
+        s.state.swap(next); routes.swap(candidate);
+        s.work.logical_rows += uint64_t(s.tokens); ++s.work.completed_chunks;
+        error.clear(); return true;
+    } catch (const std::exception& e) { error = e.what(); return false; }
+}
+int64_t PortableFfn::tokens() const { return impl_->tokens; }
+PortableFfnWork PortableFfn::work() const { return impl_->work; }
 const std::vector<float>& PortableFfn::residual() const { return impl_->state; }
 const std::vector<PortablePlacement>& PortableFfn::placements() const { return impl_->placement; }
 size_t PortableFfn::weight_bytes() const { return impl_->weights_size; }
@@ -258,7 +321,11 @@ PortableMemoryUsage PortableFfn::memory_usage() const {
             m.device_graph += ggml_backend_sched_get_buffer_size(sched, s.options.accelerator);
     }
     m.host_extra_bound = 6u << 20; // three owning metadata contexts, plus token staging below
-    m.host_extra_bound += size_t(s.g.hidden * s.g.streams * 8 + s.g.selected * s.g.hidden) * sizeof(float);
+    m.host_extra_bound += size_t(s.g.hidden*s.g.streams*8 + s.g.selected*s.g.hidden) * sizeof(float);
+    if (s.tokens > 1) {
+        m.host_extra_bound += size_t((s.tokens-1)*(s.g.hidden*s.g.streams*8 + s.g.selected*s.g.hidden) +
+                                   s.tokens*s.g.experts*8) * sizeof(float);
+    }
     m.host_extra_bound += ggml_graph_plan(s.pre, s.options.threads, nullptr).work_size +
                           ggml_graph_plan(s.post, s.options.threads, nullptr).work_size;
     if (s.options.request_accelerator && s.options.accelerator) {
