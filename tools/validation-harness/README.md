@@ -15,6 +15,10 @@ The as-run driver and its unexercised Popen proposal remain available at that im
 historical campaign scripts, handwritten binary hashes and frequency-setting code are not imported
 into this branch. The new corrections are **NOT RUN** locally and are not claimed as tested operator code.
 
+For fresh device selection and the existing native/portable resident lifecycles,
+see [the local product comparison recipe](PRODUCT_COMPARISON.md). It is source
+analysis and prospective instructions, not new hardware evidence.
+
 ## Files and boundaries
 
 | File | Retained role / focused change |
