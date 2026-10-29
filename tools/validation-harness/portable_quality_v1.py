@@ -14,12 +14,14 @@ import quality as Q
 import portable_model_smoke_v1 as S
 
 
+QSA_COMBINE_FLAG = '--qsa-device-combine'
 GDN_CAUSAL_FLAG = '--gdn-causal-chunk'
 GDN_PROJECTION_FLAG = '--gdn-batch-input-projections'
 RESIDENCY_FLAGS = ('--prompt-head-elision', '--qsa-production', '--qsa-reuse-attention', '--gdn-production', '--gdn-resident-weights', '--gdn-resident-state', '--dense-resident-weights')
 
 
 def residency_arguments(parser):
+    parser.add_argument(QSA_COMBINE_FLAG,action='store_true',help='production QSA device attention-to-combine handoff')
     parser.add_argument(GDN_CAUSAL_FLAG,action='store_true',help='experimental production GDN causal chunk; requires batch projections')
     parser.add_argument(GDN_PROJECTION_FLAG,action='store_true',help='batch independent GDN projections; requires prompt chunks')
     parser.add_argument('--prompt-chunk-size',type=int,choices=range(2,9),default=0,help='bounded layer-major prompt chunks; implies head elision')
@@ -31,10 +33,12 @@ def residency_flags(args):
     size=chunk_size(args)
     projections=projection_policy(args)
     causal=causal_policy(args)
+    combine=combine_policy(args)
     flags=[flag for flag in RESIDENCY_FLAGS if getattr(args,flag[2:].replace('-','_'),False) or
            (flag=='--prompt-head-elision' and size)]
     if projections:flags += [GDN_PROJECTION_FLAG]
     if causal:flags += [GDN_CAUSAL_FLAG]
+    if combine:flags += [QSA_COMBINE_FLAG]
     if size: flags += ['--prompt-chunk-size',str(size)]
     return flags
 
@@ -71,6 +75,24 @@ def projection_binding(record,enabled):
     value=record.get('gdn_batch_input_projections',False)
     if type(enabled) is not bool or type(value) is not bool or value is not enabled:
         raise ValueError('GDN batch input projection policy mismatch')
+
+
+def combine_policy(args):
+    enabled=getattr(args,'qsa_device_combine',False)
+    if type(enabled) is not bool or (enabled and not getattr(args,'qsa_production',False)):
+        raise ValueError('QSA device combine requires production and a boolean policy')
+    return enabled
+
+def combine_argv(command):
+    count=command.count(QSA_COMBINE_FLAG)
+    if count>1 or (count and (command.count('--qsa-production')!=1 or command.count('--qsa-reuse-attention')!=1)):
+        raise ValueError('duplicate QSA device combine or missing production/reuse policy')
+    return bool(count)
+
+def combine_binding(record,enabled):
+    value=record.get('qsa_device_combine',False)
+    if type(enabled) is not bool or type(value) is not bool or value is not enabled:
+        raise ValueError('QSA device combine policy mismatch')
 
 
 def causal_policy(args):
@@ -228,6 +250,7 @@ def run_portable(args, tok):
         raise ValueError('portable binary digest mismatch')
     projections=projection_policy(args)
     causal=causal_policy(args)
+    combine=combine_policy(args)
     args.out.mkdir(mode=0o700, exist_ok=False)
     summary = dict(status='STOP', source='ac85ff3fdf0834c13437b69b1568d8704e9b0717',
                    binary_sha256=args.binary_sha256, suite=binding, requests=[],
@@ -237,6 +260,7 @@ def run_portable(args, tok):
                    gdn_policy='device_production' if getattr(args, 'gdn_production', False) else 'eager_diagnostic')
     if projections:summary['gdn_batch_input_projections']=True
     if causal:summary['gdn_causal_chunk']=True
+    if combine:summary['qsa_device_combine']=True
     size=chunk_size(args)
     capture=getattr(args,'dump_executed_logits',False)
     if capture and summary['head_policy']!='prompt_head_elision':raise ValueError('executed-head capture requires head elision')
@@ -270,7 +294,7 @@ def run_portable(args, tok):
                 for name in ('expert_tensor_mib','expert_workspace_mib','expert_free_reserve_mib'):
                     command += ['--'+name.replace('_','-'), getattr(args,name)]
                 if getattr(args,'expert_check_rows',False): command += ['--expert-check-rows']
-            if benchmark or size:
+            if benchmark or size or combine:
                 command += ['--timings', str(case / 'timings.json')]
             command += residency_flags(args)
             if capture:
@@ -315,16 +339,18 @@ def run_portable(args, tok):
                        [f['token'] for f in diagnostic['frames']]!=[prompt[-1]]+ids:
                         raise ValueError('executed-head manifest differs from request receipt')
                     summary['requests'][-1]['executed_logits_manifest']=diagnostic
-                if size:
+                if size or combine:
                     timing=json.loads((case/'timings.json').read_text())
                     chunk_fields(timing,len(prompt),len(records)-1,size)
                     projection_binding(timing,projections)
                     causal_binding(timing,causal)
+                    combine_binding(timing,combine)
                     summary['requests'][-1]['chunk_work']=timing
                 if benchmark:
                     timing = json.loads((case / 'timings.json').read_text())
                     projection_binding(timing,projections)
                     causal_binding(timing,causal)
+                    combine_binding(timing,combine)
                     timing_fields(timing, prompt, ids)
                     for key in ('selection_prompt_ms', 'selection_decode_ms', 'terminal_feed_ms'):
                         value = timing.get(key)

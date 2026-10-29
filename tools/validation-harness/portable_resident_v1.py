@@ -21,6 +21,7 @@ class Resident:
         self.prompt_chunk_size=P.chunk_argv(command)
         self.gdn_batch_input_projections=P.projection_argv(command)
         self.gdn_causal_chunk=P.causal_argv(command)
+        self.qsa_device_combine=P.combine_argv(command)
         self.head_policy = 'prompt_head_elision' if '--prompt-head-elision' in command or self.prompt_chunk_size else 'eager_diagnostic'
         self.out, self.tick = out, tick
         self.request_seconds, self.load_seconds = request_seconds, load_seconds
@@ -79,6 +80,7 @@ class Resident:
                 P.chunk_fields(row,len(tokens),len(rows),getattr(self,'prompt_chunk_size',0))
                 P.projection_binding(row,getattr(self,'gdn_batch_input_projections',False))
                 P.causal_binding(row,getattr(self,'gdn_causal_chunk',False))
+                P.combine_binding(row,getattr(self,'qsa_device_combine',False))
                 if self.head_policy == 'prompt_head_elision':
                     if (row.get('head_policy') != self.head_policy or type(row.get('receipt_schema')) is not int or
                             row['receipt_schema'] != 2 or
@@ -235,6 +237,9 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
     expected_residency = residency or {flag: False for flag in P.RESIDENCY_FLAGS}
     projections=expected_residency.get('--gdn-batch-input-projections',False)
     P.projection_policy(argparse.Namespace(gdn_batch_input_projections=projections,prompt_chunk_size=prompt_chunk_size))
+    combine=expected_residency.get(P.QSA_COMBINE_FLAG,False)
+    P.combine_policy(argparse.Namespace(qsa_device_combine=combine,qsa_production=expected_residency.get('--qsa-production',False)))
+    P.combine_binding(summary,combine)
     causal=expected_residency.get(P.GDN_CAUSAL_FLAG,False)
     P.causal_policy(argparse.Namespace(gdn_causal_chunk=causal,gdn_batch_input_projections=projections,prompt_chunk_size=prompt_chunk_size,gdn_production=expected_residency.get('--gdn-production',False)))
     P.projection_binding(summary,projections)
@@ -256,6 +261,7 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
         if P.chunk_argv(argv)!=prompt_chunk_size:raise ValueError('reference chunk argv mismatch')
         if P.projection_argv(argv) is not projections:raise ValueError('reference GDN projection argv mismatch')
         if P.causal_argv(argv) is not causal:raise ValueError('reference GDN causal argv mismatch')
+        if P.combine_argv(argv) is not combine:raise ValueError('reference QSA combine argv mismatch')
         for flag in P.RESIDENCY_FLAGS:
             if argv.count(flag) != int(expected_residency.get(flag, False)):
                 raise ValueError('reference residency policy mismatch: '+flag)
@@ -280,12 +286,14 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
         saved=summary['requests'][index-1]
         P.projection_binding(saved.get('chunk_work',{}),projections)
         P.causal_binding(saved.get('chunk_work',{}),causal)
-        if projections or (case/'timings.json').exists():
+        P.combine_binding(saved.get('chunk_work',{}),combine)
+        if projections or combine or (case/'timings.json').exists():
             timing=json.loads((case/'timings.json').read_text())
             P.projection_binding(timing,projections)
             P.causal_binding(timing,causal)
+            P.combine_binding(timing,combine)
             P.chunk_binding(timing,prompt_chunk_size)
-            if projections and saved['chunk_work']!=timing:raise ValueError('reference GDN projection timing/summary mismatch')
+            if (projections or combine) and saved['chunk_work']!=timing:raise ValueError('reference GDN projection timing/summary mismatch')
         records = [json.loads(line) for line in (case/'stdout.jsonl').read_text().splitlines()]
         ids, stop = P.completion(records,prompt,vocabulary,expected_head,prompt_chunk_size)
         if saved['tokens'] != ids or saved['finish'] != stop:
@@ -337,6 +345,7 @@ def run_suite(runner, out, prompts, references, binding, vocabulary, binary_sha,
         if receipt.get('prompt_chunk_size',0):summary.update(prompt_chunk_size=receipt['prompt_chunk_size'],chunk_policy='layer_major_v1')
         if receipt.get('gdn_batch_input_projections',False):summary['gdn_batch_input_projections']=True
         if receipt.get('gdn_causal_chunk',False):summary['gdn_causal_chunk']=True
+        if receipt.get('qsa_device_combine',False):summary['qsa_device_combine']=True
         receipt['passes'].append(summary)
         began=time.monotonic()
         try:
@@ -353,6 +362,7 @@ def run_suite(runner, out, prompts, references, binding, vocabulary, binary_sha,
                     raise ValueError(f'fresh reference mismatch: pass {pass_id} case {case_id}')
                 P.projection_binding(result['metrics'],receipt.get('gdn_batch_input_projections',False))
                 P.causal_binding(result['metrics'],receipt.get('gdn_causal_chunk',False))
+                P.combine_binding(result['metrics'],receipt.get('qsa_device_combine',False))
                 suite_metrics(result['metrics'],prompt,ids,len(result['rows']),pass_id==2,receipt['gdn_policy'],summary['head_policy'],receipt.get('prompt_chunk_size',0))
                 summary['requests'].append(dict(index=case_id,request_id=request_id,tokens=ids,finish=stop,
                     consumed_rows=len(result['rows']),timing=result['metrics']))
@@ -378,6 +388,7 @@ def main():
     p.add_argument('--expert-tensor-mib', default='2404,2404')
     p.add_argument('--expert-timings', action='store_true', help='coarse provider and per-device executor call timing')
     p.add_argument('--prompt-chunk-size',type=int,choices=range(2,9),default=0)
+    p.add_argument(P.QSA_COMBINE_FLAG,action='store_true',help='production QSA device combine; requires matching fresh references')
     p.add_argument(P.GDN_CAUSAL_FLAG,action='store_true',help='experimental production causal GDN chunk')
     p.add_argument('--gdn-batch-input-projections',action='store_true',help='batch independent GDN projections; requires prompt chunks and matching fresh references')
     p.add_argument('--prompt-head-elision', action='store_true', help='omit nonfinal prompt heads; requires matching schema-2 references')
@@ -392,6 +403,7 @@ def main():
     args=p.parse_args()
     if args.prompt_chunk_size:args.prompt_head_elision=True
     P.causal_policy(args)
+    P.combine_policy(args)
     if args.gdn_batch_input_projections and not args.prompt_chunk_size:p.error('--gdn-batch-input-projections requires --prompt-chunk-size')
     selected,physical=S.device_selection(p,args)
     if len(args.plan)!=2: p.error('two plans required')
@@ -413,7 +425,7 @@ def main():
                                   {'--model':str(args.gguf),'--manifest':args.manifest,'--vulkan':args.devices,
                                    '--split':str(args.split),'--device-cap-mib':','.join([str(args.device_cap_mib)]*2),
                                    '--threads':'4','--expert-workers':'12','--host-cap-mib':'32768'},
-                                  {flag:flag in P.residency_flags(args) for flag in (*P.RESIDENCY_FLAGS,P.GDN_PROJECTION_FLAG,P.GDN_CAUSAL_FLAG)},P.chunk_size(args))
+                                  {flag:flag in P.residency_flags(args) for flag in (*P.RESIDENCY_FLAGS,P.GDN_PROJECTION_FLAG,P.GDN_CAUSAL_FLAG,P.QSA_COMBINE_FLAG)},P.chunk_size(args))
         args.max_new=Q.MAX_NEW
         args.expert_timings=True
     else:
@@ -429,6 +441,7 @@ def main():
                  excluded_warmups=1,measured_requests=3)
     if args.gdn_batch_input_projections:receipt['gdn_batch_input_projections']=True
     if args.gdn_causal_chunk:receipt['gdn_causal_chunk']=True
+    if args.qsa_device_combine:receipt['qsa_device_combine']=True
     if P.chunk_size(args):receipt.update(prompt_chunk_size=P.chunk_size(args),chunk_policy='layer_major_v1')
     if args.suite:
         receipt.update(mode='suite',suite=binding,reference_root=str(args.reference_root),
@@ -482,6 +495,7 @@ def main():
         if args.expert_timings: command += ['--expert-timings']
         if args.gdn_batch_input_projections:command+=['--gdn-batch-input-projections']
         if args.gdn_causal_chunk:command+=[P.GDN_CAUSAL_FLAG]
+        if args.qsa_device_combine:command+=[P.QSA_COMBINE_FLAG]
         if args.prompt_head_elision: command += ['--prompt-head-elision']
         if P.chunk_size(args):command+=['--prompt-chunk-size',str(P.chunk_size(args))]
         if args.gdn_resident_weights: command += ['--gdn-resident-weights']
@@ -504,6 +518,7 @@ def main():
                 result=runner.request(tokens,args.max_new,index)
                 P.projection_binding(result['metrics'],args.gdn_batch_input_projections)
                 P.causal_binding(result['metrics'],args.gdn_causal_chunk)
+                P.combine_binding(result['metrics'],args.qsa_device_combine)
                 if args.expert_timings:
                     m=result['metrics']
                     model_phase_fields(m,len(result['rows']),receipt['gdn_policy'],receipt['head_policy'],P.chunk_size(args))

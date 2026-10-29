@@ -136,7 +136,10 @@ int main(int argc, char **argv) {
                     production.execution.request_accelerator = true;
                 }
                 Bf16Fixture production_fixture;
-                production_tests(production, production_fixture.views, [&](int t){return production_fixture.base.input(t);});
+                for (bool combine : {false, true}) {
+                    production.device_combine=combine;
+                    production_tests(production, production_fixture.views, [&](int t){return production_fixture.base.input(t);});
+                }
             }
         } // validate streamed and resident dense weights
         return 0;

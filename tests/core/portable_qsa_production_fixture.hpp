@@ -1,6 +1,7 @@
 #pragma once
 #include "portable_qsa_fixture.hpp"
 #include <algorithm>
+#include "ggml-backend.h"
 namespace qsa_fixture {
 // Run against a strict selected backend (CPU-backed selection for local tests,
 // actual Vulkan for the hardware fixture). Compare complete active state and
@@ -13,10 +14,12 @@ void production_tests(PortableQsaOptions opts, const std::vector<PortableTensorV
     std::string error;
     auto layer = PortableQsaLayer::create(3, views, opts, error);
     check(bool(layer), error);
-    auto diagnostic = opts; diagnostic.production = false;
+    auto diagnostic = opts; diagnostic.production = false; diagnostic.device_combine = false;
     auto control = PortableQsaLayer::create(3, views, diagnostic, error);
     check(bool(control), error);
-    auto invalid = opts; invalid.reuse_attention = false;
+    auto invalid = opts; invalid.production = false; invalid.device_combine = true;
+    check(!PortableQsaLayer::create(3, views, invalid, error), "device combine requires production");
+    invalid = opts; invalid.reuse_attention = false;
     check(!PortableQsaLayer::create(3, views, invalid, error), "production requires reuse");
     invalid = opts; invalid.execution.allow_cpu_fallback = true;
     check(!PortableQsaLayer::create(3, views, invalid, error), "production forbids fallback");
@@ -79,7 +82,19 @@ void production_tests(PortableQsaOptions opts, const std::vector<PortableTensorV
                 for (size_t j = 0; j < t; ++j)
                     check(layer->step(j, input(int(j) + sequence), experts(), route, error), error);
             }
+            const auto work = layer->graph_work();
             check(layer->step(t, input(int(t) + sequence), experts(), route, error), error);
+            const auto next = layer->graph_work();
+            check(next.attention_submissions == work.attention_submissions + 1 &&
+                  next.combine_submissions == work.combine_submissions + !opts.device_combine &&
+                  next.device_handoffs == work.device_handoffs + opts.device_combine,
+                  "actual attention/combine submission and device handoff deltas");
+            for (const auto &p : layer->placements())
+                if (!p.metadata_only && p.phase != "host") {
+                    check(!opts.device_combine || p.phase != "qsa-combine", "merged path has no standalone combine");
+                    check(p.backend == ggml_backend_name(opts.execution.accelerator) && p.fallback_reason.empty(),
+                          "strict production placement");
+                }
             check(control->step(t, input(int(t) + sequence), experts(), expected, error), error);
             verify();
         }
@@ -93,6 +108,9 @@ void production_tests(PortableQsaOptions opts, const std::vector<PortableTensorV
     const auto after = layer->memory_usage();
     check(after.device_state == before.device_state && after.host_graph == before.host_graph &&
           after.device_graph == before.device_graph, "reset retains admitted state and scheduler allocations");
+    std::printf("PASS QSA device_combine=%d attention_submissions=%llu combine_submissions=%llu device_handoffs=%llu\n",
+        int(opts.device_combine), (unsigned long long)layer->graph_work().attention_submissions,
+        (unsigned long long)layer->graph_work().combine_submissions, (unsigned long long)layer->graph_work().device_handoffs);
     std::puts("PASS QSA device production exact state, append boundaries, poison/reset A/B/A positions0-8");
 }
 }

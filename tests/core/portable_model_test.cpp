@@ -269,7 +269,9 @@ int main() {
         session.reset(); // bound peak fixture memory before resident-ownership run
         std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> selected(ggml_backend_cpu_init(), ggml_backend_free);
         size_t gdn_state_only=0;
-        for (bool qsa_only : {false, true}) {
+        for (int production_mode : {0, 1, 2}) {
+        const bool qsa_only=production_mode>0;
+        opts.qsa_device_combine=production_mode==2;
         opts.qsa_production = qsa_only;
         opts.gdn_production = !qsa_only;
         opts.accelerators = {selected.get()};
@@ -281,7 +283,11 @@ int main() {
                    12*PortableQsaLayer::device_state_allocation_size(selected.get(),opts.context),
                    "model actual QSA state ledger charged once after preflight");
         check(session->step(5, logits, error) && logits == reference[0], "production full model same-backend bytes");
-        const auto work = session->model_work().gdn_phases;
+        const auto qsa_work=session->model_work();
+        check(qsa_work.qsa_attention_submissions==12 &&
+              qsa_work.qsa_combine_submissions==(opts.qsa_device_combine?0:12) &&
+              qsa_work.qsa_device_handoffs==(opts.qsa_device_combine?12:0),"model reports actual QSA graph work");
+        const auto work = qsa_work.gdn_phases;
         check(work.candidate_readback_calls == (qsa_only ? 109 : 36) && work.candidate_finite_calls == (qsa_only ? 109 : 36) &&
               work.state_commit_calls == 36, "production model residual-only reads");
         check(session->reset(error) && session->step(5, logits, error) && logits == reference[0],

@@ -107,7 +107,7 @@ int main(int argc, char **argv) {
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
                              " [--gdn-production (requires --gdn-resident-state and strict Vulkan)]\n"
-                             " [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
+                             " [--qsa-device-combine (production only; default off)] [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
                              " [--qsa-reuse-attention (trial, default off)]\n"
                              " [--gdn-resident-state (trial, default off)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
@@ -133,6 +133,10 @@ int main(int argc, char **argv) {
             }
             if (key == "--prompt-head-elision") {
                 opts.prompt_head_elision = true;
+                continue;
+            }
+            if (key == "--qsa-device-combine") {
+                opts.qsa_device_combine = true;
                 continue;
             }
             if (key == "--qsa-production") {
@@ -230,6 +234,8 @@ int main(int argc, char **argv) {
             else
                 throw std::runtime_error("unknown option: " + key);
         }
+        if(opts.qsa_device_combine && !opts.qsa_production)
+            throw std::runtime_error("--qsa-device-combine requires --qsa-production");
         if(opts.gdn_causal_chunk && (!opts.prompt_chunk_size || !opts.gdn_batch_input_projections || !opts.gdn_production))
             throw std::runtime_error("--gdn-causal-chunk requires --prompt-chunk-size, --gdn-batch-input-projections and --gdn-production");
         if(opts.gdn_batch_input_projections && !opts.prompt_chunk_size)
@@ -423,8 +429,12 @@ int main(int argc, char **argv) {
             std::cout << "}\n";
         };
         const auto chunk_fields = [&](std::ostream& out) {
-            if(!opts.prompt_chunk_size)return;
             const auto after=session->model_work();
+            if(opts.qsa_device_combine) out << ",\"qsa_device_combine\":true"
+                << ",\"qsa_attention_submissions_delta\":" << after.qsa_attention_submissions-heads_before.qsa_attention_submissions
+                << ",\"qsa_combine_submissions_delta\":" << after.qsa_combine_submissions-heads_before.qsa_combine_submissions
+                << ",\"qsa_device_handoffs_delta\":" << after.qsa_device_handoffs-heads_before.qsa_device_handoffs;
+            if(!opts.prompt_chunk_size)return;
             out << ",\"chunk_policy\":\"layer_major_v1\",\"prompt_chunk_size\":" << opts.prompt_chunk_size
                 << ",\"gdn_subphases_available\":false"
                 << ",\"model_forward_calls_delta\":" << after.completed_forward_calls-heads_before.completed_forward_calls

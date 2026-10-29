@@ -1,8 +1,21 @@
 #pragma once
 #include "ggml.h"
 #include <algorithm>
+#include <utility>
 
 namespace strata::core::portable_detail {
+// Native order: gate attention, output projection, then HC residual injection.
+// The caller decides whether inputs are backend views or staged diagnostics.
+inline std::pair<ggml_tensor *, ggml_tensor *> qsa_combine(ggml_context *c, ggml_tensor *attention,
+    ggml_tensor *gate, ggml_tensor *weight, ggml_tensor *residual, ggml_tensor *inject) {
+    const auto H = residual->ne[0], HC = residual->ne[1];
+    auto *gated = ggml_mul(c, ggml_reshape_1d(c, attention, 6144), ggml_sigmoid(c, ggml_reshape_1d(c, gate, 6144)));
+    auto *projected = ggml_mul_mat(c, weight, gated);
+    auto *scatter = ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, inject, 0.25f)), 2.0f), 1, HC, 1);
+    auto *repeat = ggml_repeat_4d(c, ggml_reshape_3d(c, projected, H, 1, 1), H, HC, 1, 1);
+    return {gated, ggml_add(c, residual, ggml_mul(c, repeat, scatter))};
+}
+
 // Retain FP16 K/V, but perform attention arithmetic in F32. Explicit
 // per-query-head products avoid the pinned Vulkan batched 12-column path,
 // which produces wrong logits after column 7 on the two-cell regression.
