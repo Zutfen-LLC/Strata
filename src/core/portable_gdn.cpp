@@ -110,6 +110,10 @@ struct PortableGdnLayer::Impl {
     AttentionOutputs tail_outputs{};
     size_t projection_tokens = 0, projection_bytes = 0;
     uint64_t projection_calls = 0, projection_columns = 0;
+    uint64_t causal_calls = 0, residual_handoffs = 0, causal_commits = 0;
+    ggml_tensor* causal_residuals=nullptr;
+    AttentionOutputs causal_outputs{};
+    bool causal() const { return options.causal_chunk && !options.ple_table; }
     bool batch_projections() const { return options.batch_input_projections && !options.ple_table; }
     AttentionOutputs outputs() const {
         return {attn_residual,state_output,history_output,qkv,conv,q,k,v,g,beta,attention};
@@ -118,6 +122,37 @@ struct PortableGdnLayer::Impl {
         attn_residual=a[0];state_output=a[1];history_output=a[2];qkv=a[3];conv=a[4];
         q=a[5];k=a[6];v=a[7];g=a[8];beta=a[9];attention=a[10];
     }
+    AttentionOutputs build_tail(ggml_context* c, ggml_tensor* hidden, ggml_tensor* inject,
+        ggml_tensor* qkv_input, ggml_tensor* z, ggml_tensor* alpha, ggml_tensor* beta_input,
+        ggml_tensor* state, ggml_tensor* history) {
+        const auto& w=weights;
+        qkv=qkv_input;
+        beta=ggml_reshape_4d(c,ggml_sigmoid(c,beta_input),1,HV,1,1);
+        g=ggml_reshape_4d(c,ggml_mul(c,ggml_softplus(c,ggml_add(c,alpha,w.at("ssm_dt.bias"))),w.at("ssm_a")),1,HV,1,1);
+        auto *window = ggml_concat(c, history, ggml_reshape_3d(c, qkv, 1, CHANNELS, 1), 0);
+        history_output = ggml_cont(c, ggml_view_2d(c, window, 3, CHANNELS, 4 * sizeof(float), sizeof(float)));
+        conv = ggml_silu(c, ggml_ssm_conv(c, window, w.at("ssm_conv1d.weight")));
+        auto *qraw = ggml_view_4d(c, conv, D, HK, 1, 1, D * sizeof(float), CHANNELS * sizeof(float),
+                                  CHANNELS * sizeof(float), 0);
+        auto *kraw = ggml_view_4d(c, conv, D, HK, 1, 1, D * sizeof(float), CHANNELS * sizeof(float),
+                                  CHANNELS * sizeof(float), D * HK * sizeof(float));
+        v = ggml_view_4d(c, conv, D, HV, 1, 1, D * sizeof(float), CHANNELS * sizeof(float), CHANNELS * sizeof(float),
+                         2 * D * HK * sizeof(float));
+        q = ggml_scale(c, ggml_rms_norm(c, qraw, 1e-6f / float(D)), 1.0f / std::sqrt(float(D)));
+        k = ggml_scale(c, ggml_rms_norm(c, kraw, 1e-6f / float(D)), 1.0f / std::sqrt(float(D)));
+        auto *result = ggml_gated_delta_net(c, q, k, v, g, beta, state, 1);
+        attention = ggml_view_2d(c, result, D, HV, D * sizeof(float), 0);
+        state_output = ggml_view_1d(c, result, STATES, INNER * sizeof(float));
+        auto *normalized = ggml_mul(c, ggml_rms_norm(c, attention, 1e-6f), w.at("ssm_norm.weight"));
+        auto *outgate = ggml_reshape_2d(c, ggml_sigmoid(c, z), D, HV);
+        auto *projected =
+            ggml_mul_mat(c, w.at("ssm_out.weight"), ggml_reshape_1d(c, ggml_mul(c, normalized, outgate), INNER));
+        auto *scatter =
+            ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, inject, 0.25f)), 2.0f), 1, HC, 1);
+        auto *repeat = ggml_repeat_4d(c, ggml_reshape_3d(c, projected, H, 1, 1), H, HC, 1, 1);
+        attn_residual = ggml_add(c, hidden, ggml_mul(c, repeat, scatter));
+        return outputs();
+    }
     size_t chunk_graphs() const { return (chunk_ffn ? chunk_ffn->graph_bytes() : 0) + projection_bytes; }
     void prepare_projections(size_t T) {
         if (!batch_projections() || projection_tokens == T) return;
@@ -125,8 +160,9 @@ struct PortableGdnLayer::Impl {
         // schedulers keep their own buffers and are included in graphs_size.
         projection_scheduler.reset(); projection_ctx.reset(); projection_bytes=0; projection_tokens=0;
         projection_graph=nullptr; projection_input=nullptr; projection_outputs={};
+        causal_residuals=nullptr; causal_outputs={};
         placement.erase(std::remove_if(placement.begin(),placement.end(),[](const auto& p) {
-            return p.phase=="gdn-input-projections";
+            return p.phase=="gdn-input-projections" || p.phase=="gdn-causal-chunk";
         }),placement.end());
         if(T==1) return;
         projection_ctx=context(); auto* c=projection_ctx.get();
@@ -147,10 +183,32 @@ struct PortableGdnLayer::Impl {
             ggml_set_name(projection_outputs[i+1],names[i]);
         }
         for(auto* t:projection_outputs) {ggml_set_output(t);ggml_build_forward_expand(projection_graph,t);}
+        if(causal()) {
+            // Each next token consumes its predecessor's candidate tensors.
+            // No committed state is overwritten while this graph or FFN runs.
+            const auto saved=outputs();
+            auto* state=state_input; auto* history=history_input;
+            causal_residuals=nullptr;
+            for(size_t t=0;t<T;++t) {
+                std::array<ggml_tensor*,5> column{};
+                for(size_t i=0;i<5;++i) {
+                    const int64_t n=projection_outputs[i]->ne[0];
+                    column[i]=ggml_view_1d(c,projection_outputs[i],n,t*n*sizeof(float));
+                }
+                auto* hidden=ggml_view_3d(c,projection_input,H,HC,1,H*sizeof(float),RESIDUAL*sizeof(float),t*RESIDUAL*sizeof(float));
+                causal_outputs=build_tail(c,hidden,column[0],column[1],column[2],column[3],column[4],state,history);
+                state=ggml_reshape_4d(c,causal_outputs[1],D,D,HV,1);
+                history=ggml_reshape_3d(c,causal_outputs[2],3,CHANNELS,1);
+                causal_residuals=causal_residuals?ggml_concat(c,causal_residuals,causal_outputs[0],2):causal_outputs[0];
+            }
+            causal_outputs[1]=state; causal_outputs[2]=history;
+            for(auto* t:{causal_residuals,state,history}) {ggml_set_output(t);ggml_build_forward_expand(projection_graph,t);}
+            outputs(saved);
+        }
         auto opts=options.execution;
         require(graphs_size+chunk_graphs()<opts.graph_budget,"portable GDN: no projection graph budget");
         opts.graph_budget-=graphs_size+(chunk_ffn?chunk_ffn->graph_bytes():0);
-        projection_scheduler=portable_detail::schedule(projection_graph,"gdn-input-projections",opts,cpu,placement,projection_bytes);
+        projection_scheduler=portable_detail::schedule(projection_graph,causal()?"gdn-causal-chunk":"gdn-input-projections",opts,cpu,placement,projection_bytes,causal());
         projection_tokens=T;
     }
 
@@ -253,26 +311,27 @@ struct PortableGdnLayer::Impl {
         }
         return {std::move(next_residual),next_previous,std::move(next_trace)};
     }
-    void commit_device(PortableGdnWork* work, bool projected = false) {
+    void commit_device(PortableGdnWork* work, bool projected = false, bool causal = false) {
         auto& s = *this;
         PortableGdnWork disabled;
         auto& timing = work ? *work : disabled;
         if (s.state_buffer) {
             // Retain separate synchronous copies on this backend API. Diagnostics
             // validate full candidates; production only reads the FFN residual.
-            // T1 invokes this after FFN. A chunk invokes it after each causal
-            // attention step to advance its working cursor before batched FFN.
+            // T1 and the causal graph invoke this after FFN. The legacy chunk
+            // advances its working cursor after each serial attention step.
             // A recoverable copy exception poisons device state until reset;
             // public mirrors still describe the last successful token.
             portable_detail::ScopedExpertTimer<> commit_timer(work != nullptr,
                 timing.state_commit_ms, timing.state_commit_calls);
             s.state_healthy = false;
-            ggml_backend_tensor_copy(projected?s.tail_outputs[1]:s.state_output, s.state_input);
-            ggml_backend_tensor_copy(projected?s.tail_outputs[2]:s.history_output, s.history_input);
+            ggml_backend_tensor_copy(causal?s.causal_outputs[1]:(projected?s.tail_outputs[1]:s.state_output), s.state_input);
+            ggml_backend_tensor_copy(causal?s.causal_outputs[2]:(projected?s.tail_outputs[2]:s.history_output), s.history_input);
             if (s.options.ple_table)
                 ggml_backend_tensor_copy(s.ple_hist_out, s.ple_hist);
             ggml_backend_synchronize(s.options.execution.accelerator);
             s.state_healthy = true;
+            if(causal) ++s.causal_commits;
         }
     }
 
@@ -307,6 +366,8 @@ struct PortableGdnLayer::Impl {
         require(!production() || (options.resident_state && options.execution.request_accelerator &&
                     options.execution.accelerator && !options.execution.allow_cpu_fallback),
                 "portable GDN: production requires resident state and strict selected backend");
+        require(!options.causal_chunk || (options.batch_input_projections && production()),
+                "portable GDN: causal chunk requires production and batched input projections");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
         auto expected_shapes = shapes();
         if (options.ple_table)
@@ -368,6 +429,7 @@ struct PortableGdnLayer::Impl {
                 "portable GDN: actual aligned weight budget exceeded");
         attention_device_weights = resident ? actual_weights : 0;
         weights_size = ffn->weight_bytes() + actual_weights;
+        weights=w;
         auto *c = ctx.get();
         input = ggml_new_tensor_3d(c, GGML_TYPE_F32, H, HC, 1);
         const bool keep_state = options.resident_state && options.execution.request_accelerator &&
@@ -437,32 +499,9 @@ struct PortableGdnLayer::Impl {
             if(external) inject=projection_inputs[0];
             qkv = external ? projection_inputs[1] : ggml_mul_mat(c, w.at("attn_qkv.weight"), mixed);
             auto *z = external ? projection_inputs[2] : ggml_mul_mat(c, w.at("attn_gate.weight"), mixed);
-            beta = ggml_reshape_4d(c, ggml_sigmoid(c, external ? projection_inputs[4] : ggml_mul_mat(c, w.at("ssm_beta.weight"), mixed)), 1, HV, 1, 1);
-            auto *alpha = external ? projection_inputs[3] : ggml_mul_mat(c, w.at("ssm_alpha.weight"), mixed);
-            g = ggml_reshape_4d(c, ggml_mul(c, ggml_softplus(c, ggml_add(c, alpha, w.at("ssm_dt.bias"))), w.at("ssm_a")), 1,
-                                HV, 1, 1);
-            auto *window = ggml_concat(c, history_input, ggml_reshape_3d(c, qkv, 1, CHANNELS, 1), 0);
-            history_output = ggml_cont(c, ggml_view_2d(c, window, 3, CHANNELS, 4 * sizeof(float), sizeof(float)));
-            conv = ggml_silu(c, ggml_ssm_conv(c, window, w.at("ssm_conv1d.weight")));
-            auto *qraw = ggml_view_4d(c, conv, D, HK, 1, 1, D * sizeof(float), CHANNELS * sizeof(float),
-                                      CHANNELS * sizeof(float), 0);
-            auto *kraw = ggml_view_4d(c, conv, D, HK, 1, 1, D * sizeof(float), CHANNELS * sizeof(float),
-                                      CHANNELS * sizeof(float), D * HK * sizeof(float));
-            v = ggml_view_4d(c, conv, D, HV, 1, 1, D * sizeof(float), CHANNELS * sizeof(float), CHANNELS * sizeof(float),
-                             2 * D * HK * sizeof(float));
-            q = ggml_scale(c, ggml_rms_norm(c, qraw, 1e-6f / float(D)), 1.0f / std::sqrt(float(D)));
-            k = ggml_scale(c, ggml_rms_norm(c, kraw, 1e-6f / float(D)), 1.0f / std::sqrt(float(D)));
-            auto *result = ggml_gated_delta_net(c, q, k, v, g, beta, state_input, 1);
-            attention = ggml_view_2d(c, result, D, HV, D * sizeof(float), 0);
-            state_output = ggml_view_1d(c, result, STATES, INNER * sizeof(float));
-            auto *normalized = ggml_mul(c, ggml_rms_norm(c, attention, 1e-6f), w.at("ssm_norm.weight"));
-            auto *outgate = ggml_reshape_2d(c, ggml_sigmoid(c, z), D, HV);
-            auto *projected =
-                ggml_mul_mat(c, w.at("ssm_out.weight"), ggml_reshape_1d(c, ggml_mul(c, normalized, outgate), INNER));
-            auto *scatter =
-                ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, inject, 0.25f)), 2.0f), 1, HC, 1);
-            auto *repeat = ggml_repeat_4d(c, ggml_reshape_3d(c, projected, H, 1, 1), H, HC, 1, 1);
-            attn_residual = ggml_add(c, hidden, ggml_mul(c, repeat, scatter));
+            auto* beta_input=external ? projection_inputs[4] : ggml_mul_mat(c,w.at("ssm_beta.weight"),mixed);
+            auto* alpha=external ? projection_inputs[3] : ggml_mul_mat(c,w.at("ssm_alpha.weight"),mixed);
+            outputs(build_tail(c,hidden,inject,qkv,z,alpha,beta_input,state_input,history_input));
             graph = ggml_new_graph(c);
             for (auto *t : {attn_residual, state_output, history_output, qkv, conv, q, k, v, g, beta, attention}) {
                 ggml_set_output(t);
@@ -511,11 +550,10 @@ struct PortableGdnLayer::Impl {
             else scheduler=std::move(sched);
         };
         build(false);
-        if(batch_projections()) {
+        if(batch_projections() && !causal()) {
             const auto saved=outputs(); auto* saved_graph=graph;
             build(true); outputs(saved); graph=saved_graph;
         }
-        weights=w;
         if (!production()) {
             state.assign(STATES, 0);
             history.assign(HISTORY, 0);
@@ -616,7 +654,7 @@ bool PortableGdnLayer::reset(std::string &error) {
         if(impl_->chunk_host_bound) {
             next_placement=impl_->placement;
             next_placement.erase(std::remove_if(next_placement.begin(),next_placement.end(),[](const auto& p){
-                return p.phase != "gdn-attention" && p.phase != "gdn-chunk-recurrence" && p.phase != "gdn-input-projections";
+                return p.phase != "gdn-attention" && p.phase != "gdn-chunk-recurrence" && p.phase != "gdn-input-projections" && p.phase != "gdn-causal-chunk";
             }),next_placement.end());
             next_placement.insert(next_placement.begin(),impl_->ffn->placements().begin(),impl_->ffn->placements().end());
         }
@@ -680,7 +718,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         if(s.chunk_host_bound) {
             next_placement=s.placement;
             next_placement.erase(std::remove_if(next_placement.begin(),next_placement.end(),[](const auto& p){
-                return p.phase != "gdn-attention" && p.phase != "gdn-chunk-recurrence" && p.phase != "gdn-input-projections";
+                return p.phase != "gdn-attention" && p.phase != "gdn-chunk-recurrence" && p.phase != "gdn-input-projections" && p.phase != "gdn-causal-chunk";
             }),next_placement.end());
             next_placement.insert(next_placement.begin(),s.ffn->placements().begin(),s.ffn->placements().end());
         }
@@ -733,6 +771,9 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
         auto previous = s.previous;
         std::vector<float> attended_rows; attended_rows.reserve(T*RESIDUAL);
         const bool projected=s.batch_projections() && T>1;
+        const bool causal=s.causal() && T>1;
+        require(!causal || (s.causal_calls<UINT64_MAX && s.residual_handoffs<UINT64_MAX && s.causal_commits<UINT64_MAX),
+                "portable GDN: exhausted causal chunk counters");
         std::array<std::vector<float>,5> projections;
         if(projected) {
             require(s.projection_calls<UINT64_MAX && T<=UINT64_MAX-s.projection_columns,
@@ -741,9 +782,15 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
             require(ggml_backend_sched_graph_compute(s.projection_scheduler.get(),s.projection_graph)==GGML_STATUS_SUCCESS,
                     "portable GDN: input projection graph failed");
             ++s.projection_calls; s.projection_columns+=T;
+            if(causal) ++s.causal_calls;
             for(size_t i=0;i<5;++i) projections[i]=read(s.projection_outputs[i]);
         }
-        for(size_t t=0;t<T;++t) {
+        if(causal) {
+            // Keep the five bulk reads for the existing finite checks. Their
+            // device tensors feed recurrence directly; never upload host slices.
+            attended_rows=read(s.causal_residuals);
+            ++s.residual_handoffs;
+        } else for(size_t t=0;t<T;++t) {
             if(projected) for(size_t i=0;i<5;++i) {
                 const size_t n=size_t(ggml_nelements(s.projection_inputs[i]));
                 ggml_backend_tensor_set(s.projection_inputs[i],projections[i].data()+t*n,0,n*sizeof(float));
@@ -775,7 +822,7 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
         std::vector<float> last(completed.end()-RESIDUAL,completed.end());
         auto placement = s.placement;
         placement.erase(std::remove_if(placement.begin(),placement.end(),[](const auto& p){
-            return p.phase != "gdn-attention" && p.phase != "gdn-chunk-recurrence" && p.phase != "gdn-input-projections";
+            return p.phase != "gdn-attention" && p.phase != "gdn-chunk-recurrence" && p.phase != "gdn-input-projections" && p.phase != "gdn-causal-chunk";
         }),placement.end());
         placement.insert(placement.begin(),ffn.placements().begin(),ffn.placements().end());
         const auto after = ffn.work();
@@ -785,6 +832,7 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
         work.provider_calls += after.provider_calls-before.provider_calls;
         work.ffn_post_calls += after.post_graph_calls-before.post_graph_calls;
         require(s.state_healthy,"portable GDN: chunk invalidated; reset required");
+        if(causal) s.commit_device(nullptr,false,true);
         if(!s.production()) { s.state.swap(state); s.history.swap(history); s.ple_history.swap(ple_history); }
         s.previous = previous; s.last.swap(last); s.count += T;
         s.placement.swap(placement); s.chunk_work = work;
@@ -793,6 +841,9 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
     } catch(const std::exception& e) { s.state_healthy=false; error=e.what(); return false; }
       catch(...) { s.state_healthy=false; error="portable GDN: unknown chunk failure; reset required"; return false; }
 }
+uint64_t PortableGdnLayer::causal_chunk_calls() const { return impl_->causal_calls; }
+uint64_t PortableGdnLayer::causal_residual_handoffs() const { return impl_->residual_handoffs; }
+uint64_t PortableGdnLayer::causal_state_commits() const { return impl_->causal_commits; }
 uint64_t PortableGdnLayer::input_projection_calls() const { return impl_->projection_calls; }
 uint64_t PortableGdnLayer::input_projection_columns() const { return impl_->projection_columns; }
 PortableLayerChunkWork PortableGdnLayer::chunk_work() const { return impl_->chunk_work; }

@@ -32,19 +32,22 @@ int main(int argc, char **argv) {
         check(bool(device) && !ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "distinct Vulkan buffers required");
         // Same-device serial control isolates multirow FFN kernel differences.
-        for(bool batched:{false,true}) for(bool production:{false,true}) {
+        for(bool batched:{false,true}) for(bool production:{false,true}) for(bool causal:{false,true}) {
+            if(causal && (!batched || !production)) continue;
             gdn_fixture::Fixture fixture;std::string error;
             PortableGdnOptions options;options.resident_state=true;
             options.execution.accelerator=device.get();options.execution.request_accelerator=true;
             options.execution.allow_cpu_fallback=false;options.execution.resident_dense_weights=true;
             options.policy=production?PortableGdnPolicy::device_production:PortableGdnPolicy::eager_diagnostic;
             options.batch_input_projections=batched;
+            options.causal_chunk=causal;
             auto chunk=PortableGdnLayer::create(0,fixture.views,options,error);
             options.batch_input_projections=false;
+            options.causal_chunk=false;
             auto serial=PortableGdnLayer::create(0,fixture.views,options,error);
             check(bool(chunk)&&bool(serial),error);
             layer_chunk_fixture::exercise(*chunk,*serial,fixture,gdn_fixture::experts(),device.get(),
-                options.execution.graph_budget,options.state_budget,production?"GDN production Vulkan":"GDN diagnostic Vulkan",true,batched);
+                options.execution.graph_budget,options.state_budget,production?"GDN production Vulkan":"GDN diagnostic Vulkan",true,batched,causal);
         }
         for (int trial : {0, 1, 2, 3, 4, 5}) {
             const int mode = trial % 3;
