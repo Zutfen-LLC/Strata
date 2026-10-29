@@ -96,7 +96,10 @@ and host experts remain in this bounded slice.
 Raw state at capacity C is `2048*C + 512*(floor(C/4)+1) + 512 + 2048 + 8*C`
 bytes: 562176 bytes per layer at C256 before backend alignment. Admission charges
 the actual aligned state buffer in `device_state`, separately from retained
-scheduler buffers and the unchanged workspace allowance. It removes only the
+scheduler buffers and the unchanged workspace allowance. Before constructing
+each production QSA layer, model preflight also checks that backend's exact
+aligned estimate from the same tensor declarations. This estimate reserves no
+ledger bytes; the actual allocation is charged once after construction. It removes only the
 scheduled inputs replaced by external views. Caps and context limits are
 unchanged. Reset retains these allocations.
 

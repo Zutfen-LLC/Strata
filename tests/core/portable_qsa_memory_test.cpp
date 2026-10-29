@@ -68,6 +68,14 @@ int main(){
                 (state.pooled.size()+state.spare.size()+state.tail.size()+state.bias.size()+state.mapping.size())*4;
             check(raw==562176,"C256 raw persistent payload derived from allocated tensor shapes");
             check(layer->memory_usage().device_state>=raw,"aligned actual state ledger");
+            check(PortableQsaLayer::device_state_allocation_size(backend.get(),opts.capacity)==
+                  layer->memory_usage().device_state,"preallocation estimate equals actual aligned buffer");
+            for (size_t invalid : {size_t(0), size_t(262145), SIZE_MAX}) {
+                bool refused=false;
+                try { PortableQsaLayer::device_state_allocation_size(backend.get(),invalid); }
+                catch(const std::exception&) { refused=true; }
+                check(refused,"invalid/overflowing estimate capacity rejected before tensor construction");
+            }
             auto limited=opts; limited.state_budget=layer->state_bytes()-1;
             check(!PortableQsaLayer::create(3,f.views,limited,error),"actual aligned device state budget enforced");
             fail_next_allocation=true;

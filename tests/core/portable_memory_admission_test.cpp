@@ -1,5 +1,6 @@
 #include "../../src/core/portable_memory.hpp"
 #include <cstdio>
+#include "ggml-cpu.h"
 #include <limits>
 using namespace strata::core;
 namespace {
@@ -69,6 +70,45 @@ int main(){
         check(refused && states.device_state==saved_state.device_state &&
               states.device_admission==saved_state.device_admission && states.device_scheduler==saved_state.device_scheduler,
               "state admission refusal transactional");
+        // A cap that admitted the previous QSA constructor bound must now
+        // reject before any new layer/device storage is allocated. Preflight
+        // uses the selected backend's aligned estimate, not just raw payload.
+        std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> cpu(ggml_backend_cpu_init(),ggml_backend_free);
+        PortableModelOptions opts; opts.context=3; opts.qsa_production=true;
+        opts.gdn_resident_state=true;
+        const size_t estimated=PortableQsaLayer::device_state_allocation_size(cpu.get(),opts.context);
+        check(estimated>2048*opts.context+512*(opts.context/4+1)+512+2048+8*opts.context,
+              "small-capacity estimate includes backend padding beyond raw payload");
+        for (size_t layer : {size_t(3),size_t(7),size_t(47)})
+            check(portable_detail::layer_state_preflight_bytes(opts,layer,cpu.get())==estimated,
+                  "every QSA layer includes capacity/aligned state before allocation");
+        check(portable_detail::layer_state_preflight_bytes(opts,0,cpu.get())==PortableGdnOptions{}.resident_state_budget,
+              "GDN preflight bound retained");
+        check(portable_detail::layer_state_preflight_bytes(opts,3,nullptr)==0,"no selected device has no state charge");
+        opts.qsa_production=false;
+        check(portable_detail::layer_state_preflight_bytes(opts,3,cpu.get())==0,"diagnostic QSA preflight unchanged");
+        auto pending=fresh(); pending.device_admission[1]=17*M;
+        const size_t legacy=280*M, exact_cap=pending.device_admission[1]+legacy+estimated;
+        const auto pending_before=pending;
+        portable_detail::preflight_device_memory(pending.device_admission[1],exact_cap,legacy+estimated);
+        refused=false;
+        try { portable_detail::preflight_device_memory(pending.device_admission[1],exact_cap-1,legacy+estimated); }
+        catch(const std::exception&) {refused=true;}
+        check(refused,"one byte below aligned QSA preflight bound rejected");
+        refused=false;
+        try { portable_detail::preflight_device_memory(pending.device_admission[1],exact_cap-estimated,legacy+estimated); }
+        catch(const std::exception&) {refused=true;}
+        check(refused,"old cap omitting QSA state rejected before allocation");
+        check(pending.device_admission==pending_before.device_admission &&
+              pending.device_state==pending_before.device_state,"preflight never mutates actual per-die ledger");
+        PortableMemoryUsage actual;actual.device_state=estimated;actual.device_graph=M;
+        portable_detail::account_device_memory(pending,1,exact_cap,actual);
+        check(pending.device_state[1]==estimated && pending.device_admission[1]==17*M+estimated+M &&
+              pending.device_admission[0]==0,"final actual state counted once on selected die");
+        refused=false;
+        try { portable_detail::preflight_device_memory(SIZE_MAX-1,SIZE_MAX,2); }
+        catch(const std::exception&) {refused=true;}
+        check(refused,"preflight addition overflow rejected by subtraction");
         auto overflow=fresh();overflow.device_admission[0]=std::numeric_limits<size_t>::max()-1;
         overflow.device_scheduler[0]=overflow.device_admission[0];
         q={};q.device_graph=2;refused=false;

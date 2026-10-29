@@ -63,6 +63,40 @@ std::vector<uint16_t> half(const std::vector<float> &x) {
     }
     return h;
 }
+// One schema for preflight and allocation, in allocator order. No layer,
+// scheduler, weight or backend buffer is created by the estimator.
+std::array<ggml_tensor *, 7> state_tensors(ggml_context *c, size_t capacity) {
+    require(capacity > 0 && capacity <= 262144, "portable QSA: capacity must be in [1,262144]");
+    return {{ggml_new_tensor_3d(c, GGML_TYPE_F16, D, KH, capacity),
+             ggml_new_tensor_3d(c, GGML_TYPE_F16, D, KH, capacity),
+             ggml_new_tensor_2d(c, GGML_TYPE_F32, ID, capacity / 4 + 1),
+             ggml_new_tensor_2d(c, GGML_TYPE_F32, ID, 1),
+             ggml_new_tensor_3d(c, GGML_TYPE_F32, ID, 4, 1),
+             ggml_new_tensor_1d(c, GGML_TYPE_I32, capacity),
+             ggml_new_tensor_1d(c, GGML_TYPE_F32, capacity)}};
+}
+size_t state_allocation_size(ggml_context *c, ggml_backend_t backend) {
+    require(backend != nullptr, "portable QSA: state estimate requires selected backend");
+    auto *buft = ggml_backend_get_default_buffer_type(backend);
+    const size_t alignment = ggml_backend_buft_get_alignment(buft);
+    require(alignment > 0 && (alignment & (alignment - 1)) == 0,
+            "portable QSA: invalid device state alignment");
+    const size_t maximum = ggml_backend_buft_get_max_size(buft);
+    size_t total = 0;
+    for (auto *t = ggml_get_first_tensor(c); t; t = ggml_get_next_tensor(c, t)) {
+        const size_t bytes = ggml_backend_buft_get_alloc_size(buft, t);
+        require(bytes <= SIZE_MAX - (alignment - 1), "portable QSA: device state alignment overflow");
+        const size_t padded = (bytes + alignment - 1) & ~(alignment - 1);
+        require(padded <= maximum && padded <= SIZE_MAX - total,
+                "portable QSA: device state allocation overflow/limit");
+        total += padded;
+    }
+    // Pinned GGML pads each tensor and sums buffer chunks. Check all arithmetic
+    // before calling its estimator, which otherwise uses unchecked additions.
+    require(total == ggml_backend_alloc_ctx_tensors_from_buft_size(c, buft),
+            "portable QSA: device state estimator mismatch");
+    return total;
+}
 ggml_tensor *rope(ggml_context *c, ggml_tensor *x, ggml_tensor *position) {
     int sections[]{11, 11, 10, 0};
     return ggml_rope_multi(c, x, position, nullptr, 64, sections, GGML_ROPE_TYPE_IMROPE, 0, 1e7f, 1.0f, 0.0f, 1.0f,
@@ -158,15 +192,11 @@ struct PortableQsaLayer::Impl {
         copy_ctx.reset(ggml_init({4096, nullptr, true}));
         require(bool(copy_ctx), "portable QSA: copy metadata allocation failed");
         auto *c = state_ctx.get();
-        device_k = ggml_new_tensor_3d(c, GGML_TYPE_F16, D, KH, options.capacity);
-        device_v = ggml_new_tensor_3d(c, GGML_TYPE_F16, D, KH, options.capacity);
-        device_pool = ggml_new_tensor_2d(c, GGML_TYPE_F32, ID, options.capacity / 4 + 1);
-        device_spare = ggml_new_tensor_2d(c, GGML_TYPE_F32, ID, 1);
-        device_tail = ggml_new_tensor_3d(c, GGML_TYPE_F32, ID, 4, 1);
-        device_mapping = ggml_new_tensor_1d(c, GGML_TYPE_I32, options.capacity);
-        device_bias = ggml_new_tensor_1d(c, GGML_TYPE_F32, options.capacity);
-        const size_t aligned = ggml_backend_alloc_ctx_tensors_from_buft_size(
-            c, ggml_backend_get_default_buffer_type(options.execution.accelerator));
+        auto tensors = state_tensors(c, options.capacity);
+        device_k = tensors[0]; device_v = tensors[1]; device_pool = tensors[2];
+        device_spare = tensors[3]; device_tail = tensors[4];
+        device_mapping = tensors[5]; device_bias = tensors[6];
+        const size_t aligned = state_allocation_size(c, options.execution.accelerator);
         require(aligned <= options.state_budget - states_size, "portable QSA: aligned device state budget exceeded");
         state_buffer.reset(ggml_backend_alloc_ctx_tensors(c, options.execution.accelerator));
         require(bool(state_buffer), "portable QSA: device state allocation failed");
@@ -392,6 +422,12 @@ struct PortableQsaLayer::Impl {
         }
     }
 };
+size_t PortableQsaLayer::device_state_allocation_size(ggml_backend *backend, size_t capacity) {
+    Context c(ggml_init({4096, nullptr, true}), ggml_free);
+    require(bool(c), "portable QSA: state estimate metadata allocation failed");
+    state_tensors(c.get(), capacity);
+    return state_allocation_size(c.get(), backend);
+}
 PortableQsaLayer::PortableQsaLayer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 PortableQsaLayer::~PortableQsaLayer() = default;
 std::unique_ptr<PortableQsaLayer> PortableQsaLayer::create(int64_t layer, const std::vector<PortableTensorView> &views,

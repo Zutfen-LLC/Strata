@@ -209,8 +209,8 @@ struct PortableModelSession::Impl {
             require(opts.layer_graph_cap <= SIZE_MAX - private_workspace, "portable model: graph cap overflow");
             const bool resident = !opts.accelerators.empty() &&
                                   (opts.dense_resident_weights || (opts.gdn_resident_weights && l % 4 != 3));
-            const size_t state_bound = opts.gdn_resident_state && l % 4 != 3 && !opts.accelerators.empty()
-                                           ? PortableGdnOptions{}.resident_state_budget : 0;
+            const size_t state_bound = portable_detail::layer_state_preflight_bytes(
+                opts, l, opts.accelerators.empty() ? nullptr : opts.accelerators[device(l)]);
             require(state_bound <= SIZE_MAX - opts.layer_graph_cap - private_workspace,
                     "portable model: resident state preflight overflow");
             const size_t resident_bound = resident ? opts.layer_weight_cap : 0;
@@ -315,9 +315,7 @@ struct PortableModelSession::Impl {
             used += bytes;
         }
         if (!opts.accelerators.empty())
-            require(report.device_admission[die] <= opts.device_caps[die] &&
-                        graph <= opts.device_caps[die] - report.device_admission[die],
-                    "portable model: next module exceeds separate die admission cap");
+            portable_detail::preflight_device_memory(report.device_admission[die], opts.device_caps[die], graph);
     }
     void account(const PortableMemoryUsage &m, size_t die) {
         report.host_weights += m.host_weights;

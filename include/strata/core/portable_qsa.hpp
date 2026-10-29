@@ -34,6 +34,9 @@ class PortableQsaLayer {
                                                     PortableQsaOptions options, std::string &error);
     static std::unique_ptr<PortableQsaLayer> from_gguf(const GgufModel &model, int64_t layer,
                                                        PortableQsaOptions options, std::string &error);
+    // Metadata-only exact estimate for this backend, before allocating layer/device storage.
+    // Throws on invalid capacity/backend or size/alignment overflow.
+    static size_t device_state_allocation_size(ggml_backend *backend, size_t capacity);
     ~PortableQsaLayer();
     PortableQsaLayer(const PortableQsaLayer &) = delete;
     PortableQsaLayer &operator=(const PortableQsaLayer &) = delete;

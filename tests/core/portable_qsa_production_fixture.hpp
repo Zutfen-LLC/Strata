@@ -58,6 +58,8 @@ void production_tests(PortableQsaOptions opts, const std::vector<PortableTensorV
               route.weights == expected.weights, "production exact residual/routes");
     };
     const auto before = layer->memory_usage();
+    check(before.device_state == PortableQsaLayer::device_state_allocation_size(opts.execution.accelerator, opts.capacity),
+          "preflight estimate equals actual aligned state on selected backend");
     check(before.device_state >= 2048 * opts.capacity + 512 * (opts.capacity / 4 + 1) + 512 + 2048 + 8 * opts.capacity,
           "actual aligned state covers raw payload");
     for (int sequence : {0, 9, 0}) {
