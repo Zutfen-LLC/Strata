@@ -99,6 +99,93 @@ inline void ffn_batch_fixture(PortableFfnOptions options) {
         std::printf("FFN batch T1-8 %s: max_abs=%.9g relative_l2=%.9g exact_elements=%zu/%zu; T-column graphs, one provider/chunk, slot merge and failure/reset passed\n",
                     q8?"Q8":"F32",maximum,std::sqrt(square/(norm+1e-30)),exact,elements);
     }
+    // A bounded pair shares exactly one immutable weight allocation. Exercise
+    // both destruction orders and successive tail shapes, with no shape cache.
+    for(bool q8:{false,true}) {
+        auto views=f.views;
+        std::vector<std::vector<uint8_t>> quantized(9);
+        if(q8) for(size_t i:{size_t(1),size_t(2),size_t(3),size_t(6),size_t(7),size_t(8)}) {
+            quantized[i].resize(f.data[i].size()/32*34);
+            ggml_quantize_chunk(GGML_TYPE_Q8_0,f.data[i].data(),quantized[i].data(),0,
+                int64_t(f.data[i].size()/size_t(views[i].shape[0])),views[i].shape[0],nullptr);
+            views[i].type=8;views[i].data=quantized[i].data();views[i].bytes=quantized[i].size();
+        }
+        auto base=PortableFfn::create(f.g,0,views,options,error);
+        auto independent=PortableFfn::create(f.g,0,views,options,error);
+        check(bool(base)&&bool(independent),error);
+        for(int64_t invalid:{-1,0,1,9})
+            check(!base->create_chunk_execution(invalid,error),"shared chunk rejects unsupported shape");
+        const auto base_memory=base->memory_usage();
+        const auto base_graphs=base->graph_bytes(), weight_bytes=base->weight_bytes();
+        std::vector<float> input(128);
+        for(size_t h=0;h<input.size();++h)input[h]=float(int(h%17)-8)*0.07f;
+        PortableRoute route;
+        check(base->reset(input,error)&&base->step(single,route,error),error);
+        const auto serial_output=base->residual(); const auto serial_route=route;
+        for(int64_t T:{8,2,7,3,6,4,5}) {
+            auto chunk=base->create_chunk_execution(T,error);
+            check(bool(chunk),error);
+            check(!base->create_chunk_execution(2,error),"at most one active chunk scheduler pair");
+            check(!chunk->create_chunk_execution(2,error),"chunk cannot create nested execution caches");
+            PortableMemoryUsage combined;
+            check(base->combined_memory_usage(*chunk,combined,error),error);
+            const auto chunk_memory=chunk->memory_usage();
+            check(combined.host_weights==base_memory.host_weights&&combined.device_weights==base_memory.device_weights&&
+                  chunk->weight_bytes()==weight_bytes,"shared allocation counted once");
+            check(combined.host_graph==base_memory.host_graph+chunk_memory.host_graph&&
+                  combined.device_graph==base_memory.device_graph+chunk_memory.device_graph&&
+                  base_graphs+chunk->graph_bytes()<=options.graph_budget,"all retained graph buffers under common cap");
+            check(combined.host_extra_bound==base_memory.host_extra_bound+chunk_memory.host_extra_bound-(2u<<20),
+                  "owner metadata arena counted once; both execution/staging bounds retained");
+            check(combined.device_extra_bound==base_memory.device_extra_bound+chunk_memory.device_extra_bound&&
+                  combined.device_shared_conversion_bound==std::max(base_memory.device_shared_conversion_bound,
+                                                                   chunk_memory.device_shared_conversion_bound),
+                  "conservative private workspace additive; known backend conversion high water shared");
+            check(!base->combined_memory_usage(*independent,combined,error)&&combined.host_weights==0&&
+                  combined.device_weights==0,"unrelated weight owners cannot be deduplicated");
+            std::vector<float> rows;
+            for(int64_t t=0;t<T;++t)rows.insert(rows.end(),input.begin(),input.end());
+            const PortableExpertRowsBatch dispatch=[&](int64_t l,const auto& routes,auto& result,auto& e) {
+                for(const auto& r:routes){std::vector<float> token;single(l,r,token,e);
+                    result.insert(result.end(),token.begin(),token.end());}
+                return true;
+            };
+            std::vector<PortableRoute> routes;
+            check(chunk->reset(rows,error)&&chunk->step_batch(dispatch,routes,error),error);
+            for(int64_t t=0;t<T;++t) {
+                const std::vector<float> out(chunk->residual().begin()+t*128,chunk->residual().begin()+(t+1)*128);
+                close(out,serial_output,q8?0.003f:options.request_accelerator?3e-4f:2e-5f);
+                check(routes[size_t(t)].ids==serial_route.ids,"shared weights preserve routes");
+            }
+            check(base->reset(input,error)&&base->step(single,route,error),error);
+            close(base->residual(),serial_output,0);
+            // The chunk still works after the original T1 facade is gone.
+            if(T==5) {
+                base.reset();
+                check(chunk->memory_usage().host_weights==base_memory.host_weights&&
+                      chunk->memory_usage().device_weights==base_memory.device_weights,
+                      "survivor standalone ledger retains owner allocation");
+                check(chunk->reset(rows,error)&&chunk->step_batch(dispatch,routes,error),error);
+            }
+        } // each chunk is destroyed before planning the next tail
+        std::printf("FFN %s shared owner: T1 plus one active T2-8 execution, tail replacement, inclusive/deduplicated ledgers and both destruction orders passed\n",q8?"Q8":"F32");
+    }
+    if(!options.request_accelerator) {
+        // Find the smallest admitted T1 budget; a T8 pair must exceed it.
+        // This probes allocation rejection, never calibrates numerical gates.
+        size_t low=1,high=options.graph_budget;
+        while(low<high) {
+            const size_t mid=low+(high-low)/2;auto limited=options;limited.graph_budget=mid;
+            if(PortableFfn::create(f.g,0,f.views,limited,error))high=mid;else low=mid+1;
+        }
+        auto limited=options;limited.graph_budget=low;
+        auto base=PortableFfn::create(f.g,0,f.views,limited,error);
+        check(bool(base),error);
+        check(!base->create_chunk_execution(8,error)&&!base->create_chunk_execution(8,error),
+              "shared graph cap refusal releases candidate lease for retry");
+        std::vector<float> initial(128,0.2f);PortableRoute route;
+        check(base->reset(initial,error)&&base->step(single,route,error),error);
+    }
     for(int64_t T:{int64_t(0),int64_t(9)})
         check(!PortableFfn::create(f.g,0,f.views,options,error,T),"reject unsupported T before allocation");
 }

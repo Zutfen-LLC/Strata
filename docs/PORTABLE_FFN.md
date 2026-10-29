@@ -95,6 +95,33 @@ called once with T routes and returns unweighted `[token,original slot,H]` rows.
 after finite post-graph results. Failed provider work can have external side
 effects; an enclosing recurrent model must poison and require reset/replay.
 
+A T1 runner can call `create_chunk_execution(T, error)` for T=2–8. This
+additive API shares the existing nine immutable tensors, allocation backend and
+weight metadata arena. It performs no weight allocation or copy. Each execution
+still owns its residual, routes, counters, two graph contexts and schedulers.
+Calls on the pair must be serialized. The borrowed accelerator must outlive both
+executions; destroying the original T1 runner does not invalidate the chunk's
+weights or CPU backend. Existing factory and T1 step/reset APIs are unchanged.
+
+There is at most one active chunk execution per weight owner. Destroy it before
+planning a different tail size; nested/shared T1 clones and per-T graph caches
+are not offered. The original runner's `graph_budget` caps the aggregate T1 and
+chunk scheduler buffers. Planning the chunk uses that cap minus actual retained
+T1 buffers, with the same conservative per-node preallocation check. Failed
+planning releases the candidate's buffers and lease and leaves T1 usable. This
+retains at most four schedulers and five metadata arenas for a shared pair:
+one weight arena plus two graph arenas per execution.
+
+`weight_bytes()` and `memory_usage()` remain inclusive standalone reports, so a
+surviving execution continues to report the allocation it retains. For a live
+T1/chunk pair, call `combined_memory_usage`: weights and the weight metadata
+arena are counted once; actual graph buffers, CPU graph workspaces, host staging
+and private device allowances remain additive. Only the already verified
+backend-wide conversion high water uses `max`. Both executions' schedulers are
+retained, with no token-temporary reuse credit. Unrelated owners are rejected.
+These are FFN component ledgers; the future model still must preflight the
+combined ledger and attention working state under its host/per-device caps.
+
 The pre graph uses normalization `[H,HC,T]` (RMS over H separately), flattened HC
 `[H*HC,T]`, mixed `[H,T]`, router `[NE,T]`, shared gate/up `[FF,T]`, shared output
 `[H,T]` and injection `[HC,T]`. Four stream additions, per-token full softmax,
@@ -146,9 +173,9 @@ Before layer-major model integration, split the GDN/QSA attention transaction
 into private ordered working cursors and completed-chunk publication. GDN must
 advance recurrence, convolution and PLE predecessors in order; QSA must advance
 KV, pool, spare and tail without exposing future cells. Preserve T1 rollback;
-failed chunks poison until reset/replay. Retain one immutable FFN weight owner
-per layer with bounded T1/chunk scheduler reuse rather than constructing extra
-full-weight runners. Preflight those working states/schedulers under unchanged
-model caps before enabling the chunk option or binding it in the harness.
+failed chunks poison until reset/replay. The shared FFN owner now supplies
+one T1 execution plus one active chunk shape. Integrate that pair with the layer
+cursor and preflight its combined ledger plus attention working state under
+unchanged model caps before enabling the chunk option or binding it in the harness.
 Mixed segmentation, attention-history/EOS boundaries, model poisoning and
 requested-logit/continuation checks belong to that next integration checkpoint.

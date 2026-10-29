@@ -92,6 +92,15 @@ public:
     // Does not touch routed expert payloads, the PLE table, or attention weights.
     static std::unique_ptr<PortableFfn> from_gguf(const GgufModel& model, int64_t layer,
         PortableFfnOptions options, std::string& error, int64_t tokens = 1);
+    // Additive opt-in execution seam: one T1 runner plus at most one active
+    // T2..8 chunk execution share immutable tensors and the allocation backend.
+    // The original graph_budget covers both runners' aggregate scheduler bytes.
+    // Destroy the chunk before planning another tail shape. Calls on this pair
+    // must be serialized; the borrowed accelerator must outlive both runners.
+    std::unique_ptr<PortableFfn> create_chunk_execution(int64_t tokens, std::string& error) const;
+    // Standalone reports remain inclusive. Use this ledger to count a pair's
+    // shared weights/owner arena once and all retained graph buffers together.
+    bool combined_memory_usage(const PortableFfn& chunk, PortableMemoryUsage& memory, std::string& error) const;
     ~PortableFfn();
     PortableFfn(const PortableFfn&) = delete;
     PortableFfn& operator=(const PortableFfn&) = delete;
