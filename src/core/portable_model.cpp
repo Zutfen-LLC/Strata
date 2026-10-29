@@ -18,6 +18,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -115,6 +116,7 @@ struct PortableModelSession::Impl {
     std::unique_ptr<portable_detail::LocalExperts> local_experts;
 #endif
     PortableTensorView embedding;
+    std::map<ggml_backend_t, std::shared_ptr<PortableQsaAttention>> qsa_attention;
     std::vector<Layer> layers;
     std::unique_ptr<PortableHead> head;
     PortableModelReport report;
@@ -220,6 +222,18 @@ struct PortableModelSession::Impl {
             return o;
         };
         std::string error;
+        // Native SessionState::qsa_bufs: one serial scratch owner per physical
+        // dense backend. Reserve its whole shape-growth cap before any layer.
+        for (size_t l = 3; l < L; l += 4) {
+            const auto execution_options = execution(l, false);
+            auto &owner = qsa_attention[execution_options.accelerator];
+            if (!owner) {
+                preflight(device(l), l, "qsa-shared-attention", 0, opts.layer_graph_cap, PortableQsaAttention::host_metadata_bound());
+                owner = PortableQsaAttention::create(execution_options, error);
+                require(bool(owner), error);
+                account(owner->memory_usage(), device(l));
+            }
+        }
         layers.reserve(L);
         for (size_t l = 0; l < L; ++l) {
             // Fixed schedulers obey layer_graph_cap. Native backend-private
@@ -249,8 +263,9 @@ struct PortableModelSession::Impl {
                 PortableQsaOptions o;
                 o.execution = execution(l, false);
                 o.capacity = opts.context;
-                o.reuse_attention = opts.qsa_reuse_attention;
+                o.reuse_attention = true; // session ownership; standalone legacy API is unchanged
                 o.production = opts.qsa_production;
+                o.attention = qsa_attention.at(o.execution.accelerator);
                 layer.qsa = PortableQsaLayer::from_gguf(model, int64_t(l), o, error);
                 require(bool(layer.qsa), "portable model: layer " + std::to_string(l) + ": " + error);
             } else {
@@ -293,6 +308,23 @@ struct PortableModelSession::Impl {
             account(memory, device(l));
             append_placements(layer.placements(), int64_t(l));
             layers.push_back(std::move(layer));
+        }
+        // Initial admission charged the full shared cap with zero buffers.
+        // Reclassify actual primed allocations without changing total admission.
+        report.qsa_attention_resources = qsa_attention.size();
+        for (const auto &[backend, owner] : qsa_attention) {
+            const auto memory = owner->memory_usage();
+            host_graph += memory.host_graph;
+            report.host_scheduler = host_graph;
+            report.host_state_bound -= memory.host_graph;
+            report.graph_admission_bound += memory.host_graph;
+            report.qsa_attention_host_scheduler += memory.host_graph;
+            if (backend) {
+                const size_t die = size_t(std::find(opts.accelerators.begin(), opts.accelerators.end(), backend) - opts.accelerators.begin());
+                report.device_scheduler[die] += memory.device_graph;
+                report.device_workspace_bound[die] -= memory.device_graph;
+                report.qsa_attention_device_scheduler += memory.device_graph;
+            }
         }
         std::vector<PortableTensorView> hw;
         for (const char *name :

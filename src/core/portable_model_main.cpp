@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
                              " [--device-free-bytes N,N (optional external free evidence; only tightens admission)]\n"
                              " [--gdn-production (requires --gdn-resident-state and strict Vulkan)]\n"
                              " [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
-                             " [--qsa-reuse-attention (trial, default off)]\n"
+                             " [--qsa-reuse-attention (compatibility flag; session scratch is shared)]\n"
                              " [--gdn-resident-state (trial, default off)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"

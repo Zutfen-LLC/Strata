@@ -81,7 +81,7 @@ struct PortableModelOptions {
     size_t prompt_chunk_size = 0; // default off; 2..8 implies prompt head elision
     bool prompt_head_elision = false; // opt-in: only final prompt position projects vocabulary
     bool qsa_production = false; // device KV/indexer authority; requires strict accelerator and reuse
-    bool qsa_reuse_attention = false; // capacity-primed execution/scratch; default off
+    bool qsa_reuse_attention = false; // compatibility flag; model sessions always share attention scratch
     bool gdn_production = false; // opt-in device authority; requires strict resident accelerator execution
 };
 struct PortableExpertWork {
@@ -116,6 +116,8 @@ struct PortableModelReport {
     size_t mapped_bytes = 0, host_weights = 0, host_state_bound = 0, expert_staging = 0;
     size_t graph_admission_bound = 0;
     size_t host_scheduler = 0;
+    size_t qsa_attention_resources = 0;
+    size_t qsa_attention_host_scheduler = 0, qsa_attention_device_scheduler = 0;
     std::vector<size_t> device_scheduler, device_workspace_bound, device_token_temporary_bound, device_shared_conversion_bound, device_admission;
     std::vector<size_t> device_state; // actual aligned session state, separate from schedulers/weights
     std::vector<size_t> device_weights; // actual persistent dense weights per physical backend
