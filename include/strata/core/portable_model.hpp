@@ -66,6 +66,7 @@ struct PortableModelOptions {
     bool gdn_resident_weights = false; // opt-in GDN attention only
     bool gdn_resident_state = false; // opt-in; independent of weight residency
     bool dense_resident_weights = false; // opt-in attention, FFN and head weights
+    bool gdn_batch_input_projections = false; // requires prompt chunks; non-PLE layers only
     size_t prompt_chunk_size = 0; // default off; 2..8 implies prompt head elision
     bool prompt_head_elision = false; // opt-in: only final prompt position projects vocabulary
     bool qsa_production = false; // device KV/indexer authority; requires strict accelerator and reuse

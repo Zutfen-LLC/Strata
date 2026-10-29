@@ -51,6 +51,7 @@ int main() {
         double maximum=0,square=0,norm=0;
         for(size_t width=2;width<=8;++width) {
             options.prompt_chunk_size=width;
+            options.gdn_batch_input_projections=true;
             auto session=PortableModelSession::open(fixture.paths,manifest,options,error);check(bool(session),error);
             check(session->report().chunk_memory_is_shape_envelope&&session->report().host_weights==weights,
                   "pre-admitted shape envelope retains exactly one dense weight owner");

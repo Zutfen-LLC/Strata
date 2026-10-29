@@ -5,6 +5,7 @@ namespace strata::core {
 enum class PortableGdnPolicy { eager_diagnostic, device_production };
 struct PortableGdnOptions {
     PortableFfnOptions execution;
+    bool batch_input_projections = false; // opt-in chunk T>1, non-PLE only; T1 stays serial
     size_t state_budget = 16ull << 20; // host state/scratch bound; policy-specific mirrors
     std::shared_ptr<PortablePleTable> ple_table; // enables configured layer-1 PLE; host only
     bool resident_state = false; // session-lifetime GDN/PLE state; diagnostic host mirrors stay validated
@@ -64,6 +65,10 @@ class PortableGdnLayer {
     // Caller pre-admits the module bound before invoking this planning seam.
     bool prepare_chunk(size_t tokens, std::string& error);
     PortableLayerChunkWork chunk_work() const;
+    // Actual projection graph submissions/columns, including work before a failed
+    // chunk; reset preserves these cumulative execution receipts.
+    uint64_t input_projection_calls() const;
+    uint64_t input_projection_columns() const;
     // Tensor-state observers require eager_diagnostic and throw in production.
     // Token history and last_residual remain current in both policies. Production
     // rejects traces, poisons on any failed step, and requires successful reset.

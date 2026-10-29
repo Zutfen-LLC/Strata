@@ -98,7 +98,61 @@ struct PortableGdnLayer::Impl {
     bool chunk_active = false;
     size_t chunk_host_bound = 0;
     PortableLayerChunkWork chunk_work;
-    size_t chunk_graphs() const { return chunk_ffn ? chunk_ffn->graph_bytes() : 0; }
+    // Graphs borrow the original immutable weight tensors; no second weight bank.
+    std::map<std::string, ggml_tensor*> weights;
+    Context projection_ctx{nullptr, ggml_free};
+    portable_detail::Scheduler projection_scheduler{nullptr, ggml_backend_sched_free};
+    portable_detail::Scheduler tail_scheduler{nullptr, ggml_backend_sched_free};
+    ggml_cgraph *projection_graph = nullptr, *tail_graph = nullptr;
+    ggml_tensor *projection_input = nullptr;
+    std::array<ggml_tensor*,5> projection_outputs{}, projection_inputs{};
+    using AttentionOutputs = std::array<ggml_tensor*,11>;
+    AttentionOutputs tail_outputs{};
+    size_t projection_tokens = 0, projection_bytes = 0;
+    uint64_t projection_calls = 0, projection_columns = 0;
+    bool batch_projections() const { return options.batch_input_projections && !options.ple_table; }
+    AttentionOutputs outputs() const {
+        return {attn_residual,state_output,history_output,qkv,conv,q,k,v,g,beta,attention};
+    }
+    void outputs(const AttentionOutputs& a) {
+        attn_residual=a[0];state_output=a[1];history_output=a[2];qkv=a[3];conv=a[4];
+        q=a[5];k=a[6];v=a[7];g=a[8];beta=a[9];attention=a[10];
+    }
+    size_t chunk_graphs() const { return (chunk_ffn ? chunk_ffn->graph_bytes() : 0) + projection_bytes; }
+    void prepare_projections(size_t T) {
+        if (!batch_projections() || projection_tokens == T) return;
+        // Drop the old shape before allocating its replacement. The tail and T1
+        // schedulers keep their own buffers and are included in graphs_size.
+        projection_scheduler.reset(); projection_ctx.reset(); projection_bytes=0; projection_tokens=0;
+        projection_graph=nullptr; projection_input=nullptr; projection_outputs={};
+        placement.erase(std::remove_if(placement.begin(),placement.end(),[](const auto& p) {
+            return p.phase=="gdn-input-projections";
+        }),placement.end());
+        if(T==1) return;
+        projection_ctx=context(); auto* c=projection_ctx.get();
+        projection_input=ggml_new_tensor_3d(c,GGML_TYPE_F32,H,HC,T); ggml_set_input(projection_input);
+        auto* norm=ggml_mul(c,ggml_reshape_2d(c,ggml_rms_norm(c,projection_input,1e-6f),H*HC,T),weights.at("hc_attn_norm.weight"));
+        auto* low=ggml_silu(c,ggml_scale(c,ggml_mul_mat(c,weights.at("hc_attn_down.weight"),norm),0.25f));
+        auto* gates=ggml_sigmoid(c,ggml_mul_mat(c,weights.at("hc_attn_up.weight"),low));
+        auto* gated=ggml_reshape_3d(c,ggml_mul(c,norm,gates),H,HC,T);
+        auto* mixed=ggml_cont(c,ggml_view_2d(c,gated,H,T,H*HC*sizeof(float),0));
+        for(int64_t stream=1;stream<HC;++stream)
+            mixed=ggml_add(c,mixed,ggml_view_2d(c,gated,H,T,H*HC*sizeof(float),stream*H*sizeof(float)));
+        mixed=ggml_scale(c,mixed,0.25f);
+        projection_outputs[0]=ggml_mul_mat(c,weights.at("hc_attn_inject.weight"),norm);
+        const char* names[]={"attn_qkv.weight","attn_gate.weight","ssm_alpha.weight","ssm_beta.weight"};
+        projection_graph=ggml_new_graph(c);
+        for(size_t i=0;i<4;++i) {
+            projection_outputs[i+1]=ggml_mul_mat(c,weights.at(names[i]),mixed);
+            ggml_set_name(projection_outputs[i+1],names[i]);
+        }
+        for(auto* t:projection_outputs) {ggml_set_output(t);ggml_build_forward_expand(projection_graph,t);}
+        auto opts=options.execution;
+        require(graphs_size+chunk_graphs()<opts.graph_budget,"portable GDN: no projection graph budget");
+        opts.graph_budget-=graphs_size+(chunk_ffn?chunk_ffn->graph_bytes():0);
+        projection_scheduler=portable_detail::schedule(projection_graph,"gdn-input-projections",opts,cpu,placement,projection_bytes);
+        projection_tokens=T;
+    }
 
     void prepare(size_t T,std::string& error) {
         auto& s=*this;
@@ -107,13 +161,16 @@ struct PortableGdnLayer::Impl {
                              (3*T*RESIDUAL+RESIDUAL)*sizeof(float);
         require(s.host_state_bytes() <= s.options.state_budget && extra <= s.options.state_budget-s.host_state_bytes(),
                 "portable GDN: chunk working state budget exceeded");
-        s.chunk_host_bound = extra;
+        s.chunk_host_bound = extra + (s.batch_projections() && T>1 ? T*(HC+CHANNELS+INNER+2*HV)*sizeof(float) : 0);
+        require(s.chunk_host_bound <= s.options.state_budget-s.host_state_bytes(),
+                "portable GDN: projection host scratch budget exceeded");
         if (T == 1 || (s.chunk_ffn && s.chunk_ffn->tokens() != int64_t(T))) s.chunk_ffn.reset();
         if (T > 1 && !s.chunk_ffn) {
-            require(s.graphs_size < s.options.execution.graph_budget,"portable GDN: no chunk graph budget");
-            s.chunk_ffn = s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-s.graphs_size);
+            require(s.graphs_size+s.projection_bytes < s.options.execution.graph_budget,"portable GDN: no chunk graph budget");
+            s.chunk_ffn = s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-s.graphs_size-s.projection_bytes);
             require(bool(s.chunk_ffn),error);
         }
+        s.prepare_projections(T);
     }
     struct CursorView {
         const std::vector<float>& state;
@@ -127,8 +184,11 @@ struct PortableGdnLayer::Impl {
         PortableGdnTrace trace;
     };
     AttentionResult attend(int32_t token, const std::vector<float>& residual,
-                           CursorView cursor, bool want_trace, PortableGdnWork* work) {
+                           CursorView cursor, bool want_trace, PortableGdnWork* work, bool projected = false) {
         auto& s = *this;
+        const auto saved_outputs=projected?s.outputs():AttentionOutputs{};
+        struct Restore { Impl& s; AttentionOutputs saved; bool enabled; ~Restore(){if(enabled)s.outputs(saved);} } restore{s,saved_outputs,projected};
+        if(projected) s.outputs(s.tail_outputs);
         std::string error;
         finite(residual);
         const bool trace = want_trace;
@@ -162,7 +222,7 @@ struct PortableGdnLayer::Impl {
             {
                 portable_detail::ScopedExpertTimer<> compute_timer(work != nullptr,
                     timing.attention_compute_ms, timing.attention_compute_calls);
-                status = ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph);
+                status = ggml_backend_sched_graph_compute(projected?s.tail_scheduler.get():s.scheduler.get(), projected?s.tail_graph:s.graph);
             }
             require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
             if (!s.production()) {
@@ -193,7 +253,7 @@ struct PortableGdnLayer::Impl {
         }
         return {std::move(next_residual),next_previous,std::move(next_trace)};
     }
-    void commit_device(PortableGdnWork* work) {
+    void commit_device(PortableGdnWork* work, bool projected = false) {
         auto& s = *this;
         PortableGdnWork disabled;
         auto& timing = work ? *work : disabled;
@@ -207,8 +267,8 @@ struct PortableGdnLayer::Impl {
             portable_detail::ScopedExpertTimer<> commit_timer(work != nullptr,
                 timing.state_commit_ms, timing.state_commit_calls);
             s.state_healthy = false;
-            ggml_backend_tensor_copy(s.state_output, s.state_input);
-            ggml_backend_tensor_copy(s.history_output, s.history_input);
+            ggml_backend_tensor_copy(projected?s.tail_outputs[1]:s.state_output, s.state_input);
+            ggml_backend_tensor_copy(projected?s.tail_outputs[2]:s.history_output, s.history_input);
             if (s.options.ple_table)
                 ggml_backend_tensor_copy(s.ple_hist_out, s.ple_hist);
             ggml_backend_synchronize(s.options.execution.accelerator);
@@ -361,83 +421,101 @@ struct PortableGdnLayer::Impl {
             ggml_set_name(ple_result, "ple_residual");
             hidden = ple_result;
         }
-        auto *norm =
-            ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, hidden, 1e-6f), H * HC, 1), w.at("hc_attn_norm.weight"));
-        auto *low = ggml_silu(c, ggml_scale(c, ggml_mul_mat(c, w.at("hc_attn_down.weight"), norm), 0.25f));
-        auto *gates = ggml_sigmoid(c, ggml_mul_mat(c, w.at("hc_attn_up.weight"), low));
-        auto *gated = ggml_reshape_2d(c, ggml_mul(c, norm, gates), H, HC);
-        auto *mixed = ggml_cont(c, ggml_view_1d(c, gated, H, 0));
-        for (int64_t s = 1; s < HC; ++s)
-            mixed = ggml_add(c, mixed, ggml_view_1d(c, gated, H, size_t(s * H) * sizeof(float)));
-        mixed = ggml_scale(c, mixed, 0.25f);
-        auto *inject = ggml_mul_mat(c, w.at("hc_attn_inject.weight"), norm);
-        qkv = ggml_mul_mat(c, w.at("attn_qkv.weight"), mixed);
-        auto *z = ggml_mul_mat(c, w.at("attn_gate.weight"), mixed);
-        beta = ggml_reshape_4d(c, ggml_sigmoid(c, ggml_mul_mat(c, w.at("ssm_beta.weight"), mixed)), 1, HV, 1, 1);
-        auto *alpha = ggml_mul_mat(c, w.at("ssm_alpha.weight"), mixed);
-        g = ggml_reshape_4d(c, ggml_mul(c, ggml_softplus(c, ggml_add(c, alpha, w.at("ssm_dt.bias"))), w.at("ssm_a")), 1,
-                            HV, 1, 1);
-        auto *window = ggml_concat(c, history_input, ggml_reshape_3d(c, qkv, 1, CHANNELS, 1), 0);
-        history_output = ggml_cont(c, ggml_view_2d(c, window, 3, CHANNELS, 4 * sizeof(float), sizeof(float)));
-        conv = ggml_silu(c, ggml_ssm_conv(c, window, w.at("ssm_conv1d.weight")));
-        auto *qraw = ggml_view_4d(c, conv, D, HK, 1, 1, D * sizeof(float), CHANNELS * sizeof(float),
-                                  CHANNELS * sizeof(float), 0);
-        auto *kraw = ggml_view_4d(c, conv, D, HK, 1, 1, D * sizeof(float), CHANNELS * sizeof(float),
-                                  CHANNELS * sizeof(float), D * HK * sizeof(float));
-        v = ggml_view_4d(c, conv, D, HV, 1, 1, D * sizeof(float), CHANNELS * sizeof(float), CHANNELS * sizeof(float),
-                         2 * D * HK * sizeof(float));
-        q = ggml_scale(c, ggml_rms_norm(c, qraw, 1e-6f / float(D)), 1.0f / std::sqrt(float(D)));
-        k = ggml_scale(c, ggml_rms_norm(c, kraw, 1e-6f / float(D)), 1.0f / std::sqrt(float(D)));
-        auto *result = ggml_gated_delta_net(c, q, k, v, g, beta, state_input, 1);
-        attention = ggml_view_2d(c, result, D, HV, D * sizeof(float), 0);
-        state_output = ggml_view_1d(c, result, STATES, INNER * sizeof(float));
-        auto *normalized = ggml_mul(c, ggml_rms_norm(c, attention, 1e-6f), w.at("ssm_norm.weight"));
-        auto *outgate = ggml_reshape_2d(c, ggml_sigmoid(c, z), D, HV);
-        auto *projected =
-            ggml_mul_mat(c, w.at("ssm_out.weight"), ggml_reshape_1d(c, ggml_mul(c, normalized, outgate), INNER));
-        auto *scatter =
-            ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, inject, 0.25f)), 2.0f), 1, HC, 1);
-        auto *repeat = ggml_repeat_4d(c, ggml_reshape_3d(c, projected, H, 1, 1), H, HC, 1, 1);
-        attn_residual = ggml_add(c, hidden, ggml_mul(c, repeat, scatter));
-        graph = ggml_new_graph(c);
-        for (auto *t : {attn_residual, state_output, history_output, qkv, conv, q, k, v, g, beta, attention}) {
-            ggml_set_output(t);
-            ggml_build_forward_expand(graph, t);
-        }
-        if (options.ple_table) {
-            for (auto *t : {ple_hist_out, ple_key, ple_value, ple_gate, ple_norm, ple_conv, ple_result}) {
+        auto build = [&](bool external) {
+            auto *norm =
+                ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, hidden, 1e-6f), H * HC, 1), w.at("hc_attn_norm.weight"));
+            auto *low = ggml_silu(c, ggml_scale(c, ggml_mul_mat(c, w.at("hc_attn_down.weight"), norm), 0.25f));
+            auto *gates = ggml_sigmoid(c, ggml_mul_mat(c, w.at("hc_attn_up.weight"), low));
+            auto *gated = ggml_reshape_2d(c, ggml_mul(c, norm, gates), H, HC);
+            auto *mixed = ggml_cont(c, ggml_view_1d(c, gated, H, 0));
+            for (int64_t s = 1; s < HC; ++s)
+                mixed = ggml_add(c, mixed, ggml_view_1d(c, gated, H, size_t(s * H) * sizeof(float)));
+            mixed = ggml_scale(c, mixed, 0.25f);
+            auto *inject = ggml_mul_mat(c, w.at("hc_attn_inject.weight"), norm);
+            auto leaf=[&](int64_t n) {auto* t=ggml_new_tensor_1d(c,GGML_TYPE_F32,n);ggml_set_input(t);return t;};
+            if(external) for(size_t i=0;i<5;++i) projection_inputs[i]=leaf(std::array<int64_t,5>{HC,CHANNELS,INNER,HV,HV}[i]);
+            if(external) inject=projection_inputs[0];
+            qkv = external ? projection_inputs[1] : ggml_mul_mat(c, w.at("attn_qkv.weight"), mixed);
+            auto *z = external ? projection_inputs[2] : ggml_mul_mat(c, w.at("attn_gate.weight"), mixed);
+            beta = ggml_reshape_4d(c, ggml_sigmoid(c, external ? projection_inputs[4] : ggml_mul_mat(c, w.at("ssm_beta.weight"), mixed)), 1, HV, 1, 1);
+            auto *alpha = external ? projection_inputs[3] : ggml_mul_mat(c, w.at("ssm_alpha.weight"), mixed);
+            g = ggml_reshape_4d(c, ggml_mul(c, ggml_softplus(c, ggml_add(c, alpha, w.at("ssm_dt.bias"))), w.at("ssm_a")), 1,
+                                HV, 1, 1);
+            auto *window = ggml_concat(c, history_input, ggml_reshape_3d(c, qkv, 1, CHANNELS, 1), 0);
+            history_output = ggml_cont(c, ggml_view_2d(c, window, 3, CHANNELS, 4 * sizeof(float), sizeof(float)));
+            conv = ggml_silu(c, ggml_ssm_conv(c, window, w.at("ssm_conv1d.weight")));
+            auto *qraw = ggml_view_4d(c, conv, D, HK, 1, 1, D * sizeof(float), CHANNELS * sizeof(float),
+                                      CHANNELS * sizeof(float), 0);
+            auto *kraw = ggml_view_4d(c, conv, D, HK, 1, 1, D * sizeof(float), CHANNELS * sizeof(float),
+                                      CHANNELS * sizeof(float), D * HK * sizeof(float));
+            v = ggml_view_4d(c, conv, D, HV, 1, 1, D * sizeof(float), CHANNELS * sizeof(float), CHANNELS * sizeof(float),
+                             2 * D * HK * sizeof(float));
+            q = ggml_scale(c, ggml_rms_norm(c, qraw, 1e-6f / float(D)), 1.0f / std::sqrt(float(D)));
+            k = ggml_scale(c, ggml_rms_norm(c, kraw, 1e-6f / float(D)), 1.0f / std::sqrt(float(D)));
+            auto *result = ggml_gated_delta_net(c, q, k, v, g, beta, state_input, 1);
+            attention = ggml_view_2d(c, result, D, HV, D * sizeof(float), 0);
+            state_output = ggml_view_1d(c, result, STATES, INNER * sizeof(float));
+            auto *normalized = ggml_mul(c, ggml_rms_norm(c, attention, 1e-6f), w.at("ssm_norm.weight"));
+            auto *outgate = ggml_reshape_2d(c, ggml_sigmoid(c, z), D, HV);
+            auto *projected =
+                ggml_mul_mat(c, w.at("ssm_out.weight"), ggml_reshape_1d(c, ggml_mul(c, normalized, outgate), INNER));
+            auto *scatter =
+                ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, inject, 0.25f)), 2.0f), 1, HC, 1);
+            auto *repeat = ggml_repeat_4d(c, ggml_reshape_3d(c, projected, H, 1, 1), H, HC, 1, 1);
+            attn_residual = ggml_add(c, hidden, ggml_mul(c, repeat, scatter));
+            graph = ggml_new_graph(c);
+            for (auto *t : {attn_residual, state_output, history_output, qkv, conv, q, k, v, g, beta, attention}) {
                 ggml_set_output(t);
                 ggml_build_forward_expand(graph, t);
             }
-            if (!production()) {
-                ple_history.assign(PLE_HISTORY, 0);
-                candidate_ple_history.resize(PLE_HISTORY);
+            if (options.ple_table) {
+                for (auto *t : {ple_hist_out, ple_key, ple_value, ple_gate, ple_norm, ple_conv, ple_result}) {
+                    ggml_set_output(t);
+                    ggml_build_forward_expand(graph, t);
+                }
+                if (!production()) {
+                    ple_history.assign(PLE_HISTORY, 0);
+                    candidate_ple_history.resize(PLE_HISTORY);
+                }
             }
-        }
-        if (keep_state) {
-            // Native session ownership: one committed state allocation per layer.
-            // Candidate graph outputs remain separate until attention AND FFN pass.
-            auto *backend = options.execution.accelerator;
-            const size_t bound = ggml_backend_alloc_ctx_tensors_from_buft_size(
-                state_ctx.get(), ggml_backend_get_default_buffer_type(backend));
-            require(bound <= options.resident_state_budget, "portable GDN: resident state budget exceeded");
-            state_buffer.reset(ggml_backend_alloc_ctx_tensors(state_ctx.get(), backend));
-            require(bool(state_buffer), "portable GDN: resident state allocation failed");
-            device_state_size = ggml_backend_buffer_get_size(state_buffer.get());
-            require(device_state_size <= options.resident_state_budget,
-                    "portable GDN: actual resident state budget exceeded");
-            ggml_backend_buffer_clear(state_buffer.get(), 0);
-            ggml_backend_synchronize(backend);
-            // The copy API requires identical layouts. These are metadata-only
-            // views of the unchanged candidate bytes, allocated before scheduling.
-            state_output = ggml_reshape_4d(c, state_output, D, D, HV, 1);
-            history_output = ggml_reshape_3d(c, history_output, 3, CHANNELS, 1);
-            for (auto *t : {state_output, history_output}) {
-                ggml_set_output(t);
-                ggml_build_forward_expand(graph, t);
+            if (keep_state && !external) {
+                // Native session ownership: one committed state allocation per layer.
+                // Candidate graph outputs remain separate until attention AND FFN pass.
+                auto *backend = options.execution.accelerator;
+                const size_t bound = ggml_backend_alloc_ctx_tensors_from_buft_size(
+                    state_ctx.get(), ggml_backend_get_default_buffer_type(backend));
+                require(bound <= options.resident_state_budget, "portable GDN: resident state budget exceeded");
+                state_buffer.reset(ggml_backend_alloc_ctx_tensors(state_ctx.get(), backend));
+                require(bool(state_buffer), "portable GDN: resident state allocation failed");
+                device_state_size = ggml_backend_buffer_get_size(state_buffer.get());
+                require(device_state_size <= options.resident_state_budget,
+                        "portable GDN: actual resident state budget exceeded");
+                ggml_backend_buffer_clear(state_buffer.get(), 0);
+                ggml_backend_synchronize(backend);
+                // The copy API requires identical layouts. These are metadata-only
+                // views of the unchanged candidate bytes, allocated before scheduling.
+                state_output = ggml_reshape_4d(c, state_output, D, D, HV, 1);
+                history_output = ggml_reshape_3d(c, history_output, 3, CHANNELS, 1);
+                for (auto *t : {state_output, history_output}) {
+                    ggml_set_output(t);
+                    ggml_build_forward_expand(graph, t);
+                }
             }
+            if(external && keep_state) {
+                state_output=ggml_reshape_4d(c,state_output,D,D,HV,1);
+                history_output=ggml_reshape_3d(c,history_output,3,CHANNELS,1);
+                for(auto* t:{state_output,history_output}) {ggml_set_output(t);ggml_build_forward_expand(graph,t);}
+            }
+            auto sched=portable_detail::schedule(graph,external?"gdn-chunk-recurrence":"gdn-attention",options.execution,cpu,placement,graphs_size);
+            if(external) { tail_scheduler=std::move(sched); tail_graph=graph; tail_outputs=outputs(); }
+            else scheduler=std::move(sched);
+        };
+        build(false);
+        if(batch_projections()) {
+            const auto saved=outputs(); auto* saved_graph=graph;
+            build(true); outputs(saved); graph=saved_graph;
         }
-        scheduler = portable_detail::schedule(graph, "gdn-attention", options.execution, cpu, placement, graphs_size);
+        weights=w;
         if (!production()) {
             state.assign(STATES, 0);
             history.assign(HISTORY, 0);
@@ -538,7 +616,7 @@ bool PortableGdnLayer::reset(std::string &error) {
         if(impl_->chunk_host_bound) {
             next_placement=impl_->placement;
             next_placement.erase(std::remove_if(next_placement.begin(),next_placement.end(),[](const auto& p){
-                return p.phase != "gdn-attention";
+                return p.phase != "gdn-attention" && p.phase != "gdn-chunk-recurrence" && p.phase != "gdn-input-projections";
             }),next_placement.end());
             next_placement.insert(next_placement.begin(),impl_->ffn->placements().begin(),impl_->ffn->placements().end());
         }
@@ -602,7 +680,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         if(s.chunk_host_bound) {
             next_placement=s.placement;
             next_placement.erase(std::remove_if(next_placement.begin(),next_placement.end(),[](const auto& p){
-                return p.phase != "gdn-attention";
+                return p.phase != "gdn-attention" && p.phase != "gdn-chunk-recurrence" && p.phase != "gdn-input-projections";
             }),next_placement.end());
             next_placement.insert(next_placement.begin(),s.ffn->placements().begin(),s.ffn->placements().end());
         }
@@ -654,12 +732,27 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
         auto state = s.state, history = s.history, ple_history = s.ple_history;
         auto previous = s.previous;
         std::vector<float> attended_rows; attended_rows.reserve(T*RESIDUAL);
+        const bool projected=s.batch_projections() && T>1;
+        std::array<std::vector<float>,5> projections;
+        if(projected) {
+            require(s.projection_calls<UINT64_MAX && T<=UINT64_MAX-s.projection_columns,
+                    "portable GDN: exhausted input projection counters");
+            finite(residual_rows); write(s.projection_input,residual_rows);
+            require(ggml_backend_sched_graph_compute(s.projection_scheduler.get(),s.projection_graph)==GGML_STATUS_SUCCESS,
+                    "portable GDN: input projection graph failed");
+            ++s.projection_calls; s.projection_columns+=T;
+            for(size_t i=0;i<5;++i) projections[i]=read(s.projection_outputs[i]);
+        }
         for(size_t t=0;t<T;++t) {
+            if(projected) for(size_t i=0;i<5;++i) {
+                const size_t n=size_t(ggml_nelements(s.projection_inputs[i]));
+                ggml_backend_tensor_set(s.projection_inputs[i],projections[i].data()+t*n,0,n*sizeof(float));
+            }
             std::vector<float> input(residual_rows.begin()+t*RESIDUAL,residual_rows.begin()+(t+1)*RESIDUAL);
-            auto next = s.attend(tokens[t],input,{state,history,ple_history,previous},false,nullptr);
+            auto next = s.attend(tokens[t],input,{state,history,ple_history,previous},false,nullptr,projected);
             // The recurrence/conv/PLE cursor advances now, before the next
             // attention. Public diagnostic banks remain unchanged until FFN.
-            s.commit_device(nullptr);
+            s.commit_device(nullptr,projected);
             if(!s.production()) {
                 state.swap(s.candidate_state); history.swap(s.candidate_history);
                 ple_history.swap(s.candidate_ple_history);
@@ -682,7 +775,7 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
         std::vector<float> last(completed.end()-RESIDUAL,completed.end());
         auto placement = s.placement;
         placement.erase(std::remove_if(placement.begin(),placement.end(),[](const auto& p){
-            return p.phase != "gdn-attention";
+            return p.phase != "gdn-attention" && p.phase != "gdn-chunk-recurrence" && p.phase != "gdn-input-projections";
         }),placement.end());
         placement.insert(placement.begin(),ffn.placements().begin(),ffn.placements().end());
         const auto after = ffn.work();
@@ -700,6 +793,8 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
     } catch(const std::exception& e) { s.state_healthy=false; error=e.what(); return false; }
       catch(...) { s.state_healthy=false; error="portable GDN: unknown chunk failure; reset required"; return false; }
 }
+uint64_t PortableGdnLayer::input_projection_calls() const { return impl_->projection_calls; }
+uint64_t PortableGdnLayer::input_projection_columns() const { return impl_->projection_columns; }
 PortableLayerChunkWork PortableGdnLayer::chunk_work() const { return impl_->chunk_work; }
 bool PortableGdnLayer::poisoned() const { return !impl_->state_healthy; }
 PortableGdnPolicy PortableGdnLayer::policy() const { return impl_->options.policy; }
@@ -735,6 +830,13 @@ PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     m.host_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
     if (s.options.execution.accelerator && s.options.execution.request_accelerator)
         m.device_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.options.execution.accelerator);
+    for(auto* sched:{s.tail_scheduler.get(),s.projection_scheduler.get()}) if(sched) {
+        m.host_graph+=ggml_backend_sched_get_buffer_size(sched,s.cpu.get());
+        if(s.options.execution.accelerator && s.options.execution.request_accelerator)
+            m.device_graph+=ggml_backend_sched_get_buffer_size(sched,s.options.execution.accelerator);
+    }
+    if(s.tail_graph) m.host_extra_bound+=ggml_graph_plan(s.tail_graph,s.options.execution.threads,nullptr).work_size;
+    if(s.projection_ctx) m.host_extra_bound+=(4u<<20)+ggml_graph_plan(s.projection_graph,s.options.execution.threads,nullptr).work_size;
     const size_t buffers = m.host_graph + m.device_graph;
     const size_t allowance = graph_bytes() > buffers ? graph_bytes() - buffers : 0;
     m.host_extra_bound += state_bytes() + (8u << 20) + allowance +

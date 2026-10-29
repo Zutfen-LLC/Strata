@@ -93,7 +93,8 @@ with tempfile.TemporaryDirectory() as d:
     # Actual fresh/resident chunk policy, not a fake child: implicit head
     # elision, T1 tails, terminal feed, A/B/A, and actual execution counts.
     for size in (2,8):
-        command+=['--prompt-chunk-size',str(size)]
+        projection_flags=['--gdn-batch-input-projections'] if size==8 else []
+        command+=projection_flags+['--prompt-chunk-size',str(size)]
         r=start('chunks-'+str(size))
         try:
             a=r.request([5,6,7],1,1)
@@ -103,6 +104,7 @@ with tempfile.TemporaryDirectory() as d:
             assert a['stop']['stop']=='eos'
             for result,prompt in ((a,[5,6,7]),(b,[6]),(again,[5,6,7])):
                 m=result['metrics'];n=len(result['rows'])
+                assert m.get('gdn_batch_input_projections',False)==bool(projection_flags)
                 forwards=P.chunk_fields(m,len(prompt),n,size)
                 model_phase_fields(m,n,'eager_diagnostic','prompt_head_elision',size)
                 assert m['model_step_calls_delta']==forwards
@@ -117,7 +119,7 @@ with tempfile.TemporaryDirectory() as d:
             timing=root/f'chunk-{size}-timings.json'
             requested=root/f'chunk-{size}-executed';requested.mkdir()
             fresh=subprocess.run([binary,'--model',model,'--manifest',manifest,'--tokens','5,6,7',
-                                  '--max-new','1','--context','4','--prompt-chunk-size',str(size),'--timings',str(timing),'--dump-executed-logits',str(requested)],
+                                  '--max-new','1','--context','4','--prompt-chunk-size',str(size),'--timings',str(timing),'--dump-executed-logits',str(requested),*projection_flags],
                                  capture_output=True,text=True,check=True,timeout=90)
             assert [json.loads(line) for line in fresh.stdout.splitlines()]==a['rows']+[a['stop']]
             assert E.compare(serial_dump,requested,0,size)['numeric_pass']
@@ -125,7 +127,7 @@ with tempfile.TemporaryDirectory() as d:
             P.chunk_fields(json.loads(timing.read_text()),3,4,size)
             r.finish()
         finally:r.close()
-        command=command[:-2]
+        command=command[:-(2+len(projection_flags))]
     final_only=root/'final-only';final_only.mkdir()
     subprocess.run([binary,'--model',model,'--manifest',manifest,'--tokens','6','--max-new','0',
                     '--context','4','--prompt-head-elision','--dump-executed-logits',str(final_only)],
@@ -138,6 +140,8 @@ with tempfile.TemporaryDirectory() as d:
     rejected=subprocess.run([binary,'--prompt-chunk-size','2','--dump-logits',str(root)],
                             capture_output=True,text=True,timeout=5)
     assert rejected.returncode!=0 and 'cannot dump skipped logits' in rejected.stderr
+    rejected=subprocess.run([binary,'--gdn-batch-input-projections'],capture_output=True,text=True,timeout=5)
+    assert rejected.returncode!=0 and 'requires --prompt-chunk-size' in rejected.stderr
     for invalid in ('0','1','9'):
         rejected=subprocess.run([binary,'--prompt-chunk-size',invalid],capture_output=True,text=True,timeout=5)
         assert rejected.returncode!=0 and 'prompt chunk size' in rejected.stderr

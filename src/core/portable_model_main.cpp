@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
                              " [--prompt-head-elision (serial head elision; incompatible with --dump-logits)]\n"
-                             " [--prompt-chunk-size 2..8 (implies head elision; default off)]\n"
+                             " [--gdn-batch-input-projections (requires prompt chunks; default off)] [--prompt-chunk-size 2..8 (implies head elision; default off)]\n"
                              " [--dump-logits DIRECTORY | --dump-executed-logits EMPTY_DIRECTORY] [--placements FILE] [--timings FILE]\n"
                              " Or --stdio [--max-requests 4]: GEN <max_new> <id,id,...> / QUIT; JSONL replies.\n"
                              "Default T=1 serial text; optional bounded prompt chunks; all 48 layers; CPU experts/host PLE.\n"
@@ -153,6 +153,10 @@ int main(int argc, char **argv) {
             }
             if (key == "--dense-resident-weights") {
                 opts.dense_resident_weights = true;
+                continue;
+            }
+            if (key == "--gdn-batch-input-projections") {
+                opts.gdn_batch_input_projections = true;
                 continue;
             }
             if (key == "--gdn-resident-weights") {
@@ -222,6 +226,8 @@ int main(int argc, char **argv) {
             else
                 throw std::runtime_error("unknown option: " + key);
         }
+        if(opts.gdn_batch_input_projections && !opts.prompt_chunk_size)
+            throw std::runtime_error("--gdn-batch-input-projections requires --prompt-chunk-size");
         if (!executed_dump.empty() && (!dump.empty() || !opts.prompt_head_elision || resident))
             throw std::runtime_error("--dump-executed-logits requires fresh head elision and excludes --dump-logits/--stdio");
         if (opts.prompt_head_elision && !dump.empty())
@@ -427,6 +433,7 @@ int main(int argc, char **argv) {
                 << ",\"chunk_ffn_pre_calls_delta\":" << after.chunk_ffn_pre_calls-heads_before.chunk_ffn_pre_calls
                 << ",\"chunk_provider_calls_delta\":" << after.chunk_provider_calls-heads_before.chunk_provider_calls
                 << ",\"chunk_ffn_post_calls_delta\":" << after.chunk_ffn_post_calls-heads_before.chunk_ffn_post_calls;
+            if(opts.gdn_batch_input_projections) out << ",\"gdn_batch_input_projections\":true";
         };
         auto consume = [&](int32_t token, bool generated, bool project = true) {
             if(resident) {
