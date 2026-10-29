@@ -7,6 +7,9 @@
 #include <cstring>
 #include <cstdio>
 #include <stdexcept>
+#include <sstream>
+#include <iomanip>
+#include <type_traits>
 
 namespace layer_chunk_fixture {
 using namespace strata::core;
@@ -14,14 +17,23 @@ inline void check(bool ok,const std::string& error) { if(!ok)throw std::runtime_
 template<class T> void append(std::vector<uint8_t>& out,const std::vector<T>& values) {
     if(!values.empty()) { const auto* p=reinterpret_cast<const uint8_t*>(values.data()); out.insert(out.end(),p,p+values.size()*sizeof(T)); }
 }
-struct Snapshot { uint64_t tokens; std::vector<float> last; std::vector<uint8_t> history; };
+struct SnapshotField { const char* name; size_t offset, elements; bool floating; };
+struct Snapshot {
+    uint64_t tokens; std::vector<float> last; std::vector<uint8_t> history;
+    std::vector<SnapshotField> fields;
+};
+template<class T> void append_field(Snapshot& s,const char* name,const std::vector<T>& values) {
+    static_assert(sizeof(T)==4,"snapshot fields are F32 or 32-bit integers");
+    s.fields.push_back({name,s.history.size(),values.size(),std::is_floating_point_v<T>});
+    append(s.history,values); // Keep the existing byte-comparison payload/order.
+}
 inline Snapshot snapshot(const PortableGdnLayer& layer,bool = false) {
     Snapshot s{layer.tokens(),layer.last_residual(),{}};
     const auto& previous=layer.token_history();
-    append(s.history,std::vector<int32_t>(previous.begin(),previous.end()));
+    append_field(s,"token_history",std::vector<int32_t>(previous.begin(),previous.end()));
     if(layer.policy()==PortableGdnPolicy::eager_diagnostic) {
-        append(s.history,layer.recurrent_state());append(s.history,layer.convolution_history());
-        append(s.history,layer.ple_convolution_history());
+        append_field(s,"recurrent_state",layer.recurrent_state());append_field(s,"convolution_history",layer.convolution_history());
+        append_field(s,"ple_convolution_history",layer.ple_convolution_history());
     }
     return s;
 }
@@ -40,8 +52,70 @@ inline Snapshot snapshot(const PortableQsaLayer& layer,bool device = false) {
 inline bool exact(const std::vector<float>& a,const std::vector<float>& b) {
     return a.size()==b.size()&&(a.empty()||std::memcmp(a.data(),b.data(),a.size()*sizeof(float))==0);
 }
-inline void same(const Snapshot& a,const Snapshot& b,bool last=true) {
+// Failure-only diagnostics. Metrics describe a mismatch; they never select a
+// tolerance or change the original byte-exact publication/state/replay gate.
+inline void field_difference(std::ostream& out,const char* name,const uint8_t* a,const uint8_t* b,
+                             size_t elements,bool floating) {
+    size_t different=0,first=elements,nonfinite_a=0,nonfinite_b=0;
+    uint32_t first_a=0,first_b=0;double maximum=0,square=0,norm=0;
+    for(size_t i=0;i<elements;++i) {
+        uint32_t x,y;std::memcpy(&x,a+4*i,4);std::memcpy(&y,b+4*i,4);
+        if(x!=y) {++different;if(first==elements){first=i;first_a=x;first_b=y;}}
+        if(floating) {
+            float f,g;std::memcpy(&f,&x,4);std::memcpy(&g,&y,4);
+            nonfinite_a+=!std::isfinite(f);nonfinite_b+=!std::isfinite(g);
+            if(std::isfinite(f)&&std::isfinite(g)) {
+                const double delta=double(f)-g;
+                maximum=std::max(maximum,std::abs(delta));square+=delta*delta;norm+=double(g)*g;
+            }
+        }
+    }
+    if(!different)return;
+    out<<" field="<<name<<" elements="<<elements<<" different="<<different<<" first_index="<<first
+       <<" actual_bits=0x"<<std::hex<<first_a<<" reference_bits=0x"<<first_b<<std::dec;
+    if(floating)out<<std::setprecision(9)<<" finite_pair_max_abs="<<maximum
+        <<" finite_pair_relative_l2="<<std::sqrt(square/(norm+1e-30))
+        <<" actual_nonfinite="<<nonfinite_a<<" reference_nonfinite="<<nonfinite_b;
+    else {int32_t x,y;std::memcpy(&x,&first_a,4);std::memcpy(&y,&first_b,4);
+        out<<" actual_value="<<x<<" reference_value="<<y;}
+    out<<'\n';
+}
+inline std::string snapshot_difference(const Snapshot& a,const Snapshot& b,bool last,const std::string& context) {
+    std::ostringstream out;
+    out<<"[chunk-snapshot] "<<context<<" tokens_actual="<<a.tokens<<" tokens_reference="<<b.tokens
+       <<" history_bytes_actual="<<a.history.size()<<" history_bytes_reference="<<b.history.size()
+       <<" history_bytes_equal="<<(a.history==b.history)<<" named_fields_actual="<<a.fields.size()<<" named_fields_reference="<<b.fields.size()
+       <<" last_compared="<<last<<" last_bytes_equal="<<exact(a.last,b.last)<<'\n';
+    for(size_t i=0;i<a.fields.size();++i) {
+        const auto& f=a.fields[i];
+        if(i>=b.fields.size()||std::string(f.name)!=b.fields[i].name||f.elements!=b.fields[i].elements||
+           f.offset!=b.fields[i].offset||f.floating!=b.fields[i].floating) {
+            out<<" field="<<f.name<<" layout_mismatch actual_elements="<<f.elements<<'\n';continue;
+        }
+        if(f.offset>a.history.size()||f.elements>(a.history.size()-f.offset)/4||
+           f.offset>b.history.size()||f.elements>(b.history.size()-f.offset)/4) {
+            out<<" field="<<f.name<<" invalid_snapshot_range\n";continue;
+        }
+        if(f.elements)field_difference(out,f.name,a.history.data()+f.offset,b.history.data()+f.offset,f.elements,f.floating);
+    }
+    if(last) {
+        if(a.last.size()!=b.last.size())out<<" field=last_output actual_elements="<<a.last.size()<<" reference_elements="<<b.last.size()<<'\n';
+        else if(!a.last.empty())field_difference(out,"last_output",reinterpret_cast<const uint8_t*>(a.last.data()),
+            reinterpret_cast<const uint8_t*>(b.last.data()),a.last.size(),true);
+    }
+    return out.str();
+}
+inline void same(const Snapshot& a,const Snapshot& b,bool last=true,const std::string& context="unspecified comparison") {
+    if(!(a.tokens==b.tokens&&a.history==b.history&&(!last||exact(a.last,b.last)))) {
+        const auto detail=snapshot_difference(a,b,last,context);
+        std::fputs(detail.c_str(),stderr);std::fflush(stderr);
+    }
     check(a.tokens==b.tokens&&a.history==b.history&&(!last||exact(a.last,b.last)),"chunk committed snapshot differs");
+}
+inline std::string comparison_context(const char* label,bool batched,bool causal,size_t width,int replay,size_t pos,size_t T,const char* phase) {
+    std::ostringstream out;out<<"mode="<<label<<" batched_projections="<<batched<<" causal="<<causal
+        <<" width="<<width<<" replay="<<replay<<" position="<<pos<<" T="<<T<<" phase="<<phase;
+    return out.str();
 }
 inline bool step(PortableGdnLayer& l,int32_t token,uint64_t,const std::vector<float>& x,
                  const PortableExpertRows& p,PortableRoute& r,std::string& e) { return l.step(token,x,p,r,e); }
@@ -74,6 +148,7 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
     std::string error;double maximum=0,square=0,norm=0;size_t elements=0,completed_chunks=0,attention_tokens=0;
     const std::vector<int32_t> ids{5,248044,6,248056,0,8,9,7,11};
     const auto weight_bytes=chunk.weight_bytes();
+    std::fprintf(stderr,"[chunk-snapshot] begin mode=%s batched_projections=%d causal=%d gpu=%d\n",label,int(batched_projections),int(causal),int(gpu));
     for(size_t width=1;width<=8;++width) {
         Snapshot first;
         for(int replay=0;replay<3;++replay) {
@@ -94,7 +169,7 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
                 }
                 const auto before=snapshot(chunk);const auto work=chunk.chunk_work();size_t calls=0;
                 const PortableExpertRowsBatch dispatch=[&](int64_t layer,const auto& routes,auto& rows,auto& e) {
-                    ++calls;same(snapshot(chunk),before);check(routes.size()==T,"layer batch provider T");
+                    ++calls;same(snapshot(chunk),before,true,comparison_context(label,batched_projections,causal,width,replay,pos,T,"provider-publication"));check(routes.size()==T,"layer batch provider T");
                     for(const auto& route:routes) {std::vector<float> token;check(provider(layer,route,token,e),e);
                         rows.insert(rows.end(),token.begin(),token.end());}
                     return true;
@@ -130,7 +205,7 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
                 check(after.chunks==work.chunks+1&&after.tokens==work.tokens+T&&after.attention_calls==work.attention_calls+T&&
                       after.ffn_pre_calls==work.ffn_pre_calls+1&&after.provider_calls==work.provider_calls+1&&
                       after.ffn_post_calls==work.ffn_post_calls+1,"logical tokens versus graph/provider executions");
-                same(snapshot(chunk,true),snapshot(serial,true),false);
+                same(snapshot(chunk,true),snapshot(serial,true),false,comparison_context(label,batched_projections,causal,width,replay,pos,T,"after-chunk-vs-serial"));
                 near(input,expected);
                 for(size_t t=0;t<T;++t) {check(routes[t].ids==reference[t].ids,"chunk route IDs");
                     near(routes[t].activation,reference[t].activation);near(routes[t].weights,reference[t].weights);}
@@ -149,10 +224,10 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
                 pos+=T;
             }
             if(replay==0)first=snapshot(chunk,true);
-            if(replay==2)same(snapshot(chunk,true),first);
+            if(replay==2)same(snapshot(chunk,true),first,true,comparison_context(label,batched_projections,causal,width,replay,9,0,"reset-A-replay"));
             PortableRoute a,b;const auto continuation=fixture.input(22);
             check(step(chunk,2,9,continuation,provider,a,error)&&step(serial,2,9,continuation,provider,b,error),error);
-            same(snapshot(chunk,true),snapshot(serial,true));check(a.ids==b.ids,"serial continuation after chunk");
+            same(snapshot(chunk,true),snapshot(serial,true),true,comparison_context(label,batched_projections,causal,width,replay,9,1,"serial-continuation"));check(a.ids==b.ids,"serial continuation after chunk");
         }
     }
     // Invalid middle input, provider rejection/throw, and an actual post graph
@@ -167,7 +242,7 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
         bool provider_called=false;
         PostFault::original=original;PostFault::calls=0;PostFault::fail_at=1;
         const PortableExpertRowsBatch dispatch=[&](int64_t layer,const auto& routes,auto& rows,auto& e) {
-            provider_called=true;same(snapshot(chunk),before);
+            provider_called=true;same(snapshot(chunk),before,true,comparison_context(label,batched_projections,causal,3,failure,0,3,"failure-provider-publication"));
             if(failure==1){e="controlled chunk provider rejection";return false;}
             if(failure==2)throw std::runtime_error("controlled chunk provider throw");
             for(const auto& route:routes){std::vector<float> token;check(provider(layer,route,token,e),e);
@@ -178,7 +253,7 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
         const bool ok=chunk.run_chunk({5,248044,6},0,input,dispatch,routes,error);
         backend->iface.graph_compute=original;
         check(!ok&&chunk.poisoned()&&routes.empty()&&exact(input,saved),"failed chunk exposes output or fails to poison");
-        same(snapshot(chunk),before);
+        same(snapshot(chunk),before,true,comparison_context(label,batched_projections,causal,3,failure,0,3,"failed-chunk-publication"));
         check(chunk.chunk_work().tokens==work.tokens&&chunk.chunk_work().chunks==work.chunks&&
               chunk.chunk_work().attention_calls==work.attention_calls&&chunk.chunk_work().provider_calls==work.provider_calls,
               "failed chunk published completion counters");
