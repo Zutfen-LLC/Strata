@@ -12,7 +12,7 @@ struct PortableHeadGeometry {
 class PortableHead {
   public:
     // guard_logits adds bounded exponent-bit status checks before publishing logits;
-    // the model enables it for either opt-in production policy. Host output checks remain.
+    // the model enables it for production state policies or prompt head elision. Host output checks remain.
     static std::unique_ptr<PortableHead> create(PortableHeadGeometry geometry,
                                                 const std::vector<PortableTensorView> &weights,
                                                 PortableFfnOptions options, std::string &error, bool guard_logits = false);
@@ -66,6 +66,7 @@ struct PortableModelOptions {
     bool gdn_resident_weights = false; // opt-in GDN attention only
     bool gdn_resident_state = false; // opt-in; independent of weight residency
     bool dense_resident_weights = false; // opt-in attention, FFN and head weights
+    bool prompt_head_elision = false; // opt-in: only final prompt position projects vocabulary
     bool qsa_production = false; // device KV/indexer authority; requires strict accelerator and reuse
     bool qsa_reuse_attention = false; // capacity-primed execution/scratch; default off
     bool gdn_production = false; // opt-in device authority; requires strict resident accelerator execution
@@ -80,8 +81,10 @@ struct PortableExpertWork {
     double provider_ms = 0; // encloses CPU pool and local GPU expert calls; never add overlapping times
     uint64_t provider_calls = 0;
 };
-// Optional whole-call wall totals. Layer totals include matched provider intervals.
+// Whole-call wall totals are optional; head outcome counters are unconditional.
+// Layer totals include matched provider intervals.
 struct PortableModelWork {
+    uint64_t heads_executed = 0, heads_skipped = 0; // unconditional, cumulative across reset
     PortableGdnWork gdn_phases; // nested GDN scopes; enabled only by expert_timings
     double step_ms = 0, gdn_ms = 0, qsa_ms = 0, head_ms = 0;
     double gdn_provider_ms = 0, qsa_provider_ms = 0;
@@ -122,6 +125,9 @@ class PortableModelSession {
     // with its separate metadata history boundary, regardless of token kind.
     bool step(int32_t token, std::vector<float> &logits, std::string &error,
               PortableTokenKind kind = PortableTokenKind::input);
+    // Input-only state advancement. No logits or logit finite check at this
+    // position. Layer execution, poison/reset and position commit match step().
+    bool advance(int32_t token, std::string &error);
     bool generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result, std::string &error);
     bool reset(std::string &error);
     uint64_t position() const;

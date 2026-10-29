@@ -55,6 +55,37 @@ with tempfile.TemporaryDirectory() as d:
             assert m['gpu_infer_rows_ms_delta']==[] and m['gpu_infer_rows_calls_delta']==[]
         r.finish()
     finally: r.close()
+    # Same sparse backend and final/generated rows; skipped rows expose no
+    # prediction. A/B/A includes different prompt lengths and max-new zero.
+    command+=['--prompt-head-elision']
+    r=start('head-elision')
+    try:
+        a=r.request([5,7],2,1)
+        assert a['rows'][0]['greedy_next'] is None and not a['rows'][0]['logits_available']
+        for actual,expected in zip(a['rows'][1:],baseline_rows[1:-1]):
+            assert {k:actual[k] for k in expected}==expected
+        assert a['stop']==baseline_rows[-1]
+        fresh=subprocess.run([binary,'--model',model,'--manifest',manifest,'--tokens','5,7',
+                              '--max-new','2','--context','4','--prompt-head-elision'],
+                             capture_output=True,text=True,check=True,timeout=90)
+        assert [json.loads(line) for line in fresh.stdout.splitlines()]==a['rows']+[a['stop']]
+        assert 'prompt_head_work executed=2 skipped=1' in fresh.stderr
+        b=r.request([6],0,2)
+        again=r.request([5,7],2,3)
+        assert a['rows']==again['rows'] and a['stop']==again['stop']
+        for result,prompt_count in ((a,2),(b,1),(again,2)):
+            m=result['metrics']
+            assert m['heads_skipped_delta']==prompt_count-1
+            assert m['heads_executed_delta']==len(result['rows'])-prompt_count+1
+            model_phase_fields(m,len(result['rows']),'eager_diagnostic','prompt_head_elision')
+        r.finish()
+    finally: r.close()
+    command.remove('--prompt-head-elision')
+    # Explicit exhaustive dumps remain eager; incompatible policies fail before
+    # model load rather than inventing intermediate output files.
+    rejected=subprocess.run([binary,'--prompt-head-elision','--dump-logits',str(root)],
+                            capture_output=True,text=True,timeout=5)
+    assert rejected.returncode!=0 and 'cannot dump skipped logits' in rejected.stderr
     for mode in ('eof','quit','signal','malformed','mutation'):
         r=start(mode)
         try:

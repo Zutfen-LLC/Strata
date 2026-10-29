@@ -37,6 +37,29 @@ class QualityAdapter(unittest.TestCase):
             with self.assertRaises(ValueError): P.completion(bad+[stop],[1],248320)
         with self.assertRaises(ValueError): P.completion(rows+[dict(stop='context',position=3)],[1],248320)
 
+    def test_head_elision_receipts_are_explicit_and_policy_bound(self):
+        rows = [dict(position=0,token=1,generated=False,greedy_next=None),
+                dict(position=1,token=3,generated=False,greedy_next=248046),
+                dict(position=2,token=248046,generated=True,greedy_next=0)]
+        for i,row in enumerate(rows):
+            row.update(schema=2,head_policy='prompt_head_elision',logits_available=i!=0)
+        records=rows+[dict(stop='eos',position=3)]
+        self.assertEqual(P.completion(records,[1,3],248320,'prompt_head_elision'),([248046],'eos'))
+        with self.assertRaises(ValueError): P.completion(records,[1,3],248320)
+        for pos,key,value in ((0,'greedy_next',0),(0,'logits_available',True),(1,'greedy_next',None),
+                              (1,'logits_available',False),(0,'schema',3),(0,'head_policy','foreign'),
+                              (0,'generated',True),(0,'position',False),(0,'schema',True)):
+            bad=copy.deepcopy(records);bad[pos][key]=value
+            with self.assertRaises(ValueError): P.completion(bad,[1,3],248320,'prompt_head_elision')
+        bad=copy.deepcopy(records);del bad[0]['schema']
+        with self.assertRaises(ValueError): P.completion(bad,[1,3],248320,'prompt_head_elision')
+        with self.assertRaises(ValueError): P.completion(records,[1,3],248320,'foreign')
+        # The last prompt and terminal generated head must still be available.
+        one=[dict(position=0,token=3,generated=False,greedy_next=248046,schema=2,
+                  head_policy='prompt_head_elision',logits_available=True),dict(rows[2],position=1),
+             dict(stop='eos',position=2)]
+        self.assertEqual(P.completion(one,[3],248320,'prompt_head_elision'),([248046],'eos'))
+
     def test_native_owned_lifecycle_and_failure_cleanup(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
@@ -90,7 +113,7 @@ class QualityAdapter(unittest.TestCase):
             root=Path(d); suite=root/'suite'; P.Q.prepare(Tokenizer(),suite)
             binary=root/'binary';binary.write_bytes(b'not an executable: mock launch only')
             args=SimpleNamespace(suite=suite,binary=binary,binary_sha256=P.Q.bundle.sha(binary),out=root/'run',
-                                 dense_resident_weights=True,gdn_resident_state=True,gdn_production=True,qsa_reuse_attention=True,qsa_production=True)
+                                 dense_resident_weights=True,gdn_resident_state=True,gdn_production=True,qsa_reuse_attention=True,qsa_production=True,prompt_head_elision=True)
             child=SimpleNamespace(pid=123456789,poll=lambda:None,wait=lambda timeout:0)
             with patch.object(P.S,'host_memory',return_value={'effective_available':1<<40}), \
                  patch.object(P.S,'model_working_set',return_value={'working_set_bound_bytes':0}), \
@@ -103,6 +126,7 @@ class QualityAdapter(unittest.TestCase):
                 launch.assert_called_once()
                 argv=launch.call_args.args[0]
                 self.assertEqual(argv.count('--dense-resident-weights'),1)
+                self.assertEqual(argv.count('--prompt-head-elision'),1)
                 self.assertEqual(argv.count('--gdn-resident-state'),1)
                 self.assertEqual(argv.count('--gdn-production'),1)
                 self.assertEqual(argv.count('--qsa-reuse-attention'),1)
