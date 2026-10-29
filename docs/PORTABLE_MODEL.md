@@ -35,6 +35,43 @@ heads and completed model chunk counters publish only after all 48 layers
 succeed. Route diagnostics are staged until then. The CLI emits no completed
 rows for a failed chunk. Exhaustive T1 `step` remains available.
 
+### Executed-head numerical diagnostics
+
+Fresh head-elision runs, including chunk mode, can use
+`--dump-executed-logits EMPTY_DIRECTORY`. The directory must already exist and
+be empty. This separate opt-in writes the existing little-endian raw F32
+`pos-N.f32` format for executed heads only. It does not add intermediate prompt
+heads or alter generation. It excludes stdio and exhaustive `--dump-logits`;
+the existing exhaustive option and its policy restrictions are unchanged.
+
+A `manifest.json` is written after the complete forward sequence. Its
+`executed_heads_f32le_v1` format binds prompt token IDs, vocabulary, output
+count, stop reason, head policy and chunk policy/size. Each frame records its
+position, consumed token, filename and role: `final_prompt`, `generated` or
+`terminal`. With no generated tokens, the final prompt is the only frame.
+Otherwise the final generated token is the terminal feed, including EOS.
+Skipped prompt positions have no files and must never be interpreted as zeros.
+A failed or interrupted dump without a valid complete manifest is unusable.
+
+Compare serial head elision with chunk size2 using:
+
+```sh
+python tools/validation-harness/executed_logits_v1.py \
+  --baseline "$SERIAL_DUMP" --candidate "$CHUNK_DUMP" \
+  --baseline-chunk-size 0 --candidate-chunk-size 2
+```
+
+The reader rejects missing/extra/duplicate frames or files, policy mismatches,
+nonfinite/wrong-size rows and inconsistent greedy token progression. Both sides
+must have identical prompt IDs, consumed tokens, positions, roles and stop.
+Use `--max-new 0` for an isolated final-prompt comparison. For a continuation
+comparison, retain every generated/terminal frame. The helper calls the existing
+`compare_logits.py` comparison directly: absolute logit floor0.01 plus
+0.0001 times baseline scale, relative L2 at most0.0001, maximum probability
+difference0.001 and KL at most0.00001. It reports each frame's measurements and
+top1 agreement; no limit is fitted to observed outputs. Token mismatch or a
+failed numerical gate prevents a parity claim.
+
 ### Admission before allocation
 
 For the enabled policy, construction pre-admits a conservative complete module

@@ -68,7 +68,7 @@ std::vector<int64_t> numbers(const std::string &text) {
 int main(int argc, char **argv) {
     try {
         strata::core::PortableModelOptions opts;
-        std::string model, manifest, token_text, dump, placement_path, timings_path;
+        std::string model, manifest, token_text, dump, executed_dump, placement_path, timings_path;
         using Clock = std::chrono::steady_clock;
         Clock::time_point setup_start, prompt_start, decode_start, decode_end, last_prompt_start, last_selection;
         std::vector<int64_t> devices, caps, expert_tensors, expert_workspaces, expert_reserves;
@@ -116,7 +116,7 @@ int main(int argc, char **argv) {
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
                              " [--prompt-head-elision (serial head elision; incompatible with --dump-logits)]\n"
                              " [--prompt-chunk-size 2..8 (implies head elision; default off)]\n"
-                             " [--dump-logits DIRECTORY] [--placements FILE] [--timings FILE]\n"
+                             " [--dump-logits DIRECTORY | --dump-executed-logits EMPTY_DIRECTORY] [--placements FILE] [--timings FILE]\n"
                              " Or --stdio [--max-requests 4]: GEN <max_new> <id,id,...> / QUIT; JSONL replies.\n"
                              "Default T=1 serial text; optional bounded prompt chunks; all 48 layers; CPU experts/host PLE.\n"
                              "Every consumed prompt/generated token can dump its full vocabulary as pos-N.f32.\n";
@@ -204,6 +204,8 @@ int main(int argc, char **argv) {
                 caps = numbers(value);
             else if (key == "--dump-logits")
                 dump = value;
+            else if (key == "--dump-executed-logits")
+                executed_dump = value;
             else if (key == "--expert-plan") {
                 const auto colon=value.find(':');
                 if(colon==std::string::npos || colon+1==value.size()) throw std::runtime_error("expert plan requires SLOT:FILE");
@@ -220,6 +222,8 @@ int main(int argc, char **argv) {
             else
                 throw std::runtime_error("unknown option: " + key);
         }
+        if (!executed_dump.empty() && (!dump.empty() || !opts.prompt_head_elision || resident))
+            throw std::runtime_error("--dump-executed-logits requires fresh head elision and excludes --dump-logits/--stdio");
         if (opts.prompt_head_elision && !dump.empty())
             throw std::runtime_error("--prompt-head-elision cannot dump skipped logits; omit it for exhaustive --dump-logits");
         if (opts.expert_timings && !resident) throw std::runtime_error("--expert-timings requires --stdio");
@@ -303,6 +307,9 @@ int main(int argc, char **argv) {
         device_memory("before-model", 0);
         if (!dump.empty() && !std::filesystem::is_directory(dump))
             throw std::runtime_error("--dump-logits directory must already exist");
+        if (!executed_dump.empty() && (!std::filesystem::is_directory(executed_dump) ||
+                                      !std::filesystem::is_empty(executed_dump)))
+            throw std::runtime_error("--dump-executed-logits directory must exist and be empty");
         std::string error;
         auto paths = strata::gguf_split_paths(model);
         auto source_paths = paths;
@@ -388,6 +395,7 @@ int main(int argc, char **argv) {
             tokens=std::move(request.tokens); max_new=request.max_new; ++request_id;
         }
         std::vector<float> logits;
+        std::vector<int32_t> executed_tokens;
         const auto heads_before = session->model_work();
         const auto emit_row = [&](uint64_t pos,int32_t token,bool generated,bool project) {
             std::cout << "{\"position\":" << pos << ",\"token\":" << token
@@ -444,17 +452,18 @@ int main(int argc, char **argv) {
                           << " cpu_entries=" << work.cpu_entries << '\n';
                 expert_report("token-complete",pos);
             }
-            if (project && !dump.empty()) {
+            if (project && (!dump.empty() || !executed_dump.empty())) {
                 // compare_logits.py consumes little-endian raw F32. This CLI is
                 // for the existing little-endian x86 CPU/Vulkan execution path.
                 const uint16_t one = 1;
                 if (*reinterpret_cast<const uint8_t *>(&one) != 1)
                     throw std::runtime_error("logit dump requires little-endian host");
-                std::ofstream file(dump + "/pos-" + std::to_string(pos) + ".f32", std::ios::binary);
+                std::ofstream file((executed_dump.empty()?dump:executed_dump) + "/pos-" + std::to_string(pos) + ".f32", std::ios::binary);
                 file.write(reinterpret_cast<const char *>(logits.data()),
                            std::streamsize(logits.size() * sizeof(float)));
                 if (!file)
                     throw std::runtime_error("logit dump write failed");
+                if(!executed_dump.empty())executed_tokens.push_back(token);
             }
             emit_row(pos,token,generated,project);
         };
@@ -500,6 +509,26 @@ int main(int argc, char **argv) {
                       << " skipped=" << heads.heads_skipped-heads_before.heads_skipped << '\n';
         }
         const char *stop = session->ended() ? "eos" : session->position() == opts.context ? "context" : "max_new";
+        if(!executed_dump.empty()) {
+            // A manifest is published only after the complete forward sequence.
+            // Missing prompt positions are absent, never zero-filled logit rows.
+            std::ofstream file(executed_dump+"/manifest.json");
+            file << "{\"schema\":1,\"format\":\"executed_heads_f32le_v1\",\"head_policy\":\"prompt_head_elision\","
+                 << "\"chunk_policy\":\"" << (opts.prompt_chunk_size?"layer_major_v1":"serial_t1")
+                 << "\",\"prompt_chunk_size\":" << opts.prompt_chunk_size
+                 << ",\"vocabulary\":" << session->vocabulary() << ",\"prompt_tokens\":[";
+            for(size_t i=0;i<tokens.size();++i)file << (i?",":"") << tokens[i];
+            file << "],\"output_count\":" << generated << ",\"stop\":\"" << stop << "\",\"frames\":[";
+            if(executed_tokens.size()!=generated+1)throw std::runtime_error("executed logit frame count mismatch");
+            for(size_t i=0;i<executed_tokens.size();++i) {
+                const auto position=tokens.size()-1+i;
+                file << (i?",":"") << "{\"position\":" << position << ",\"token\":" << executed_tokens[i]
+                     << ",\"role\":\"" << (!i?"final_prompt":i+1==executed_tokens.size()?"terminal":"generated")
+                     << "\",\"file\":\"pos-" << position << ".f32\"}";
+            }
+            file << "]}\n";
+            if(!file)throw std::runtime_error("executed logit manifest write failed");
+        }
         std::cout << "{\"stop\":\"" << stop << "\",\"position\":" << session->position() << "}\n";
         if(resident) {
             sources->check();

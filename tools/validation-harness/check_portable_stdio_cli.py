@@ -9,6 +9,7 @@ import sys
 import tempfile
 from portable_resident_v1 import Resident, model_phase_fields
 import portable_quality_v1 as P
+import executed_logits_v1 as E
 
 binary,model,manifest=sys.argv[1:]
 command=[binary,'--model',model,'--manifest',manifest,'--context','4','--stdio','--max-requests','8']
@@ -82,6 +83,13 @@ with tempfile.TemporaryDirectory() as d:
         r.finish()
     finally: r.close()
     command.remove('--prompt-head-elision')
+    serial_dump=root/'serial-executed';serial_dump.mkdir()
+    subprocess.run([binary,'--model',model,'--manifest',manifest,'--tokens','5,6,7','--max-new','1',
+                    '--context','4','--prompt-head-elision','--dump-executed-logits',str(serial_dump)],
+                   capture_output=True,text=True,check=True,timeout=90)
+    serial_manifest,_=E.load(serial_dump,0)
+    assert [f['position'] for f in serial_manifest['frames']]==[2,3]
+    assert [f['role'] for f in serial_manifest['frames']]==['final_prompt','terminal']
     # Actual fresh/resident chunk policy, not a fake child: implicit head
     # elision, T1 tails, terminal feed, A/B/A, and actual execution counts.
     for size in (2,8):
@@ -107,15 +115,26 @@ with tempfile.TemporaryDirectory() as d:
             assert again['metrics']['cpu_verifications_delta']==0
             assert again['metrics']['cpu_hits_delta']==480*3
             timing=root/f'chunk-{size}-timings.json'
+            requested=root/f'chunk-{size}-executed';requested.mkdir()
             fresh=subprocess.run([binary,'--model',model,'--manifest',manifest,'--tokens','5,6,7',
-                                  '--max-new','1','--context','4','--prompt-chunk-size',str(size),'--timings',str(timing)],
+                                  '--max-new','1','--context','4','--prompt-chunk-size',str(size),'--timings',str(timing),'--dump-executed-logits',str(requested)],
                                  capture_output=True,text=True,check=True,timeout=90)
             assert [json.loads(line) for line in fresh.stdout.splitlines()]==a['rows']+[a['stop']]
+            assert E.compare(serial_dump,requested,0,size)['numeric_pass']
             assert 'prompt_chunk_admission shape_envelope=1' in fresh.stderr
             P.chunk_fields(json.loads(timing.read_text()),3,4,size)
             r.finish()
         finally:r.close()
         command=command[:-2]
+    final_only=root/'final-only';final_only.mkdir()
+    subprocess.run([binary,'--model',model,'--manifest',manifest,'--tokens','6','--max-new','0',
+                    '--context','4','--prompt-head-elision','--dump-executed-logits',str(final_only)],
+                   capture_output=True,text=True,check=True,timeout=90)
+    only,_=E.load(final_only,0)
+    assert only['output_count']==0 and only['frames'][0]['position']==0 and only['frames'][0]['role']=='final_prompt'
+    for flags in ([],['--stdio','--prompt-head-elision'],['--prompt-head-elision','--dump-logits',str(root)]):
+        rejected=subprocess.run([binary,*flags,'--dump-executed-logits',str(root)],capture_output=True,text=True,timeout=5)
+        assert rejected.returncode!=0 and 'requires fresh head elision' in rejected.stderr
     rejected=subprocess.run([binary,'--prompt-chunk-size','2','--dump-logits',str(root)],
                             capture_output=True,text=True,timeout=5)
     assert rejected.returncode!=0 and 'cannot dump skipped logits' in rejected.stderr
