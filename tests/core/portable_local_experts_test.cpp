@@ -7,7 +7,7 @@
 using namespace strata::core;
 using namespace model_fixture;
 namespace {
-struct State { int prepares=0,releases=0,inferences=0; bool fail=false,bad=false,nonfinite=false; float bad_value=NAN; size_t bad_offset=0; };
+struct State { int prepares=0,releases=0,inferences=0; bool fail=false,bad=false,nonfinite=false; float bad_value=NAN; size_t bad_offset=0; std::function<void()> before_infer; };
 class Fake final:public strata::worker::GpuExecutor {
     State& s;
 public:
@@ -32,6 +32,7 @@ public:
                strata::worker::InferReply&,std::string&)override{return false;}
     bool infer_rows(const strata::worker::GpuPlan&,const strata::worker::InferRequest& r,
                     strata::worker::EntryRowsReply& out,std::string& error) override {
+        if(s.before_infer) s.before_infer();
         ++s.inferences;if(s.fail){error="controlled GPU failure";return false;}
         out={};out.session=r.session;out.sequence=r.sequence;
         for(size_t i=0;i<r.mask.size();++i)if(r.mask[i]) {
@@ -140,6 +141,58 @@ int main(){
             for(const auto& d:untimed.report()) check(d.infer_rows_calls==0 && d.infer_rows_ms==0,
                 "default executor path has no new timing capture");
         }
+        // Opt-in ordering: all cold slots finish on the caller before any
+        // resident executor. Masks cover CPU-only, GPU-only and mixed ownership.
+        opts.overlap_shared_cpu=true;
+        for (size_t hot : {size_t(0),size_t(3),size_t(10)}) {
+            std::vector<std::pair<uint16_t,uint16_t>> ownership;
+            for(size_t slot=0;slot<hot;++slot) ownership.emplace_back(0,uint16_t(route.ids[slot]));
+            auto configured=opts;
+            configured.expert_devices.clear();
+            if(hot) {
+                auto device=a; device.plan_path=plan("mask-"+std::to_string(hot),ownership);
+                configured.expert_devices.push_back(device);
+            }
+            portable_detail::LocalExperts local(model,cpu,configured,factory,memory);
+            const auto before=cpu.work(); const auto gpu_before=state.inferences;
+            state.before_infer=[&] {
+                check(cpu.work().hits==before.hits+10-hot,"all CPU slots precede GPU calls");
+            };
+            check(local.run(0,route,rows,error),error);
+            check(local.cpu_entries()==10-hot && local.gpu_entries()==hot,"exact ownership counts");
+            check(state.inferences-gpu_before==int(hot>0),"skip empty GPU set");
+            for(size_t slot=0;slot<10;++slot) for(size_t h=0;h<2560;++h)
+                check(rows[slot*2560+h]==(slot<hot?float(route.ids[slot]+1):ref[slot*2560+h]),
+                      "opt-in original-slot unweighted rows");
+            state.before_infer={};
+            if(hot) {
+                state.fail=true;
+                check(!local.run(0,route,rows,error)&&rows.empty(),"GPU failure after CPU publishes no rows");
+                state.fail=false;
+                check(local.run(0,route,rows,error),"recovery after CPU-first dispatch failure");
+            }
+        }
+        {
+            // Corrupt only a cold expert's expected digest. Hot preparation still
+            // succeeds; the CPU failure must stop before any resident request.
+            auto broken=f.manifest; broken.digests[size_t(route.ids[0])].a^=1;
+            const auto path=(f.root/"bad-cold-manifest").string();
+            check(strata::worker::write_local_manifest(path,broken,error),error);
+            portable_detail::CpuExperts bad_cpu(model,path,opts);
+            strata::worker::GpuPlan hot_plan;
+            check(strata::worker::make_gpu_plan(bad_cpu.identity(),{{0,3}},hot_plan,error),error);
+            auto configured=opts; auto hot_device=a;
+            hot_device.plan_path=(f.root/"bad-cold-hot-plan").string();
+            check(strata::worker::write_gpu_plan(hot_device.plan_path,hot_plan,error),error);
+            configured.expert_devices={hot_device};
+            portable_detail::LocalExperts local(model,bad_cpu,configured,factory,memory);
+            const auto before=state.inferences;
+            check(!local.run(0,route,rows,error)&&rows.empty()&&
+                  error.find("selected expert digest mismatch")!=std::string::npos,
+                  "cold CPU failure publishes no rows");
+            check(state.inferences==before,"cold CPU failure precedes GPU request");
+        }
+        opts.overlap_shared_cpu=false;
         opts.expert_timings=true;
         auto rejected=[&](PortableModelOptions bad,const char* why){
             const int before=state.prepares;bool failed=false;

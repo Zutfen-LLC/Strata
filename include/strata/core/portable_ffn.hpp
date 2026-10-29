@@ -32,6 +32,7 @@ struct PortableTensorView {
 
 struct PortableFfnOptions {
     int threads = 1;
+    bool overlap_shared_cpu = false; // submit shared graph before synchronous expert dispatch; default off
     // Borrowed backend, e.g. ggml_backend_vk_init(die). Caller retains lifetime.
     ggml_backend* accelerator = nullptr;
     bool request_accelerator = false;

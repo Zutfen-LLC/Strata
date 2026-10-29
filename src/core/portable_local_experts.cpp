@@ -22,7 +22,7 @@ void LocalExperts::guard(size_t i) {
             "resident expert tensor/runtime growth budget exceeded");
 }
 LocalExperts::LocalExperts(const GgufModel& model,CpuExperts& cpu,const PortableModelOptions& opts,
-                           Factory factory,Memory memory):model_(model),cpu_(cpu),memory_(std::move(memory)),check_rows_(opts.expert_check_rows),timings_(opts.expert_timings) {
+                           Factory factory,Memory memory):model_(model),cpu_(cpu),memory_(std::move(memory)),check_rows_(opts.expert_check_rows),timings_(opts.expert_timings),cpu_first_(opts.overlap_shared_cpu) {
     for (size_t s=0;s<model.size();++s) times_.push_back(std::filesystem::last_write_time(model.shard(s).path()));
     std::set<std::pair<int,int>> owned;
     std::set<size_t> dies;
@@ -96,16 +96,30 @@ bool LocalExperts::run(int64_t layer,const PortableRoute& route,std::vector<floa
         const uint64_t sequence=++sequence_;
         std::array<bool,K> cold; cold.fill(true);
         std::vector<float> result(K*H,0);
+        // Freeze all ownership masks before dispatch. Keep original slot numbers.
+        std::vector<worker::InferRequest> requests(devices_.size());
+        std::vector<size_t> counts(devices_.size(),0);
         for(size_t die=0;die<devices_.size();++die) {
-            auto& d=devices_[die]; auto& report=report_[die];
-            worker::InferRequest req;
+            auto& d=devices_[die]; auto& req=requests[die];
             req.model_id=d.plan.model_id; req.partition_id=d.plan.placement_id.a;
             req.session=1; req.sequence=sequence; req.layer=uint16_t(layer); req.T=1; req.K=K;
             req.ids.assign(route.ids.begin(),route.ids.end()); req.weights=route.weights; req.activations=route.activation; req.mask.assign(K,0);
-            size_t count=0;
             for(size_t slot=0;slot<K;++slot) if(d.plan.owns(int(layer),route.ids[slot])) {
-                req.mask[slot]=1; cold[slot]=false; ++count;
+                req.mask[slot]=1; cold[slot]=false; ++counts[die];
             }
+        }
+        auto run_cpu = [&] {
+            if(std::none_of(cold.begin(),cold.end(),[](bool active){ return active; })) return;
+            std::vector<float> cpu_rows;
+            require(cpu_.run(layer,route,cpu_rows,error,&cold),error);
+            for(size_t slot=0;slot<K;++slot) if(cold[slot]) {
+                std::copy_n(cpu_rows.begin()+slot*H,H,result.begin()+slot*H); ++cpu_entries_;
+            }
+        };
+        if(cpu_first_) run_cpu();
+        for(size_t die=0;die<devices_.size();++die) {
+            auto& d=devices_[die]; auto& report=report_[die];
+            auto& req=requests[die]; const size_t count=counts[die];
             if(!count) continue;
             guard(die);
             worker::EntryRowsReply reply;
@@ -144,11 +158,7 @@ bool LocalExperts::run(int64_t layer,const PortableRoute& route,std::vector<floa
             }
             ++report.requests; report.entries+=count; gpu_entries_+=count;
         }
-        std::vector<float> cpu_rows;
-        require(cpu_.run(layer,route,cpu_rows,error,&cold),error);
-        for(size_t slot=0;slot<K;++slot) if(cold[slot]) {
-            std::copy_n(cpu_rows.begin()+slot*H,H,result.begin()+slot*H); ++cpu_entries_;
-        }
+        if(!cpu_first_) run_cpu();
         rows=std::move(result); return true;
     } catch(const std::exception& e) { rows.clear(); error=e.what(); return false; }
 }

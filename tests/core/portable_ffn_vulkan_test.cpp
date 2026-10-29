@@ -26,11 +26,12 @@ int main(int argc, char** argv) {
         check(bool(device), "Vulkan backend initialization failed");
         check(!ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "regression requires a distinct device buffer type");
-        for (bool resident : {false, true}) {
-            std::printf("dense weight fixture: resident=%d\n", int(resident));
+        for (bool overlap : {false, true}) for (bool resident : {false, true}) {
+            std::printf("dense weight fixture: resident=%d overlap_shared_cpu=%d\n", int(resident), int(overlap));
             Fixture f;
             PortableFfnOptions options;
             options.resident_dense_weights = resident;
+            options.overlap_shared_cpu = overlap;
             options.request_accelerator = true;
             options.allow_cpu_fallback = true;
             options.accelerator = device.get();
@@ -53,7 +54,7 @@ int main(int argc, char** argv) {
                     ++post;
                 }
             }
-            check(matmuls > 0 && post > 0, "no actual matrix/HC post device assignments");
+            check(matmuls == 8 && post > 0, "no actual matrix/HC post device assignments");
             std::vector<float> initial(128);
             for (size_t i = 0; i < initial.size(); ++i) initial[i] = 0.2f + float(int(i % 19)-9) * 0.06f;
             const PortableExpertRows experts = [](int64_t, const PortableRoute& r, std::vector<float>& rows, std::string&) {

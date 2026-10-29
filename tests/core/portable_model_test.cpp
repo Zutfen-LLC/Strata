@@ -213,6 +213,7 @@ int main() {
         size_t gdn_state_only=0;
         for (bool qsa_only : {false, true}) {
         opts.qsa_production = qsa_only;
+        opts.overlap_shared_cpu = true; // production composition must match serial reference bytes
         opts.gdn_production = !qsa_only;
         opts.accelerators = {selected.get()};
         opts.device_caps = {64ull << 30}; // synthetic CPU backend; no hardware initialized

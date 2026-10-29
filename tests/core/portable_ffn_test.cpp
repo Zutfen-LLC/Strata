@@ -6,13 +6,125 @@
 #include <limits>
 #include <cstring>
 
+namespace {
+// CPU execution with observed submit/join boundaries. This proves coordinator
+// ordering and failure draining, not asynchronous hardware execution.
+struct ObservedBackend {
+    static inline ObservedBackend* active = nullptr;
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    decltype(backend->iface.graph_compute) compute = backend->iface.graph_compute;
+    decltype(backend->iface.synchronize) synchronize = backend->iface.synchronize;
+    bool pending = false;
+    int joins = 0, matrices = 0;
+    std::string fail;
+    ObservedBackend() {
+        active = this;
+        backend->iface.graph_compute = [](ggml_backend_t b, ggml_cgraph* graph) {
+            auto& s = *active;
+            bool shared = false, route = false;
+            for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
+                auto* t = ggml_graph_node(graph, i);
+                shared |= std::string(ggml_get_name(t)) == "shared";
+                route |= std::string(ggml_get_name(t)) == "router_logits";
+                if (t->op == GGML_OP_MUL_MAT) ++s.matrices;
+            }
+            if (shared) {
+                check(!s.pending, "no outstanding shared reuse");
+                // The shared graph has four matmuls and a leaf with no producer edges.
+                int products = 0;
+                for (int i = 0; i < ggml_graph_n_nodes(graph); ++i)
+                    products += ggml_graph_node(graph,i)->op == GGML_OP_MUL_MAT;
+                check(products == 4, "shared graph must not repeat routing/HC producers");
+                s.pending = true;
+            }
+            if ((shared && s.fail == "shared") || (route && s.fail == "route")) return GGML_STATUS_FAILED;
+            return s.compute(b, graph);
+        };
+        backend->iface.synchronize = [](ggml_backend_t b) {
+            auto& s = *active;
+            if (s.pending) { s.pending = false; ++s.joins; }
+            if (s.synchronize) s.synchronize(b);
+        };
+    }
+    ~ObservedBackend() {
+        check(!pending, "destruction must drain shared submission");
+        backend->iface.graph_compute = compute;
+        backend->iface.synchronize = synchronize;
+        ggml_backend_free(backend); active = nullptr;
+    }
+};
+void scheduling_test() {
+    Fixture f; ObservedBackend backend; std::string error;
+    PortableFfnOptions o; o.accelerator = backend.backend; o.request_accelerator = true;
+    o.overlap_shared_cpu = true; o.resident_dense_weights = true;
+    auto runner = PortableFfn::create(f.g,0,f.views,o,error);
+    check(bool(runner),error);
+    std::vector<float> initial(128, .2f);
+    PortableRoute route;
+    auto callback = [&](int64_t, const PortableRoute& r, std::vector<float>& rows, std::string& e) {
+        check(backend.pending, "shared submitted before CPU callback without join");
+        if (backend.fail == "cpu" || backend.fail == "gpu") { e = backend.fail; return false; }
+        if (backend.fail == "throw") throw std::runtime_error("callback exception");
+        rows.resize(64);
+        for (size_t k=0;k<2;++k) for(size_t h=0;h<32;++h)
+            rows[k*32+h] = float(r.ids[k]+1) * (.03f + float(h)*.001f);
+        return true;
+    };
+    for (const std::string stage : {"", "route", "shared", "cpu", "gpu", "throw"}) {
+        backend.fail = stage; backend.matrices = 0;
+        check(runner->reset(initial,error),error);
+        bool dispatched = false;
+        const bool ok = runner->step([&](int64_t l,const PortableRoute& r,std::vector<float>& rows,std::string& e) {
+            dispatched = true; return callback(l,r,rows,e);
+        },route,error);
+        check(ok == stage.empty(), "injected stage outcome: " + stage);
+        check(!backend.pending, "join before return, including failed submit");
+        if (!ok) {
+            close(runner->residual(),initial,0);
+            check(route.ids.empty(), "no partial route publication");
+            if(stage == "route" || stage == "shared") check(!dispatched,"failed graph blocks dispatch");
+        } else {
+            check(backend.matrices == 8,"eight executed matmuls without duplicate producer work");
+            PortableRoute ref; close(runner->residual(),f.oracle(initial,ref));
+            close(route.activation,ref.activation); close(route.weights,ref.weights);
+            check(route.ids==ref.ids,"identical stable routing");
+        }
+    }
+    backend.fail.clear();
+    auto serial = PortableFfn::create(f.g,0,f.views,{},error);
+    check(bool(serial),error);
+    check(serial->reset(initial,error) && runner->reset(initial,error),error);
+    for (int token=0; token<3; ++token) {
+        PortableRoute serial_route;
+        check(serial->step([](int64_t,const PortableRoute& r,std::vector<float>& rows,std::string&) {
+            rows.resize(64);
+            for(size_t k=0;k<2;++k) for(size_t h=0;h<32;++h)
+                rows[k*32+h]=float(r.ids[k]+1)*(.03f+float(h)*.001f);
+            return true;
+        },serial_route,error),error);
+        check(runner->step(callback,route,error),error);
+        close(runner->residual(),serial->residual(),0);
+        close(route.activation,serial_route.activation,0);
+        close(route.weights,serial_route.weights,0);
+        check(route.ids==serial_route.ids,"serial/split exact routes");
+    }
+    check(runner->reset(initial,error) && runner->step(callback,route,error),error);
+    runner.reset(); check(!backend.pending,"cleanup after recovery");
+}
+}
 int main() {
     try {
+        scheduling_test();
+        for (bool overlap : {false, true}) {
         Fixture f;
         std::string error;
         PortableFfnOptions options;
+        options.overlap_shared_cpu = overlap;
         auto runner = PortableFfn::create(f.g, 0, f.views, options, error);
         check(bool(runner), error);
+        size_t matrices = 0;
+        for (const auto& p : runner->placements()) if (p.operation == "MUL_MAT") ++matrices;
+        check(matrices == 8, "exactly eight original pre-FFN matrix products");
         PortableRoute route, expected_route;
         const PortableExpertRows experts = [&](int64_t layer, const PortableRoute& r, std::vector<float>& rows, std::string&) {
             check(layer == 0 && r.ids.size() == 2 && r.activation.size() == 32, "callback boundary");
@@ -196,6 +308,7 @@ int main() {
         check(bound->reset(initial, error) && bound->step(experts, route, error), error);
         close(bound->residual(), qrunner->residual(), 0);
         std::puts("portable_ffn_test: scalar parity, state/reset, callback failures, placement/fallback, budgets, Q8_0, split GGUF passed");
+        }
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }
 }

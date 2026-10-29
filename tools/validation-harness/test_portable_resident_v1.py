@@ -263,11 +263,11 @@ for index,line in enumerate(sys.stdin,1):
             with self.subTest(failure=failure),tempfile.TemporaryDirectory() as d:
                 root=Path(d)
                 tok,suite,prompts,binding,ref,binary,plans,records=self.fixtures(root)
-                fresh=json.loads((ref/'summary.json').read_text());fresh['qsa_reuse_attention']=True;fresh['qsa_policy']='device_production'
+                fresh=json.loads((ref/'summary.json').read_text());fresh['qsa_reuse_attention']=True;fresh['qsa_policy']='device_production';fresh['overlap_shared_cpu']=True
                 (ref/'summary.json').write_text(json.dumps(fresh))
                 for case in ref.glob('case-*'):
                     path=case/'argv.json'
-                    path.write_text(json.dumps(json.loads(path.read_text())+['--dense-resident-weights','--gdn-resident-state','--qsa-reuse-attention','--qsa-production']))
+                    path.write_text(json.dumps(json.loads(path.read_text())+['--overlap-shared-cpu','--dense-resident-weights','--gdn-resident-state','--qsa-reuse-attention','--qsa-production']))
                 out=root/'out';samples=[]
                 for index in range(1,25):
                     prompt=prompts[(index-1)%12];record=copy.deepcopy(records[(index-1)%12])
@@ -287,7 +287,7 @@ for index,line in enumerate(sys.stdin,1):
                 args=['resident','--binary',str(binary),'--binary-sha256',M.Q.bundle.sha(binary),
                       '--out',str(out),'--suite',str(suite),'--gguf',str(binary),'--reference-root',str(ref),
                       '--expert-tensor-mib','5529,5529','--plan',str(plans[0]),'--plan',str(plans[1]),
-                      '--dense-resident-weights','--gdn-resident-state','--qsa-reuse-attention','--qsa-production']
+                      '--overlap-shared-cpu','--dense-resident-weights','--gdn-resident-state','--qsa-reuse-attention','--qsa-production']
                 with mock.patch.object(sys,'argv',args),mock.patch.object(M,'Resident',side_effect=runner), \
                      mock.patch.object(M.Q,'tokenizer',return_value=tok), \
                      mock.patch.object(M.S,'host_memory',return_value=host), \
@@ -307,6 +307,7 @@ for index,line in enumerate(sys.stdin,1):
                 self.assertEqual(argv[argv.index('--max-requests')+1],'25')
                 self.assertEqual(argv[argv.index('--expert-tensor-mib')+1],'5529,5529')
                 self.assertIn('--expert-timings',argv)
+                self.assertEqual(argv.count('--overlap-shared-cpu'),1)
                 self.assertEqual(argv.count('--dense-resident-weights'),1)
                 self.assertEqual(argv.count('--gdn-resident-state'),1)
                 self.assertEqual(argv.count('--qsa-reuse-attention'),1)
@@ -314,6 +315,9 @@ for index,line in enumerate(sys.stdin,1):
                 self.assertNotIn('--gdn-resident-weights',argv)
                 receipt=json.loads((out/'summary.json').read_text())
                 self.assertTrue(receipt['child_reaped'])
+                self.assertIs(receipt['overlap_shared_cpu'],True)
+                self.assertEqual(receipt['overlap_environment'],M.P.overlap_environment())
+                self.assertTrue(all(p['overlap_shared_cpu'] is True for p in receipt['passes']))
                 self.assertIs(receipt['qsa_reuse_attention'],True)
                 self.assertEqual(receipt['qsa_policy'],'device_production')
                 self.assertTrue(all(p['qsa_policy']=='device_production' for p in receipt['passes']))
@@ -350,6 +354,9 @@ for index,line in enumerate(sys.stdin,1):
             for recorded, expected in ((0, True), (1, False), (2, True), (1, True)):
                 with self.subTest(flag=flag,recorded=recorded,expected=expected), tempfile.TemporaryDirectory() as d:
                     tok,suite,prompts,binding,ref,binary,plans,records=self.fixtures(Path(d))
+                    if flag == '--overlap-shared-cpu':
+                        summary=json.loads((ref/'summary.json').read_text());summary['overlap_shared_cpu']=expected
+                        (ref/'summary.json').write_text(json.dumps(summary))
                     if flag == '--qsa-production':
                         summary=json.loads((ref/'summary.json').read_text());summary['qsa_policy']='device_production' if expected else 'eager_diagnostic'
                         (ref/'summary.json').write_text(json.dumps(summary))
@@ -384,6 +391,25 @@ for index,line in enumerate(sys.stdin,1):
                     else:
                         with self.assertRaisesRegex(ValueError,'QSA summary'):
                             M.reference_rows(*args,residency={'--qsa-reuse-attention':expected})
+
+    def test_overlap_summary_binding_mutations(self):
+        for expected in (False, True):
+            for recorded in ('missing', False, True, 0, 1, 'true', None):
+                with self.subTest(expected=expected,recorded=recorded),tempfile.TemporaryDirectory() as d:
+                    tok,suite,prompts,binding,ref,binary,plans,records=self.fixtures(Path(d))
+                    summary=json.loads((ref/'summary.json').read_text())
+                    if recorded != 'missing': summary['overlap_shared_cpu']=recorded
+                    (ref/'summary.json').write_text(json.dumps(summary))
+                    if expected:
+                        for case in ref.glob('case-*'):
+                            path=case/'argv.json'
+                            path.write_text(json.dumps(json.loads(path.read_text())+['--overlap-shared-cpu']))
+                    args=(ref,binding,prompts,len(tok.tokens),M.Q.bundle.sha(binary),plans,'5529,5529')
+                    if recorded is expected or (not expected and recorded == 'missing'):
+                        self.assertEqual(M.reference_rows(*args,residency={'--overlap-shared-cpu':expected}),records)
+                    else:
+                        with self.assertRaisesRegex(ValueError,'shared CPU overlap summary'):
+                            M.reference_rows(*args,residency={'--overlap-shared-cpu':expected})
 
     def test_qsa_production_summary_mutations(self):
         for enabled in (False, True):

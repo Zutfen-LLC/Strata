@@ -71,16 +71,33 @@ struct PortableFfn::Impl {
     int64_t layer;
     PortableFfnOptions options;
     Backend cpu{nullptr, ggml_backend_free};
-    Context weights_ctx{nullptr, ggml_free}, pre_ctx{nullptr, ggml_free}, post_ctx{nullptr, ggml_free};
+    Context weights_ctx{nullptr, ggml_free}, pre_ctx{nullptr, ggml_free}, shared_ctx{nullptr, ggml_free}, post_ctx{nullptr, ggml_free};
     Buffer weights_buffer{nullptr, ggml_backend_buffer_free};
-    Scheduler pre_sched{nullptr, ggml_backend_sched_free}, post_sched{nullptr, ggml_backend_sched_free};
-    ggml_cgraph *pre = nullptr, *post = nullptr;
+    Scheduler pre_sched{nullptr, ggml_backend_sched_free}, shared_sched{nullptr, ggml_backend_sched_free}, post_sched{nullptr, ggml_backend_sched_free};
+    ggml_cgraph *pre = nullptr, *shared_graph = nullptr, *post = nullptr;
     ggml_tensor *input = nullptr, *mixed = nullptr, *inject = nullptr, *logits = nullptr, *shared = nullptr;
     ggml_tensor *post_input = nullptr, *post_inject = nullptr, *post_block = nullptr, *output = nullptr;
     std::vector<float> state;
     std::vector<PortablePlacement> placement;
     size_t weights_size = 0, graphs_size = 0, device_weights = 0;
-    bool initialized = false;
+    bool initialized = false, pending_shared = false;
+
+    void drain_shared() {
+        if (pending_shared) {
+            ggml_backend_sched_synchronize(shared_sched.get());
+            pending_shared = false;
+        }
+    }
+    void drain_all() {
+        if (!options.overlap_shared_cpu) return;
+        // Also cover exceptions thrown during route or post submission before
+        // the synchronous scheduler wrapper reaches its own wait.
+        for (auto* sched : {pre_sched.get(), shared_sched.get(), post_sched.get()})
+            if (sched) ggml_backend_sched_synchronize(sched);
+        pending_shared = false;
+    }
+    ~Impl() { drain_all(); } // before scheduler, graph, weights or producer storage is freed
+
 
 
     Impl(PortableFfnGeometry geometry, int64_t index, const std::vector<PortableTensorView>& weights,
@@ -149,13 +166,40 @@ struct PortableFfn::Impl {
         mixed = named(ggml_scale(c, mixed, 1.0f / float(g.streams)), "mixed");
         inject = named(ggml_mul_mat(c, w.at("hc_ffn_inject.weight"), norm), "inject");
         logits = named(ggml_mul_mat(c, w.at("ffn_gate_inp.weight"), mixed), "router_logits");
-        auto* sg = ggml_silu(c, ggml_mul_mat(c, w.at("ffn_gate_shexp.weight"), mixed));
-        auto* su = ggml_mul_mat(c, w.at("ffn_up_shexp.weight"), mixed);
+        ggml_tensor* shared_input = mixed;
+        if (options.overlap_shared_cpu) {
+            pre = ggml_new_graph(c);
+            for (auto* t : {mixed, inject, logits}) { ggml_set_output(t); ggml_build_forward_expand(pre, t); }
+            pre_sched = portable_detail::schedule(pre, "route-ready", options, cpu, placement, graphs_size);
+            // mixed is an output of the retained producer scheduler: no liveness reuse.
+            // Bind an OP_NONE leaf via the public API, not a view with producer edges.
+            // Context and producer scheduler both outlive shared_sched and every submission.
+            require(mixed->type == GGML_TYPE_F32 && ggml_is_contiguous(mixed) && mixed->buffer && mixed->data,
+                    "portable FFN: mixed allocation unavailable for alias");
+            shared_ctx = context(); c = shared_ctx.get();
+            shared_input = named(ggml_new_tensor_1d(c, GGML_TYPE_F32, g.hidden), "shared_mixed_alias");
+            require(ggml_backend_tensor_alloc(mixed->buffer, shared_input, mixed->data) == GGML_STATUS_SUCCESS,
+                    "portable FFN: mixed alias binding failed");
+        }
+        auto* sg = ggml_silu(c, ggml_mul_mat(c, w.at("ffn_gate_shexp.weight"), shared_input));
+        auto* su = ggml_mul_mat(c, w.at("ffn_up_shexp.weight"), shared_input);
         shared = ggml_mul_mat(c, w.at("ffn_down_shexp.weight"), ggml_mul(c, sg, su));
-        shared = named(ggml_mul(c, shared, ggml_sigmoid(c, ggml_mul_mat(c, w.at("ffn_gate_inp_shexp.weight"), mixed))), "shared");
-        pre = ggml_new_graph(c);
-        for (auto* t : {mixed, inject, logits, shared}) { ggml_set_output(t); ggml_build_forward_expand(pre, t); }
-        pre_sched = portable_detail::schedule(pre, "pre-experts", options, cpu, placement, graphs_size);
+        shared = named(ggml_mul(c, shared, ggml_sigmoid(c, ggml_mul_mat(c, w.at("ffn_gate_inp_shexp.weight"), shared_input))), "shared");
+        if (options.overlap_shared_cpu) {
+            shared_graph = ggml_new_graph(c);
+            ggml_set_output(shared); ggml_build_forward_expand(shared_graph, shared);
+            shared_sched = portable_detail::schedule(shared_graph, "shared-expert", options, cpu, placement, graphs_size);
+            auto* producer = ggml_backend_sched_get_tensor_backend(pre_sched.get(), mixed);
+            auto* alias_owner = ggml_backend_sched_get_tensor_backend(shared_sched.get(), shared_input);
+            require(producer && alias_owner == producer && shared_input->buffer == mixed->buffer &&
+                        shared_input->data == mixed->data && shared_input->op == GGML_OP_NONE &&
+                        !shared_input->view_src,
+                    "portable FFN: mixed alias backend/storage ownership mismatch");
+        } else {
+            pre = ggml_new_graph(c);
+            for (auto* t : {mixed, inject, logits, shared}) { ggml_set_output(t); ggml_build_forward_expand(pre, t); }
+            pre_sched = portable_detail::schedule(pre, "pre-experts", options, cpu, placement, graphs_size);
+        }
 
         c = post_ctx.get();
         post_input = ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, 1);
@@ -210,6 +254,7 @@ std::unique_ptr<PortableFfn> PortableFfn::from_gguf(const GgufModel& model, int6
 bool PortableFfn::reset(const std::vector<float>& residual, std::string& error) {
     error.clear();
     try {
+        impl_->drain_all();
         require(residual.size() == size_t(impl_->g.hidden * impl_->g.streams), "portable FFN: residual size mismatch");
         finite(residual); impl_->state = residual; impl_->initialized = true; return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
@@ -224,11 +269,18 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         PortableRoute candidate;
         candidate.activation = read(s.mixed);
         route_logits(read(s.logits), s.g.selected, candidate);
+        if (s.shared_sched) {
+            // Mark pending before submit: even a failed submission may have queued work.
+            s.pending_shared = true;
+            require(ggml_backend_sched_graph_compute_async(s.shared_sched.get(), s.shared_graph) == GGML_STATUS_SUCCESS,
+                    "portable FFN: shared graph failed");
+        }
         std::vector<float> rows;
         const bool dispatched = dispatch(s.layer, candidate, rows, error);
         require(dispatched, error.empty() ? "portable FFN: expert dispatch failed" : error);
         require(rows.size() == size_t(s.g.hidden * s.g.selected), "portable FFN: indexed expert row count mismatch");
         finite(rows);
+        s.drain_shared();
         auto block = read(s.shared);
         for (int64_t h = 0; h < s.g.hidden; ++h) {
             float routed = 0;
@@ -240,7 +292,8 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         require(ggml_backend_sched_graph_compute(s.post_sched.get(), s.post) == GGML_STATUS_SUCCESS, "portable FFN: post graph failed");
         auto next = read(s.output);
         s.state = std::move(next); route = std::move(candidate); error.clear(); return true;
-    } catch (const std::exception& e) { error = e.what(); return false; }
+    } catch (const std::exception& e) { impl_->drain_all(); error = e.what(); return false; }
+    catch (...) { impl_->drain_all(); error = "portable FFN: unknown expert/graph exception"; return false; }
 }
 const std::vector<float>& PortableFfn::residual() const { return impl_->state; }
 const std::vector<PortablePlacement>& PortableFfn::placements() const { return impl_->placement; }
@@ -252,15 +305,17 @@ PortableMemoryUsage PortableFfn::memory_usage() const {
     PortableMemoryUsage m;
     m.host_weights = s.weights_size - s.device_weights;
     m.device_weights = s.device_weights;
-    for (auto *sched : {s.pre_sched.get(), s.post_sched.get()}) {
+    for (auto *sched : {s.pre_sched.get(), s.shared_sched.get(), s.post_sched.get()}) {
+        if (!sched) continue;
         m.host_graph += ggml_backend_sched_get_buffer_size(sched, s.cpu.get());
         if (s.options.accelerator && s.options.request_accelerator)
             m.device_graph += ggml_backend_sched_get_buffer_size(sched, s.options.accelerator);
     }
-    m.host_extra_bound = 6u << 20; // three owning metadata contexts, plus token staging below
+    m.host_extra_bound = (s.shared_sched ? 8u : 6u) << 20; // three or four owning metadata contexts, plus token staging below
     m.host_extra_bound += size_t(s.g.hidden * s.g.streams * 8 + s.g.selected * s.g.hidden) * sizeof(float);
     m.host_extra_bound += ggml_graph_plan(s.pre, s.options.threads, nullptr).work_size +
                           ggml_graph_plan(s.post, s.options.threads, nullptr).work_size;
+    if (s.shared_graph) m.host_extra_bound += ggml_graph_plan(s.shared_graph, s.options.threads, nullptr).work_size;
     if (s.options.request_accelerator && s.options.accelerator) {
         const size_t largest = std::max({s.g.hidden * s.g.streams * s.g.rank,
             s.g.hidden * s.g.shared_ff, s.g.hidden * s.g.experts});

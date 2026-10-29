@@ -190,6 +190,7 @@ struct PortableModelSession::Impl {
         auto execution = [&](size_t index, bool output) {
             PortableFfnOptions o;
             o.threads = opts.threads;
+            o.overlap_shared_cpu = opts.overlap_shared_cpu;
             o.allow_cpu_fallback = opts.allow_cpu_fallback;
             o.resident_dense_weights = opts.dense_resident_weights;
             o.weight_budget = output ? opts.head_weight_cap : opts.layer_weight_cap;

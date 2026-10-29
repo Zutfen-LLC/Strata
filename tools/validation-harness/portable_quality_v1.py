@@ -13,7 +13,15 @@ import quality as Q
 import portable_model_smoke_v1 as S
 
 
-RESIDENCY_FLAGS = ('--qsa-production', '--qsa-reuse-attention', '--gdn-production', '--gdn-resident-weights', '--gdn-resident-state', '--dense-resident-weights')
+RESIDENCY_FLAGS = ('--overlap-shared-cpu', '--qsa-production', '--qsa-reuse-attention', '--gdn-production', '--gdn-resident-weights', '--gdn-resident-state', '--dense-resident-weights')
+
+
+def overlap_environment():
+    # Pinned Vulkan checks presence, including when a variable contains "0".
+    # Do not alter the caller's settings to manufacture asynchronous execution.
+    return {key: key in os.environ for key in (
+        'GGML_VK_DISABLE_ASYNC', 'GGML_VK_SERIALIZE_SUBMISSIONS',
+        'GGML_VK_PERF_LOGGER', 'GGML_VK_PERF_LOGGER_CONCURRENT')}
 
 
 def residency_arguments(parser):
@@ -118,6 +126,8 @@ def run_portable(args, tok):
     summary = dict(status='STOP', source='ac85ff3fdf0834c13437b69b1568d8704e9b0717',
                    binary_sha256=args.binary_sha256, suite=binding, requests=[],
                    qsa_policy='device_production' if getattr(args, 'qsa_production', False) else 'eager_diagnostic',
+                   overlap_environment=overlap_environment(),
+                   overlap_shared_cpu=bool(getattr(args, 'overlap_shared_cpu', False)),
                    qsa_reuse_attention=bool(getattr(args, 'qsa_reuse_attention', False)),
                    gdn_policy='device_production' if getattr(args, 'gdn_production', False) else 'eager_diagnostic')
     if getattr(args,'expert_plan',[]):

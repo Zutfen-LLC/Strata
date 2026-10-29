@@ -108,6 +108,7 @@ int main(int argc, char **argv) {
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
                              " [--gdn-production (requires --gdn-resident-state and strict Vulkan)]\n"
                              " [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
+                             " [--overlap-shared-cpu (trial, default off)]\n"
                              " [--qsa-reuse-attention (trial, default off)]\n"
                              " [--gdn-resident-state (trial, default off)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
@@ -131,6 +132,10 @@ int main(int argc, char **argv) {
             }
             if (key == "--qsa-production") {
                 opts.qsa_production = true;
+                continue;
+            }
+            if (key == "--overlap-shared-cpu") {
+                opts.overlap_shared_cpu = true;
                 continue;
             }
             if (key == "--qsa-reuse-attention") {
