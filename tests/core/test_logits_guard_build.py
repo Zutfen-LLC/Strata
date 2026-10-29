@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 GGML = Path(sys.argv.pop(1)).resolve()
 BUILD = Path(sys.argv.pop(1)).resolve()
 CMAKE = sys.argv.pop(1)
+NATIVE_STAGES = len(sys.argv) > 1 and sys.argv.pop(1).upper() in ("ON", "TRUE", "1")
 FILES = ('src/ggml-vulkan/ggml-vulkan.cpp', 'src/ggml-vulkan/ggml-vulkan-common.h',
          'src/ggml-vulkan/ggml-vulkan-types.h', 'src/ggml-vulkan/ggml-vulkan-push-constants.h',
          'src/ggml-backend-impl.h', 'src/ggml-impl.h', 'include/ggml.h',
@@ -53,10 +54,13 @@ class GuardBuild(unittest.TestCase):
             self.assertEqual(self.gate(candidate, directory).returncode, 0)
         self.assertEqual(before, {name: digest(GGML / name) for name in FILES})
 
-    def test_copy_is_exact_original_plus_one_local_include(self):
+    def test_copy_is_exact_original_plus_local_includes(self):
         original = (GGML / FILES[0]).read_bytes()
         copy = (BUILD / 'ggml-vulkan-guard.cpp').read_bytes()
-        self.assertEqual(copy, original + b'\n#include "strata_vk_logits_guard.inc"\n')
+        suffix = b'\n#include "strata_vk_logits_guard.inc"\n'
+        if NATIVE_STAGES:
+            suffix += b'#include "strata_vk_native_stages.inc"\n'
+        self.assertEqual(copy, original + suffix)
 
     def test_shader_has_integer_classification_and_no_float_type(self):
         data = (BUILD / 'logits_nonfinite.spv').read_bytes()
