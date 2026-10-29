@@ -1,4 +1,4 @@
-// Native-consumer-only probe. No quantizer call and no new GPU kernel.
+// Native-consumer-only probe. No direct quantizer call or new GPU kernel.
 #include "native_q8_consumer_fixture.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include <cuda_runtime.h>
@@ -43,6 +43,8 @@ int main(int argc,char** argv){try {
     need(layout.bytes==weights.size() && layout.gu_row==272 && layout.d_row==34 && layout.up_off==8704 &&
         layout.down_off==17408 && layout.tail_off==0 && layout.had_block==0,"consumer: native Q8 layout mismatch");
     const size_t scratch_bytes=native_expert_scratch_bytes(2,c::F),fa=(2*c::F*4+255)&~size_t(255);
+    const size_t hq_offset=c::checked_hq_offset(scratch_bytes);
+    need(hq_offset==3*fa,"consumer: hq plane layout mismatch");
     Device w(weights.size()),x(2*c::PREFIX_BYTES),pointer(8),start(8),groups(4),dst(8),tok(8),scratch(scratch_bytes),out(2*c::H*4);
     Bytes paired;paired.insert(paired.end(),native.input.begin(),native.input.begin()+c::PREFIX_BYTES);
     paired.insert(paired.end(),observation.input.begin(),observation.input.begin()+c::PREFIX_BYTES);
@@ -58,10 +60,12 @@ int main(int argc,char** argv){try {
     std::vector<float> gate(2*c::F),up(2*c::F),output(2*c::H);
     read(gate.data(),scratch.p,gate.size()*4);read(up.data(),static_cast<const uint8_t*>(scratch.p)+fa,up.size()*4);
     read(output.data(),out.p,output.size()*4);
+    Bytes hq(c::HQ_BYTES);read(hq.data(),static_cast<const uint8_t*>(scratch.p)+hq_offset,hq.size());
     Bytes retained(paired.size());read(retained.data(),x.p,retained.size());need(retained==paired,"consumer: packed inputs changed");
     // Save every raw result before comparisons so a mismatch is not discarded.
     std::ofstream raw(argv[10],std::ios::binary);need(bool(raw),"consumer: cannot create raw receipt");
     word(raw,0x3143384e);save(raw,gate);save(raw,up);save(raw,output);need(bool(raw),"consumer: raw receipt write failed");raw.close();
+    c::write_hq(std::string(argv[10])+".hq.bin",hq);
     const size_t mismatches=compare("gate",gate,c::F)+compare("up",up,c::F)+compare("output",output,c::H);
     std::printf("native_consumer_only=true qualified=false observation_fp32_denorm_mode=unspecified original_byte_failure_preserved=true finite_synthetic_weights=true device=%s pci=%s entries=2 n_embd=256 n_ff=32 total_raw_bit_mismatches=%zu\n",props.name,pci,mismatches);
     return mismatches?1:0;

@@ -45,6 +45,14 @@ int main(){try {
     rejects([&]{c::read_capture(b,true);});
     write_observation_result(b,observation,true);{std::ofstream file(b,std::ios::binary|std::ios::app);file.put('x');}
     rejects([&]{c::read_capture(b,true);});
+    need(c::checked_hq_offset(1024)==768 && c::checked_hq_offset(840)==768 && c::HQ_BYTES==72,"native hq layout");
+    rejects([&]{c::checked_hq_offset(839);});rejects([&]{c::checked_hq_offset(0);});
+    const auto hq_path=(tmp.path/"hq").string();Bytes hq(c::HQ_BYTES);
+    for(size_t i=0;i<hq.size();++i)hq[i]=uint8_t(i);
+    c::write_hq(hq_path,hq);need(std::filesystem::file_size(hq_path)==72,"hq padding/header leaked");
+    {std::ifstream in(hq_path,std::ios::binary);Bytes got(72);in.read(reinterpret_cast<char*>(got.data()),got.size());
+     need(got==hq && in.peek()==EOF,"hq raw bytes changed");}
+    hq.pop_back();rejects([&]{c::write_hq(hq_path,hq);});
     const auto oracle=(tmp.path/"oracle").string(),weight_path=(tmp.path/"weights").string();
     {std::ofstream file(oracle,std::ios::binary);word(file,0x3143384e);
      for(size_t count:{size_t(64),size_t(64),size_t(512)}){word(file,uint32_t(count));for(size_t i=0;i<count;++i)word(file,i%4==0?0x80000000u:0x3f800000u);}}

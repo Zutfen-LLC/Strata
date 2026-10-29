@@ -111,6 +111,24 @@ class Tools(unittest.TestCase):
             write(o, True, [observed[0], bytes(936)] + observed[2:])
             with self.assertRaises(ValueError):consumer.validate(f, n, o)
 
+    def test_native_hq_capture_requires_retained_output_and_weights(self):
+        consumer = module('native_q8_consumer')
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory);raw = d / 'native-consumer.raw';weights = d / 'native-consumer.raw.weights.bin'
+            hq = d / 'native-consumer.raw.hq.bin'
+            raw.write_bytes(b'original raw output');weights.write_bytes(b'original weights');hq.write_bytes(bytes(range(72)))
+            expected = consumer.validate_hq_capture(d, raw.read_bytes(), weights.read_bytes())
+            self.assertEqual(expected, hashlib.sha256(hq.read_bytes()).hexdigest())
+            with self.assertRaises(ValueError):consumer.validate_hq_capture(d, b'different oracle', weights.read_bytes())
+            with self.assertRaises(ValueError):consumer.validate_hq_capture(d, raw.read_bytes(), b'different weights')
+            for length in (0, 71, 73, 256):
+                hq.write_bytes(bytes(length))
+                with self.assertRaises(ValueError):consumer.validate_hq_capture(d, raw.read_bytes(), weights.read_bytes())
+        source = (ROOT / 'tests/kernels/native_q8_consumer.cpp').read_text()
+        self.assertIn('static_cast<const uint8_t*>(scratch.p)+hq_offset', source)
+        self.assertLess(source.index('checked(cudaDeviceSynchronize())'), source.index('Bytes hq(c::HQ_BYTES)'))
+        self.assertIn('word(raw,0x3143384e);save(raw,gate);save(raw,up);save(raw,output)', source)
+
     def test_gu_oracle_and_raw_bit_comparison(self):
         gu = module('native_q8_gu')
         with tempfile.TemporaryDirectory() as directory:

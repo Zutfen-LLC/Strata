@@ -55,12 +55,27 @@ def validate(fixture_path, native_path, observation_path):
     return report
 
 
+def validate_hq_capture(directory, retained_oracle, retained_weights):
+    """Only a capture whose existing results are unchanged may supply down input."""
+    if (directory / 'native-consumer.raw').read_bytes() != retained_oracle:
+        raise ValueError('hq capture gate/up/output differs from retained native oracle')
+    if (directory / 'native-consumer.raw.weights.bin').read_bytes() != retained_weights:
+        raise ValueError('hq capture weights differ from retained native oracle')
+    hq = (directory / 'native-consumer.raw.hq.bin').read_bytes()
+    if len(hq) != 72:
+        raise ValueError('hq capture must contain exactly two actual Q8_1 blocks (72 bytes)')
+    return hashlib.sha256(hq).hexdigest()
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('fixture', 'native', 'observation', 'consumer', 'output'):
         p.add_argument('--' + name, type=Path, required=True)
     for name in ('fixture', 'native', 'observation'):
         p.add_argument('--' + name + '-sha256', required=True)
+    for name in ('retained-oracle', 'retained-weights'):
+        p.add_argument('--' + name, type=Path)
+        p.add_argument('--' + name + '-sha256')
     p.add_argument('--device', required=True)
     p.add_argument('--expect-device', required=True)
     a = p.parse_args()
@@ -68,6 +83,13 @@ def main():
         raise ValueError('verified numeric device and nonempty device substring required')
     sources = {name: checked_bytes(getattr(a, name), getattr(a, name + '_sha256'))
                for name in ('fixture', 'native', 'observation')}
+    retained = {}
+    supplied = (a.retained_oracle, a.retained_oracle_sha256, a.retained_weights, a.retained_weights_sha256)
+    if any(value is not None for value in supplied):
+        if not all(value is not None for value in supplied):
+            raise ValueError('hq capture requires both retained artifacts and their verified hashes')
+        for name in ('retained-oracle', 'retained-weights'):
+            retained[name] = checked_bytes(getattr(a, name.replace('-', '_')), getattr(a, name.replace('-', '_') + '_sha256'))
     a.output.mkdir(parents=False, exist_ok=False)
     # Immutable-by-convention fresh snapshots bind validation and child inputs to
     # the same bytes; originals remain untouched. Hashes are checked before GPU use.
@@ -76,6 +98,8 @@ def main():
         paths[name] = a.output / (name + '.bin')
         with paths[name].open('xb') as out:
             out.write(data)
+    for name, data in retained.items():
+        with (a.output / (name + '.bin')).open('xb') as out:out.write(data)
     comparison = validate(paths['fixture'], paths['native'], paths['observation'])
     (a.output / 'original-comparison.json').write_text(json.dumps(comparison, indent=2, allow_nan=False) + '\n')
     exe = a.consumer.resolve(strict=True)
@@ -83,7 +107,7 @@ def main():
                '--native', str(paths['native'].resolve()), '--observation', str(paths['observation'].resolve()),
                '--output', str((a.output / 'native-consumer.raw').resolve())]
     receipt = {'qualified': False, 'fp32_denorm_mode': 'unspecified', 'original_comparator_exit': 1,
-               'native_consumer_only': True, 'finite_synthetic_weights': True, 'argv': command,
+               'native_consumer_only': True, 'finite_synthetic_weights': True, 'hq_reuse_verified': False, 'argv': command,
                'denorm_mode_applies_to': 'retained_observation_capture',
                'native_environment': {k: os.environ.get(k) for k in ('STRATA_GROUPED_V1', 'STRATA_KQ_SPLIT',
                    'STRATA_OLD_IQ_MMVQ', 'STRATA_EXPERT_V2', 'STRATA_GU_SWIGLU', 'STRATA_EXPDEC', 'STRATA_EXP_MODE')},
@@ -91,6 +115,9 @@ def main():
                'consumer_sha256': hashlib.sha256(exe.read_bytes()).hexdigest()}
     revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True, capture_output=True)
     receipt['source_head'] = revision.stdout.strip() if revision.returncode == 0 else None
+    if retained:
+        receipt['retained_oracle_sha256'] = hashlib.sha256(retained['retained-oracle']).hexdigest()
+        receipt['retained_weights_sha256'] = hashlib.sha256(retained['retained-weights']).hexdigest()
     receipt_path = a.output / 'receipt.json'
     receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
     with (a.output / 'consumer.log').open('wb') as log:
@@ -107,13 +134,19 @@ def main():
         except OSError as error:
             receipt['actual_child_exit'] = None
             receipt['launch_error'] = str(error)
-    for name in ('native-consumer.raw', 'native-consumer.raw.weights.bin'):
+    for name in ('native-consumer.raw', 'native-consumer.raw.weights.bin', 'native-consumer.raw.hq.bin'):
         path = a.output / name
         if path.is_file():
             receipt['sha256'][name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if retained and receipt.get('actual_child_exit') == 0 and not receipt.get('timeout') and not receipt.get('launch_error'):
+        try:
+            receipt['sha256']['native-consumer.raw.hq.bin'] = validate_hq_capture(a.output, retained['retained-oracle'], retained['retained-weights'])
+            receipt['hq_reuse_verified'] = True
+        except (OSError, ValueError) as error:
+            receipt['hq_reuse_error'] = str(error)
     receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt))
-    return 1 if receipt.get('timeout') or receipt.get('launch_error') else receipt['actual_child_exit'] if receipt['actual_child_exit'] >= 0 else 1
+    return 1 if receipt.get('timeout') or receipt.get('launch_error') or receipt.get('hq_reuse_error') else receipt['actual_child_exit'] if receipt['actual_child_exit'] >= 0 else 1
 
 
 if __name__ == '__main__':

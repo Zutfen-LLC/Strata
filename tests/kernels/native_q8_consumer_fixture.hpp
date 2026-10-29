@@ -2,6 +2,20 @@
 #include "native_q8_fixture.hpp"
 namespace native_q8_fixture::consumer {
 constexpr size_t ELEMENTS=832, H=256, F=32, BLOCK_BYTES=36, PREFIX_BYTES=8*BLOCK_BYTES;
+// Same fixed paired fixture as native_expert_grouped: hq follows three
+// 256-byte-aligned F32 planes. Capture only the live blocks, not padding.
+constexpr size_t ENTRIES=2, FLOAT_PLANE_BYTES=(ENTRIES*F*4+255)&~size_t(255);
+constexpr size_t HQ_OFFSET=3*FLOAT_PLANE_BYTES, HQ_BYTES=ENTRIES*(F/32)*BLOCK_BYTES;
+static_assert(FLOAT_PLANE_BYTES==256 && HQ_OFFSET==768 && HQ_BYTES==72);
+inline size_t checked_hq_offset(size_t scratch_bytes) {
+    need(HQ_OFFSET<=scratch_bytes && HQ_BYTES<=scratch_bytes-HQ_OFFSET,"consumer: hq exceeds native scratch");
+    return HQ_OFFSET;
+}
+inline void write_hq(const std::string& path,const Bytes& hq) {
+    need(hq.size()==HQ_BYTES,"consumer: hq sidecar size mismatch");
+    std::ofstream out(path,std::ios::binary);need(bool(out),"consumer: cannot create hq sidecar");
+    out.write(reinterpret_cast<const char*>(hq.data()),hq.size());need(bool(out),"consumer: hq sidecar write failed");
+}
 inline Result read_capture(const std::string& path,bool observation) {
     std::ifstream in(path,std::ios::binary);need(bool(in),"consumer: cannot read capture");
     need(word(in)==(observation?0x3252384e:0x3152384e),"consumer: wrong capture role/magic");

@@ -429,3 +429,39 @@ the unchanged receipt snapshot. This records independently verified evidence; it
 commit from an archive hash or verify an archive build itself. Missing or
 malformed values, receipt/binary conflicts, and overrides of ordinary Git
 receipts are rejected. Existing Git-backed receipts require no additional flags.
+
+## Capture the actual native down input
+
+The paired native consumer additionally saves `native-consumer.raw.hq.bin`:
+exactly 72 raw packed bytes, two Q8_1 blocks, copied after its existing native
+synchronization. `native_expert_grouped` places `hq` after three aligned F32
+planes; this fixture uses 256-byte planes, hence scratch offset 768. The copy
+is bounded against `native_expert_scratch_bytes`. No arithmetic or kernel is
+added, and the existing gate/up/output raw format is unchanged.
+
+To obtain the missing intermediate with one bounded repetition of the same
+synthetic native consumer, build `native_q8_consumer` in the existing CUDA build
+and use the existing original fixture/captures plus retained oracle and weights:
+
+```sh
+cmake --build CUDA_BUILD --target native_q8_consumer -j4
+python3 tools/native_q8_consumer.py \
+  --consumer CUDA_BUILD/native_q8_consumer \
+  --device "$DEVICE" --expect-device "$DEVICE_NAME" --output "$FRESH_OUTPUT" \
+  --fixture "$EVIDENCE/fixture.bin" --fixture-sha256 "$FIXTURE_SHA256" \
+  --native "$EVIDENCE/native.bin" --native-sha256 "$NATIVE_SHA256" \
+  --observation "$EVIDENCE/observation.bin" --observation-sha256 "$OBSERVATION_SHA256" \
+  --retained-oracle "$EVIDENCE/native-consumer.raw" --retained-oracle-sha256 "$ORACLE_SHA256" \
+  --retained-weights "$EVIDENCE/native-consumer.raw.weights.bin" --retained-weights-sha256 "$WEIGHTS_SHA256"
+```
+
+The new arguments are all-or-none. Their supplied hashes are checked before
+launch and fresh snapshots are saved. After the single existing native call,
+the launcher requires the new gate/up/output raw bytes and weight bytes to equal
+the retained artifacts exactly, and the sidecar to contain exactly 72 bytes.
+Failure returns exit 1, keeps actual child exit and artifacts, and leaves
+`hq_reuse_verified=false`. Only a completed guarded capture sets that flag true;
+without retained artifacts the sidecar is still saved but is not verified for
+reuse. A future down-only runner must require that verification and its hashes
+before consuming the sidecar. No hidden values are reconstructed or quantized
+by Vulkan. The original packed-byte failure and unqualified status persist.
