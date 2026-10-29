@@ -66,6 +66,7 @@ struct PortableModelOptions {
     bool gdn_resident_weights = false; // opt-in GDN attention only
     bool gdn_resident_state = false; // opt-in; independent of weight residency
     bool dense_resident_weights = false; // opt-in attention, FFN and head weights
+    size_t prompt_chunk_size = 0; // default off; 2..8 implies prompt head elision
     bool prompt_head_elision = false; // opt-in: only final prompt position projects vocabulary
     bool qsa_production = false; // device KV/indexer authority; requires strict accelerator and reuse
     bool qsa_reuse_attention = false; // capacity-primed execution/scratch; default off
@@ -87,6 +88,10 @@ struct PortableExpertWork {
 // Layer totals include matched provider intervals.
 struct PortableModelWork {
     uint64_t heads_executed = 0, heads_skipped = 0; // unconditional, cumulative across reset
+    uint64_t completed_forward_calls = 0, completed_layer_calls = 0;
+    uint64_t completed_ffn_pre_calls = 0, completed_provider_calls = 0, completed_ffn_post_calls = 0;
+    uint64_t logical_tokens = 0, prompt_chunks = 0, prompt_chunk_tokens = 0;
+    uint64_t chunk_layer_calls = 0, chunk_ffn_pre_calls = 0, chunk_provider_calls = 0, chunk_ffn_post_calls = 0;
     PortableGdnWork gdn_phases; // nested GDN scopes; enabled only by expert_timings
     double step_ms = 0, gdn_ms = 0, qsa_ms = 0, head_ms = 0;
     double gdn_provider_ms = 0, qsa_provider_ms = 0;
@@ -94,6 +99,7 @@ struct PortableModelWork {
 };
 struct PortableModelReport {
     // Unique mapped shard file bytes; PLE may alias the same backing file.
+    bool chunk_memory_is_shape_envelope = false;
     size_t mapped_bytes = 0, host_weights = 0, host_state_bound = 0, expert_staging = 0;
     size_t graph_admission_bound = 0;
     size_t host_scheduler = 0;
@@ -130,6 +136,9 @@ class PortableModelSession {
     // Input-only state advancement. No logits or logit finite check at this
     // position. Layer execution, poison/reset and position commit match step().
     bool advance(int32_t token, std::string &error);
+    // Enabled-policy input-only chunk. No completed publication on failure;
+    // earlier layers may have advanced, so any execution error poisons/reset.
+    bool advance_chunk(const std::vector<int32_t>& tokens, std::string& error);
     bool generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result, std::string &error);
     bool reset(std::string &error);
     uint64_t position() const;

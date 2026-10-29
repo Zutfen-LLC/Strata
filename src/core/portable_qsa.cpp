@@ -162,6 +162,24 @@ struct PortableQsaLayer::Impl {
     size_t chunk_host_bound = 0;
     PortableLayerChunkWork chunk_work;
     size_t chunk_graphs() const { return chunk_ffn ? chunk_ffn->graph_bytes() : 0; }
+
+    void prepare(size_t T,std::string& error) {
+        auto& s=*this;
+        require(T>=1&&T<=8,"portable layer: chunk size outside [1,8]");
+        const size_t extra=(s.options.production?0:s.options.capacity*2*KV*sizeof(uint16_t)+
+                            (s.options.capacity/4+6)*ID*sizeof(float))+(3*T*RES+RES)*sizeof(float);
+        const size_t device_state=s.state_buffer?ggml_backend_buffer_get_size(s.state_buffer.get()):0;
+        require(s.states_size+device_state<=s.options.state_budget &&
+                extra<=s.options.state_budget-s.states_size-device_state,"portable QSA: chunk working state budget exceeded");
+        s.chunk_host_bound=extra;
+        if(T==1 || (s.chunk_ffn && s.chunk_ffn->tokens()!=int64_t(T))) s.chunk_ffn.reset();
+        if(T>1 && !s.chunk_ffn) {
+            const size_t used=s.fixed_graphs+s.retained_attention_bytes;
+            require(used<s.options.execution.graph_budget,"portable QSA: no chunk graph budget");
+            s.chunk_ffn=s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-used);
+            require(bool(s.chunk_ffn),error);
+        }
+    }
     struct CursorView {
         const std::vector<uint16_t>& keys;
         const std::vector<uint16_t>& values;
@@ -760,6 +778,11 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
         return false;
     }
 }
+bool PortableQsaLayer::prepare_chunk(size_t tokens,std::string& error) {
+    error.clear();
+    try { require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
+    catch(const std::exception& e) { error=e.what(); return false; }
+}
 bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t position0,
     std::vector<float>& residual_rows,const PortableExpertRowsBatch& dispatch,
     std::vector<PortableRoute>& routes,std::string& error) {
@@ -771,19 +794,7 @@ bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t pos
         require(position0==s.count && T<=s.options.capacity-s.count && T<=UINT64_MAX-s.chunk_work.tokens,
                 "portable QSA: noncontiguous/exhausted chunk");
         struct Active { bool& flag; explicit Active(bool& f):flag(f){flag=true;} ~Active(){flag=false;} } active(s.chunk_active);
-        const size_t extra=(s.options.production?0:s.options.capacity*2*KV*sizeof(uint16_t)+
-                            (s.options.capacity/4+6)*ID*sizeof(float))+(3*T*RES+RES)*sizeof(float);
-        const size_t device_state=s.state_buffer?ggml_backend_buffer_get_size(s.state_buffer.get()):0;
-        require(s.states_size+device_state<=s.options.state_budget &&
-                extra<=s.options.state_budget-s.states_size-device_state,"portable QSA: chunk working state budget exceeded");
-        s.chunk_host_bound=extra;
-        if(T==1 || (s.chunk_ffn && s.chunk_ffn->tokens()!=int64_t(T))) s.chunk_ffn.reset();
-        if(T>1 && !s.chunk_ffn) {
-            const size_t used=s.fixed_graphs+s.retained_attention_bytes;
-            require(used<s.options.execution.graph_budget,"portable QSA: no chunk graph budget");
-            s.chunk_ffn=s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-used);
-            require(bool(s.chunk_ffn),error);
-        }
+        s.prepare(T,error);
         auto keys=s.keys, values=s.values; auto pooled=s.pooled, tail=s.tail;
         if(!s.options.production) {
             keys.reserve(s.options.capacity*KV); values.reserve(s.options.capacity*KV);

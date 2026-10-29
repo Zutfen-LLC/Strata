@@ -60,6 +60,9 @@ class PortableGdnLayer {
     bool run_chunk(const std::vector<int32_t>& tokens, uint64_t position0,
                    std::vector<float>& residual_rows, const PortableExpertRowsBatch& dispatch,
                    std::vector<PortableRoute>& routes, std::string& error);
+    // Allocate/replace one chunk shape without advancing sequence state.
+    // Caller pre-admits the module bound before invoking this planning seam.
+    bool prepare_chunk(size_t tokens, std::string& error);
     PortableLayerChunkWork chunk_work() const;
     // Tensor-state observers require eager_diagnostic and throw in production.
     // Token history and last_residual remain current in both policies. Production

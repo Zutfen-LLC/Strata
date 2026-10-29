@@ -99,6 +99,22 @@ struct PortableGdnLayer::Impl {
     size_t chunk_host_bound = 0;
     PortableLayerChunkWork chunk_work;
     size_t chunk_graphs() const { return chunk_ffn ? chunk_ffn->graph_bytes() : 0; }
+
+    void prepare(size_t T,std::string& error) {
+        auto& s=*this;
+        require(T>=1&&T<=8,"portable layer: chunk size outside [1,8]");
+        const size_t extra = (s.production() ? 0 : (STATES+HISTORY+(s.options.ple_table?PLE_HISTORY:0))*sizeof(float)) +
+                             (3*T*RESIDUAL+RESIDUAL)*sizeof(float);
+        require(s.host_state_bytes() <= s.options.state_budget && extra <= s.options.state_budget-s.host_state_bytes(),
+                "portable GDN: chunk working state budget exceeded");
+        s.chunk_host_bound = extra;
+        if (T == 1 || (s.chunk_ffn && s.chunk_ffn->tokens() != int64_t(T))) s.chunk_ffn.reset();
+        if (T > 1 && !s.chunk_ffn) {
+            require(s.graphs_size < s.options.execution.graph_budget,"portable GDN: no chunk graph budget");
+            s.chunk_ffn = s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-s.graphs_size);
+            require(bool(s.chunk_ffn),error);
+        }
+    }
     struct CursorView {
         const std::vector<float>& state;
         const std::vector<float>& history;
@@ -616,6 +632,11 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         return false;
     }
 }
+bool PortableGdnLayer::prepare_chunk(size_t tokens,std::string& error) {
+    error.clear();
+    try { require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
+    catch(const std::exception& e) { error=e.what(); return false; }
+}
 bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t position0,
     std::vector<float>& residual_rows, const PortableExpertRowsBatch& dispatch,
     std::vector<PortableRoute>& routes, std::string& error) {
@@ -629,17 +650,7 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
         require(position0 == s.count && T <= UINT64_MAX-s.count && T <= UINT64_MAX-s.chunk_work.tokens,
                 "portable GDN: noncontiguous/exhausted chunk");
         struct Active { bool& flag; explicit Active(bool& f):flag(f){flag=true;} ~Active(){flag=false;} } active(s.chunk_active);
-        const size_t extra = (s.production() ? 0 : (STATES+HISTORY+(s.options.ple_table?PLE_HISTORY:0))*sizeof(float)) +
-                             (3*T*RESIDUAL+RESIDUAL)*sizeof(float);
-        require(s.host_state_bytes() <= s.options.state_budget && extra <= s.options.state_budget-s.host_state_bytes(),
-                "portable GDN: chunk working state budget exceeded");
-        s.chunk_host_bound = extra;
-        if (T == 1 || (s.chunk_ffn && s.chunk_ffn->tokens() != int64_t(T))) s.chunk_ffn.reset();
-        if (T > 1 && !s.chunk_ffn) {
-            require(s.graphs_size < s.options.execution.graph_budget,"portable GDN: no chunk graph budget");
-            s.chunk_ffn = s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-s.graphs_size);
-            require(bool(s.chunk_ffn),error);
-        }
+        s.prepare(T,error);
         auto state = s.state, history = s.history, ple_history = s.ple_history;
         auto previous = s.previous;
         std::vector<float> attended_rows; attended_rows.reserve(T*RESIDUAL);

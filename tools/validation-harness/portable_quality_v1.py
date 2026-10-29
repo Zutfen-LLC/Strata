@@ -17,12 +17,57 @@ RESIDENCY_FLAGS = ('--prompt-head-elision', '--qsa-production', '--qsa-reuse-att
 
 
 def residency_arguments(parser):
+    parser.add_argument('--prompt-chunk-size',type=int,choices=range(2,9),default=0,help='bounded layer-major prompt chunks; implies head elision')
     for flag in RESIDENCY_FLAGS:
         parser.add_argument(flag, action='store_true', help='forward opt-in model residency policy')
 
 
 def residency_flags(args):
-    return [flag for flag in RESIDENCY_FLAGS if getattr(args, flag[2:].replace('-', '_'), False)]
+    size=chunk_size(args)
+    flags=[flag for flag in RESIDENCY_FLAGS if getattr(args,flag[2:].replace('-','_'),False) or
+           (flag=='--prompt-head-elision' and size)]
+    if size: flags += ['--prompt-chunk-size',str(size)]
+    return flags
+
+
+CHUNK_COUNTERS={'logical_tokens_delta','prompt_chunks_delta','prompt_chunk_tokens_delta','chunk_layer_calls_delta',
+    'chunk_ffn_pre_calls_delta','chunk_provider_calls_delta','chunk_ffn_post_calls_delta',
+    'model_forward_calls_delta','model_layer_calls_delta','ffn_pre_calls_delta','provider_calls_delta','ffn_post_calls_delta'}
+def chunk_size(args):
+    value=getattr(args,'prompt_chunk_size',0)
+    if type(value) is not int or value not in (0,2,3,4,5,6,7,8): raise ValueError('invalid prompt chunk size')
+    return value
+
+def chunk_argv(command):
+    flag='--prompt-chunk-size'
+    if flag not in command:return 0
+    if command.count(flag)!=1 or command.index(flag)+1>=len(command): raise ValueError('duplicate/missing chunk size')
+    value=command[command.index(flag)+1]
+    if value not in tuple(map(str,range(2,9))):raise ValueError('invalid chunk argv size')
+    return int(value)
+
+def chunk_binding(record,size):
+    if size:
+        if type(record.get('prompt_chunk_size')) is not int or record['prompt_chunk_size']!=size or record.get('chunk_policy')!='layer_major_v1':
+            raise ValueError('prompt chunk policy mismatch')
+    elif 'prompt_chunk_size' in record or 'chunk_policy' in record: raise ValueError('foreign prompt chunk policy')
+
+def chunk_fields(metrics,prompt_count,consumed,size):
+    chunk_binding(metrics,size)
+    if not size:
+        if any(key in metrics for key in CHUNK_COUNTERS) or 'gdn_subphases_available' in metrics:raise ValueError('foreign chunk counters')
+        return consumed
+    chunks=(prompt_count-1+size-1)//size
+    forwards=chunks+consumed-(prompt_count-1)
+    expected={'logical_tokens_delta':consumed,'prompt_chunks_delta':chunks,'prompt_chunk_tokens_delta':prompt_count-1,
+        'chunk_layer_calls_delta':48*chunks,'chunk_ffn_pre_calls_delta':48*chunks,
+        'chunk_provider_calls_delta':48*chunks,'chunk_ffn_post_calls_delta':48*chunks,
+        'model_forward_calls_delta':forwards,'model_layer_calls_delta':48*forwards,
+        'ffn_pre_calls_delta':48*forwards,'provider_calls_delta':48*forwards,'ffn_post_calls_delta':48*forwards}
+    if metrics.get('gdn_subphases_available') is not False:raise ValueError('chunk GDN detailed phases unavailable')
+    for key,value in expected.items():
+        if type(metrics.get(key)) is not int or metrics[key]!=value:raise ValueError('chunk execution count mismatch: '+key)
+    return forwards
 
 
 def frozen(tok, root):
@@ -46,10 +91,13 @@ def frozen(tok, root):
     return [[int(t) for t in line.split()[2:]] for line in lines], binding
 
 
-def token_receipt(row, position, prompt_count, vocabulary, head_policy='eager_diagnostic'):
+def token_receipt(row, position, prompt_count, vocabulary, head_policy='eager_diagnostic', prompt_chunk_size=0):
     if head_policy not in ('eager_diagnostic', 'prompt_head_elision'):
         raise ValueError('unknown head policy')
+    chunk_binding(row,prompt_chunk_size)
+    if prompt_chunk_size and head_policy!='prompt_head_elision':raise ValueError('chunking requires head elision')
     fields = {'position', 'token', 'generated', 'greedy_next'}
+    if prompt_chunk_size:fields|={'chunk_policy','prompt_chunk_size'}
     elision = head_policy == 'prompt_head_elision'
     available = not elision or position + 1 >= prompt_count
     if elision:
@@ -68,14 +116,14 @@ def token_receipt(row, position, prompt_count, vocabulary, head_policy='eager_di
         raise ValueError('invalid token or greedy ID')
 
 
-def completion(records, prompt, vocabulary, head_policy='eager_diagnostic'):
+def completion(records, prompt, vocabulary, head_policy='eager_diagnostic', prompt_chunk_size=0):
     if not prompt:
         raise ValueError('empty prompt')
     if not records or set(records[-1]) != {'stop', 'position'}:
         raise ValueError('missing final stop receipt')
     rows = records[:-1]
     for i, row in enumerate(rows):
-        token_receipt(row, i, len(prompt), vocabulary, head_policy)
+        token_receipt(row,i,len(prompt),vocabulary,head_policy,prompt_chunk_size)
     if len(rows) <= len(prompt) or [r['token'] for r in rows[:len(prompt)]] != prompt or \
        any(r['generated'] != (i >= len(prompt)) for i, r in enumerate(rows)):
         raise ValueError('prompt/generated boundary mismatch')
@@ -135,10 +183,12 @@ def run_portable(args, tok):
     args.out.mkdir(mode=0o700, exist_ok=False)
     summary = dict(status='STOP', source='ac85ff3fdf0834c13437b69b1568d8704e9b0717',
                    binary_sha256=args.binary_sha256, suite=binding, requests=[],
-                   head_policy='prompt_head_elision' if getattr(args, 'prompt_head_elision', False) else 'eager_diagnostic',
+                   head_policy='prompt_head_elision' if getattr(args,'prompt_head_elision',False) or chunk_size(args) else 'eager_diagnostic',
                    qsa_policy='device_production' if getattr(args, 'qsa_production', False) else 'eager_diagnostic',
                    qsa_reuse_attention=bool(getattr(args, 'qsa_reuse_attention', False)),
                    gdn_policy='device_production' if getattr(args, 'gdn_production', False) else 'eager_diagnostic')
+    size=chunk_size(args)
+    if size:summary.update(prompt_chunk_size=size,chunk_policy='layer_major_v1')
     if getattr(args,'expert_plan',[]):
         summary['expert_plans']=args.expert_plan
         summary['source']='local resident expert candidate; see exact source export/binary SHA'
@@ -199,10 +249,14 @@ def run_portable(args, tok):
                     raise RuntimeError(f'portable_model exited{status}')
                 participation = S.placements(case / 'placements.tsv', [0, 1], 32)
                 records = [json.loads(line) for line in (case / 'stdout.jsonl').read_text().splitlines()]
-                ids, stop = completion(records, prompt, len(tok.tokens), summary['head_policy'])
+                ids, stop = completion(records,prompt,len(tok.tokens),summary['head_policy'],size)
                 summary['requests'].append(dict(index=index, tokens=ids, finish=stop, seconds=time.monotonic()-began,
                     tensor_operations_by_device=participation, sampled_peak_vram=peak,
                     minimum_effective_available=minimum))
+                if size:
+                    timing=json.loads((case/'timings.json').read_text())
+                    chunk_fields(timing,len(prompt),len(records)-1,size)
+                    summary['requests'][-1]['chunk_work']=timing
                 if benchmark:
                     timing = json.loads((case / 'timings.json').read_text())
                     timing_fields(timing, prompt, ids)

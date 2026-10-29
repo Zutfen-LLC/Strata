@@ -114,7 +114,8 @@ int main(int argc, char **argv) {
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
-                             " [--prompt-head-elision (no batching; incompatible with --dump-logits)]\n"
+                             " [--prompt-head-elision (serial head elision; incompatible with --dump-logits)]\n"
+                             " [--prompt-chunk-size 2..8 (implies head elision; default off)]\n"
                              " [--dump-logits DIRECTORY] [--placements FILE] [--timings FILE]\n"
                              " Or --stdio [--max-requests 4]: GEN <max_new> <id,id,...> / QUIT; JSONL replies.\n"
                              "T=1 serial text; all 48 layers; fresh embedding per token; CPU experts/host PLE.\n"
@@ -175,6 +176,11 @@ int main(int argc, char **argv) {
                 opts.context = integer(value);
             else if (key == "--max-requests")
                 max_requests = integer(value);
+            else if (key == "--prompt-chunk-size") {
+                opts.prompt_chunk_size=integer(value);
+                if(opts.prompt_chunk_size<2||opts.prompt_chunk_size>8)throw std::runtime_error("prompt chunk size must be in [2,8]");
+                opts.prompt_head_elision=true;
+            }
             else if (key == "--max-new")
                 max_new = integer(value);
             else if (key == "--threads" || key == "--expert-workers") {
@@ -380,6 +386,37 @@ int main(int argc, char **argv) {
         }
         std::vector<float> logits;
         const auto heads_before = session->model_work();
+        const auto emit_row = [&](uint64_t pos,int32_t token,bool generated,bool project) {
+            std::cout << "{\"position\":" << pos << ",\"token\":" << token
+                      << ",\"generated\":" << (generated ? "true" : "false");
+            if (opts.prompt_head_elision)
+                std::cout << ",\"schema\":2,\"head_policy\":\"prompt_head_elision\",\"logits_available\":"
+                          << (project ? "true" : "false");
+            if(opts.prompt_chunk_size)
+                std::cout << ",\"chunk_policy\":\"layer_major_v1\",\"prompt_chunk_size\":" << opts.prompt_chunk_size;
+            std::cout << ",\"greedy_next\":";
+            if (project) std::cout << std::max_element(logits.begin(), logits.end()) - logits.begin();
+            else std::cout << "null";
+            std::cout << "}\n";
+        };
+        const auto chunk_fields = [&](std::ostream& out) {
+            if(!opts.prompt_chunk_size)return;
+            const auto after=session->model_work();
+            out << ",\"chunk_policy\":\"layer_major_v1\",\"prompt_chunk_size\":" << opts.prompt_chunk_size
+                << ",\"gdn_subphases_available\":false"
+                << ",\"model_forward_calls_delta\":" << after.completed_forward_calls-heads_before.completed_forward_calls
+                << ",\"model_layer_calls_delta\":" << after.completed_layer_calls-heads_before.completed_layer_calls
+                << ",\"ffn_pre_calls_delta\":" << after.completed_ffn_pre_calls-heads_before.completed_ffn_pre_calls
+                << ",\"provider_calls_delta\":" << after.completed_provider_calls-heads_before.completed_provider_calls
+                << ",\"ffn_post_calls_delta\":" << after.completed_ffn_post_calls-heads_before.completed_ffn_post_calls
+                << ",\"logical_tokens_delta\":" << after.logical_tokens-heads_before.logical_tokens
+                << ",\"prompt_chunks_delta\":" << after.prompt_chunks-heads_before.prompt_chunks
+                << ",\"prompt_chunk_tokens_delta\":" << after.prompt_chunk_tokens-heads_before.prompt_chunk_tokens
+                << ",\"chunk_layer_calls_delta\":" << after.chunk_layer_calls-heads_before.chunk_layer_calls
+                << ",\"chunk_ffn_pre_calls_delta\":" << after.chunk_ffn_pre_calls-heads_before.chunk_ffn_pre_calls
+                << ",\"chunk_provider_calls_delta\":" << after.chunk_provider_calls-heads_before.chunk_provider_calls
+                << ",\"chunk_ffn_post_calls_delta\":" << after.chunk_ffn_post_calls-heads_before.chunk_ffn_post_calls;
+        };
         auto consume = [&](int32_t token, bool generated, bool project = true) {
             if(resident) {
                 if(interrupted) throw std::runtime_error("resident interrupted");
@@ -416,21 +453,28 @@ int main(int argc, char **argv) {
                 if (!file)
                     throw std::runtime_error("logit dump write failed");
             }
-            std::cout << "{\"position\":" << pos << ",\"token\":" << token
-                      << ",\"generated\":" << (generated ? "true" : "false");
-            if (opts.prompt_head_elision)
-                std::cout << ",\"schema\":2,\"head_policy\":\"prompt_head_elision\",\"logits_available\":"
-                          << (project ? "true" : "false");
-            std::cout << ",\"greedy_next\":";
-            if (project) std::cout << std::max_element(logits.begin(), logits.end()) - logits.begin();
-            else std::cout << "null";
-            std::cout << "}\n";
+            emit_row(pos,token,generated,project);
         };
         if (resident || !timings_path.empty())
             prompt_start = Clock::now();
         // Native DONE places the last prompt forward step in decode. Keep
         // that selection boundary as well as this CLI's full-consumption phases.
-        for (size_t i = 0; i < tokens.size(); ++i) {
+        size_t first=0;
+        if(opts.prompt_chunk_size) while(first+1<tokens.size()) {
+            const size_t count=std::min(opts.prompt_chunk_size,tokens.size()-1-first);
+            if(resident) {
+                if(interrupted)throw std::runtime_error("resident interrupted");
+                sources->check();
+            }
+            const uint64_t pos=session->position();
+            if(!session->advance_chunk({tokens.begin()+first,tokens.begin()+first+count},error))throw std::runtime_error(error);
+            if(resident&&interrupted)throw std::runtime_error("resident interrupted during chunk");
+            device_memory("chunk-complete",pos);
+            // No row is published until all 48 layers completed this chunk.
+            for(size_t t=0;t<count;++t)emit_row(pos+t,tokens[first+t],false,false);
+            first+=count;
+        }
+        for (size_t i = first; i < tokens.size(); ++i) {
             if ((resident || !timings_path.empty()) && i + 1 == tokens.size())
                 last_prompt_start = Clock::now();
             consume(tokens[i], false, !opts.prompt_head_elision || i + 1 == tokens.size());
@@ -488,6 +532,7 @@ int main(int argc, char **argv) {
                           << ",\"heads_executed_delta\":" << heads.heads_executed-heads_before.heads_executed
                           << ",\"heads_skipped_delta\":" << heads.heads_skipped-heads_before.heads_skipped;
             }
+            chunk_fields(std::cout);
             if(opts.expert_timings) {
                 std::cout << ",\"expert_provider_ms_delta\":" << after.provider_ms-before.provider_ms
                     << ",\"expert_provider_calls_delta\":" << after.provider_calls-before.provider_calls
@@ -508,7 +553,7 @@ int main(int argc, char **argv) {
                 const double compute=ga.attention_compute_ms-gb.attention_compute_ms;
                 const double ffn=ga.ffn_ms-gb.ffn_ms;
                 const double gp=model_after.gdn_provider_ms-model_before.gdn_provider_ms;
-                std::cout << ",\"gdn_attention_exchange_ms_delta\":" << attention
+                if(!opts.prompt_chunk_size) std::cout << ",\"gdn_attention_exchange_ms_delta\":" << attention
                     << ",\"gdn_attention_compute_ms_delta\":" << compute
                     << ",\"gdn_candidate_readback_ms_delta\":" << ga.candidate_readback_ms-gb.candidate_readback_ms
                     << ",\"gdn_candidate_finite_ms_delta\":" << ga.candidate_finite_ms-gb.candidate_finite_ms
@@ -553,7 +598,9 @@ int main(int argc, char **argv) {
                  << ",\"terminal_feed_ms\":" << (generated ? ms(last_selection, decode_end) : 0.0)
                  << ",\"selection_prompt_steps\":" << tokens.size() - 1
                  << ",\"selection_decode_steps\":" << generated
-                 << ",\"prompt_steps\":" << tokens.size() << ",\"decode_steps\":" << generated << "}\n";
+                 << ",\"prompt_steps\":" << tokens.size() << ",\"decode_steps\":" << generated;
+            chunk_fields(file);
+            file << "}\n";
             if (!file)
                 throw std::runtime_error("timing report write failed");
         }

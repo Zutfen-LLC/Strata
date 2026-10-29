@@ -18,7 +18,8 @@ import portable_quality_v1 as P
 class Resident:
     """Owned finite child. tick runs throughout load, requests and cleanup waits."""
     def __init__(self, command, out, tick=lambda _pid: None, load_seconds=180, request_seconds=180, total_seconds=960):
-        self.head_policy = 'prompt_head_elision' if '--prompt-head-elision' in command else 'eager_diagnostic'
+        self.prompt_chunk_size=P.chunk_argv(command)
+        self.head_policy = 'prompt_head_elision' if '--prompt-head-elision' in command or self.prompt_chunk_size else 'eager_diagnostic'
         self.out, self.tick = out, tick
         self.request_seconds, self.load_seconds = request_seconds, load_seconds
         self.start = time.monotonic()
@@ -73,6 +74,7 @@ class Resident:
                 if row['prompt_count'] != len(tokens) or row['output_count'] != len(rows)-len(tokens):
                     raise ValueError('actual token counts')
                 if stop.get('position')!=len(rows) or len(rows)<len(tokens): raise ValueError('stop position')
+                P.chunk_fields(row,len(tokens),len(rows),getattr(self,'prompt_chunk_size',0))
                 if self.head_policy == 'prompt_head_elision':
                     if (row.get('head_policy') != self.head_policy or type(row.get('receipt_schema')) is not int or
                             row['receipt_schema'] != 2 or
@@ -109,7 +111,7 @@ class Resident:
                 raise ValueError('invalid token row')
             if row.get('generated') != (pos>=len(tokens)): raise ValueError('token kind')
             if pos<len(tokens) and row['token']!=tokens[pos]: raise ValueError('prompt changed')
-            P.token_receipt(row, pos, len(tokens), 248320, self.head_policy)
+            P.token_receipt(row,pos,len(tokens),248320,self.head_policy,getattr(self,"prompt_chunk_size",0))
             rows.append(row)
         raise ValueError('too many response rows')
 
@@ -149,7 +151,7 @@ class Resident:
         self.selector.close(); self.log.close(); self.transcript.close()
 
 
-def model_phase_fields(metrics, consumed, gdn_policy='eager_diagnostic', head_policy='eager_diagnostic'):
+def model_phase_fields(metrics, consumed, gdn_policy='eager_diagnostic', head_policy='eager_diagnostic', prompt_chunk_size=0):
     if gdn_policy not in ('eager_diagnostic', 'device_production'):
         raise ValueError('unknown GDN execution policy')
     if head_policy not in ('eager_diagnostic', 'prompt_head_elision'):
@@ -159,11 +161,13 @@ def model_phase_fields(metrics, consumed, gdn_policy='eager_diagnostic', head_po
             metrics.get('heads_executed_delta') != consumed-skipped):
         raise ValueError('head phase counters incomplete')
     production = gdn_policy == 'device_production'
-    for key, multiplier in (('model_step_calls_delta',1),('gdn_layer_calls_delta',36),
-                            ('qsa_layer_calls_delta',12),('output_head_calls_delta',1),
-                            ('gdn_attention_exchange_calls_delta',36),('gdn_attention_compute_calls_delta',36),
-                            ('gdn_ffn_calls_delta',36)):
-        if metrics[key] != (consumed-skipped if key == 'output_head_calls_delta' else consumed*multiplier): raise ValueError('model phase call capture incomplete')
+    forwards=P.chunk_fields(metrics,metrics.get('prompt_count',consumed),consumed,prompt_chunk_size)
+    for key,multiplier in (('model_step_calls_delta',1),('gdn_layer_calls_delta',36),('qsa_layer_calls_delta',12),('output_head_calls_delta',1)):
+        expected=consumed-skipped if key=='output_head_calls_delta' else forwards*multiplier
+        if metrics[key]!=expected:raise ValueError('model phase call capture incomplete')
+    if not prompt_chunk_size:
+        for key in ('gdn_attention_exchange_calls_delta','gdn_attention_compute_calls_delta','gdn_ffn_calls_delta'):
+            if metrics[key]!=36*consumed:raise ValueError('GDN phase call capture incomplete')
     step=metrics['model_step_ms_delta']; gdn=metrics['gdn_layer_ms_delta']
     qsa=metrics['qsa_layer_ms_delta']; head=metrics['output_head_ms_delta']
     gp=metrics['gdn_provider_ms_delta']; qp=metrics['qsa_provider_ms_delta']
@@ -174,6 +178,10 @@ def model_phase_fields(metrics, consumed, gdn_policy='eager_diagnostic', head_po
        abs(gp+qp-provider)>epsilon or \
        abs(step-gdn-qsa-head-residual)>epsilon:
         raise ValueError('model phase containment/reconciliation failed')
+    if prompt_chunk_size:
+        if any(key.startswith('gdn_') and ('attention_' in key or 'ffn_' in key or 'candidate_' in key or 'state_commit_' in key or 'outer_residual_' in key)
+               for key in metrics):raise ValueError('T1-only GDN detail presented as chunk totals')
+        return
     attention=metrics['gdn_attention_exchange_ms_delta']; compute=metrics['gdn_attention_compute_ms_delta']
     ffn=metrics['gdn_ffn_ms_delta']; outer=metrics['gdn_outer_residual_ms_delta']
     surrounding=metrics['gdn_attention_surrounding_ms_delta']; nonprovider=metrics['gdn_ffn_non_provider_ms_delta']
@@ -202,7 +210,7 @@ def model_phase_fields(metrics, consumed, gdn_policy='eager_diagnostic', head_po
             raise ValueError('GDN candidate diagnostic containment/counts failed')
 
 
-def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor_mib, expected_argv=None, residency=None):
+def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor_mib, expected_argv=None,residency=None,prompt_chunk_size=0):
     """Read completed same-backend evidence; never launch or reconstruct a case."""
     root = Path(root)
     summary = json.loads((root/'summary.json').read_text())
@@ -219,6 +227,7 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
         if name in pins or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
             raise ValueError('invalid reference input identity')
         pins[name] = digest
+    P.chunk_binding(summary,prompt_chunk_size)
     expected_residency = residency or {flag: False for flag in P.RESIDENCY_FLAGS}
     expected_head = 'prompt_head_elision' if expected_residency.get('--prompt-head-elision', False) else 'eager_diagnostic'
     if summary.get('head_policy', 'eager_diagnostic') != expected_head:
@@ -233,6 +242,7 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
     for index, prompt in enumerate(prompts,1):
         case = root/f'case-{index:02d}'
         argv = json.loads((case/'argv.json').read_text())
+        if P.chunk_argv(argv)!=prompt_chunk_size:raise ValueError('reference chunk argv mismatch')
         for flag in P.RESIDENCY_FLAGS:
             if argv.count(flag) != int(expected_residency.get(flag, False)):
                 raise ValueError('reference residency policy mismatch: '+flag)
@@ -255,7 +265,7 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
             if slot != str(die) or pins.get(name) != Q.bundle.sha(plan):
                 raise ValueError('reference plan hash mismatch')
         records = [json.loads(line) for line in (case/'stdout.jsonl').read_text().splitlines()]
-        ids, stop = P.completion(records,prompt,vocabulary,expected_head)
+        ids, stop = P.completion(records,prompt,vocabulary,expected_head,prompt_chunk_size)
         saved = summary['requests'][index-1]
         if saved['tokens'] != ids or saved['finish'] != stop:
             raise ValueError('reference summary/rows mismatch')
@@ -263,7 +273,7 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
     return rows
 
 
-def suite_metrics(m, prompt, ids, consumed, warm, gdn_policy='eager_diagnostic', head_policy='eager_diagnostic'):
+def suite_metrics(m,prompt,ids,consumed,warm,gdn_policy='eager_diagnostic',head_policy='eager_diagnostic',prompt_chunk_size=0):
     # Validate every nested counter even if a mock/alternate caller bypasses
     # Resident.request. Timer scopes are retained separately, never added.
     for key,value in m.items():
@@ -282,8 +292,8 @@ def suite_metrics(m, prompt, ids, consumed, warm, gdn_policy='eager_diagnostic',
     if m['prompt_count'] != len(prompt) or m['output_count'] != len(ids) or \
        m['selection_prompt_steps'] != len(prompt)-1 or m['selection_decode_steps'] != len(ids):
         raise ValueError('suite counts mismatch')
-    model_phase_fields(m,consumed,gdn_policy,head_policy)
-    if m['expert_provider_calls_delta'] != 48*consumed or m['expert_provider_ms_delta'] <= 0:
+    model_phase_fields(m,consumed,gdn_policy,head_policy,prompt_chunk_size)
+    if m['expert_provider_calls_delta'] != 48*P.chunk_fields(m,len(prompt),consumed,prompt_chunk_size) or m['expert_provider_ms_delta'] <= 0:
         raise ValueError('provider timing/call capture incomplete')
     for key in ('gpu_entries_per_device_delta','gpu_infer_rows_calls_delta','gpu_infer_rows_ms_delta'):
         if len(m[key]) != 2 or min(m[key]) <= 0:
@@ -303,6 +313,7 @@ def run_suite(runner, out, prompts, references, binding, vocabulary, binary_sha,
                        head_policy=receipt.get('head_policy', 'eager_diagnostic'),
                        qsa_policy=receipt.get('qsa_policy', 'eager_diagnostic'),
                        qsa_reuse_attention=receipt.get('qsa_reuse_attention', False))
+        if receipt.get('prompt_chunk_size',0):summary.update(prompt_chunk_size=receipt['prompt_chunk_size'],chunk_policy='layer_major_v1')
         receipt['passes'].append(summary)
         began=time.monotonic()
         try:
@@ -313,11 +324,11 @@ def run_suite(runner, out, prompts, references, binding, vocabulary, binary_sha,
                 Q.write(out/f'request-{request_id}.json',result)
                 if result['metrics']['done'] != request_id:
                     raise ValueError('suite done ID mismatch')
-                ids,stop=P.completion(result['rows']+[result['stop']],prompt,vocabulary,summary['head_policy'])
+                ids,stop=P.completion(result['rows']+[result['stop']],prompt,vocabulary,summary['head_policy'],receipt.get('prompt_chunk_size',0))
                 expected=references[case_id-1]
                 if result['rows'] != expected['rows'] or result['stop'] != expected['stop']:
                     raise ValueError(f'fresh reference mismatch: pass {pass_id} case {case_id}')
-                suite_metrics(result['metrics'],prompt,ids,len(result['rows']),pass_id==2,receipt['gdn_policy'],summary['head_policy'])
+                suite_metrics(result['metrics'],prompt,ids,len(result['rows']),pass_id==2,receipt['gdn_policy'],summary['head_policy'],receipt.get('prompt_chunk_size',0))
                 summary['requests'].append(dict(index=case_id,request_id=request_id,tokens=ids,finish=stop,
                     consumed_rows=len(result['rows']),timing=result['metrics']))
             summary['status']='complete'
@@ -341,6 +352,7 @@ def main():
     p.add_argument('--max-new', type=int)
     p.add_argument('--expert-tensor-mib', default='2404,2404')
     p.add_argument('--expert-timings', action='store_true', help='coarse provider and per-device executor call timing')
+    p.add_argument('--prompt-chunk-size',type=int,choices=range(2,9),default=0)
     p.add_argument('--prompt-head-elision', action='store_true', help='omit nonfinal prompt heads; requires matching schema-2 references')
     p.add_argument('--gdn-resident-weights', action='store_true', help='forward the opt-in GDN attention weight placement trial')
     p.add_argument('--qsa-production', action='store_true', help='device-owned QSA state; requires reuse and matching production references')
@@ -351,6 +363,7 @@ def main():
     p.add_argument('--plan', type=Path, action='append', required=True)
     S.device_arguments(p)
     args=p.parse_args()
+    if args.prompt_chunk_size:args.prompt_head_elision=True
     selected,physical=S.device_selection(p,args)
     if len(args.plan)!=2: p.error('two plans required')
     caps=args.expert_tensor_mib.split(',')
@@ -371,7 +384,7 @@ def main():
                                   {'--model':str(args.gguf),'--manifest':args.manifest,'--vulkan':args.devices,
                                    '--split':str(args.split),'--device-cap-mib':','.join([str(args.device_cap_mib)]*2),
                                    '--threads':'4','--expert-workers':'12','--host-cap-mib':'32768'},
-                                  {flag: flag in P.residency_flags(args) for flag in P.RESIDENCY_FLAGS})
+                                  {flag:flag in P.residency_flags(args) for flag in P.RESIDENCY_FLAGS},P.chunk_size(args))
         args.max_new=Q.MAX_NEW
         args.expert_timings=True
     else:
@@ -385,6 +398,7 @@ def main():
     args.out.mkdir(mode=0o700,exist_ok=False)
     receipt=dict(head_policy='prompt_head_elision' if args.prompt_head_elision else 'eager_diagnostic',qsa_policy='device_production' if args.qsa_production else 'eager_diagnostic',qsa_reuse_attention=args.qsa_reuse_attention,gdn_policy='device_production' if args.gdn_production else 'eager_diagnostic', status='STOP',binary_sha256=args.binary_sha256,prompt=tokens,max_new=args.max_new,
                  excluded_warmups=1,measured_requests=3)
+    if P.chunk_size(args):receipt.update(prompt_chunk_size=P.chunk_size(args),chunk_policy='layer_major_v1')
     if args.suite:
         receipt.update(mode='suite',suite=binding,reference_root=str(args.reference_root),
                        excluded_warmups=12,measured_requests=12,passes=[],
@@ -436,6 +450,7 @@ def main():
         for i,plan in enumerate(args.plan): command+=['--expert-plan',f'{i}:{plan.resolve(strict=True)}']
         if args.expert_timings: command += ['--expert-timings']
         if args.prompt_head_elision: command += ['--prompt-head-elision']
+        if P.chunk_size(args):command+=['--prompt-chunk-size',str(P.chunk_size(args))]
         if args.gdn_resident_weights: command += ['--gdn-resident-weights']
         if args.gdn_resident_state: command += ['--gdn-resident-state']
         if args.gdn_production: command += ['--gdn-production']
@@ -456,8 +471,8 @@ def main():
                 result=runner.request(tokens,args.max_new,index)
                 if args.expert_timings:
                     m=result['metrics']
-                    model_phase_fields(m,len(result['rows']),receipt['gdn_policy'],receipt['head_policy'])
-                    if m['expert_provider_calls_delta']!=len(result['rows'])*48 or m['expert_provider_ms_delta']<=0:
+                    model_phase_fields(m,len(result['rows']),receipt['gdn_policy'],receipt['head_policy'],P.chunk_size(args))
+                    if m['expert_provider_calls_delta']!=48*P.chunk_fields(m,len(tokens),len(result['rows']),P.chunk_size(args)) or m['expert_provider_ms_delta']<=0:
                         raise ValueError('provider timing/call capture incomplete')
                     if len(m['gpu_infer_rows_ms_delta'])!=2 or len(m['gpu_infer_rows_calls_delta'])!=2 or \
                        min(m['gpu_infer_rows_ms_delta'])<=0 or min(m['gpu_infer_rows_calls_delta'])<=0:
