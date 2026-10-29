@@ -9,6 +9,7 @@ import signal
 import subprocess
 import time
 
+import executed_logits_v1 as E
 import quality as Q
 import portable_model_smoke_v1 as S
 
@@ -189,6 +190,8 @@ def run_portable(args, tok):
                    qsa_reuse_attention=bool(getattr(args, 'qsa_reuse_attention', False)),
                    gdn_policy='device_production' if getattr(args, 'gdn_production', False) else 'eager_diagnostic')
     size=chunk_size(args)
+    capture=getattr(args,'dump_executed_logits',False)
+    if capture and summary['head_policy']!='prompt_head_elision':raise ValueError('executed-head capture requires head elision')
     if size:summary.update(prompt_chunk_size=size,chunk_policy='layer_major_v1')
     if getattr(args,'expert_plan',[]):
         summary['expert_plans']=args.expert_plan
@@ -222,6 +225,9 @@ def run_portable(args, tok):
             if benchmark or size:
                 command += ['--timings', str(case / 'timings.json')]
             command += residency_flags(args)
+            if capture:
+                requested=case/'executed-logits';requested.mkdir()
+                command += ['--dump-executed-logits',str(requested)]
             Q.write(case / 'argv.json', command)
             process = None
             peak = [v['used'] for v in initial]
@@ -255,6 +261,12 @@ def run_portable(args, tok):
                 summary['requests'].append(dict(index=index, tokens=ids, finish=stop, seconds=time.monotonic()-began,
                     tensor_operations_by_device=participation, sampled_peak_vram=peak,
                     minimum_effective_available=minimum))
+                if capture:
+                    diagnostic,_=E.load(requested,size)
+                    if diagnostic['prompt_tokens']!=prompt or diagnostic['output_count']!=len(ids) or diagnostic['stop']!=stop or \
+                       [f['token'] for f in diagnostic['frames']]!=[prompt[-1]]+ids:
+                        raise ValueError('executed-head manifest differs from request receipt')
+                    summary['requests'][-1]['executed_logits_manifest']=diagnostic
                 if size:
                     timing=json.loads((case/'timings.json').read_text())
                     chunk_fields(timing,len(prompt),len(records)-1,size)
@@ -460,6 +472,7 @@ def main():
     p.add_argument('--model-root', type=Path)
     p.add_argument('--manifest', default=S.MANIFEST)
     residency_arguments(p)
+    p.add_argument('--dump-executed-logits',action='store_true',help='capture executed heads in each case/executed-logits; requires head elision')
     p.add_argument('--single-case', action='store_true', help='only frozen case 1 once, timed; no warmup or scoring')
     p.add_argument('--suite', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True)

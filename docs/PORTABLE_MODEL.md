@@ -44,6 +44,13 @@ be empty. This separate opt-in writes the existing little-endian raw F32
 heads or alter generation. It excludes stdio and exhaustive `--dump-logits`;
 the existing exhaustive option and its policy restrictions are unchanged.
 
+The existing `portable_quality_v1.py portable` adapter accepts a boolean
+`--dump-executed-logits` switch with head elision. It creates each case's empty
+`executed-logits` directory, forwards the model option, records the actual argv
+and validates the manifest against prompt/output receipts. Use `--single-case`
+for one fresh case1 capture per policy. Its existing resource sampling, deadline
+and owned-process cleanup remain active throughout model execution.
+
 A `manifest.json` is written after the complete forward sequence. Its
 `executed_heads_f32le_v1` format binds prompt token IDs, vocabulary, output
 count, stop reason, head policy and chunk policy/size. Each frame records its

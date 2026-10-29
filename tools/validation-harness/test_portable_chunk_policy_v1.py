@@ -92,7 +92,7 @@ class ChunkPolicy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);binary=root/'binary';binary.write_bytes(b'mocked child')
             args=SimpleNamespace(suite=root/'suite',binary=binary,binary_sha256=P.Q.bundle.sha(binary),
-                out=root/'out',prompt_chunk_size=2,benchmark=False)
+                out=root/'out',prompt_chunk_size=2,benchmark=False,dump_executed_logits=True)
             rows=[dict(position=i,token=t,generated=i==3,greedy_next=None if i<2 else 248046,
                 schema=2,head_policy='prompt_head_elision',logits_available=i>=2,
                 chunk_policy='layer_major_v1',prompt_chunk_size=2) for i,t in enumerate([5,6,7,248046])]
@@ -100,6 +100,17 @@ class ChunkPolicy(unittest.TestCase):
             def launch(argv,stdout,stderr,**kwargs):
                 self.assertEqual(argv.count('--timings'),1)
                 Path(argv[argv.index('--timings')+1]).write_text(json.dumps(timing))
+                import array
+                self.assertEqual(argv.count('--dump-executed-logits'),1)
+                requested=Path(argv[argv.index('--dump-executed-logits')+1])
+                self.assertEqual(list(requested.iterdir()),[])
+                raw=array.array('f',[0.])*248320;raw[248046]=1.
+                for position in (2,3):(requested/f'pos-{position}.f32').write_bytes(raw.tobytes())
+                diagnostic=dict(schema=1,format='executed_heads_f32le_v1',head_policy='prompt_head_elision',
+                    chunk_policy='layer_major_v1',prompt_chunk_size=2,vocabulary=248320,prompt_tokens=[5,6,7],
+                    output_count=1,stop='eos',frames=[dict(position=p,token=t,role=r,file=f'pos-{p}.f32')
+                        for p,t,r in [(2,7,'final_prompt'),(3,248046,'terminal')]])
+                (requested/'manifest.json').write_text(json.dumps(diagnostic))
                 stdout.write(''.join(json.dumps(row)+'\n' for row in rows+[dict(stop='eos',position=4)]));stdout.flush()
                 return SimpleNamespace(pid=123456789,poll=lambda:0)
             with ExitStack() as stack:
@@ -115,6 +126,7 @@ class ChunkPolicy(unittest.TestCase):
             self.assertEqual(summary['status'],'complete')
             self.assertEqual(summary['requests'][0]['chunk_work'],timing)
             self.assertNotIn('timing',summary['requests'][0])
+            self.assertEqual(summary['requests'][0]['executed_logits_manifest']['prompt_chunk_size'],2)
 
     def test_fresh_reference_summary_argv_and_rows(self):
         for mutation in ('none','missing_summary','wrong_summary','bool_summary','argv_size','argv_duplicate','row_size','off'):
