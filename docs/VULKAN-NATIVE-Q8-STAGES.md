@@ -423,8 +423,9 @@ archive hash and binary identity from retained build evidence, append:
 All three are required together, only for an explicitly null source field.
 The binary hash must equal the original receipt's consumer hash. The launcher
 binds these explicit values to the already hash-checked original receipt and
-records them as `native_archive_identity`; it also retains the unchanged receipt
-snapshot. This records independently verified evidence; it does not infer a
+records them as `native_archive_identity`, labelled as independently verified
+later inspection rather than the original producer receipt. It also retains
+the unchanged receipt snapshot. This records independently verified evidence; it does not infer a
 commit from an archive hash or verify an archive build itself. Missing or
 malformed values, receipt/binary conflicts, and overrides of ordinary Git
 receipts are rejected. Existing Git-backed receipts require no additional flags.

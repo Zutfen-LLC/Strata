@@ -146,6 +146,7 @@ def main():
                   'native_dispatch_basis': 'source and retained environment, not a dynamic launch trace'}
     if archive_identity is not None:
         provenance['native_archive_identity'] = archive_identity
+        provenance['native_archive_identity_basis'] = 'explicit independently verified later inspection; not the original producer receipt'
         provenance['native_source_head'] = archive_identity['source_head']
     revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True, capture_output=True)
     provenance['source_head'] = revision.stdout.strip() if revision.returncode == 0 else None
