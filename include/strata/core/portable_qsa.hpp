@@ -27,10 +27,10 @@ struct PortableQsaOptions {
     size_t state_budget = 64ull << 20;
     // Opt-in capacity-primed scheduler/scratch reuse; exact active shapes, host KV staging.
     bool reuse_attention = false;
-    // Optional session owner; requires reuse. Omit for private standalone scratch.
-    std::shared_ptr<PortableQsaAttention> attention;
     // Device-authoritative state; requires reuse and strict selected accelerator.
     bool production = false;
+    // Optional session owner; requires reuse. Omit for private standalone scratch.
+    std::shared_ptr<PortableQsaAttention> attention;
 };
 // Explicit diagnostic download, including unused capacity, never a host mirror.
 struct PortableQsaState {

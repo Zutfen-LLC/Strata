@@ -331,8 +331,10 @@ model failure retains the existing session poison/reset policy.
 
 For a shared layer, `graph_bytes()` is the inclusive module-ceiling check: fixed
 phases plus the shared attention high water and the active chunk FFN. Its
-`memory_usage()` excludes shared scheduler buffers and future attention growth;
-`PortableQsaAttention::memory_usage()` owns those costs once. Actual scheduler
+`memory_usage()` excludes shared scheduler buffers and device attention growth;
+`PortableQsaAttention::memory_usage()` owns those costs once. The layer's previous
+host allowance remains intact for the unchanged fixed schedulers' metadata and
+workspaces outside scheduler-buffer reporting; no host-envelope saving is taken. Actual scheduler
 allocations appear in host/device graph fields. The resource reserves a complete
 layer graph cap on each applicable backend, including CPU workspace and every
 permitted future exact shape. Unspent cap is an allowance, not allocated bytes.

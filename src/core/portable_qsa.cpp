@@ -1056,12 +1056,13 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
             m.device_graph +=
                 ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.options.execution.accelerator);
     }
-    // Legacy attention has a temporary scheduler; reuse retains its actual buffers.
-    // Reserve the unspent aggregate layer graph cap on each backend, including workspaces; fixed
-    // scheduler buffers above are actual per-backend allocations.
+    // Keep the existing host envelope: the unchanged fixed schedulers also
+    // retain GGML metadata/context buffers outside get_buffer_size(). Sharing
+    // device attention storage does not justify removing this host allowance.
+    // Scheduler buffer fields above still report only actual owned allocations.
     const size_t buffers = m.host_graph + m.device_graph;
-    const size_t allowance = s.shared() ? (s.fixed_graphs > buffers ? s.fixed_graphs - buffers : 0) :
-        (s.options.execution.graph_budget > buffers ? s.options.execution.graph_budget - buffers : 0);
+    const size_t allowance =
+        s.options.execution.graph_budget > buffers ? s.options.execution.graph_budget - buffers : 0;
     m.device_state += s.state_buffer ? ggml_backend_buffer_get_size(s.state_buffer.get()) : 0;
     m.host_extra_bound += s.states_size+s.chunk_host_bound + (16u << 20) + allowance + s.conversion_scratch;
     if (s.options.execution.request_accelerator && s.options.execution.accelerator) {
