@@ -2,6 +2,7 @@
 #include "ggml-cpu.h"
 #include "ggml-vulkan.h"
 #include "portable_gdn_fixture.hpp"
+#include "portable_gdn_projection_probe.hpp"
 #include "portable_gdn_production.hpp"
 #include <cstdlib>
 #include <limits>
@@ -11,15 +12,19 @@ int main(int argc, char **argv) {
     try {
         int index = 0;
         std::string expected;
-        for (int i = 1; i < argc; i += 2) {
-            check(i + 1 < argc, "usage: --device INDEX --expect-device SUBSTRING");
-            if (std::string(argv[i]) == "--device") {
+        bool projection_probe=false;
+        for (int i = 1; i < argc;) {
+            const std::string key=argv[i++];
+            if(key=="--projection-probe"){projection_probe=true;continue;}
+            check(i < argc, "usage: --device INDEX --expect-device SUBSTRING [--projection-probe]");
+            const char* value=argv[i++];
+            if (key == "--device") {
                 char *end = nullptr;
-                long n = std::strtol(argv[i + 1], &end, 10);
-                check(end != argv[i + 1] && *end == 0 && n >= 0 && n < GGML_VK_MAX_DEVICES, "bad index");
+                long n = std::strtol(value, &end, 10);
+                check(end != value && *end == 0 && n >= 0 && n < GGML_VK_MAX_DEVICES, "bad index");
                 index = int(n);
-            } else if (std::string(argv[i]) == "--expect-device")
-                expected = argv[i + 1];
+            } else if (key == "--expect-device")
+                expected = value;
             else
                 check(false, "unknown option");
         }
@@ -31,6 +36,13 @@ int main(int argc, char **argv) {
                                                                            ggml_backend_free);
         check(bool(device) && !ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "distinct Vulkan buffers required");
+        if(projection_probe){
+            std::fprintf(stderr,"[gdn-projection-probe] isolated synthetic diagnostic; no qualification gate evaluated\n");
+            gdn_projection_probe::run(device.get(),false);
+            gdn_projection_probe::run(device.get(),true);
+            gdn_projection_probe::run(device.get(),false,true);
+            return 0;
+        }
         // Same-device serial control isolates multirow FFN kernel differences.
         for(bool batched:{false,true}) for(bool production:{false,true}) for(bool causal:{false,true}) {
             if(causal && (!batched || !production)) continue;

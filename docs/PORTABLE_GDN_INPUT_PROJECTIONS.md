@@ -7,7 +7,12 @@ Omitting the new flag retains the existing execution and output formats.
 Native prefill (`src/prefill/prefill.cpp`, GDN section) projects qkv, the output
 gate, alpha and beta with T columns before convolution and recurrence. This
 portable slice follows that boundary using the existing Q8 weights and GGML
-scheduler. Independent HC preparation and injection also use T columns. HC stream
+scheduler. Batched HC down/up/injection and qkv/gate/alpha/beta now use strided
+F32 activation columns to exclude the pinned vector selector's implicit Q8_1
+activation quantization. Precision annotations alone are not consulted by that
+selector. The storage-only pad/view mechanism and admission are described in
+[the numerical-contract notes](PORTABLE_CHUNK_SNAPSHOT_DIAGNOSTICS.md).
+Independent HC preparation and injection also use T columns. HC stream
 addition order, F32 projection outputs, alpha/beta nonlinear operations, and the
 existing convolution, recurrence and output projection expressions are retained.
 Without the separate [causal chunk option](PORTABLE_GDN_CAUSAL_CHUNKS.md),

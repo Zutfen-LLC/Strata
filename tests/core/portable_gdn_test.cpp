@@ -7,6 +7,7 @@
 #include "../../src/core/portable_gdn_finite.hpp"
 #include <chrono>
 #include <limits>
+#include <set>
 using namespace strata::core;
 using namespace gdn_fixture;
 namespace {
@@ -31,6 +32,31 @@ struct CaptureCausalState {
             }
         }
         return status;
+    }
+};
+struct ProjectionLayoutCapture {
+    static inline decltype(ggml_backend_i::graph_compute) original=nullptr;
+    static inline uint32_t widths=0;
+    static inline size_t graphs=0;
+    static ggml_status compute(ggml_backend_t backend,ggml_cgraph* graph) {
+        size_t matrices=0;int64_t T=0;std::set<const ggml_tensor*> banks;
+        for(int i=0;i<ggml_graph_n_nodes(graph);++i){
+            const auto* node=ggml_graph_node(graph,i);
+            const std::string name=ggml_get_name(node);
+            if(node->op!=GGML_OP_MUL_MAT || node->ne[1]<=1 ||
+               (name!="hc_attn_down.weight"&&name!="hc_attn_up.weight"&&name!="hc_attn_inject.weight"&&
+                name!="attn_qkv.weight"&&name!="attn_gate.weight"&&name!="ssm_alpha.weight"&&name!="ssm_beta.weight"))continue;
+            const auto* x=node->src[1];const auto K=node->src[0]->ne[0];T=node->ne[1];
+            check(node->src[0]->type==GGML_TYPE_Q8_0&&x->type==GGML_TYPE_F32&&x->ne[0]==K&&x->ne[1]==T,
+                  "runtime GDN projection types/shapes");
+            check(!ggml_is_contiguous(x)&&x->nb[0]==sizeof(float)&&x->nb[1]==size_t(K+1)*sizeof(float)&&
+                  x->op==GGML_OP_VIEW&&x->view_src&&x->view_src->op==GGML_OP_PAD&&x->view_src->ne[0]==K+1,
+                  "runtime GDN activation layout must exclude pinned MMVQ eligibility");
+            banks.insert(x->view_src);++matrices;
+        }
+        if(matrices){check(matrices==7&&banks.size()==3,"all seven runtime projections share three F32 padded banks");
+            widths|=1u<<T;++graphs;}
+        return original(backend,graph);
     }
 };
 void finite_predicate() {
@@ -189,8 +215,16 @@ int main() {
             chunk_opts.causal_chunk=false;
             auto serial=PortableGdnLayer::create(0,f.views,chunk_opts,error);
             check(bool(chunk)&&bool(serial),error);
-            layer_chunk_fixture::exercise(*chunk,*serial,f,experts(),selected.get(),
-                chunk_opts.execution.graph_budget,chunk_opts.state_budget,production?"GDN production CPU-selected":"GDN diagnostic resident CPU-selected",false,batched,causal);
+            const auto compute=selected->iface.graph_compute;
+            ProjectionLayoutCapture::original=compute;ProjectionLayoutCapture::widths=0;ProjectionLayoutCapture::graphs=0;
+            if(batched)selected->iface.graph_compute=ProjectionLayoutCapture::compute;
+            try {
+                layer_chunk_fixture::exercise(*chunk,*serial,f,experts(),selected.get(),
+                    chunk_opts.execution.graph_budget,chunk_opts.state_budget,production?"GDN production CPU-selected":"GDN diagnostic resident CPU-selected",false,batched,causal);
+            } catch(...) {selected->iface.graph_compute=compute;throw;}
+            selected->iface.graph_compute=compute;
+            if(batched)check(ProjectionLayoutCapture::widths==0x1fcu&&ProjectionLayoutCapture::graphs>=48,
+                             "actual batched and causal runtime layout exercised at every T2-8 width");
         }
         // A projection submission failure occurs before any causal state commit.
         // Check execution, admission and recovery through the existing backend seam.
