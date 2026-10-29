@@ -72,6 +72,7 @@ struct Phase {
     Context ctx{context()};
     ggml_cgraph *graph = ggml_new_graph(ctx.get());
     portable_detail::Scheduler scheduler{nullptr, ggml_backend_sched_free};
+    size_t workspace_highwater = 0;
     ggml_tensor *input(std::initializer_list<int64_t> dims, ggml_type type = GGML_TYPE_F32) {
         auto *t = ggml_new_tensor(ctx.get(), type, int(dims.size()), dims.begin());
         ggml_set_input(t);
@@ -83,15 +84,28 @@ struct Phase {
         ggml_build_forward_expand(graph, t);
     }
     void schedule(const char *name, const PortableFfnOptions &opts, portable_detail::Backend &cpu,
-                  std::vector<PortablePlacement> &placement, size_t &bytes) {
+                  std::vector<PortablePlacement> &placement, size_t &bytes, bool reuse = false) {
         // Public CPU plan exposes backend work_data (TOP_K per-thread index
         // scratch, quantized dot staging). Price it even for a strict device run,
         // so an admitted fallback cannot acquire unpriced host workspace.
-        const size_t workspace = ggml_graph_plan(graph, opts.threads, nullptr).work_size;
+        const size_t planned = ggml_graph_plan(graph, opts.threads, nullptr).work_size;
+        const size_t workspace = reuse ? std::max(workspace_highwater, planned) : planned;
         require(bytes <= opts.graph_budget && workspace <= opts.graph_budget - bytes,
                 "portable QSA: CPU workspace budget exceeded");
         bytes += workspace;
-        scheduler = portable_detail::schedule(graph, name, opts, cpu, placement, bytes);
+        workspace_highwater = workspace;
+        if (reuse)
+            portable_detail::schedule_reusing(graph, name, opts, cpu, placement, bytes, scheduler);
+        else
+            scheduler = portable_detail::schedule(graph, name, opts, cpu, placement, bytes);
+    }
+    void rebuild() {
+        // Execution is synchronous. Forget scheduler tensor identities before
+        // reusing their addresses in the same bounded metadata arena.
+        if (scheduler)
+            ggml_backend_sched_reset(scheduler.get());
+        ggml_reset(ctx.get());
+        graph = ggml_new_graph(ctx.get());
     }
     void run() {
         require(ggml_backend_sched_graph_compute(scheduler.get(), graph) == GGML_STATUS_SUCCESS,
@@ -107,7 +121,8 @@ struct PortableQsaLayer::Impl {
     Buffer weights_buffer{nullptr, ggml_backend_buffer_free};
     std::map<std::string, ggml_tensor *> w;
     std::unique_ptr<PortableFfn> ffn;
-    std::unique_ptr<Phase> project, pool, combine;
+    std::unique_ptr<Phase> project, pool, combine, attention;
+    size_t retained_attention_bytes = 0;
     ggml_tensor *input, *pos, *q, *k, *v, *gate, *iq, *ik, *inject;
     ggml_tensor *pool_input, *pool_pos, *pool_output;
     ggml_tensor *out_input, *out_residual, *out_inject, *out_gate, *gated, *attn_residual;
@@ -117,6 +132,25 @@ struct PortableQsaLayer::Impl {
     size_t attention_device_weights = 0;
     size_t weights_size = 0, fixed_graphs = 0, graphs_size = 0, states_size = 0, conversion_scratch = 0;
     uint64_t count = 0;
+
+    struct AttentionInputs {
+        ggml_tensor *ki, *vi, *qi, *idxq, *pk, *mapping, *bias, *scores, *selected, *out;
+    };
+    AttentionInputs build_attention(Phase &phase, size_t n) {
+        auto *c = phase.ctx.get();
+        const int64_t cells = int64_t(n), blocks = int64_t(n / 4 + 1);
+        auto *ki = phase.input({D, KH, cells}, GGML_TYPE_F16), *vi = phase.input({D, KH, cells}, GGML_TYPE_F16);
+        auto *qi = phase.input({D, 12, KH}), *idxq = phase.input({ID, IH});
+        auto *pk = phase.input({ID, blocks});
+        auto *mapping = phase.input({cells}, GGML_TYPE_I32), *bias = phase.input({cells});
+        auto *scores = portable_detail::qsa_cell_scores(c, pk, idxq, mapping, bias);
+        auto *selected = portable_detail::qsa_selection(c, scores);
+        auto *out = portable_detail::qsa_dense_attention(c, ki, vi, qi, selected);
+        phase.output(scores, "qsa-cell-scores");
+        phase.output(selected, "qsa-selected-mask");
+        phase.output(out, "qsa-attention");
+        return {ki, vi, qi, idxq, pk, mapping, bias, scores, selected, out};
+    }
 
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableQsaOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 == 3, "portable QSA: expected a QSA layer 3/7/.../47");
@@ -285,6 +319,15 @@ struct PortableQsaLayer::Impl {
         tail.assign(4 * ID, 0);
         placement = fixed_placement;
         graphs_size = fixed_graphs;
+        if (options.reuse_attention) {
+            attention = std::make_unique<Phase>();
+            build_attention(*attention, options.capacity);
+            auto reserve_placement = fixed_placement;
+            attention->schedule("qsa-attend", options.execution, cpu, reserve_placement, graphs_size, true);
+            retained_attention_bytes = graphs_size - fixed_graphs;
+            // Capacity priming allocates scratch but performs no attention math.
+            // Exact active graphs are rebuilt in this same arena, never padded.
+        }
     }
 };
 PortableQsaLayer::PortableQsaLayer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -461,22 +504,22 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
         std::copy(s.values.begin(), s.values.end(), next_values.begin());
         std::copy(hk.begin(), hk.end(), next_keys.begin() + (n - 1) * KV);
         std::copy(hv.begin(), hv.end(), next_values.begin() + (n - 1) * KV);
-        Phase attention;
-        auto *c = attention.ctx.get();
-        const int64_t cells = int64_t(n), blocks = int64_t(complete + 1);
-        auto *ki = attention.input({D, KH, cells}, GGML_TYPE_F16), *vi = attention.input({D, KH, cells}, GGML_TYPE_F16);
-        auto *qi = attention.input({D, 12, KH}), *idxq = attention.input({ID, IH});
-        auto *pk = attention.input({ID, blocks});
-        auto *mapping = attention.input({cells}, GGML_TYPE_I32), *bias = attention.input({cells});
-        auto *scores = portable_detail::qsa_cell_scores(c, pk, idxq, mapping, bias);
-        auto *selected = portable_detail::qsa_selection(c, scores);
-        auto *out = portable_detail::qsa_dense_attention(c, ki, vi, qi, selected);
-        attention.output(scores, "qsa-cell-scores");
-        attention.output(selected, "qsa-selected-mask");
-        attention.output(out, "qsa-attention");
+        std::unique_ptr<Phase> temporary;
+        if (!s.attention)
+            temporary = std::make_unique<Phase>();
+        auto &attention = s.attention ? *s.attention : *temporary;
+        if (s.attention)
+            attention.rebuild();
+        auto [ki, vi, qi, idxq, pk, mapping, bias, scores, selected, out] = s.build_attention(attention, n);
         auto next_placement = s.fixed_placement;
         size_t next_graphs = s.fixed_graphs;
-        attention.schedule("qsa-attend", s.options.execution, s.cpu, next_placement, next_graphs);
+        attention.schedule("qsa-attend", s.options.execution, s.cpu, next_placement, next_graphs, bool(s.attention));
+        if (s.attention) {
+            // Replanning may change offsets/topology (notably at 2051 cells).
+            // Account the retained high water even after a rejected candidate.
+            s.retained_attention_bytes = std::max(s.retained_attention_bytes, next_graphs - s.fixed_graphs);
+            next_graphs = s.fixed_graphs + s.retained_attention_bytes;
+        }
         ggml_backend_tensor_set(ki, next_keys.data(), 0, next_keys.size() * sizeof(uint16_t));
         ggml_backend_tensor_set(vi, next_values.data(), 0, next_values.size() * sizeof(uint16_t));
         write(qi, q);
@@ -546,7 +589,7 @@ bool PortableQsaLayer::reset(std::string &error) {
         s.last.clear();
         s.count = 0;
         s.placement.swap(placement);
-        s.graphs_size = s.fixed_graphs;
+        s.graphs_size = s.fixed_graphs + s.retained_attention_bytes;
         return true;
     } catch (const std::exception &e) {
         error = e.what();
@@ -561,21 +604,25 @@ const std::vector<float> &PortableQsaLayer::indexer_tail() const { return impl_-
 const std::vector<float> &PortableQsaLayer::last_residual() const { return impl_->last; }
 const std::vector<PortablePlacement> &PortableQsaLayer::placements() const { return impl_->placement; }
 size_t PortableQsaLayer::weight_bytes() const { return impl_->weights_size; }
-size_t PortableQsaLayer::graph_bytes() const { return impl_->graphs_size; }
+size_t PortableQsaLayer::graph_bytes() const {
+    return impl_->attention ? impl_->fixed_graphs + impl_->retained_attention_bytes : impl_->graphs_size;
+}
 size_t PortableQsaLayer::state_bytes() const { return impl_->states_size; }
 PortableMemoryUsage PortableQsaLayer::memory_usage() const {
     const auto &s = *impl_;
     auto m = s.ffn->memory_usage();
     m.device_weights += s.attention_device_weights;
     m.host_weights = s.weights_size - m.device_weights;
-    for (auto *phase : {s.project.get(), s.pool.get(), s.combine.get()}) {
+    for (auto *phase : {s.project.get(), s.pool.get(), s.combine.get(), s.attention.get()}) {
+        if (!phase || !phase->scheduler)
+            continue;
         m.host_graph += ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.cpu.get());
         if (s.options.execution.accelerator && s.options.execution.request_accelerator)
             m.device_graph +=
                 ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.options.execution.accelerator);
     }
-    // Attention has a fresh temporary scheduler per token. Reserve the unspent
-    // aggregate layer graph cap on each backend, including workspaces; fixed
+    // Legacy attention has a temporary scheduler; reuse retains its actual buffers.
+    // Reserve the unspent aggregate layer graph cap on each backend, including workspaces; fixed
     // scheduler buffers above are actual per-backend allocations.
     const size_t buffers = m.host_graph + m.device_graph;
     const size_t allowance =
@@ -583,14 +630,23 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
     m.host_extra_bound += state_bytes() + (16u << 20) + allowance + s.conversion_scratch;
     if (s.options.execution.request_accelerator && s.options.execution.accelerator) {
         // fixed_graphs includes fixed scheduler buffers AND private workspace.
-        // Only the remaining graph budget belongs to the token-local Phase
-        // attention. It lives through FFN/expert dispatch, then dies on return.
-        const size_t fixed_private = s.fixed_graphs > buffers ? s.fixed_graphs - buffers : 0;
+        // Legacy attention is token-local through expert dispatch; reuse owns
+        // its buffer high water across steps, failures and reset.
+        size_t fixed_buffers = buffers;
+        if (s.attention && s.attention->scheduler) {
+            fixed_buffers -= ggml_backend_sched_get_buffer_size(s.attention->scheduler.get(), s.cpu.get());
+            fixed_buffers -= ggml_backend_sched_get_buffer_size(s.attention->scheduler.get(), s.options.execution.accelerator);
+        }
+        const size_t fixed_private = s.fixed_graphs > fixed_buffers ? s.fixed_graphs - fixed_buffers : 0;
         const size_t matrix_conversion=size_t(H*2*D*QH)*sizeof(float);
         require(fixed_private>=matrix_conversion,"portable QSA: fixed workspace accounting mismatch");
         m.device_extra_bound += fixed_private-matrix_conversion;
         portable_detail::account_matrix_conversion(m,s.options.execution.accelerator,matrix_conversion);
-        m.device_token_temporary_bound = s.options.execution.graph_budget > s.fixed_graphs
+        if (s.attention) {
+            // Future exact-shape replans may use the rest of this retained cap.
+            m.device_extra_bound += s.options.execution.graph_budget - s.fixed_graphs - (buffers - fixed_buffers);
+        } else
+            m.device_token_temporary_bound = s.options.execution.graph_budget > s.fixed_graphs
                                             ? s.options.execution.graph_budget - s.fixed_graphs : 0;
     } else if(s.options.execution.request_accelerator) {
         m.device_extra_bound += allowance; // preserve missing-backend fallback accounting

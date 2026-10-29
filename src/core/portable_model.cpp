@@ -221,6 +221,7 @@ struct PortableModelSession::Impl {
                 PortableQsaOptions o;
                 o.execution = execution(l, false);
                 o.capacity = opts.context;
+                o.reuse_attention = opts.qsa_reuse_attention;
                 layer.qsa = PortableQsaLayer::from_gguf(model, int64_t(l), o, error);
                 require(bool(layer.qsa), "portable model: layer " + std::to_string(l) + ": " + error);
             } else {

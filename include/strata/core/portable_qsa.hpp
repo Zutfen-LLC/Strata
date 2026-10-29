@@ -10,6 +10,8 @@ struct PortableQsaOptions {
     PortableFfnOptions execution;
     size_t capacity = 4096;
     size_t state_budget = 64ull << 20;
+    // Opt-in capacity-primed scheduler/scratch reuse; exact active shapes, host KV staging.
+    bool reuse_attention = false;
 };
 struct PortableQsaTrace {
     std::vector<float> query, key, value, gate, index_query, index_raw_key;

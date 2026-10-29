@@ -6,14 +6,21 @@ int main() {
     try {
         spare_high_score_test({});
         selection_tests({});
+        selection_tests({}, true);
+        for (bool reuse : {false, true}) {
         Fixture f;
         std::string error;
         PortableQsaOptions opts;
         opts.capacity = 9;
+        opts.reuse_attention = reuse;
         auto layer = PortableQsaLayer::create(3, f.views, opts, error);
         check(bool(layer), error);
+        opts.reuse_attention = false; // independent legacy same-backend control
         auto clean = PortableQsaLayer::create(3, f.views, opts, error);
         check(bool(clean), error);
+        opts.reuse_attention = reuse;
+        const auto initial_memory = layer->memory_usage();
+        const auto initial_graphs = layer->graph_bytes();
         PortableRoute clean_route;
         std::vector<float> first_residual;
         PortableRoute route;
@@ -31,7 +38,7 @@ int main() {
                           layer->placements().size() == placements,
                       "transaction rollback");
             };
-            if (t == 0 || t == 3 || t == 4)
+            if (t == 0 || t == 1 || t == 3 || t == 4 || t == 7 || t == 8)
                 for (int failure = 0; failure < 4; ++failure) {
                     check(!layer->step(
                               t, f.input(int(t)),
@@ -70,7 +77,18 @@ int main() {
             unchanged();
             check(layer->step(t, f.input(int(t)), experts(), route, error, &trace), error);
             oracle.check_step(f, t, f.input(int(t)), trace, *layer);
-            check(clean->step(t, f.input(int(t)), experts(), clean_route, error), error);
+            if (reuse) {
+                const auto memory = layer->memory_usage();
+                check(memory.host_graph == initial_memory.host_graph && memory.device_graph == initial_memory.device_graph &&
+                          layer->graph_bytes() == initial_graphs, "capacity-primed scratch does not grow");
+            }
+            PortableQsaTrace clean_trace;
+            check(clean->step(t, f.input(int(t)), experts(), clean_route, error, &clean_trace), error);
+            for (auto member : {&PortableQsaTrace::query, &PortableQsaTrace::key, &PortableQsaTrace::value,
+                                &PortableQsaTrace::gate, &PortableQsaTrace::index_query, &PortableQsaTrace::index_raw_key,
+                                &PortableQsaTrace::pooled_key, &PortableQsaTrace::cell_scores, &PortableQsaTrace::selected,
+                                &PortableQsaTrace::attention, &PortableQsaTrace::gated_attention, &PortableQsaTrace::attention_residual})
+                check(trace.*member == clean_trace.*member, "exact legacy/reuse trace parity");
             check(layer->keys() == clean->keys() && layer->values() == clean->values() &&
                       layer->pooled_keys() == clean->pooled_keys() &&
                       layer->indexer_tail() == clean->indexer_tail() &&
@@ -89,6 +107,12 @@ int main() {
               "reset");
         check(layer->step(0, f.input(0), experts(), route, error, &trace), error);
         check(layer->last_residual() == first_residual, "reset equals fresh control");
+        // Reuse the same scratch for a different sequence B, then replay A.
+        check(layer->reset(error), error);
+        for (size_t t = 0; t < 9; ++t)
+            check(layer->step(t, f.input(int(t + 9)), experts(), route, error), error);
+        check(layer->reset(error) && layer->step(0, f.input(0), experts(), route, error, &trace), error);
+        check(layer->last_residual() == first_residual, "reset A/B/A exact replay");
         auto late_views = f.views;
         for (auto &v : late_views)
             v.name = "blk.47." + v.name.substr(6);
@@ -190,7 +214,8 @@ int main() {
                   "QSA finite edge trace replay bytes");
         }
         std::printf("PASS portable QSA H2560 layer3 positions0-8, scalar "
-                    "attention/indexer, rollback/reset/budgets/fallback\n");
+                    "attention/indexer, rollback/reset/budgets/fallback reuse=%d\n", int(reuse));
+        }
     } catch (const std::exception &e) {
         std::fprintf(stderr, "FAIL %s\n", e.what());
         return 1;

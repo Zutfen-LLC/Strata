@@ -9,6 +9,64 @@ The initial implementation supports one serial text sequence, all 48 layers,
 and context limits from 1 to 256 tokens. Defaults remain off. The existing
 CUDA production executable and allocations are separate.
 
+## QSA attention execution reuse trial
+
+`--qsa-reuse-attention` is default off. It retains one attention Phase per QSA
+layer: a 4 MiB metadata arena, one scheduler and its backend scratch buffers.
+Creation allocates the exact capacity-sized graph once without executing it.
+Each token resets the scheduler identities before rebuilding the exact active
+shape in that arena, reapplies every placement pin, and uses the existing
+allocator's retained buffer high water. There is no per-length graph cache.
+Reset clears sequence state but keeps execution storage. Leave the flag off
+for the legacy token-local attention Phase.
+
+The existing fresh-quality and resident adapters accept this same flag and record
+its Boolean policy. Resident suite references must match that policy in both the
+fresh summary and every case argv, with exactly one flag when enabled. Missing,
+duplicate or mismatched enabled references are rejected. Older references with
+no QSA policy remain usable only with the default-off mode.
+
+This follows the bounded ownership in native `SessionState` (`session_init` in
+`src/core/session.cpp` and `sycl/src/core/session.cpp`) and the active native
+Verifier's retained arena/execution (`src/core/verify.cpp`). It does not copy
+native fused math or its graph-capture API. At the pinned GGML revision
+`3cf03257f219afbe7334045ff7c6a06ac68c627d`, Vulkan exposes no `graph_plan_*`
+callbacks. GGML's scheduler reset retains allocator buffers; exact shape or
+node-count changes can replan offsets. Its allocator replaces backing buffers
+only when the required chunk size grows. CPU plan workspace is priced at its
+retained high water, even for strict Vulkan execution. Backend-private Vulkan
+workspace can still grow on first execution of a newly required shape and is
+covered by the existing conservative allowance. This is scheduler/scratch reuse,
+not a claim of persistent compiled Vulkan commands or zero host allocation.
+
+Active FP16 KV and F32 pooled keys still come from host candidate vectors and
+upload their full active prefix each step. Device KV, pooled/spare/tail ownership
+and append-only uploads are the next slice of #67. The per-head F32 attention
+workaround, exact BF16 indexer widening, RoPE positions, moving spare, finite
+checks, stable selection ties and cutoff at 2051 cells are unchanged. No padding
+or masked maximum-length softmax is introduced. Layer failures keep committed
+state unchanged; scratch may be overwritten and is rebuilt on retry. A partial
+model failure retains the existing session poison/reset policy.
+
+`graph_bytes()` includes retained attention buffers and the admitted CPU plan
+high water in this trial. `memory_usage()` reports the actual scheduler buffers
+in host/device graph fields, including after a failed candidate and reset.
+The remaining layer graph allowance is retained device extra rather than
+`device_token_temporary_bound`; it is no longer credited as shared token-local
+scratch across QSA layers. Host state/candidate staging and the 4 MiB arena stay
+within the existing state/metadata bounds. Backend-private workspace, shared
+matrix conversion and driver exclusions keep their existing accounting. The
+same caps apply; capacity priming can reject at creation where the legacy path
+would reject only on reaching a larger active shape.
+
+The QSA CPU/Vulkan fixtures exercise legacy and reuse modes, positions 0–8,
+pool boundaries, callback failures/retries, capacity, reset A/B/A, actual buffer
+high water and exact same-backend state/results. BF16 and GGUF fixtures cover
+both policies. Independent selection fixtures cross 2050/2051/2052 and pooled
+2055/2056 boundaries, ties and all 24 heads, with a second scheduler/arena sweep
+checking stable backing buffers. These synthetic gates do not establish model
+quality, device admission on other cards or a speed improvement.
+
 ## GDN execution policy
 
 The default is `PortableGdnPolicy::eager_diagnostic`. It keeps the existing

@@ -59,6 +59,7 @@ int main() {
             check(baseline->expert_work().provider_ms == 0 && baseline->expert_work().provider_calls == 0,
                   "default provider path has no new timing capture");
         }
+        opts.qsa_reuse_attention = true; // same-backend rows compare with default baseline above
         opts.gdn_resident_state = true; // absent accelerator preserves default logits
         opts.dense_resident_weights = true;
         opts.gdn_resident_weights = true; // CPU execution must preserve the default reference

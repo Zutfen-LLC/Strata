@@ -202,6 +202,9 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
             raise ValueError('invalid reference input identity')
         pins[name] = digest
     expected_residency = residency or {flag: False for flag in P.RESIDENCY_FLAGS}
+    expected_qsa = bool(expected_residency.get('--qsa-reuse-attention', False))
+    if summary.get('qsa_reuse_attention', False) is not expected_qsa:
+        raise ValueError('reference residency policy mismatch: QSA summary')
     rows = []
     for index, prompt in enumerate(prompts,1):
         case = root/f'case-{index:02d}'
@@ -272,7 +275,8 @@ def run_suite(runner, out, prompts, references, binding, vocabulary, binary_sha,
     for pass_id in (1,2):
         pass_out = out/f'pass-{pass_id}'; pass_out.mkdir()
         summary = dict(status='STOP',suite=binding,binary_sha256=binary_sha,requests=[],
-                       pass_id=pass_id,cache_populating=pass_id==1,gdn_policy=receipt['gdn_policy'])
+                       pass_id=pass_id,cache_populating=pass_id==1,gdn_policy=receipt['gdn_policy'],
+                       qsa_reuse_attention=receipt.get('qsa_reuse_attention', False))
         receipt['passes'].append(summary)
         began=time.monotonic()
         try:
@@ -312,6 +316,7 @@ def main():
     p.add_argument('--expert-tensor-mib', default='2404,2404')
     p.add_argument('--expert-timings', action='store_true', help='coarse provider and per-device executor call timing')
     p.add_argument('--gdn-resident-weights', action='store_true', help='forward the opt-in GDN attention weight placement trial')
+    p.add_argument('--qsa-reuse-attention', action='store_true', help='forward bounded QSA execution reuse; requires matching fresh references')
     p.add_argument('--gdn-production', action='store_true', help='forward opt-in GDN production policy; requires fresh production references')
     p.add_argument('--gdn-resident-state', action='store_true', help='forward session-lifetime GDN state residency')
     p.add_argument('--dense-resident-weights', action='store_true', help='forward model-lifetime dense weight placement')
@@ -350,7 +355,7 @@ def main():
     binary=args.binary.resolve(strict=True)
     if Q.bundle.sha(binary)!=args.binary_sha256: raise ValueError('binary hash mismatch')
     args.out.mkdir(mode=0o700,exist_ok=False)
-    receipt=dict(gdn_policy='device_production' if args.gdn_production else 'eager_diagnostic', status='STOP',binary_sha256=args.binary_sha256,prompt=tokens,max_new=args.max_new,
+    receipt=dict(qsa_reuse_attention=args.qsa_reuse_attention,gdn_policy='device_production' if args.gdn_production else 'eager_diagnostic', status='STOP',binary_sha256=args.binary_sha256,prompt=tokens,max_new=args.max_new,
                  excluded_warmups=1,measured_requests=3)
     if args.suite:
         receipt.update(mode='suite',suite=binding,reference_root=str(args.reference_root),
@@ -405,6 +410,7 @@ def main():
         if args.gdn_resident_weights: command += ['--gdn-resident-weights']
         if args.gdn_resident_state: command += ['--gdn-resident-state']
         if args.gdn_production: command += ['--gdn-production']
+        if args.qsa_reuse_attention: command += ['--qsa-reuse-attention']
         if args.dense_resident_weights: command += ['--dense-resident-weights']
         receipt['plan_sha256']=[Q.bundle.sha(plan) for plan in args.plan]
         Q.write(args.out/'argv.json',command)

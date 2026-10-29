@@ -38,7 +38,9 @@ int main(int argc, char **argv) {
             throw std::runtime_error("this build has no Vulkan backend");
 #endif
         }
+        for (bool reuse : {false, true})
         for (bool resident : {false, true}) {
+            options.reuse_attention = reuse;
             std::printf("dense weight fixture: resident=%d\n", int(resident));
             options.execution.resident_dense_weights = resident;
             Bf16Fixture fixture;
