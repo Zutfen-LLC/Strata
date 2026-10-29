@@ -1,4 +1,5 @@
 #include "native_q8_consumer_fixture.hpp"
+#include "native_q8_gu_fixture.hpp"
 #include <chrono>
 #include <filesystem>
 using namespace native_q8_fixture;
@@ -44,5 +45,15 @@ int main(){try {
     rejects([&]{c::read_capture(b,true);});
     write_observation_result(b,observation,true);{std::ofstream file(b,std::ios::binary|std::ios::app);file.put('x');}
     rejects([&]{c::read_capture(b,true);});
+    const auto oracle=(tmp.path/"oracle").string(),weight_path=(tmp.path/"weights").string();
+    {std::ofstream file(oracle,std::ios::binary);word(file,0x3143384e);
+     for(size_t count:{size_t(64),size_t(64),size_t(512)}){word(file,uint32_t(count));for(size_t i=0;i<count;++i)word(file,i%4==0?0x80000000u:0x3f800000u);}}
+    auto decoded=gu::read_oracle(oracle);need(decoded.gate[0]==0x80000000u,"oracle zero-sign bits lost");
+    {std::fstream file(oracle,std::ios::binary|std::ios::in|std::ios::out);file.seekp(4);word(file,32);}
+    rejects([&]{gu::read_oracle(oracle);});
+    {std::ofstream file(weight_path,std::ios::binary);file.write(reinterpret_cast<const char*>(weights.data()),weights.size());}
+    need(gu::read_weights(weight_path)==weights,"native recipe receipt mismatch");
+    {std::ofstream file(weight_path,std::ios::binary|std::ios::app);file.put('x');}
+    rejects([&]{gu::read_weights(weight_path);});
     std::puts("consumer input/finite-weight tests passed; no CUDA or numerical consumer proof");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

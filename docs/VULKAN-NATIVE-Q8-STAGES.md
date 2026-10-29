@@ -68,7 +68,7 @@ opposite infinities producing a NaN raw sum. The comparator reports **all**
 byte differences, including these cases, and marks these contract holes explicitly. It does not waive
 NaN payloads, code differences or activation error with a tolerance.
 
-The component is not ready for product integration. Grouped gate/up/down,
+The component is not ready for product integration. Additional grouped gate/up branches, down,
 `native_moe_combine`, device/CPU overlap and native execution policy remain
 separate parity gaps. The earlier native `--native --spec2` control does not
 establish which optional fused kernels ran.
@@ -324,3 +324,87 @@ finite weights and common nonzero signal. The receipt still says
 `qualified=false`, `fp32_denorm_mode=unspecified` (referring to the retained
 observation), and `original_comparator_exit=1`. It does not establish packed-byte
 parity, a Vulkan guarantee, other-format behavior or product qualification.
+
+## Standalone Q8_0 grouped gate/up consumer
+
+`native_q8_gu_component` ports only `native_gu_kernel<8>`: the per-entry,
+full-warp branch selected by `launch_gu<8>` when `STRATA_KQ_SPLIT` is unset.
+This selection is source-derived, not a dynamic launch trace. The component
+consumes the retained paired native/observation Q8_1 inputs directly. It does
+not run quantization, activation, down, combine, or the product grouped path.
+
+The mapping to `src/kernels/cuda/iq_kernels.cu` is:
+
+- `vec_dot_q8_0_q8_1` (lines 569–577): two signed four-byte integer dots;
+  decode the weight half scale and the low half of Q8_1 `ds`.
+- `Fmt<8>` and `row_dot` (lines 738, 773–780): lane-strided partials, starting
+  at positive zero, followed by XOR offsets 16, 8, 4, 2, 1.
+- `native_gu_kernel<8>` (lines 1766–1796): eight rows per 256-thread group,
+  separate gate/up row ranges, active group intervals and entry token indices.
+  Buffer byte offsets replace native weight pointers. Pure Q8 uses final scale 1.
+- `launch_gu` (around line 3809): this component implements the full-warp
+  branch only. It does not implement split-K, fused/subwarp, or tail formats.
+
+Inspection of a complete CUDA 13.1 sm_86 symbol (Release, no per-file fast-math)
+shows separately rounded scale `FMUL`, integer conversion, and `FFMA` into the
+lane accumulator. The shader uses explicit `fma`; `precise` protects the scale
+multiply and separate reduction additions. The first reduction addition lists
+the shuffled operand first, matching that symbol. A final separate multiply
+retains the native scale operation. Shared memory implements logical 32-lane
+behavior independently of physical subgroup width. This is a source/compiler
+mapping, not evidence that a Vulkan driver executed the same instructions.
+
+This consumer requires FP32 RTE and signed-zero/Inf/NaN preservation, with no
+FP32 denorm execution mode. For **finite half scales and signed byte codes**,
+nonzero scale products and partials are integer multiples of 2^-48; the bounded
+lane and reduction sums cannot enter FP32's subnormal range or overflow. That
+argument concerns this packed consumer, not the preceding F32 quantizer or
+SwiGLU. The finite synthetic weight recipe and retained input preflight remain
+mandatory. Nonfinite scales and other native branches are not qualified.
+The strict quantizer, its capability gate and original packed-byte failure
+remain unchanged. All new reports retain `qualified=false` and
+`quantizer_qualified=false`, even when gate/up bits match.
+
+Build and check without GPU execution, using the existing configured opt-in
+Vulkan build directory:
+
+```sh
+cmake --build BUILD --target native_q8_gu_component native_q8_gu_shader_test native_q8_gu_input_test native_q8_consumer_input_test -j4
+ctest --test-dir BUILD -R '^(native_q8_.*|portable_logits_guard_build_test)$' --output-on-failure
+BUILD/native_q8_gu_shader_test /tmp/native-gu-effective
+for mode in 0 1 2 3; do spirv-val --target-env vulkan1.2 /tmp/native-gu-effective.$mode.spv; done
+```
+
+The shader test checks two signed integer dots, one explicit Fma, separate
+scale/final multiplies and reduction additions, logical-warp barriers, and the
+actual pinned helper's four FP16 metadata combinations. It validates the
+module after helper modification and rejects arithmetic changes. CPU metadata
+tests cover empty groups, inactive intervals, tokens, offsets and bounds. These
+checks and compilation are not GPU proof.
+
+One bounded, independent capture against an **existing** native oracle follows.
+`EVIDENCE` identifies the retained consumer result directory; use its verified
+receipt hashes and a fresh `OUTPUT`. `DEVICE` and `DEVICE_NAME` must already be
+verified on the intended same device. This runs no CUDA oracle or model:
+
+```sh
+python3 tools/native_q8_gu.py \
+  --component BUILD/native_q8_gu_component \
+  --device "$DEVICE" --expect-device "$DEVICE_NAME" --output "$OUTPUT" \
+  --fixture "$EVIDENCE/fixture.bin" --fixture-sha256 "$FIXTURE_SHA256" \
+  --native "$EVIDENCE/native.bin" --native-sha256 "$NATIVE_SHA256" \
+  --observation "$EVIDENCE/observation.bin" --observation-sha256 "$OBSERVATION_SHA256" \
+  --oracle "$EVIDENCE/native-consumer.raw" --oracle-sha256 "$ORACLE_SHA256" \
+  --weights "$EVIDENCE/native-consumer.raw.weights.bin" --weights-sha256 "$WEIGHTS_SHA256" \
+  --native-receipt "$EVIDENCE/receipt.json" --native-receipt-sha256 "$RECEIPT_SHA256"
+```
+
+The wrapper binds the retained receipt to all original artifacts, preserves the
+full original 832-element comparison failure, verifies the unchanged finite
+weight recipe and only-block-5 input difference, and launches the component once
+with a 30-second timeout. It retains actual exit/PID, raw gate/up bits, buffer
+views including sentinels, final effective SPIR-V, hashes and a comparison
+against the retained native gate/up oracle, including zero signs. Exit 0 means
+this bounded gate/up comparison completed exactly; exit 1 means a mismatch,
+sentinel failure, rejected input, or execution failure. Neither exit qualifies
+the quantizer or authorizes product integration. No down-stage dispatch occurs.

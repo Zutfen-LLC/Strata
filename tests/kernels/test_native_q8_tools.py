@@ -111,6 +111,48 @@ class Tools(unittest.TestCase):
             write(o, True, [observed[0], bytes(936)] + observed[2:])
             with self.assertRaises(ValueError):consumer.validate(f, n, o)
 
+    def test_gu_oracle_and_raw_bit_comparison(self):
+        gu = module('native_q8_gu')
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory);oracle = d / 'oracle';result = d / 'result'
+            values = (0x3f800000, 0xbf800000, 0, 0x80000000) * 16
+            out = values * 8
+            def section(v):return struct.pack('<I', len(v)) + struct.pack('<' + 'I' * len(v), *v)
+            oracle.write_bytes(struct.pack('<I', 0x3143384e) + section(values) + section(values) + section(out))
+            expected = gu.validate_oracle(oracle)
+            result.write_bytes(struct.pack('<II', 0x3147384e, 1) + section(values) + section(values))
+            report = gu.compare(expected, result)
+            self.assertTrue(report['exact']);self.assertFalse(report['qualified'])
+            self.assertFalse(report['quantizer_qualified']);self.assertEqual(report['original_comparator_exit'], 1)
+            altered = list(values);altered[2] = 0x80000000
+            result.write_bytes(struct.pack('<II', 0x3147384e, 1) + section(altered) + section(values))
+            report = gu.compare(expected, result)
+            self.assertFalse(report['exact']);self.assertEqual(report['stages']['gate']['different_bits'], 1)
+            self.assertEqual(report['stages']['gate']['differences'][0]['native_bits'], '00000000')
+            self.assertEqual(report['stages']['gate']['differences'][0]['vulkan_bits'], '80000000')
+            result.write_bytes(struct.pack('<II', 0x3147384e, 0) + section(values) + section(values))
+            self.assertFalse(gu.compare(expected, result)['exact'])
+            oracle.write_bytes(struct.pack('<I', 0x3143384e) + section(altered) + section(values) + section(out))
+            with self.assertRaises(ValueError):gu.validate_oracle(oracle)
+            result.write_bytes(struct.pack('<II', 0x3147384e, 1) + section(values[:32]))
+            with self.assertRaises(ValueError):gu.compare(expected, result)
+
+    def test_gu_native_receipt_binds_branch_and_artifacts(self):
+        gu = module('native_q8_gu')
+        hashes = {name: str(i) * 64 for i, name in enumerate(('fixture', 'native', 'observation', 'oracle', 'weights'))}
+        receipt = {'source_head': 'a' * 40, 'consumer_sha256': 'b' * 64, 'actual_child_exit': 0,
+                   'native_consumer_only': True, 'finite_synthetic_weights': True, 'qualified': False,
+                   'original_comparator_exit': 1, 'native_environment': {'STRATA_KQ_SPLIT': None},
+                   'sha256': {'fixture': hashes['fixture'], 'native': hashes['native'], 'observation': hashes['observation'],
+                              'native-consumer.raw': hashes['oracle'], 'native-consumer.raw.weights.bin': hashes['weights']}}
+        gu.validate_receipt(receipt, hashes)
+        receipt['native_environment']['STRATA_KQ_SPLIT'] = '1'
+        with self.assertRaises(ValueError):gu.validate_receipt(receipt, hashes)
+        receipt['native_environment']['STRATA_KQ_SPLIT'] = None
+        receipt['sha256']['native-consumer.raw'] = 'f' * 64
+        with self.assertRaises(ValueError):gu.validate_receipt(receipt, hashes)
+        with self.assertRaises(ValueError):gu.validate_receipt([], hashes)
+
     def test_native_conversion_holes_are_not_qualified(self):
         compare = module('compare_native_q8_stages')
         self.assertEqual(compare.contract_exceptions([0] * 32, bytes(36)), [])

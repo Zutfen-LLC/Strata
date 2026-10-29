@@ -117,3 +117,5 @@ void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggm
     ggml_vk_sync_buffers(ctx,compute);compute.reset();ggml_backend_vk_synchronize(g.backend);
 }
 }
+
+#include "strata_vk_q8_gu.inc"
