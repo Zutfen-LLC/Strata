@@ -111,7 +111,8 @@ changed stage plus exact differences, finite-pair metrics and nonfinite counts.
 The three controls are default layout/precision, F32 accumulator+source
 annotations, and a T2-only strided F32 layout made with public pad/view operations.
 At the pin the strided input excludes MMVQ and is packed back to F32 for the
-F32-activation kernel; it is a diagnostic candidate, not a runtime correction.
+F32-activation kernel. The corrected runtime uses the same strided-column helper
+for the opt-in batched projection graph.
 Output protection can affect fusion/liveness, so this probe does not qualify the
 original stateful graph or its performance. It sets no environment override.
 
@@ -128,3 +129,38 @@ fallback is to omit both `--gdn-batch-input-projections` and `--gdn-causal-chunk
 while retaining `--prompt-chunk-size`. This keeps serial GDN attention and the
 other layer/FFN chunk improvements. It does not require a device blacklist or a
 global backend override.
+
+
+## Batched GDN F32 activation contract
+
+The opt-in batched input graph now uses strided F32 activation columns for all
+seven quantized matmuls: HC down/up/injection and qkv/gate/alpha/beta. Three shared
+pad/view banks hold norm, low-rank and mixed inputs. Padding changes storage only;
+the original HC arithmetic, column order, projection outputs and finite reads
+remain. The helper is used by both projection-only and causal-chunk execution.
+T1, PLE, FFN and QSA graphs retain their existing paths. No environment override,
+vendor filter or numerical gate change is involved. This is an explicit F32
+batched-input contract; it does not change a backend's existing T1 policy.
+
+The scheduler accounts for padded graph tensors using its existing bounds and
+checks actual allocations against the unchanged graph cap. The module's device
+extra bound additionally prices 327,680 bytes for the distinct backend F32
+packing bank: eight rows of the largest 10,240-element activation. This bound is
+retained even after changing to a smaller graph because the backend workspace
+can retain its high-water size. Existing private allocation/alignment allowance
+remains; the new packing bank receives no shared-X-buffer reuse credit.
+
+The CPU GDN fixture checks the actual graph inputs of all seven matmuls for
+noncontiguous F32 layout, the K+1 row stride and three shared PAD roots at every
+T2–8 width, in both enabled policies. Existing exact snapshots, reset/failure
+checks and serial comparisons remain in place. The standalone strided projection
+probe reuses the runtime helper, while its default and precision-annotation
+controls deliberately retain the earlier layout for diagnosis.
+
+The next qualification step is the original stateful device-0 fixture command
+without `--projection-probe`, once inside the retained guard. Require every
+original exact state, continuation, replay, route and numerical gate, strict
+placement and the established submission counts. No model or second-device run
+follows automatically. Each backend still needs this gate, including backends
+whose T1 policy already uses MMVQ; the F32 batched contract alone does not prove
+bitwise equivalence with a different T1 policy.

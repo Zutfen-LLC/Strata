@@ -2,6 +2,7 @@
 // Synthetic diagnostic only: no state, FFN, model, tolerance or backend policy changes.
 #include "portable_gdn_fixture.hpp"
 #include "../../src/core/portable_graph.hpp"
+#include "../../src/core/portable_gdn_projection.hpp"
 #include "portable_layer_chunk_fixture.hpp"
 #include <map>
 namespace gdn_projection_probe {
@@ -43,14 +44,12 @@ inline bool run(ggml_backend_t selected,bool force_f32,bool strided_f32=false) {
     auto build=[&](int64_t T) {
         Graph g;g.ctx=context();require(bool(g.ctx),"projection probe graph metadata");auto* c=g.ctx.get();
         g.input=ggml_new_tensor_3d(c,GGML_TYPE_F32,H,HC,T);ggml_set_input(g.input);
+        std::map<ggml_tensor*,ggml_tensor*> columns;
         auto matrix=[&](const char* name,ggml_tensor* x) {
             if(strided_f32&&T>1){
-                // Public GGML layout operations retain the original F32 values.
-                // At the pin this excludes contiguous-input MMVQ for this op;
-                // the backend packs the strided F32 input before its F32 kernel.
-                const int64_t K=x->ne[0];
-                auto* padded=ggml_pad(c,x,1,0,0,0);
-                x=ggml_view_2d(c,padded,K,T,size_t(K+1)*sizeof(float),0);
+                auto [it,inserted]=columns.emplace(x,nullptr);
+                if(inserted)it->second=portable_detail::gdn_f32_projection_columns(c,x);
+                x=it->second;
             }
             auto* y=ggml_mul_mat(c,weights.at(name),x);
             if(force_f32){
