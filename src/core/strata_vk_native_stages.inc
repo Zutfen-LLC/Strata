@@ -2,6 +2,7 @@
 #include "strata_vk_native_stages.hpp"
 #include "strata_native_stages_spv.hpp"
 #include "native_q8_spirv.hpp"
+#include "native_q8_float_controls.hpp"
 namespace strata::core::portable_detail {
 struct StrataVkNativeStages {
     // Reuse the existing pipeline/owned metadata cleanup. Its status buffer
@@ -19,9 +20,7 @@ StrataVkNativeStages* strata_vk_native_stages_create(ggml_backend_t backend) {
                       limits.maxComputeSharedMemorySize>=3*32*4,"native stages: device geometry unsupported");
     const auto properties=ctx->device->physical_device.getProperties2<vk::PhysicalDeviceProperties2,vk::PhysicalDeviceVulkan12Properties>();
     const auto& fp=properties.get<vk::PhysicalDeviceVulkan12Properties>();
-    logits_guard_need(fp.shaderDenormPreserveFloat32 && fp.shaderSignedZeroInfNanPreserveFloat32 &&
-                      fp.shaderRoundingModeRTEFloat32,
-                      "native stages: mandatory FP32 preserve/RTE controls unavailable; no relaxed fallback");
+    native_q8_require_float_controls(fp,properties.get<vk::PhysicalDeviceProperties2>().properties);
     g.metadata.reset(ggml_init({4096,nullptr,true}));
     logits_guard_need(bool(g.metadata),"native stages: metadata allocation failed");
     g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,16);

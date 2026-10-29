@@ -1,9 +1,67 @@
 #include "native_q8_spirv.hpp"
+#include "native_q8_float_controls.hpp"
+#include <vulkan/vulkan.hpp>
 #include "strata_native_stages_spv.hpp"
 #include "native_q8_fixture.hpp"
 using namespace native_q8_fixture;
 using namespace strata::core::portable_detail;
+namespace {
+uint32_t property_mask=0;
+bool query_chain_valid=false;
+VKAPI_ATTR void VKAPI_CALL probe_properties(VkPhysicalDevice device,VkPhysicalDeviceProperties2* p) {
+    query_chain_valid=device==reinterpret_cast<VkPhysicalDevice>(uintptr_t(0x1234)) &&
+        p->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 && p->pNext;
+    if(!query_chain_valid)return;
+    auto* fp=static_cast<VkPhysicalDeviceVulkan12Properties*>(p->pNext);
+    query_chain_valid=fp->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES && !fp->pNext;
+    if(!query_chain_valid)return;
+    fp->shaderDenormPreserveFloat32=property_mask&1?VK_TRUE:VK_FALSE;
+    fp->shaderSignedZeroInfNanPreserveFloat32=property_mask&2?VK_TRUE:VK_FALSE;
+    fp->shaderRoundingModeRTEFloat32=property_mask&4?VK_TRUE:VK_FALSE;
+    fp->shaderDenormFlushToZeroFloat32=VK_TRUE;fp->shaderRoundingModeRTZFloat32=VK_FALSE;
+    fp->denormBehaviorIndependence=VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
+    fp->roundingModeIndependence=VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
+    fp->shaderDenormPreserveFloat16=VK_FALSE;fp->shaderRoundingModeRTEFloat16=VK_TRUE;
+    p->properties.apiVersion=VK_API_VERSION_1_2;p->properties.driverVersion=123;
+    p->properties.vendorID=456;p->properties.deviceID=789;
+    std::strcpy(p->properties.deviceName,"mock property query; no GPU");
+}
+struct ProbeDispatch {
+    uint32_t getVkHeaderVersion()const{return VK_HEADER_VERSION;}
+    PFN_vkGetPhysicalDeviceProperties2 vkGetPhysicalDeviceProperties2=probe_properties;
+};
+void property_diagnostics() {
+    vk::PhysicalDevice device(reinterpret_cast<VkPhysicalDevice>(uintptr_t(0x1234)));
+    for(property_mask=0;property_mask<8;++property_mask){
+        // Exercise the same real Vulkan-Hpp overload and chain as the bridge,
+        // with a mock dispatcher. This checks plumbing, not a driver's values.
+        const auto properties=device.getProperties2<vk::PhysicalDeviceProperties2,vk::PhysicalDeviceVulkan12Properties>(ProbeDispatch{});
+        need(query_chain_valid,"Vulkan-Hpp property chain/physical handle incorrect");
+        const auto& fp=properties.get<vk::PhysicalDeviceVulkan12Properties>();
+        const auto& base=properties.get<vk::PhysicalDeviceProperties2>();
+        need(base.pNext==&fp,"returned Vulkan-Hpp chain pointer incorrect");
+        need(fp.shaderDenormPreserveFloat32==uint32_t(bool(property_mask&1)) &&
+             fp.shaderSignedZeroInfNanPreserveFloat32==uint32_t(bool(property_mask&2)) &&
+             fp.shaderRoundingModeRTEFloat32==uint32_t(bool(property_mask&4)),"queried property values lost");
+        bool accepted=true;std::string error;
+        try{native_q8_require_float_controls(fp,base.properties);}catch(const std::runtime_error& e){accepted=false;error=e.what();}
+        need(accepted==(property_mask==7),"diagnostic changed original three-property decision");
+        if(!accepted){
+            for(const auto& field:{std::pair{"shaderDenormPreserveFloat32=",bool(property_mask&1)},
+                                   std::pair{"shaderSignedZeroInfNanPreserveFloat32=",bool(property_mask&2)},
+                                   std::pair{"shaderRoundingModeRTEFloat32=",bool(property_mask&4)}})
+                need(error.find(std::string(field.first)+(field.second?"1":"0"))!=std::string::npos,"missing raw required property");
+            for(const char* field:{"shaderDenormFlushToZeroFloat32=1","shaderRoundingModeRTZFloat32=0",
+                "denormBehaviorIndependence=0","roundingModeIndependence=1","shaderDenormPreserveFloat16=0",
+                "shaderRoundingModeRTEFloat16=1","apiVersion=4202496","driverVersion=123","vendorID=456",
+                "deviceID=789","deviceName=mock property query; no GPU"})
+                need(error.find(field)!=std::string::npos,"missing raw context property");
+        }
+    }
+}
+}
 int main(int argc,char** argv){try {
+    property_diagnostics();
     auto words=native_stage_float_controls(strata_native_stages_spv,sizeof(strata_native_stages_spv)/4);
     size_t divides=0,contractions=0,controls=0,barriers=0;
     for(size_t pos=5;pos<words.size();){uint32_t len=words[pos]>>16,op=words[pos]&65535;

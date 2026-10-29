@@ -136,3 +136,52 @@ difference returns one, and exact bytes with native NaN/conversion holes return
 two. The report always sets product qualification to false. Preserve
 nonzero results for arithmetic diagnosis. Never integrate based on a host or
 software-Vulkan substitute for native GPU evidence.
+
+## Property-gate diagnosis
+
+The property gate admits the SPIR-V emitted by this component; it is not a
+native Strata capability check. A refusal does not establish that native
+Strata arithmetic is impossible on that GPU.
+
+The borrowed physical device is queried with Vulkan-Hpp's
+`getProperties2<PhysicalDeviceProperties2, PhysicalDeviceVulkan12Properties>`.
+Vulkan-Hpp constructs and links the chain before the query. Pinned GGML queries
+the same core 1.2 property struct. These are physical-device properties, not
+logical-device features to enable. A host mock exercises that exact overload,
+physical handle and returned chain for all eight combinations of the required
+booleans. This checks plumbing, not a real driver's response.
+
+Failures report each required raw FP32 property, FTZ/RTZ support, independence
+enums, the FP16 controls used by the pinned helper, and device/API/driver
+identity from the same query. The conjunction and shader stay unchanged.
+The earlier generic error cannot reveal which required property was false.
+
+Native grouped `iq_kernels.cu` is absent from CMake's per-file fast-math list;
+`native_mmvq.cu` is on that list and is a different path. The supplied oracle
+command likewise has no fast-math option. CUDA 13.1 defaults preserve ordinary
+F32 subnormals and use precise division, while contraction is enabled.
+The native fused hidden product explicitly uses `__fmul_rn`; HIP disables
+contraction there. [NVCC 13.1 options](https://docs.nvidia.com/cuda/archive/13.1.0/cuda-compiler-driver-nvcc/index.html#options-for-steering-cuda-compilation)
+explain these defaults. Exact remote build overrides still require receipts.
+
+Activation explicitly calls approximate `__expf`, rather than standard `expf`.
+Neither the ordinary arithmetic defaults nor the new property gate establish
+its subnormal behavior or bit equality with Vulkan `Exp`.
+[CUDA 13.1 intrinsic documentation](https://docs.nvidia.com/cuda/archive/13.1.0/cuda-math-api/cuda_math_api/group__CUDA__MATH__INTRINSIC__SINGLE.html)
+identifies it as approximate. Inspect the retained oracle's generated
+instructions to distinguish actual FTZ handling; do not infer the intrinsic's
+mode from `--ftz=false` alone.
+
+The [Vulkan SPIR-V environment](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html)
+forbids using the declared controls when their corresponding properties are
+false. Its `DenormPreserve` instruction list includes add/multiply but excludes
+division and `Exp`; division has its own accuracy allowance. Thus the current
+controls are insufficient for full native arithmetic parity even when admitted.
+
+The next discriminator is the actual raw property tuple, preferably checked
+against an independent properties-only query, plus retained native compile and
+PTX/SASS evidence. If a required property is genuinely false, the current
+module cannot legally be dispatched. A narrower diagnostic domain would need
+operation-by-operation justification, including intermediates; finite input
+values alone do not suffice. No gate relaxation, shader change or fleet retry
+is authorized by this diagnosis.
