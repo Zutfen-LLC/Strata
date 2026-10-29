@@ -25,7 +25,33 @@ def devices(log, stage, selected=(0, 1)):
     return out
 
 
-def assignments(log, split=32):
+def primary_plans(paths):
+    # Reuse the existing bounded decoder and native placement identity check.
+    # SHA binding retains exact expert IDs without inventing a selection policy.
+    import quality_v2 as V
+    if len(paths) != 2:
+        raise ValueError('primary topology requires two explicit expert plans')
+    return V.plan_binding(paths)
+
+
+def primary_plan_reports(log, paths, binding, selected):
+    if primary_plans(paths) != binding:
+        raise ValueError('primary expert plans changed')
+    if sum(line.startswith('expert_device stage=loaded ') for line in log.splitlines()) != 2:
+        raise ValueError('primary expert load reports missing or duplicated')
+    reports = devices(log, 'loaded', selected)
+    if set(reports) != {0, 1}:
+        raise ValueError('primary expert load reports missing')
+    for slot, plan in enumerate(binding['plans']):
+        if (int(reports[slot]['assigned']) != plan['assigned_experts'] or
+                int(reports[slot]['weight_bytes']) != plan['assigned_bytes']):
+            raise ValueError('primary expert plan/load ownership mismatch')
+    return reports
+
+
+def assignments(log, split=32, dense_topology='split'):
+    if dense_topology != 'split':
+        raise ValueError('route discovery is split-only; supply exact native expert plans')
     pools = [set(), set()]
     for line in log.splitlines():
         match = re.fullmatch(r'expert_route position=0 layer=(\d+) ids=([\d,]+)', line)
@@ -55,15 +81,21 @@ def main():
     selected, physical = S.device_selection(p, args)
     caps = S.device_caps(args)
     if len(args.plan) != (2 if args.phase == 'smoke' else 0): p.error('smoke requires exactly two plans; discover has none')
+    if S.dense_topology(args) == 'primary' and args.phase == 'discover':
+        p.error('primary topology requires exact plans; split route discovery is incompatible')
     binary = args.binary.resolve(strict=True)
     if Q.bundle.sha(binary) != args.binary_sha256: raise ValueError('binary hash mismatch')
     args.out.mkdir(mode=0o700, exist_ok=False)
     summary = dict(status='STOP', phase=args.phase, binary_sha256=args.binary_sha256, prompt=[S.PROMPT[0]], max_new=0)
+    summary['device_policy'] = S.device_policy(args, physical)
+    if S.dense_topology(args) == 'primary':
+        summary['primary_expert_plans'] = primary_plans(args.plan)
     command = [str(binary), '--model', str((args.model_root or S.MODEL_ROOT)/'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
                '--manifest', args.manifest, '--tokens', str(S.PROMPT[0]), '--context', '256', '--max-new', '0',
                '--threads', '4', '--expert-workers', '12', '--host-cap-mib', '32768',
                '--vulkan', args.devices, '--device-cap-mib', S.cap_argv(args), '--split', str(args.split),
                '--placements', str(args.out/'placements.tsv')]
+    command += S.topology_argv(args)
     if args.phase == 'discover': command += ['--expert-record-routes']
     else:
         for slot, plan in enumerate(args.plan): command += ['--expert-plan', f'{slot}:{plan.resolve(strict=True)}']
@@ -122,8 +154,10 @@ def main():
         rows = [json.loads(line) for line in (args.out/'stdout.jsonl').read_text().splitlines()]
         if len(rows) != 2 or rows[0]['token'] != S.PROMPT[0] or rows[0]['generated'] or rows[0]['position'] != 0 or rows[-1] != dict(stop='max_new', position=1):
             raise ValueError('one-token output contract')
-        S.placements(args.out/'placements.tsv', selected, args.split)
+        S.placements(args.out/'placements.tsv', selected, args.split, S.dense_topology(args))
         log = (args.out/'stderr.log').read_text()
+        if S.dense_topology(args) == 'primary':
+            summary['expert_devices_loaded'] = primary_plan_reports(log, args.plan, summary['primary_expert_plans'], selected)
         if args.phase == 'discover':
             for slot, pairs in enumerate(assignments(log, args.split)):
                 (args.out/f'assignments-{slot}.txt').write_text(''.join(f'{l} {e}\n' for l,e in pairs))

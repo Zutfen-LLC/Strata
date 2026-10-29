@@ -12,6 +12,7 @@ import time
 import executed_logits_v1 as E
 import quality as Q
 import portable_model_smoke_v1 as S
+import portable_local_expert_smoke_v1 as L
 
 
 GDN_CAUSAL_FLAG = '--gdn-causal-chunk'
@@ -256,8 +257,12 @@ def run_portable(args, tok):
     try:
         mapping = S.verified_devices(binary, selected, physical)
         summary['selected_devices'] = mapping
-        summary['device_policy'] = dict(devices=args.devices, pci=physical, split=args.split,
-                                      device_cap_mib=args.device_cap_mib)
+        summary['device_policy'] = S.device_policy(args, physical)
+        if S.dense_topology(args) == 'primary':
+            if [record.split(':', 1)[0] for record in getattr(args, 'expert_plan', [])] != ['0', '1']:
+                raise ValueError('primary topology requires ordered slot 0/1 expert plans')
+            primary_paths = [Path(record.split(':', 1)[1]) for record in args.expert_plan]
+            summary['primary_expert_plans'] = L.primary_plans(primary_paths)
         for index, prompt in enumerate(prompts, 1):
             S.admit_host(S.host_memory(), work['working_set_bound_bytes'])
             case = args.out / f'case-{index:02d}'
@@ -272,6 +277,7 @@ def run_portable(args, tok):
                        '--host-cap-mib', '32768', '--vulkan', args.devices,
                        '--device-cap-mib', S.cap_argv(args),
                        '--split', str(args.split), '--placements', str(case / 'placements.tsv')]
+            command += S.topology_argv(args)
             for plan in getattr(args, 'expert_plan', []):
                 command += ['--expert-plan', plan]
             if getattr(args, 'expert_plan', []):
@@ -314,7 +320,10 @@ def run_portable(args, tok):
                         time.sleep(.2)
                 if status:
                     raise RuntimeError(f'portable_model exited{status}')
-                participation = S.placements(case / 'placements.tsv', selected, args.split)
+                participation = S.placements(case / 'placements.tsv', selected, args.split, S.dense_topology(args))
+                if S.dense_topology(args) == 'primary':
+                    L.primary_plan_reports((case/'stderr.log').read_text(), primary_paths,
+                                           summary['primary_expert_plans'], selected)
                 records = [json.loads(line) for line in (case / 'stdout.jsonl').read_text().splitlines()]
                 ids, stop = completion(records,prompt,len(tok.tokens),summary['head_policy'],size)
                 summary['requests'].append(dict(index=index, tokens=ids, finish=stop, seconds=time.monotonic()-began,

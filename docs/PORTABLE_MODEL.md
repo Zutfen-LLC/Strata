@@ -69,6 +69,19 @@ the load; memory on the helper never credits the primary. The conservative
 4 GiB output-head graph allowance remains intact. No hardware fit, numerical
 parity or performance result is claimed here.
 
+The fresh, resident and local expert smoke adapters accept the same
+`--dense-topology primary` option. Their receipts bind it alongside ordered
+device identities and caps. Historical receipts without the field mean
+`split`; a primary reference must also contain the explicit engine argument.
+Primary-mode expert tests require two ordered plans. The existing bounded
+plan decoder verifies their model/layout, disjoint exact assignments and
+placement identities; receipts retain plan hashes and loaded count/weight
+checks. Dense placement checks require every layer and head on slot 0 and
+do not require dense work on the helper. Split-based route discovery rejects
+primary mode: supply native assignments from the metadata exporter instead.
+These execution checks do not turn a load-only `QUIT` into a numerical or
+participation test.
+
 ## Bounded prompt chunks
 
 `--prompt-chunk-size N` opts into layer-major prompt advancement for N=2–8.
