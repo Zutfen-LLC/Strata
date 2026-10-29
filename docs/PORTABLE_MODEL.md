@@ -56,16 +56,21 @@ Verifier's exponent-bit kernel and requires IEEE nonfinite propagation, with
 no fast-math rewrite. The head fixture tests finite extrema, signed zero,
 subnormals, both infinities and signed quiet/signaling NaNs at multiple lengths
 and positions. Run that fixture on each admitted Vulkan backend/driver before
-model qualification. A failed status clears logits and the session requires
-reset/replay. This guard does not provide exhaustive intermediate validation.
+model qualification. `portable_head_test --vulkan INDEX` also injects nonfinite
+F32 output weights and Q8 output scales into the actual scheduled head and requires the distinct
+`nonfinite logits (device status guard)` error before logits download.
+A failed status clears logits and the session requires reset/replay. This guard does not provide exhaustive intermediate validation.
 
 Admission keeps actual device state, candidate graph buffers, weight placement,
 metadata and conservative backend-copy staging allowances. It subtracts only
 removed host mirror banks. The head guard's scratch is included in scheduler
 reservation and graph bounds. With timing capture enabled, each successful
 production GDN step records one explicit candidate read/finite check (residual),
-versus three in diagnostics or four with PLE. Commit counts remain one per
-successful layer. These are explicit API scopes, not driver traffic measurements.
+versus three in diagnostics or four with PLE. Across 36 GDN layers these are
+36 production versus 109 diagnostic reads/scans per consumed model token; the
+resident harness validates the exact counts using its recorded policy.
+Production requires all counters and exactly 36 commits per consumed token.
+Commit counts remain one per successful layer. These are explicit API scopes, not driver traffic measurements.
 
 The quality and resident harnesses forward `--gdn-production`, record the policy
 and bind it in each reference command. Suite references must be generated fresh

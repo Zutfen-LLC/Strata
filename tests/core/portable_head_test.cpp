@@ -137,20 +137,44 @@ int main(int argc, char **argv) {
                   std::memcmp(out.data(), first_edges.data(), out.size() * sizeof(float)) == 0,
                   "head finite edge replay bytes");
             for (bool guarded : {false, true}) {
-                auto invalid_weights = weights;
-                std::vector<float> invalid_output(H * V, 0.01f);
-                invalid_output.back() = std::numeric_limits<float>::quiet_NaN();
-                invalid_weights.back().type = 0;
-                invalid_weights.back().data = invalid_output.data();
-                invalid_weights.back().bytes = invalid_output.size() * sizeof(float);
-                auto bad = PortableHead::create({H, HC, R, V, 1e-6f}, invalid_weights, options, error, guarded);
-                check(bool(bad), error);
-                out = {1};
-                check(!bad->run(finite_edges, out, error) && out.empty() &&
-                      error == "portable head: nonfinite logits", "head output finite diagnostic/output clear");
-                check(head->run(finite_edges, out, error) && out.size() == first_edges.size() &&
-                      std::memcmp(out.data(), first_edges.data(), out.size() * sizeof(float)) == 0,
-                      "head recovery after invalid calls");
+                for (bool quantized : {false, true})
+                for (uint32_t invalid_bits : {0x7f800000u, 0xff800000u, 0x7fc00001u, 0xffc00001u, 0x7f800001u, 0xff800001u}) {
+                    auto invalid_weights = weights;
+                    std::vector<float> invalid_output(H * V, 0.01f);
+                    invalid_output.back() = std::bit_cast<float>(invalid_bits);
+                    invalid_weights.back().type = 0;
+                    invalid_weights.back().data = invalid_output.data();
+                    invalid_weights.back().bytes = invalid_output.size() * sizeof(float);
+                    auto invalid_q8 = data[2];
+                    if (quantized) {
+                        const uint16_t half_bits = uint16_t((invalid_bits >> 16) & 0x8000u) | 0x7c00u |
+                            ((invalid_bits & 0x7fffffu) ? ((invalid_bits & 0x400000u) ? 0x201u : 1u) : 0u);
+                        std::memcpy(invalid_q8.data() + invalid_q8.size() - 34, &half_bits, sizeof(half_bits));
+                        invalid_weights.back().type = 8;
+                        invalid_weights.back().data = invalid_q8.data();
+                        invalid_weights.back().bytes = invalid_q8.size();
+                    }
+                    auto bad = PortableHead::create({H, HC, R, V, 1e-6f}, invalid_weights, options, error, guarded);
+                    check(bool(bad), error);
+                    if (guarded && backend) {
+                        bool status_on_device = false;
+                        for (const auto &p : bad->placements()) {
+                            check(p.metadata_only || (p.backend == ggml_backend_name(backend.get()) &&
+                                  p.fallback_reason.empty()), "injected head must stay on requested Vulkan backend");
+                            status_on_device |= p.operation == "SUM" && p.tensor == "portable_logits_status" &&
+                                                p.backend == ggml_backend_name(backend.get());
+                        }
+                        check(status_on_device, "scheduled injected head must include device status guard");
+                    }
+                    out = {1};
+                    check(!bad->run(finite_edges, out, error) && out.empty() &&
+                          error == (guarded ? "portable head: nonfinite logits (device status guard)" :
+                                             "portable head: nonfinite logits"),
+                          "scheduled head must reject at requested guard before logits download");
+                    check(head->run(finite_edges, out, error) && out.size() == first_edges.size() &&
+                          std::memcmp(out.data(), first_edges.data(), out.size() * sizeof(float)) == 0,
+                          "head recovery after invalid calls");
+                }
             }
             auto small = PortableFfnOptions{};
             small.weight_budget = 1;
@@ -164,7 +188,7 @@ int main(int argc, char **argv) {
                       (backend ? memory.device_graph > 0 : memory.device_graph == 0 && memory.host_graph > 0),
                   "head allocation report");
             if (backend) {
-                for (const auto &p : head->placements())
+                for (const auto &p : guarded_head->placements())
                     check(p.metadata_only || (p.backend == ggml_backend_name(backend.get()) && p.fallback_reason.empty()),
                           "head tensor work must execute on requested Vulkan device");
                 std::printf("PASS strict Vulkan portable head backend=%s actual_device_scheduler=%zu workspace_bound=%zu\n",

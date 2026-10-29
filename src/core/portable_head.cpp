@@ -155,7 +155,7 @@ bool PortableHead::run(const std::vector<float> &streams, std::vector<float> &lo
             std::vector<float> status(1);
             ggml_backend_tensor_get(s.status, status.data(), 0, sizeof(float));
             require(portable_detail::gdn_all_finite(status) && status[0] == 0,
-                    "portable head: nonfinite logits");
+                    "portable head: nonfinite logits (device status guard)");
         }
         std::vector<float> next(size_t(s.g.vocabulary));
         ggml_backend_tensor_get(s.output, next.data(), 0, next.size() * sizeof(float));

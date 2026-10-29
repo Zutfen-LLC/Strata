@@ -19,7 +19,7 @@ for i,line in enumerate(sys.stdin,1):
     tokens=list(map(int,t.split(',')))
     for p,t in enumerate(tokens): print(json.dumps(dict(position=p,token=t,generated=False,greedy_next=7)))
     print(json.dumps(dict(stop='max_new',position=len(tokens))))
-    print(json.dumps(dict(done=i,prompt_count=len(tokens),output_count=0,prompt_ms=0,cpu_hits_delta=10,cpu_pool_gu_ms_delta=(float('nan') if sys.argv[1]=='nan' else -1.25 if sys.argv[1]=='negative' else 1.25),cpu_pool_quant_ms_delta=.25,cpu_pool_down_ms_delta=2.5,cpu_pool_elapsed_ms_delta=4.1,cpu_verifications_delta=0,cpu_copied_bytes_delta=0,cpu_digest_bytes_delta=0,source_invalidations_delta=0,model_step_ms_delta=18.,gdn_layer_ms_delta=10.,qsa_layer_ms_delta=5.,output_head_ms_delta=2.,gdn_attention_exchange_ms_delta=3.,gdn_attention_compute_ms_delta=2.,gdn_ffn_ms_delta=6.,gdn_outer_residual_ms_delta=1.,gdn_attention_surrounding_ms_delta=1.,gdn_ffn_non_provider_ms_delta=1.,gdn_attention_exchange_calls_delta=36*len(tokens),gdn_attention_compute_calls_delta=36*len(tokens),gdn_ffn_calls_delta=36*len(tokens),model_residual_ms_delta=1.,gdn_provider_ms_delta=5.,qsa_provider_ms_delta=2.5,model_step_calls_delta=len(tokens),gdn_layer_calls_delta=36*len(tokens),qsa_layer_calls_delta=12*len(tokens),output_head_calls_delta=len(tokens),expert_provider_ms_delta=7.5,expert_provider_calls_delta=len(tokens)*48,gpu_infer_rows_ms_delta=[1.0,float('nan') if sys.argv[1]=='nan_gpu' else -1.0 if sys.argv[1]=='negative_gpu' else 2.0],gpu_infer_rows_calls_delta=[1,1],gpu_entries_per_device_delta=[1,1])))
+    print(json.dumps(dict(done=i,prompt_count=len(tokens),output_count=0,prompt_ms=0,cpu_hits_delta=10,cpu_pool_gu_ms_delta=(float('nan') if sys.argv[1]=='nan' else -1.25 if sys.argv[1]=='negative' else 1.25),cpu_pool_quant_ms_delta=.25,cpu_pool_down_ms_delta=2.5,cpu_pool_elapsed_ms_delta=4.1,cpu_verifications_delta=0,cpu_copied_bytes_delta=0,cpu_digest_bytes_delta=0,source_invalidations_delta=0,model_step_ms_delta=18.,gdn_layer_ms_delta=10.,qsa_layer_ms_delta=5.,output_head_ms_delta=2.,gdn_attention_exchange_ms_delta=3.,gdn_attention_compute_ms_delta=2.,gdn_ffn_ms_delta=6.,gdn_outer_residual_ms_delta=1.,gdn_attention_surrounding_ms_delta=1.,gdn_ffn_non_provider_ms_delta=1.,gdn_attention_exchange_calls_delta=36*len(tokens),gdn_attention_compute_calls_delta=36*len(tokens),gdn_ffn_calls_delta=36*len(tokens),model_residual_ms_delta=1.,gdn_provider_ms_delta=5.,qsa_provider_ms_delta=2.5,model_step_calls_delta=len(tokens),gdn_layer_calls_delta=36*len(tokens),qsa_layer_calls_delta=12*len(tokens),output_head_calls_delta=len(tokens),expert_provider_ms_delta=7.5,expert_provider_calls_delta=len(tokens)*48,gpu_infer_rows_ms_delta=[1.0,float('nan') if sys.argv[1]=='nan_gpu' else -1.0 if sys.argv[1]=='negative_gpu' else 2.0],gpu_infer_rows_calls_delta=[1,1],gpu_entries_per_device_delta=[1,1],gdn_candidate_readback_ms_delta=.2,gdn_candidate_finite_ms_delta=.3,gdn_state_commit_ms_delta=(.5 if sys.argv[1]=='production' else 0),gdn_candidate_readback_calls_delta=(36 if sys.argv[1]=='production' else 109)*len(tokens),gdn_candidate_finite_calls_delta=(36 if sys.argv[1]=='production' else 109)*len(tokens),gdn_state_commit_calls_delta=(36*len(tokens) if sys.argv[1]=='production' else 0))))
     sys.stdout.flush()
 '''
 class HarnessTest(unittest.TestCase):
@@ -50,6 +50,25 @@ class HarnessTest(unittest.TestCase):
                           ('gdn_state_commit_calls_delta',0)]:
             with self.subTest(candidate=key),self.assertRaises(ValueError):
                 M.model_phase_fields(dict(detailed,**{key:value}),2)
+        production = dict(detailed,gdn_candidate_readback_calls_delta=72,gdn_candidate_finite_calls_delta=72)
+        M.model_phase_fields(production,2,'device_production')
+        for policy, sample in [('device_production',production),('eager_diagnostic',detailed)]:
+            for field in ('gdn_candidate_readback_calls_delta','gdn_candidate_finite_calls_delta'):
+                for wrong in (0,71,73,218 if policy=='device_production' else 72):
+                    with self.subTest(policy=policy,field=field,wrong=wrong),self.assertRaises(ValueError):
+                        M.model_phase_fields(dict(sample,**{field:wrong}),2,policy)
+            for field in ('gdn_candidate_readback_calls_delta','gdn_candidate_finite_calls_delta',
+                          'gdn_state_commit_calls_delta','gdn_state_commit_ms_delta'):
+                missing=dict(sample);del missing[field]
+                with self.subTest(policy=policy,missing=field),self.assertRaises(ValueError):
+                    M.model_phase_fields(missing,2,policy)
+        for commits in (0,1,71,73):
+            with self.subTest(commits=commits),self.assertRaises(ValueError):
+                M.model_phase_fields(dict(production,gdn_state_commit_calls_delta=commits),2,'device_production')
+        with self.assertRaisesRegex(ValueError,'incomplete GDN'):
+            M.model_phase_fields(m,2,'device_production')
+        with self.assertRaisesRegex(ValueError,'unknown GDN'):
+            M.model_phase_fields(production,2,'unknown')
         del detailed['gdn_candidate_finite_calls_delta']
         with self.assertRaisesRegex(ValueError,'incomplete GDN'): M.model_phase_fields(detailed,2)
         for key,value in [('gdn_attention_exchange_calls_delta',71),('gdn_attention_compute_calls_delta',71),('gdn_ffn_calls_delta',71),
@@ -102,7 +121,7 @@ class HarnessTest(unittest.TestCase):
             commands=[]
             def runner(command,out,tick):
                 commands.append(command)
-                return real([sys.executable,'-c',FAKE,'ok'],out,tick,load_seconds=2,request_seconds=2,total_seconds=5)
+                return real([sys.executable,'-c',FAKE,'production' if production else 'ok'],out,tick,load_seconds=2,request_seconds=2,total_seconds=5)
             host=dict(effective_available=1<<40,pswpout=0)
             args=['resident','--binary',sys.executable,'--binary-sha256',M.Q.bundle.sha(sys.executable),
                   '--out',str(out),'--tokens-file',str(tokens),'--max-new','0',
@@ -153,7 +172,7 @@ class HarnessTest(unittest.TestCase):
     def test_main_tensor_caps_with_state_and_dense(self):
         self.main_run(False,dense_weights=True,state_resident=True,tensor_caps='3606,3606')
     def test_main_production_policy(self):
-        self.main_run(False,state_resident=True,production=True)
+        self.main_run(False,timings=True,state_resident=True,production=True)
     def test_invalid_tensor_caps_before_launch(self):
         for caps in ('3606','3606,3606,1','0,3606','3606,0','-1,3606','8193,3606','3606,8193',
                      '3606.0,3606','3606,NaN','3606, 3606',',3606','3606,','3606,+1'):
@@ -333,6 +352,32 @@ for index,line in enumerate(sys.stdin,1):
                         with self.assertRaisesRegex(ValueError,'residency policy mismatch'):
                             M.reference_rows(*args,residency={flag:expected})
 
+    def test_suite_phase_policy_binding(self):
+        for policy, multiplier in [('eager_diagnostic',109),('device_production',36)]:
+            for recorded in (36,109):
+                with self.subTest(policy=policy,recorded=recorded),tempfile.TemporaryDirectory() as d:
+                    tok,suite,prompts,binding,ref,binary,plans,records=self.fixtures(Path(d))
+                    out=Path(d)/'out';out.mkdir()
+                    def request(prompt,max_new,index):
+                        record=copy.deepcopy(records[(index-1)%12])
+                        m=self.metrics(prompt,record,index);n=len(record['rows'])
+                        m.update(gdn_candidate_readback_ms_delta=.2,gdn_candidate_finite_ms_delta=.3,
+                                 gdn_state_commit_ms_delta=.5,gdn_candidate_readback_calls_delta=recorded*n,
+                                 gdn_candidate_finite_calls_delta=recorded*n,gdn_state_commit_calls_delta=36*n)
+                        record['metrics']=m
+                        return record
+                    runner=mock.Mock(request=mock.Mock(side_effect=request));receipt={'gdn_policy':policy}
+                    if recorded==multiplier:
+                        M.run_suite(runner,out,prompts,records,binding,len(tok.tokens),'binary',receipt)
+                        self.assertEqual(runner.request.call_count,24)
+                    else:
+                        with self.assertRaisesRegex(ValueError,'candidate diagnostic containment/counts'):
+                            M.run_suite(runner,out,prompts,records,binding,len(tok.tokens),'binary',receipt)
+                        self.assertEqual(runner.request.call_count,1)
+                    saved=json.loads((out/'pass-1'/'summary.json').read_text())
+                    self.assertEqual(saved['gdn_policy'],policy)
+                    self.assertEqual(saved['status'],'complete' if recorded==multiplier else 'STOP')
+
     def test_two_pass_order_warm_policy_and_fail_stop(self):
         for failure in ('none','warm','invalidate','reference9','count','timer','done','child'):
             with self.subTest(failure=failure),tempfile.TemporaryDirectory() as d:
@@ -352,7 +397,7 @@ for index,line in enumerate(sys.stdin,1):
                     if failure=='timer' and index==2: m['cpu_pool_elapsed_ms_delta']=float('nan')
                     if failure=='done' and index==2: m['done']=1
                     return record
-                runner=mock.Mock(request=mock.Mock(side_effect=request));receipt={}
+                runner=mock.Mock(request=mock.Mock(side_effect=request));receipt={'gdn_policy':'eager_diagnostic'}
                 if failure=='none': M.run_suite(runner,out,prompts,records,binding,len(tok.tokens),'binary',receipt)
                 else:
                     with self.assertRaises((ValueError,RuntimeError)):
