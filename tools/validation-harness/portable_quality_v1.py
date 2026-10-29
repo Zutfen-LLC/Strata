@@ -13,7 +13,7 @@ import quality as Q
 import portable_model_smoke_v1 as S
 
 
-RESIDENCY_FLAGS = ('--gdn-production', '--gdn-resident-weights', '--gdn-resident-state', '--dense-resident-weights')
+RESIDENCY_FLAGS = ('--qsa-reuse-attention', '--gdn-production', '--gdn-resident-weights', '--gdn-resident-state', '--dense-resident-weights')
 
 
 def residency_arguments(parser):
@@ -117,6 +117,7 @@ def run_portable(args, tok):
     args.out.mkdir(mode=0o700, exist_ok=False)
     summary = dict(status='STOP', source='ac85ff3fdf0834c13437b69b1568d8704e9b0717',
                    binary_sha256=args.binary_sha256, suite=binding, requests=[],
+                   qsa_reuse_attention=bool(getattr(args, 'qsa_reuse_attention', False)),
                    gdn_policy='device_production' if getattr(args, 'gdn_production', False) else 'eager_diagnostic')
     if getattr(args,'expert_plan',[]):
         summary['expert_plans']=args.expert_plan

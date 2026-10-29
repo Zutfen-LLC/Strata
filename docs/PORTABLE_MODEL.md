@@ -20,6 +20,12 @@ allocator's retained buffer high water. There is no per-length graph cache.
 Reset clears sequence state but keeps execution storage. Leave the flag off
 for the legacy token-local attention Phase.
 
+The existing fresh-quality and resident adapters accept this same flag and record
+its Boolean policy. Resident suite references must match that policy in both the
+fresh summary and every case argv, with exactly one flag when enabled. Missing,
+duplicate or mismatched enabled references are rejected. Older references with
+no QSA policy remain usable only with the default-off mode.
+
 This follows the bounded ownership in native `SessionState` (`session_init` in
 `src/core/session.cpp` and `sycl/src/core/session.cpp`) and the active native
 Verifier's retained arena/execution (`src/core/verify.cpp`). It does not copy
