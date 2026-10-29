@@ -14,11 +14,13 @@ import quality as Q
 import portable_model_smoke_v1 as S
 
 
+GDN_CAUSAL_FLAG = '--gdn-causal-chunk'
 GDN_PROJECTION_FLAG = '--gdn-batch-input-projections'
 RESIDENCY_FLAGS = ('--prompt-head-elision', '--qsa-production', '--qsa-reuse-attention', '--gdn-production', '--gdn-resident-weights', '--gdn-resident-state', '--dense-resident-weights')
 
 
 def residency_arguments(parser):
+    parser.add_argument(GDN_CAUSAL_FLAG,action='store_true',help='experimental production GDN causal chunk; requires batch projections')
     parser.add_argument(GDN_PROJECTION_FLAG,action='store_true',help='batch independent GDN projections; requires prompt chunks')
     parser.add_argument('--prompt-chunk-size',type=int,choices=range(2,9),default=0,help='bounded layer-major prompt chunks; implies head elision')
     for flag in RESIDENCY_FLAGS:
@@ -28,9 +30,11 @@ def residency_arguments(parser):
 def residency_flags(args):
     size=chunk_size(args)
     projections=projection_policy(args)
+    causal=causal_policy(args)
     flags=[flag for flag in RESIDENCY_FLAGS if getattr(args,flag[2:].replace('-','_'),False) or
            (flag=='--prompt-head-elision' and size)]
     if projections:flags += [GDN_PROJECTION_FLAG]
+    if causal:flags += [GDN_CAUSAL_FLAG]
     if size: flags += ['--prompt-chunk-size',str(size)]
     return flags
 
@@ -67,6 +71,24 @@ def projection_binding(record,enabled):
     value=record.get('gdn_batch_input_projections',False)
     if type(enabled) is not bool or type(value) is not bool or value is not enabled:
         raise ValueError('GDN batch input projection policy mismatch')
+
+
+def causal_policy(args):
+    enabled=getattr(args,'gdn_causal_chunk',False)
+    if type(enabled) is not bool or (enabled and (not projection_policy(args) or not getattr(args,'gdn_production',False))):
+        raise ValueError('GDN causal chunk requires batched projections and production')
+    return enabled
+
+def causal_argv(command):
+    count=command.count(GDN_CAUSAL_FLAG)
+    if count>1 or (count and (not projection_argv(command) or command.count('--gdn-production')!=1)):
+        raise ValueError('duplicate GDN causal chunk or missing projection/production policy')
+    return bool(count)
+
+def causal_binding(record,enabled):
+    value=record.get('gdn_causal_chunk',False)
+    if type(enabled) is not bool or type(value) is not bool or value is not enabled:
+        raise ValueError('GDN causal chunk policy mismatch')
 
 
 def chunk_binding(record,size):
@@ -205,6 +227,7 @@ def run_portable(args, tok):
     if Q.bundle.sha(binary) != args.binary_sha256:
         raise ValueError('portable binary digest mismatch')
     projections=projection_policy(args)
+    causal=causal_policy(args)
     args.out.mkdir(mode=0o700, exist_ok=False)
     summary = dict(status='STOP', source='ac85ff3fdf0834c13437b69b1568d8704e9b0717',
                    binary_sha256=args.binary_sha256, suite=binding, requests=[],
@@ -213,6 +236,7 @@ def run_portable(args, tok):
                    qsa_reuse_attention=bool(getattr(args, 'qsa_reuse_attention', False)),
                    gdn_policy='device_production' if getattr(args, 'gdn_production', False) else 'eager_diagnostic')
     if projections:summary['gdn_batch_input_projections']=True
+    if causal:summary['gdn_causal_chunk']=True
     size=chunk_size(args)
     capture=getattr(args,'dump_executed_logits',False)
     if capture and summary['head_policy']!='prompt_head_elision':raise ValueError('executed-head capture requires head elision')
@@ -295,10 +319,12 @@ def run_portable(args, tok):
                     timing=json.loads((case/'timings.json').read_text())
                     chunk_fields(timing,len(prompt),len(records)-1,size)
                     projection_binding(timing,projections)
+                    causal_binding(timing,causal)
                     summary['requests'][-1]['chunk_work']=timing
                 if benchmark:
                     timing = json.loads((case / 'timings.json').read_text())
                     projection_binding(timing,projections)
+                    causal_binding(timing,causal)
                     timing_fields(timing, prompt, ids)
                     for key in ('selection_prompt_ms', 'selection_decode_ms', 'terminal_feed_ms'):
                         value = timing.get(key)

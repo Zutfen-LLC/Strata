@@ -89,18 +89,20 @@ class ChunkPolicy(unittest.TestCase):
 
     def test_nonbenchmark_fresh_chunk_run_requests_and_consumes_timings(self):
         from contextlib import ExitStack
-        for batched,missing in ((False,False),(True,False),(True,True)):
+        for batched,causal,missing in ((False,False,False),(True,False,False),(True,False,True),(True,True,False),(True,True,True)):
             with tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);binary=root/'binary';binary.write_bytes(b'mocked child')
                 args=SimpleNamespace(suite=root/'suite',binary=binary,binary_sha256=P.Q.bundle.sha(binary),
-                    out=root/'out',prompt_chunk_size=2,benchmark=False,dump_executed_logits=True,gdn_batch_input_projections=batched)
+                    out=root/'out',prompt_chunk_size=2,benchmark=False,dump_executed_logits=True,gdn_batch_input_projections=batched,gdn_causal_chunk=causal,gdn_production=causal)
                 rows=[dict(position=i,token=t,generated=i==3,greedy_next=None if i<2 else 248046,
                     schema=2,head_policy='prompt_head_elision',logits_available=i>=2,
                     chunk_policy='layer_major_v1',prompt_chunk_size=2) for i,t in enumerate([5,6,7,248046])]
                 timing=metrics(2,3,4)
                 if batched and not missing:timing['gdn_batch_input_projections']=True
+                if causal and not missing:timing['gdn_causal_chunk']=True
                 def launch(argv,stdout,stderr,**kwargs):
                     self.assertEqual(argv.count(P.GDN_PROJECTION_FLAG),int(batched))
+                    self.assertEqual(argv.count(P.GDN_CAUSAL_FLAG),int(causal))
                     self.assertEqual(argv.count('--timings'),1)
                     Path(argv[argv.index('--timings')+1]).write_text(json.dumps(timing))
                     import array
@@ -132,6 +134,7 @@ class ChunkPolicy(unittest.TestCase):
                 summary=json.loads((args.out/'summary.json').read_text())
                 self.assertEqual(summary['status'],'complete')
                 self.assertEqual(summary.get('gdn_batch_input_projections',False),batched)
+                self.assertEqual(summary.get('gdn_causal_chunk',False),causal)
                 self.assertEqual(summary['requests'][0]['chunk_work'],timing)
                 self.assertNotIn('timing',summary['requests'][0])
                 self.assertEqual(summary['requests'][0]['executed_logits_manifest']['prompt_chunk_size'],2)
@@ -245,6 +248,43 @@ class ChunkPolicy(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):R.reference_rows(*args,residency=policy,prompt_chunk_size=8)
 
+    def test_causal_fresh_reference_policy_mutations(self):
+        for mutation in ('none','summary_missing','summary_false','summary_number','argv_missing','argv_duplicate',
+                         'timing_missing','timing_false','timing_number','saved_timing','off'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                tok,suite,prompts,binding,ref,binary,plans,records=ResidentTests.SuiteControls().fixtures(root)
+                summary=json.loads((ref/'summary.json').read_text())
+                summary.update(head_policy='prompt_head_elision',prompt_chunk_size=8,chunk_policy='layer_major_v1',
+                               gdn_batch_input_projections=True,gdn_causal_chunk=True,gdn_policy='device_production')
+                for index,(record,prompt) in enumerate(zip(records,prompts),1):
+                    case=ref/f'case-{index:02d}'
+                    argv=json.loads((case/'argv.json').read_text())+['--prompt-head-elision','--prompt-chunk-size','8',P.GDN_PROJECTION_FLAG,P.GDN_CAUSAL_FLAG,'--gdn-production']
+                    if index==1 and mutation=='argv_missing':argv.remove(P.GDN_CAUSAL_FLAG)
+                    if index==1 and mutation=='argv_duplicate':argv.append(P.GDN_CAUSAL_FLAG)
+                    (case/'argv.json').write_text(json.dumps(argv))
+                    for i,row in enumerate(record['rows']):
+                        row.update(schema=2,head_policy='prompt_head_elision',logits_available=i+1>=len(prompt),
+                                   prompt_chunk_size=8,chunk_policy='layer_major_v1')
+                        if i+1<len(prompt):row['greedy_next']=None
+                    (case/'stdout.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in record['rows']+[record['stop']]))
+                    timing=dict(metrics(8,len(prompt),len(record['rows'])),gdn_batch_input_projections=True,gdn_causal_chunk=True)
+                    summary['requests'][index-1]['chunk_work']=copy.deepcopy(timing)
+                    if index==1 and mutation=='saved_timing':summary['requests'][0]['chunk_work']['gdn_causal_chunk']=False
+                    if index==1 and mutation=='timing_missing':del timing['gdn_causal_chunk']
+                    if index==1 and mutation=='timing_false':timing['gdn_causal_chunk']=False
+                    if index==1 and mutation=='timing_number':timing['gdn_causal_chunk']=1
+                    (case/'timings.json').write_text(json.dumps(timing))
+                if mutation=='summary_missing':del summary['gdn_causal_chunk']
+                if mutation=='summary_false':summary['gdn_causal_chunk']=False
+                if mutation=='summary_number':summary['gdn_causal_chunk']=1
+                (ref/'summary.json').write_text(json.dumps(summary))
+                args=(ref,binding,prompts,len(tok.tokens),R.Q.bundle.sha(binary),plans,'5529,5529')
+                policy={'--prompt-head-elision':True,P.GDN_PROJECTION_FLAG:True,P.GDN_CAUSAL_FLAG:mutation!='off','--gdn-production':True}
+                if mutation=='none':self.assertEqual(R.reference_rows(*args,residency=policy,prompt_chunk_size=8),records)
+                else:
+                    with self.assertRaises(ValueError):R.reference_rows(*args,residency=policy,prompt_chunk_size=8)
+
     def test_resident_main_projection_forwarding_and_early_rejection(self):
         import sys
         from contextlib import ExitStack
@@ -255,7 +295,7 @@ class ChunkPolicy(unittest.TestCase):
             out=root/'out'
             argv=['resident','--binary',sys.executable,'--binary-sha256',R.Q.bundle.sha(sys.executable),
                   '--out',str(out),'--tokens-file',str(tokens),'--max-new','0',
-                  '--plan',str(plans[0]),'--plan',str(plans[1]),'--prompt-chunk-size','8',P.GDN_PROJECTION_FLAG]
+                  '--plan',str(plans[0]),'--plan',str(plans[1]),'--prompt-chunk-size','8',P.GDN_PROJECTION_FLAG,P.GDN_CAUSAL_FLAG,'--gdn-production']
             commands=[]
             def launch(command,path,tick):
                 commands.append(command);(path/'stderr.log').write_text('fixture')
@@ -264,7 +304,7 @@ class ChunkPolicy(unittest.TestCase):
                 del runner.cleanup_guard_error
                 def request(tokens,max_new,index):
                     return dict(rows=[{'fixture':True}],stop={'stop':'max_new'},metrics=dict(
-                        gdn_batch_input_projections=True,gpu_entries_per_device_delta=[1,1],cpu_verifications_delta=0,
+                        gdn_batch_input_projections=True,gdn_causal_chunk=True,gpu_entries_per_device_delta=[1,1],cpu_verifications_delta=0,
                         cpu_copied_bytes_delta=0,cpu_digest_bytes_delta=0,source_invalidations_delta=0))
                 runner.request.side_effect=request
                 return runner
@@ -279,10 +319,46 @@ class ChunkPolicy(unittest.TestCase):
                 R.main()
             self.assertEqual(commands[0].count(P.GDN_PROJECTION_FLAG),1)
             self.assertTrue(P.projection_argv(commands[0]))
+            self.assertTrue(P.causal_argv(commands[0]))
             summary=json.loads((out/'summary.json').read_text())
             self.assertEqual(summary['status'],'complete');self.assertIs(summary['gdn_batch_input_projections'],True)
+            self.assertIs(summary['gdn_causal_chunk'],True)
             self.assertEqual(len(summary['requests']),4);self.assertEqual(summary['excluded_warmups'],1)
-            invalid=argv[:-3]+[P.GDN_PROJECTION_FLAG]
+            invalid=[x for x in argv if x not in (P.GDN_CAUSAL_FLAG,'--gdn-production')]
+            i=invalid.index('--prompt-chunk-size');del invalid[i:i+2]
             with mock.patch.object(sys,'argv',invalid),mock.patch.object(sys,'stderr'),mock.patch.object(R,'Resident') as child:
                 with self.assertRaises(SystemExit):R.main()
                 child.assert_not_called()
+
+
+class CausalPolicy(unittest.TestCase):
+    def test_policy_argv_and_strict_receipts(self):
+        import argparse
+        parser=argparse.ArgumentParser();P.residency_arguments(parser)
+        valid=['--prompt-chunk-size','8',P.GDN_PROJECTION_FLAG,'--gdn-production',P.GDN_CAUSAL_FLAG]
+        flags=P.residency_flags(parser.parse_args(valid))
+        self.assertTrue(P.causal_argv(flags))
+        for flag in (P.GDN_PROJECTION_FLAG,'--gdn-production'):
+            with self.assertRaises(ValueError):P.residency_flags(parser.parse_args([x for x in valid if x!=flag]))
+            with self.assertRaises(ValueError):P.causal_argv([x for x in flags if x!=flag])
+        with self.assertRaises(ValueError):P.causal_argv(flags+[P.GDN_CAUSAL_FLAG])
+        for enabled in (True,False):
+            P.causal_binding({'gdn_causal_chunk':enabled},enabled)
+            for value in (1,0,'true',None,not enabled):
+                with self.assertRaises(ValueError):P.causal_binding({'gdn_causal_chunk':value},enabled)
+        with self.assertRaises(ValueError):P.causal_binding({},True)
+        P.causal_binding({},False)
+
+    def test_resident_rejects_foreign_causal_policy(self):
+        rows=[dict(position=i,token=t,generated=False,greedy_next=7 if i==2 else None,schema=2,
+            head_policy='prompt_head_elision',logits_available=i==2,chunk_policy='layer_major_v1',prompt_chunk_size=2)
+            for i,t in enumerate([5,6,7])]
+        done=dict(metrics(2,3,3),done=1,prompt_count=3,output_count=0,receipt_schema=2,
+            head_policy='prompt_head_elision',heads_skipped_delta=2,heads_executed_delta=1,gdn_batch_input_projections=True)
+        for enabled,value in ((True,None),(True,False),(True,1),(False,True)):
+            runner=object.__new__(R.Resident);runner.child=mock.Mock();runner.request_seconds=1
+            runner.head_policy='prompt_head_elision';runner.prompt_chunk_size=2;runner.gdn_batch_input_projections=True
+            runner.gdn_causal_chunk=enabled
+            receipt=dict(done,**({} if value is None else {'gdn_causal_chunk':value}))
+            runner.row=mock.Mock(side_effect=rows+[dict(stop='max_new',position=3),receipt])
+            with self.assertRaisesRegex(ValueError,'causal chunk policy mismatch'):runner.request([5,6,7],0,1)

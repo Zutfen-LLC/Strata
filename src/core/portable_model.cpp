@@ -131,6 +131,8 @@ struct PortableModelSession::Impl {
                 "portable model: prompt chunk size must be zero or [2,8]");
         require(!opts.gdn_batch_input_projections || opts.prompt_chunk_size,
                 "portable model: batched GDN input projections require prompt chunks");
+        require(!opts.gdn_causal_chunk || (opts.prompt_chunk_size && opts.gdn_batch_input_projections && opts.gdn_production),
+                "portable model: causal GDN chunks require prompt chunks, batched projections and production");
         if(opts.prompt_chunk_size) opts.prompt_head_elision=true;
         report.chunk_memory_is_shape_envelope=opts.prompt_chunk_size!=0;
         require(shards.size() == 6 && model.size() == 6, "portable model: this fleet path requires all six shards");
@@ -250,6 +252,7 @@ struct PortableModelSession::Impl {
                 require(bool(layer.qsa), "portable model: layer " + std::to_string(l) + ": " + error);
             } else {
                 PortableGdnOptions o;
+                o.causal_chunk = opts.gdn_causal_chunk;
                 o.batch_input_projections = opts.gdn_batch_input_projections;
                 o.resident_state = opts.gdn_resident_state;
                 o.policy = opts.gdn_production ? PortableGdnPolicy::device_production : PortableGdnPolicy::eager_diagnostic;
@@ -580,7 +583,15 @@ PortableExpertWork PortableModelSession::expert_work() const {
 #endif
     return work;
 }
-PortableModelWork PortableModelSession::model_work() const { return impl_->model_work; }
+PortableModelWork PortableModelSession::model_work() const {
+    auto work=impl_->model_work;
+    for(const auto& layer:impl_->layers) if(layer.gdn) {
+        work.gdn_causal_submissions+=layer.gdn->causal_chunk_calls();
+        work.gdn_causal_residual_handoffs+=layer.gdn->causal_residual_handoffs();
+        work.gdn_causal_state_commits+=layer.gdn->causal_state_commits();
+    }
+    return work;
+}
 const PortableModelReport &PortableModelSession::report() const { return impl_->report; }
 const std::vector<PortablePlacement> &PortableModelSession::placements() const { return impl_->placement; }
 bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result,

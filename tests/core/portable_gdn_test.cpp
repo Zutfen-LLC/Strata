@@ -10,6 +10,29 @@
 using namespace strata::core;
 using namespace gdn_fixture;
 namespace {
+struct CaptureCausalState {
+    static inline decltype(ggml_backend_i::graph_compute) original=nullptr;
+    static inline ggml_backend_buffer_t state=nullptr;
+    static inline bool corrupt_projection=false;
+    static ggml_status compute(ggml_backend_t backend,ggml_cgraph* graph) {
+        if(!state) for(int i=0;i<ggml_graph_n_nodes(graph);++i) {
+            auto* node=ggml_graph_node(graph,i);
+            if(node->op==GGML_OP_GATED_DELTA_NET) {
+                auto* root=node->src[5];while(root->view_src)root=root->view_src;
+                state=root->buffer;break;
+            }
+        }
+        const auto status=original(backend,graph);
+        if(corrupt_projection && status==GGML_STATUS_SUCCESS) for(int i=0;i<ggml_graph_n_nodes(graph);++i) {
+            auto* node=ggml_graph_node(graph,i);
+            if(std::string(ggml_get_name(node))=="ssm_alpha.weight") {
+                const float nonfinite=std::numeric_limits<float>::quiet_NaN();
+                ggml_backend_tensor_set(node,&nonfinite,0,sizeof(nonfinite));break;
+            }
+        }
+        return status;
+    }
+};
 void finite_predicate() {
     const uint32_t valid[] = {0u, 0x80000000u, 1u, 0x80000001u, 0x007fffffu, 0x807fffffu,
                               0x00800000u, 0x80800000u, 0x3f800000u, 0xbf800000u, 0x7f7fffffu, 0xff7fffffu};
@@ -155,16 +178,19 @@ int main() {
         refused_state.resident_state_budget = 1;
         check(!PortableGdnLayer::create(0, f.views, refused_state, error) &&
               error.find("resident state budget") != std::string::npos, "state allocation admission refusal");
-        for(bool batched:{false,true}) for(bool production:{false,true}) {
+        for(bool batched:{false,true}) for(bool production:{false,true}) for(bool causal:{false,true}) {
+            if(causal && (!batched || !production)) continue;
             auto chunk_opts=trial_options;
             chunk_opts.policy=production?PortableGdnPolicy::device_production:PortableGdnPolicy::eager_diagnostic;
             chunk_opts.batch_input_projections=batched;
+            chunk_opts.causal_chunk=causal;
             auto chunk=PortableGdnLayer::create(0,f.views,chunk_opts,error);
             chunk_opts.batch_input_projections=false;
+            chunk_opts.causal_chunk=false;
             auto serial=PortableGdnLayer::create(0,f.views,chunk_opts,error);
             check(bool(chunk)&&bool(serial),error);
             layer_chunk_fixture::exercise(*chunk,*serial,f,experts(),selected.get(),
-                chunk_opts.execution.graph_budget,chunk_opts.state_budget,production?"GDN production CPU-selected":"GDN diagnostic resident CPU-selected",false,batched);
+                chunk_opts.execution.graph_budget,chunk_opts.state_budget,production?"GDN production CPU-selected":"GDN diagnostic resident CPU-selected",false,batched,causal);
         }
         // A projection submission failure occurs before any causal state commit.
         // Check execution, admission and recovery through the existing backend seam.
@@ -192,6 +218,69 @@ int main() {
             auto denied=opts;denied.execution.graph_budget=candidate->graph_bytes()-1;
             auto budgeted=PortableGdnLayer::create(0,f.views,denied,error);
             check(!budgeted||!budgeted->prepare_chunk(3,error),"projection graph cap must reject before execution");
+        }
+        {
+            auto invalid=trial_options;invalid.causal_chunk=true;
+            check(!PortableGdnLayer::create(0,f.views,invalid,error),"causal option requires production");
+            invalid.policy=PortableGdnPolicy::device_production;
+            check(!PortableGdnLayer::create(0,f.views,invalid,error),"causal option requires batched projections");
+        }
+        // The causal graph may execute before finite/provider validation, but
+        // neither failed execution nor a failed final copy can publish a chunk.
+        for(bool commit_failure:{false,true}) {
+            auto opts=trial_options;opts.batch_input_projections=true;opts.causal_chunk=true;
+            opts.policy=PortableGdnPolicy::device_production;
+            auto candidate=PortableGdnLayer::create(0,f.views,opts,error);
+            check(bool(candidate)&&candidate->prepare_chunk(3,error),error);
+            const auto before=layer_chunk_fixture::snapshot(*candidate);
+            std::vector<float> input;
+            for(int t=0;t<3;++t){const auto row=f.input(t);input.insert(input.end(),row.begin(),row.end());}
+            const auto saved=input;
+            const auto compute=selected->iface.graph_compute;
+            CaptureCausalState::state=nullptr;CaptureCausalState::original=compute;
+            decltype(ggml_backend_buffer_i::set_tensor) set_tensor=nullptr;
+            layer_chunk_fixture::PostFault::original=compute;
+            layer_chunk_fixture::PostFault::calls=0;layer_chunk_fixture::PostFault::fail_at=1;
+            selected->iface.graph_compute=commit_failure?CaptureCausalState::compute:layer_chunk_fixture::PostFault::compute;
+            bool called=false;std::vector<PortableRoute> routes;
+            const bool ok=candidate->run_chunk({1,2,3},0,input,[&](auto layer,const auto& rs,auto& rows,auto& e){
+                called=true;
+                for(const auto& r:rs){std::vector<float> row;check(experts()(layer,r,row,e),e);rows.insert(rows.end(),row.begin(),row.end());}
+                check(CaptureCausalState::state!=nullptr,"causal committed state captured");
+                set_tensor=CaptureCausalState::state->iface.set_tensor;
+                CaptureCausalState::state->iface.set_tensor=[](ggml_backend_buffer_t,ggml_tensor*,const void*,size_t,size_t){
+                    throw std::runtime_error("injected causal final state write failure");
+                };
+                return true;
+            },routes,error);
+            selected->iface.graph_compute=compute;
+            if(set_tensor)CaptureCausalState::state->iface.set_tensor=set_tensor;
+            if(commit_failure)check(error=="injected causal final state write failure","fault reached the final deferred state write");
+            check(!ok&&candidate->poisoned()&&called==commit_failure&&input==saved&&routes.empty(),"causal execution/commit failure publication");
+            check(candidate->causal_state_commits()==0,"failed final commit counted successful");
+            layer_chunk_fixture::same(layer_chunk_fixture::snapshot(*candidate),before);
+            check(candidate->reset(error)&&!candidate->poisoned(),error);
+        }
+        {
+            auto opts=trial_options;opts.batch_input_projections=true;opts.causal_chunk=true;
+            opts.policy=PortableGdnPolicy::device_production;
+            auto candidate=PortableGdnLayer::create(0,f.views,opts,error);
+            check(bool(candidate)&&candidate->prepare_chunk(3,error),error);
+            const auto before=layer_chunk_fixture::snapshot(*candidate);
+            std::vector<float> input;
+            for(int t=0;t<3;++t){const auto row=f.input(t);input.insert(input.end(),row.begin(),row.end());}
+            const auto saved=input;const auto compute=selected->iface.graph_compute;
+            CaptureCausalState::state=nullptr;CaptureCausalState::original=compute;CaptureCausalState::corrupt_projection=true;
+            selected->iface.graph_compute=CaptureCausalState::compute;
+            bool called=false;std::vector<PortableRoute> routes;
+            const bool ok=candidate->run_chunk({1,2,3},0,input,[&](auto,auto&,auto&,auto&){called=true;return false;},routes,error);
+            selected->iface.graph_compute=compute;CaptureCausalState::corrupt_projection=false;
+            check(!ok&&!called&&candidate->poisoned()&&input==saved&&routes.empty()&&
+                  error=="portable GDN: nonfinite input/result","bulk projection finite validation retained after causal computation");
+            check(candidate->causal_chunk_calls()==1&&candidate->causal_residual_handoffs()==0&&candidate->causal_state_commits()==0,
+                  "nonfinite projection cannot reach residual handoff or commit");
+            layer_chunk_fixture::same(layer_chunk_fixture::snapshot(*candidate),before);
+            check(candidate->reset(error)&&!candidate->poisoned(),error);
         }
         production_policy(f, trial_options);
         {

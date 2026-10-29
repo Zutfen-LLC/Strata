@@ -40,7 +40,7 @@ inline bool metadata_only(ggml_tensor *t) {
     return t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;
 }
 inline void schedule_reusing(ggml_cgraph *graph, const char *phase, const PortableFfnOptions &options, Backend &cpu,
-                             std::vector<PortablePlacement> &placement, size_t &graphs_size, Scheduler &sched) {
+                             std::vector<PortablePlacement> &placement, size_t &graphs_size, Scheduler &sched, bool resident_weight_credit = false) {
     ggml_backend_t backends[] = {options.accelerator, cpu.get()};
     auto *list = options.accelerator && options.request_accelerator ? backends : backends + 1;
     const int count = list == backends ? 2 : 1;
@@ -119,10 +119,18 @@ inline void schedule_reusing(ggml_cgraph *graph, const char *phase, const Portab
             account(backend, node);
         for (auto *src : node->src)
             if (src) {
-                account(backend, src);
                 auto *root = src;
                 while (root->view_src)
                     root = root->view_src;
+                // The causal GDN graph reuses the same immutable weights for T
+                // consumers. At the pinned scheduler a source in a compatible
+                // existing buffer is consumed directly (no scheduler copy).
+                // Take only the stricter same-default-buffer credit, and only
+                // for already allocated WEIGHTS. Other source-copy bounds stay.
+                const bool shared_weight = resident_weight_credit && root->buffer &&
+                    ggml_backend_buffer_get_usage(root->buffer)==GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
+                    ggml_backend_buffer_get_type(root->buffer)==ggml_backend_get_default_buffer_type(backend);
+                if(!shared_weight) account(backend, src);
                 // Unallocated graph inputs can get original storage on either
                 // backend as well as the consumer copy accounted above.
                 if (root->op == GGML_OP_NONE && !root->buffer)
@@ -162,9 +170,9 @@ inline void schedule_reusing(ggml_cgraph *graph, const char *phase, const Portab
     graphs_size += allocated;
 }
 inline Scheduler schedule(ggml_cgraph *graph, const char *phase, const PortableFfnOptions &options, Backend &cpu,
-                          std::vector<PortablePlacement> &placement, size_t &graphs_size) {
+                          std::vector<PortablePlacement> &placement, size_t &graphs_size, bool resident_weight_credit = false) {
     Scheduler sched{nullptr, ggml_backend_sched_free};
-    schedule_reusing(graph, phase, options, cpu, placement, graphs_size, sched);
+    schedule_reusing(graph, phase, options, cpu, placement, graphs_size, sched, resident_weight_credit);
     return sched;
 }
 

@@ -66,6 +66,7 @@ struct PortableModelOptions {
     bool gdn_resident_weights = false; // opt-in GDN attention only
     bool gdn_resident_state = false; // opt-in; independent of weight residency
     bool dense_resident_weights = false; // opt-in attention, FFN and head weights
+    bool gdn_causal_chunk = false; // production/non-PLE; requires batched projections and chunks
     bool gdn_batch_input_projections = false; // requires prompt chunks; non-PLE layers only
     size_t prompt_chunk_size = 0; // default off; 2..8 implies prompt head elision
     bool prompt_head_elision = false; // opt-in: only final prompt position projects vocabulary
@@ -93,6 +94,7 @@ struct PortableModelWork {
     uint64_t completed_ffn_pre_calls = 0, completed_provider_calls = 0, completed_ffn_post_calls = 0;
     uint64_t logical_tokens = 0, prompt_chunks = 0, prompt_chunk_tokens = 0;
     uint64_t chunk_layer_calls = 0, chunk_ffn_pre_calls = 0, chunk_provider_calls = 0, chunk_ffn_post_calls = 0;
+    uint64_t gdn_causal_submissions = 0, gdn_causal_residual_handoffs = 0, gdn_causal_state_commits = 0;
     PortableGdnWork gdn_phases; // nested GDN scopes; enabled only by expert_timings
     double step_ms = 0, gdn_ms = 0, qsa_ms = 0, head_ms = 0;
     double gdn_provider_ms = 0, qsa_provider_ms = 0;

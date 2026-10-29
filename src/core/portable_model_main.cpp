@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
                              " [--prompt-head-elision (serial head elision; incompatible with --dump-logits)]\n"
-                             " [--gdn-batch-input-projections (requires prompt chunks; default off)] [--prompt-chunk-size 2..8 (implies head elision; default off)]\n"
+                             " [--gdn-causal-chunk (production chunks; default off)] [--gdn-batch-input-projections (requires prompt chunks; default off)] [--prompt-chunk-size 2..8 (implies head elision; default off)]\n"
                              " [--dump-logits DIRECTORY | --dump-executed-logits EMPTY_DIRECTORY] [--placements FILE] [--timings FILE]\n"
                              " Or --stdio [--max-requests 4]: GEN <max_new> <id,id,...> / QUIT; JSONL replies.\n"
                              "Default T=1 serial text; optional bounded prompt chunks; all 48 layers; CPU experts/host PLE.\n"
@@ -153,6 +153,10 @@ int main(int argc, char **argv) {
             }
             if (key == "--dense-resident-weights") {
                 opts.dense_resident_weights = true;
+                continue;
+            }
+            if (key == "--gdn-causal-chunk") {
+                opts.gdn_causal_chunk = true;
                 continue;
             }
             if (key == "--gdn-batch-input-projections") {
@@ -226,6 +230,8 @@ int main(int argc, char **argv) {
             else
                 throw std::runtime_error("unknown option: " + key);
         }
+        if(opts.gdn_causal_chunk && (!opts.prompt_chunk_size || !opts.gdn_batch_input_projections || !opts.gdn_production))
+            throw std::runtime_error("--gdn-causal-chunk requires --prompt-chunk-size, --gdn-batch-input-projections and --gdn-production");
         if(opts.gdn_batch_input_projections && !opts.prompt_chunk_size)
             throw std::runtime_error("--gdn-batch-input-projections requires --prompt-chunk-size");
         if (!executed_dump.empty() && (!dump.empty() || !opts.prompt_head_elision || resident))
@@ -433,6 +439,10 @@ int main(int argc, char **argv) {
                 << ",\"chunk_ffn_pre_calls_delta\":" << after.chunk_ffn_pre_calls-heads_before.chunk_ffn_pre_calls
                 << ",\"chunk_provider_calls_delta\":" << after.chunk_provider_calls-heads_before.chunk_provider_calls
                 << ",\"chunk_ffn_post_calls_delta\":" << after.chunk_ffn_post_calls-heads_before.chunk_ffn_post_calls;
+            if(opts.gdn_causal_chunk) out << ",\"gdn_causal_chunk\":true"
+                << ",\"gdn_causal_submissions_delta\":" << after.gdn_causal_submissions-heads_before.gdn_causal_submissions
+                << ",\"gdn_causal_residual_handoffs_delta\":" << after.gdn_causal_residual_handoffs-heads_before.gdn_causal_residual_handoffs
+                << ",\"gdn_causal_state_commits_delta\":" << after.gdn_causal_state_commits-heads_before.gdn_causal_state_commits;
             if(opts.gdn_batch_input_projections) out << ",\"gdn_batch_input_projections\":true";
         };
         auto consume = [&](int32_t token, bool generated, bool project = true) {

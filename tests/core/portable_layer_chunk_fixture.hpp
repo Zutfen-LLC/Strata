@@ -65,8 +65,12 @@ inline uint64_t projection_calls(const PortableGdnLayer& l) { return l.input_pro
 inline uint64_t projection_calls(const PortableQsaLayer&) { return 0; }
 inline uint64_t projection_columns(const PortableGdnLayer& l) { return l.input_projection_columns(); }
 inline uint64_t projection_columns(const PortableQsaLayer&) { return 0; }
+inline std::array<uint64_t,3> causal_work(const PortableGdnLayer& l) {
+    return {l.causal_chunk_calls(),l.causal_residual_handoffs(),l.causal_state_commits()};
+}
+inline std::array<uint64_t,3> causal_work(const PortableQsaLayer&) { return {}; }
 template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,const Fixture& fixture,
-    const PortableExpertRows& provider,ggml_backend_t backend,size_t graph_cap,size_t state_cap,const char* label,bool gpu=false,bool batched_projections=false) {
+    const PortableExpertRows& provider,ggml_backend_t backend,size_t graph_cap,size_t state_cap,const char* label,bool gpu=false,bool batched_projections=false,bool causal=false) {
     std::string error;double maximum=0,square=0,norm=0;size_t elements=0,completed_chunks=0,attention_tokens=0;
     const std::vector<int32_t> ids{5,248044,6,248056,0,8,9,7,11};
     const auto weight_bytes=chunk.weight_bytes();
@@ -96,13 +100,24 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
                     return true;
                 };
                 std::vector<PortableRoute> routes;
+                const auto causal_before=causal_work(chunk);
                 const auto projected_before=projection_calls(chunk), columns_before=projection_columns(chunk);
                 check(chunk.run_chunk({ids.begin()+pos,ids.begin()+pos+T},pos,input,dispatch,routes,error),error);
                 const bool projected=batched_projections&&T>1;
                 check(projection_calls(chunk)==projected_before+size_t(projected) &&
                       projection_columns(chunk)==columns_before+(projected?T:0),"actual projection submissions and columns");
-                size_t projection_matrices=0;
-                for(const auto& p:chunk.placements()) if(p.phase=="gdn-input-projections"&&p.operation=="MUL_MAT") {
+                const auto causal_after=causal_work(chunk);
+                for(size_t i=0;i<3;++i) check(causal_after[i]==causal_before[i]+size_t(causal&&T>1),
+                    "one actual causal submission, residual handoff and state commit per T>1 chunk");
+                size_t projection_matrices=0, recurrence_nodes=0;
+                for(const auto& p:chunk.placements()) if(p.phase=="gdn-causal-chunk") {
+                    if(gpu&&!p.metadata_only) check(p.backend==ggml_backend_name(backend)&&p.fallback_reason.empty(),
+                        "causal chunk operation not on selected Vulkan backend");
+                    if(p.operation=="GATED_DELTA_NET") ++recurrence_nodes;
+                }
+                check(recurrence_nodes==(causal&&T>1?T:0),"one ordered recurrence node per causal token");
+                for(const auto& p:chunk.placements()) if((p.phase=="gdn-input-projections"||p.phase=="gdn-causal-chunk")&&p.operation=="MUL_MAT" &&
+                    (p.tensor=="attn_qkv.weight"||p.tensor=="attn_gate.weight"||p.tensor=="ssm_alpha.weight"||p.tensor=="ssm_beta.weight")) {
                     check(projected&&p.shape.size()>1&&p.shape[1]==int64_t(T),"projection matrix lacks actual T columns");
                     if(gpu)check(p.backend==ggml_backend_name(backend)&&p.fallback_reason.empty(),"input projection matrix not on Vulkan");
                     if(p.tensor=="attn_qkv.weight"||p.tensor=="attn_gate.weight"||p.tensor=="ssm_alpha.weight"||p.tensor=="ssm_beta.weight")
@@ -177,6 +192,12 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
     }
     if(batched_projections) check(projection_calls(chunk)==(gpu?48u:51u)&&projection_columns(chunk)==(gpu?180u:189u),
                                   "bounded projection submission totals including failed chunks");
+    if(causal) {
+        const auto work=causal_work(chunk);
+        check(work[0]==(gpu?48u:51u)&&work[1]==work[0]&&work[2]==48u,"causal successful work versus deferred commits");
+        std::printf("GDN causal chunk receipts: submissions=%llu residual_handoffs=%llu state_commits=%llu\n",
+            (unsigned long long)work[0],(unsigned long long)work[1],(unsigned long long)work[2]);
+    }
     if(batched_projections) std::printf("GDN input projection receipts: enabled=%d calls=%llu columns=%llu\n",int(batched_projections),
                 (unsigned long long)projection_calls(chunk),(unsigned long long)projection_columns(chunk));
     std::printf("%s layer chunks T1-8/tails: max_abs=%.9g relative_l2=%.9g elements=%zu completed_chunks=%zu attention_tokens=%zu; causal state, routes, T-column execution, A/B/A passed; injected_failure_checks=%d\n",

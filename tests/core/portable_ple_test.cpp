@@ -212,7 +212,10 @@ int main() {
         for(bool production:{false,true}) {
             auto chunk_opts=resident_options;
             chunk_opts.policy=production?PortableGdnPolicy::device_production:PortableGdnPolicy::eager_diagnostic;
+            // The new model policy must leave PLE on its serial causal path.
+            chunk_opts.batch_input_projections=production;chunk_opts.causal_chunk=production;
             auto chunk=PortableGdnLayer::create(1,f.views,chunk_opts,error);
+            chunk_opts.batch_input_projections=false;chunk_opts.causal_chunk=false;
             auto serial=PortableGdnLayer::create(1,f.views,chunk_opts,error);
             check(bool(chunk)&&bool(serial),error);
             layer_chunk_fixture::exercise(*chunk,*serial,f,experts(),selected.get(),
