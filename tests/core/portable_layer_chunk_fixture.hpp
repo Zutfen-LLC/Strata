@@ -62,8 +62,8 @@ struct PostFault {
     }
 };
 template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,const Fixture& fixture,
-    const PortableExpertRows& provider,ggml_backend_t backend,size_t graph_cap,size_t state_cap,const char* label) {
-    std::string error;double maximum=0,square=0,norm=0;size_t elements=0;
+    const PortableExpertRows& provider,ggml_backend_t backend,size_t graph_cap,size_t state_cap,const char* label,bool gpu=false) {
+    std::string error;double maximum=0,square=0,norm=0;size_t elements=0,completed_chunks=0,attention_tokens=0;
     const std::vector<int32_t> ids{5,248044,6,248056,0,8,9,7,11};
     const auto weight_bytes=chunk.weight_bytes();
     for(size_t width=1;width<=8;++width) {
@@ -94,6 +94,7 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
                 std::vector<PortableRoute> routes;
                 check(chunk.run_chunk({ids.begin()+pos,ids.begin()+pos+T},pos,input,dispatch,routes,error),error);
                 check(calls==1&&routes.size()==T,"one provider per completed layer chunk");
+                ++completed_chunks;attention_tokens+=T;
                 const auto after=chunk.chunk_work();
                 check(after.chunks==work.chunks+1&&after.tokens==work.tokens+T&&after.attention_calls==work.attention_calls+T&&
                       after.ffn_pre_calls==work.ffn_pre_calls+1&&after.provider_calls==work.provider_calls+1&&
@@ -106,7 +107,9 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
                     maximum=std::max(maximum,std::abs(delta));square+=delta*delta;norm+=double(expected[i])*expected[i];++elements;}
                 size_t matrices=0;
                 for(const auto& p:chunk.placements()) if(p.phase=="pre-experts"&&p.operation=="MUL_MAT") {
-                    check(p.shape.size()>1&&p.shape[1]==int64_t(T),"layer FFN graph lacks actual T columns");++matrices;
+                    check(p.shape.size()>1&&p.shape[1]==int64_t(T),"layer FFN graph lacks actual T columns");
+                    if(gpu)check(p.backend==ggml_backend_name(backend)&&p.fallback_reason.empty(),"chunk FFN matrix not on Vulkan");
+                    ++matrices;
                 }
                 check(matrices==8,"layer chunk FFN matrix coverage");
                 check(chunk.weight_bytes()==weight_bytes&&chunk.memory_usage().host_weights+chunk.memory_usage().device_weights==weight_bytes,
@@ -123,7 +126,7 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
     }
     // Invalid middle input, provider rejection/throw, and an actual post graph
     // failure must poison both policies without completed publication.
-    for(int failure=0;failure<4;++failure) {
+    for(int failure=0;failure<(gpu?0:4);++failure) {
         check(chunk.reset(error),error);
         std::vector<float> input;
         for(int t=0;t<3;++t){const auto row=fixture.input(t);input.insert(input.end(),row.begin(),row.end());}
@@ -156,7 +159,7 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
         const auto row=fixture.input(0);auto next=row;
         check(chunk.run_chunk({5},0,next,[&](int64_t l,const auto& rs,auto& out,auto& e){return provider(l,rs[0],out,e);},routes,error),error);
     }
-    std::printf("%s layer chunks T1-8/tails: max_abs=%.9g relative_l2=%.9g elements=%zu; causal state, routes, T-column execution, A/B/A, midattention/provider/post failures and poison/reset passed\n",
-                label,maximum,std::sqrt(square/(norm+1e-30)),elements);
+    std::printf("%s layer chunks T1-8/tails: max_abs=%.9g relative_l2=%.9g elements=%zu completed_chunks=%zu attention_tokens=%zu; causal state, routes, T-column execution, A/B/A passed; injected_failure_checks=%d\n",
+                label,maximum,std::sqrt(square/(norm+1e-30)),elements,completed_chunks,attention_tokens,gpu?0:4);
 }
 } // namespace layer_chunk_fixture

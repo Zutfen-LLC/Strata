@@ -219,7 +219,7 @@ def run_portable(args, tok):
                 for name in ('expert_tensor_mib','expert_workspace_mib','expert_free_reserve_mib'):
                     command += ['--'+name.replace('_','-'), getattr(args,name)]
                 if getattr(args,'expert_check_rows',False): command += ['--expert-check-rows']
-            if benchmark:
+            if benchmark or size:
                 command += ['--timings', str(case / 'timings.json')]
             command += residency_flags(args)
             Q.write(case / 'argv.json', command)
