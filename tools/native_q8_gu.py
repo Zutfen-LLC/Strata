@@ -49,11 +49,27 @@ def validate_oracle(path):
     return sections
 
 
-def validate_receipt(receipt, hashes):
+def validate_receipt(receipt, hashes, archive_identity=None):
     if not isinstance(receipt, dict):
         raise ValueError('GU: malformed native receipt')
-    if not re.fullmatch('[0-9a-f]{40}', receipt.get('source_head') or '') or not re.fullmatch('[0-9a-f]{64}', receipt.get('consumer_sha256') or ''):
-        raise ValueError('GU: missing native source/binary identity')
+    if not re.fullmatch('[0-9a-f]{64}', receipt.get('consumer_sha256') or ''):
+        raise ValueError('GU: missing native binary identity')
+    source = receipt.get('source_head')
+    if archive_identity is not None:
+        if 'source_head' not in receipt or source is not None:
+            raise ValueError('GU: archive identity cannot override an ordinary Git receipt')
+        if not isinstance(archive_identity, dict) or set(archive_identity) != {
+                'source_head', 'source_archive_sha256', 'consumer_sha256', 'native_receipt_sha256'}:
+            raise ValueError('GU: incomplete verified archive identity')
+        for field, size in (('source_head', 40), ('source_archive_sha256', 64),
+                            ('consumer_sha256', 64), ('native_receipt_sha256', 64)):
+            if not isinstance(archive_identity.get(field), str) or not re.fullmatch('[0-9a-f]{' + str(size) + '}', archive_identity[field]):
+                raise ValueError('GU: invalid verified archive identity')
+        if archive_identity['consumer_sha256'] != receipt['consumer_sha256'] or archive_identity['native_receipt_sha256'] != hashes.get('native-receipt'):
+            raise ValueError('GU: archive identity conflicts with receipt/binary hash')
+        source = archive_identity['source_head']
+    if not re.fullmatch('[0-9a-f]{40}', source or ''):
+        raise ValueError('GU: missing native source identity; null archive receipt needs explicit verified identity')
     if receipt.get('actual_child_exit') != 0 or receipt.get('timeout') or receipt.get('launch_error'):
         raise ValueError('GU: native oracle did not complete successfully')
     if not receipt.get('finite_synthetic_weights') or not receipt.get('native_consumer_only') or receipt.get('qualified') is not False or receipt.get('original_comparator_exit') != 1:
@@ -89,6 +105,9 @@ def main():
     for name in names:
         p.add_argument('--' + name, type=Path, required=True)
         p.add_argument('--' + name + '-sha256', required=True)
+    p.add_argument('--native-source-head', help='Independently verified commit for a null archive receipt only')
+    p.add_argument('--native-source-archive-sha256', help='Independently verified source archive hash')
+    p.add_argument('--native-consumer-sha256', help='Independently verified native binary hash; must match receipt')
     p.add_argument('--component', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--device', required=True)
@@ -100,7 +119,12 @@ def main():
                getattr(a, name.replace('-', '_') + '_sha256')) for name in names}
     hashes = {name: hashlib.sha256(data).hexdigest() for name, data in sources.items()}
     receipt = json.loads(sources['native-receipt'])
-    validate_receipt(receipt, hashes)
+    explicit = (a.native_source_head, a.native_source_archive_sha256, a.native_consumer_sha256)
+    archive_identity = None
+    if any(value is not None for value in explicit):
+        archive_identity = {'source_head': explicit[0], 'source_archive_sha256': explicit[1],
+                            'consumer_sha256': explicit[2], 'native_receipt_sha256': hashes['native-receipt']}
+    validate_receipt(receipt, hashes, archive_identity)
     a.output.mkdir(parents=False, exist_ok=False)
     paths = {}
     for name, data in sources.items():
@@ -120,6 +144,9 @@ def main():
                   'argv': command, 'native_source_head': receipt.get('source_head'),
                   'native_consumer_sha256': receipt.get('consumer_sha256'),
                   'native_dispatch_basis': 'source and retained environment, not a dynamic launch trace'}
+    if archive_identity is not None:
+        provenance['native_archive_identity'] = archive_identity
+        provenance['native_source_head'] = archive_identity['source_head']
     revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True, capture_output=True)
     provenance['source_head'] = revision.stdout.strip() if revision.returncode == 0 else None
     receipt_path = a.output / 'receipt.json'

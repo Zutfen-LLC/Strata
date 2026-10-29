@@ -408,3 +408,23 @@ against the retained native gate/up oracle, including zero signs. Exit 0 means
 this bounded gate/up comparison completed exactly; exit 1 means a mismatch,
 sentinel failure, rejected input, or execution failure. Neither exit qualifies
 the quantizer or authorizes product integration. No down-stage dispatch occurs.
+
+An archive-built native consumer can have an explicitly null `source_head`
+because its verified source archive contains no `.git` metadata. Keep that
+original receipt unchanged. After independently verifying its source commit,
+archive hash and binary identity from retained build evidence, append:
+
+```sh
+  --native-source-head "$VERIFIED_NATIVE_COMMIT" \
+  --native-source-archive-sha256 "$VERIFIED_NATIVE_ARCHIVE_SHA256" \
+  --native-consumer-sha256 "$VERIFIED_NATIVE_BINARY_SHA256"
+```
+
+All three are required together, only for an explicitly null source field.
+The binary hash must equal the original receipt's consumer hash. The launcher
+binds these explicit values to the already hash-checked original receipt and
+records them as `native_archive_identity`; it also retains the unchanged receipt
+snapshot. This records independently verified evidence; it does not infer a
+commit from an archive hash or verify an archive build itself. Missing or
+malformed values, receipt/binary conflicts, and overrides of ordinary Git
+receipts are rejected. Existing Git-backed receipts require no additional flags.

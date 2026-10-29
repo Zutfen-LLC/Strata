@@ -153,6 +153,33 @@ class Tools(unittest.TestCase):
         with self.assertRaises(ValueError):gu.validate_receipt(receipt, hashes)
         with self.assertRaises(ValueError):gu.validate_receipt([], hashes)
 
+    def test_gu_null_archive_receipt_requires_explicit_bound_identity(self):
+        gu = module('native_q8_gu')
+        hashes = {name: str(i) * 64 for i, name in enumerate(('fixture', 'native', 'observation', 'oracle', 'weights', 'native-receipt'))}
+        receipt = {'source_head': None, 'consumer_sha256': 'b' * 64, 'actual_child_exit': 0,
+                   'native_consumer_only': True, 'finite_synthetic_weights': True, 'qualified': False,
+                   'original_comparator_exit': 1, 'native_environment': {'STRATA_KQ_SPLIT': None},
+                   'sha256': {'fixture': hashes['fixture'], 'native': hashes['native'], 'observation': hashes['observation'],
+                              'native-consumer.raw': hashes['oracle'], 'native-consumer.raw.weights.bin': hashes['weights']}}
+        identity = {'source_head': 'a' * 40, 'source_archive_sha256': 'c' * 64,
+                    'consumer_sha256': 'b' * 64, 'native_receipt_sha256': hashes['native-receipt']}
+        with self.assertRaises(ValueError):gu.validate_receipt(receipt, hashes)
+        gu.validate_receipt(receipt, hashes, identity)
+        self.assertIsNone(receipt['source_head'])  # Original receipt is never repaired in place.
+        for field in identity:
+            bad = dict(identity);bad[field] = None
+            with self.assertRaises(ValueError):gu.validate_receipt(receipt, hashes, bad)
+        for field in ('consumer_sha256', 'native_receipt_sha256'):
+            bad = dict(identity);bad[field] = 'f' * 64
+            with self.assertRaises(ValueError):gu.validate_receipt(receipt, hashes, bad)
+        missing_source = dict(receipt);del missing_source['source_head']
+        with self.assertRaises(ValueError):gu.validate_receipt(missing_source, hashes, identity)
+        receipt['source_head'] = 'd' * 40
+        with self.assertRaises(ValueError):gu.validate_receipt(receipt, hashes, identity)
+        gu.validate_receipt(receipt, hashes)
+        receipt['source_head'] = 'malformed'
+        with self.assertRaises(ValueError):gu.validate_receipt(receipt, hashes, identity)
+
     def test_native_conversion_holes_are_not_qualified(self):
         compare = module('compare_native_q8_stages')
         self.assertEqual(compare.contract_exceptions([0] * 32, bytes(36)), [])
