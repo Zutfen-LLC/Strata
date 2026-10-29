@@ -8,6 +8,19 @@ Follow Strata's model-specific CUDA/HIP/SYCL design unless a backend constraint
 or measured benefit justifies a difference. Product parity includes supported
 behavior and execution methodology, not only generated tokens or speed.
 
+## Status update: first GDN slice
+
+As of 2026-10-29, [PR #72](https://github.com/Zutfen-LLC/Strata/pull/72)
+implements the first opt-in slice of [issue #66](https://github.com/Zutfen-LLC/Strata/issues/66).
+Source and hardware qualification have been reported; the PR is not merged.
+Its device-owned GDN production policy removes full recurrent/conv/PLE-history
+mirror readbacks, retains explicit eager diagnostics, and uses an integer
+logits-status guard through an opt-in integration with the pinned Vulkan backend.
+Residual/FFN transfers and separate device commit copies remain.
+This is a bounded implementation checkpoint, not full CUDA/Vulkan parity.
+The baseline findings and first-slice plan below remain historical; the other
+roadmap items remain open.
+
 ## Current boundary
 
 The portable Q8 qwen4exp path implements GDN, QSA, PLE, HC, routed/shared MoE
