@@ -1,4 +1,4 @@
-#include "portable_ffn_fixture.hpp"
+#include "portable_ffn_batch_fixture.hpp"
 #include "ggml-vulkan.h"
 #include "ggml-cpu.h"
 #include <cstdlib>
@@ -108,6 +108,7 @@ int main(int argc, char** argv) {
             close(qdevice->residual(), qcpu->residual(), 0.003f);
             close(route.activation, qroute.activation, 0.003f);
             check(route.ids == qroute.ids, "Q8_0 Vulkan route IDs");
+            ffn_batch_fixture(options);
             options.graph_budget = 1;
             check(!PortableFfn::create(f.g, 0, f.views, options, error), "Vulkan graph budget rejection");
             std::printf("portable_ffn_vulkan_test: device=%s backend=%s actual_MUL_MAT=%zu actual_HC_post=%zu Q8_mix_MUL_MAT=%zu fallback=%zu graph_bytes=%zu; execution, F32/Q8_0 parity, strict mode, reset, rollback and budget passed\n",

@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <iostream>
 #include <set>
+#include <sstream>
 
 namespace strata::core {
 using portable_detail::require;
@@ -50,6 +51,12 @@ struct Layer {
         if (ok)
             residual = gdn ? gdn->last_residual() : qsa->last_residual();
         return ok;
+    }
+    bool prepare(size_t T,std::string& error) { return gdn?gdn->prepare_chunk(T,error):qsa->prepare_chunk(T,error); }
+    bool chunk(const std::vector<int32_t>& tokens,uint64_t pos,std::vector<float>& rows,
+               const PortableExpertRowsBatch& experts,std::string& error) {
+        std::vector<PortableRoute> routes;
+        return gdn?gdn->run_chunk(tokens,pos,rows,experts,routes,error):qsa->run_chunk(tokens,pos,rows,experts,routes,error);
     }
     PortableMemoryUsage memory() const { return gdn ? gdn->memory_usage() : qsa->memory_usage(); }
     const std::vector<PortablePlacement> &placements() const { return gdn ? gdn->placements() : qsa->placements(); }
@@ -120,6 +127,10 @@ struct PortableModelSession::Impl {
     size_t vocabulary = 0;
     Impl(const std::vector<std::string> &shards, const std::string &manifest, PortableModelOptions options)
         : opts(std::move(options)), model(shards) {
+        require(opts.prompt_chunk_size==0 || (opts.prompt_chunk_size>=2&&opts.prompt_chunk_size<=8),
+                "portable model: prompt chunk size must be zero or [2,8]");
+        if(opts.prompt_chunk_size) opts.prompt_head_elision=true;
+        report.chunk_memory_is_shape_envelope=opts.prompt_chunk_size!=0;
         require(shards.size() == 6 && model.size() == 6, "portable model: this fleet path requires all six shards");
         require(opts.context >= 1 && opts.context <= 256 && opts.threads >= 1 && opts.threads <= 256,
                 "portable model: context [1,256]/thread limits");
@@ -180,6 +191,7 @@ struct PortableModelSession::Impl {
         // Pool-owned split scratch is capped at 96 experts, MAXT=8. Include
         // its allocation, per-worker scratch/stacks and bounded manifest/index.
         report.host_state_bound = (32u << 20) + size_t(opts.expert_workers + 1) * (9u << 20);
+        if(opts.prompt_chunk_size) report.host_state_bound+=(4u<<20)+2*8*H*HC*sizeof(float);
         report.device_admission.assign(opts.accelerators.size(), 0);
         report.device_scheduler.assign(opts.accelerators.size(), 0);
         report.device_state.assign(opts.accelerators.size(), 0);
@@ -205,19 +217,26 @@ struct PortableModelSession::Impl {
         for (size_t l = 0; l < L; ++l) {
             // Fixed schedulers obey layer_graph_cap. Native backend-private
             // workspaces are admitted separately from those scheduler buffers.
-            const size_t private_workspace = l % 4 == 3 ? (24u << 20) : (136u << 20);
-            require(opts.layer_graph_cap <= SIZE_MAX - private_workspace, "portable model: graph cap overflow");
+            const size_t chunk_private = opts.prompt_chunk_size ? (8u<<20)+size_t(H*HC*320)*sizeof(float) : 0;
+            const size_t private_workspace = (l % 4 == 3 ? (24u<<20) : (136u<<20))+chunk_private;
+            require(!opts.prompt_chunk_size || opts.layer_graph_cap<=SIZE_MAX/2,"portable model: chunk graph bound overflow");
+            const size_t graph_preflight=opts.layer_graph_cap*(opts.prompt_chunk_size?2:1);
+            require(graph_preflight <= SIZE_MAX - private_workspace, "portable model: graph cap overflow");
             const bool resident = !opts.accelerators.empty() &&
                                   (opts.dense_resident_weights || (opts.gdn_resident_weights && l % 4 != 3));
             const size_t state_bound = portable_detail::layer_state_preflight_bytes(
                 opts, l, opts.accelerators.empty() ? nullptr : opts.accelerators[device(l)]);
-            require(state_bound <= SIZE_MAX - opts.layer_graph_cap - private_workspace,
+            require(state_bound <= SIZE_MAX - graph_preflight - private_workspace,
                     "portable model: resident state preflight overflow");
             const size_t resident_bound = resident ? opts.layer_weight_cap : 0;
-            require(resident_bound <= SIZE_MAX - opts.layer_graph_cap - private_workspace - state_bound,
+            require(resident_bound <= SIZE_MAX - graph_preflight - private_workspace - state_bound,
                     "portable model: resident weight preflight overflow");
-            preflight(device(l), opts.layer_weight_cap,
-                      opts.layer_graph_cap + private_workspace + resident_bound + state_bound, 128u << 20);
+            // Pre-admit the complete shape envelope BEFORE any layer/chunk
+            // allocation. A shape keeps one active chunk pair. Fieldwise
+            // maxima may combine graph and unused-workspace high waters, so
+            // reserve two graph caps plus the explicit FFN private allowance.
+            preflight(device(l),opts.layer_weight_cap,
+                      graph_preflight+private_workspace+resident_bound+state_bound,128u<<20);
             Layer layer;
             if (l % 4 == 3) {
                 PortableQsaOptions o;
@@ -236,7 +255,33 @@ struct PortableModelSession::Impl {
                 layer.gdn = PortableGdnLayer::from_gguf(model, int64_t(l), o, error);
                 require(bool(layer.gdn), "portable model: layer " + std::to_string(l) + ": " + error);
             }
-            account(layer.memory(), device(l));
+            auto memory=layer.memory();
+            if(opts.prompt_chunk_size) {
+                auto include=[&](const PortableMemoryUsage& candidate) {
+                    for(auto member:{&PortableMemoryUsage::host_weights,&PortableMemoryUsage::device_weights,
+                        &PortableMemoryUsage::host_graph,&PortableMemoryUsage::device_graph,
+                        &PortableMemoryUsage::host_extra_bound,&PortableMemoryUsage::device_extra_bound,
+                        &PortableMemoryUsage::device_token_temporary_bound,&PortableMemoryUsage::device_shared_conversion_bound,
+                        &PortableMemoryUsage::device_state}) memory.*member=std::max(memory.*member,candidate.*member);
+                };
+                for(size_t T=1;T<=opts.prompt_chunk_size;++T) {
+                    // Recheck the reserved module envelope before every shape
+                    // allocation; no account-after-allocation admission gate.
+                    preflight(device(l),opts.layer_weight_cap,
+                              graph_preflight+private_workspace+resident_bound+state_bound,128u<<20);
+                    const bool prepared=layer.prepare(T,error);
+                    require(prepared,"portable model: chunk preflight layer "+std::to_string(l)+": "+error);
+                    include(layer.memory());
+                }
+                const size_t device_total=memory.device_graph+memory.device_extra_bound+
+                    memory.device_token_temporary_bound+memory.device_shared_conversion_bound+memory.device_state+memory.device_weights;
+                require(device_total<=graph_preflight+private_workspace+resident_bound+state_bound,
+                        "portable model: chunk memory exceeds reserved module envelope");
+                require(memory.host_weights+memory.host_graph+memory.host_extra_bound<=
+                        opts.layer_weight_cap+graph_preflight+private_workspace+resident_bound+state_bound+(128u<<20),
+                        "portable model: chunk host memory exceeds reserved module envelope");
+            }
+            account(memory, device(l));
             append_placements(layer.placements(), int64_t(l));
             layers.push_back(std::move(layer));
         }
@@ -347,6 +392,65 @@ struct PortableModelSession::Impl {
         poison = false;
         return true;
     }
+    bool advance_chunk(const std::vector<int32_t>& tokens,std::string& error) {
+        error.clear();
+        if(poison) { error="portable model: session poisoned; reset/replay required"; return false; }
+        portable_detail::ScopedExpertTimer<> step_timer(opts.expert_timings,model_work.step_ms,model_work.step_calls);
+        try {
+            const size_t T=tokens.size();
+            require(opts.prompt_chunk_size&&T>=1&&T<=opts.prompt_chunk_size&&T<=opts.context-pos&&!eos_seen,
+                    "portable model: invalid prompt chunk policy/context");
+            std::vector<float> residual(T*H*HC);
+            for(size_t t=0;t<T;++t) {
+                require(tokens[t]>=0&&size_t(tokens[t])<vocabulary,"portable model: token ID out of range");
+                const auto* row=static_cast<const uint8_t*>(embedding.data)+size_t(tokens[t])*(H/32*34);
+                for(size_t b=0;b<H/32;++b)dequantize_q8_0(row+b*34,residual.data()+t*H*HC+b*32);
+                for(size_t stream=1;stream<HC;++stream)
+                    std::copy_n(residual.begin()+t*H*HC,H,residual.begin()+t*H*HC+stream*H);
+            }
+            finite(residual,"chunk embedding");
+            std::ostringstream trace;
+            const PortableExpertRowsBatch dispatch=[&](int64_t layer,const auto& routes,auto& rows,auto& e) {
+                portable_detail::ScopedExpertTimer<> timer(opts.expert_timings,provider_ms,provider_calls);
+                if(opts.expert_record_routes) for(size_t t=0;t<T;++t) {
+                    trace<<"expert_route position="<<pos+t<<" layer="<<layer<<" ids=";
+                    for(size_t k=0;k<routes[t].ids.size();++k)trace<<(k?",":"")<<routes[t].ids[k];
+                    trace<<'\n';
+                }
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+                if(local_experts)return local_experts->run_batch(layer,routes,rows,e);
+#endif
+                return experts->run_batch(layer,routes,rows,e);
+            };
+            for(size_t l=0;l<layers.size();++l) {
+                const bool gdn=bool(layers[l].gdn);const double before=provider_ms;
+                {
+                    portable_detail::ScopedExpertTimer<> timer(opts.expert_timings,gdn?model_work.gdn_ms:model_work.qsa_ms,
+                                                               gdn?model_work.gdn_calls:model_work.qsa_calls);
+                    const bool completed=layers[l].chunk(tokens,pos,residual,dispatch,error);
+                    require(completed,"portable model: chunk position "+std::to_string(pos)+" layer "+std::to_string(l)+": "+error);
+                }
+                if(opts.expert_timings)(gdn?model_work.gdn_provider_ms:model_work.qsa_provider_ms)+=provider_ms-before;
+            }
+            std::vector<PortablePlacement> next;
+            for(size_t l=0;l<layers.size();++l) for(const auto& original:layers[l].placements()) {
+                auto record=original;record.layer=int64_t(l);next.push_back(std::move(record));
+            }
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+            if(local_experts)report.expert_devices=local_experts->report();
+#endif
+            if(opts.expert_record_routes)std::cerr<<trace.str();
+            placement.swap(next);pos+=T;
+            ++model_work.completed_forward_calls;model_work.completed_layer_calls+=L;
+            model_work.completed_ffn_pre_calls+=L;model_work.completed_provider_calls+=L;model_work.completed_ffn_post_calls+=L;
+            model_work.logical_tokens+=T;model_work.heads_skipped+=T;
+            ++model_work.prompt_chunks;model_work.prompt_chunk_tokens+=T;
+            model_work.chunk_layer_calls+=L;model_work.chunk_ffn_pre_calls+=L;
+            model_work.chunk_provider_calls+=L;model_work.chunk_ffn_post_calls+=L;
+            return true;
+        } catch(const std::exception& e) { poison=true;error=e.what();return false; }
+          catch(...) { poison=true;error="portable model: unknown chunk failure; reset/replay required";return false; }
+    }
     bool step(int32_t token, std::vector<float> &logits, std::string &error, PortableTokenKind kind, bool project = true) {
         portable_detail::ScopedExpertTimer<> step_timer(opts.expert_timings, model_work.step_ms, model_work.step_calls);
         error.clear();
@@ -409,7 +513,9 @@ struct PortableModelSession::Impl {
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
             if (local_experts) report.expert_devices=local_experts->report();
 #endif
-            ++pos;
+            ++pos; ++model_work.logical_tokens;
+            ++model_work.completed_forward_calls;model_work.completed_layer_calls+=L;
+            model_work.completed_ffn_pre_calls+=L;model_work.completed_provider_calls+=L;model_work.completed_ffn_post_calls+=L;
             eos_seen = kind == PortableTokenKind::generated && token == eos_id;
             return true;
         } catch (const std::exception &e) {
@@ -440,6 +546,9 @@ bool PortableModelSession::step(int32_t token, std::vector<float> &logits, std::
 bool PortableModelSession::advance(int32_t token, std::string &error) {
     std::vector<float> omitted;
     return impl_->step(token, omitted, error, PortableTokenKind::input, false);
+}
+bool PortableModelSession::advance_chunk(const std::vector<int32_t>& tokens,std::string& error) {
+    return impl_->advance_chunk(tokens,error);
 }
 bool PortableModelSession::reset(std::string &error) {
     error.clear();
@@ -485,7 +594,13 @@ bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t m
         return false;
     }
     std::vector<float> logits;
-    for (size_t i = 0; i < prompt.size(); ++i) {
+    size_t first=0;
+    if(impl_->opts.prompt_chunk_size) while(first+1<prompt.size()) {
+        const size_t count=std::min(impl_->opts.prompt_chunk_size,prompt.size()-1-first);
+        if(!advance_chunk({prompt.begin()+first,prompt.begin()+first+count},error))return false;
+        first+=count;
+    }
+    for (size_t i = first; i < prompt.size(); ++i) {
         if (!(impl_->opts.prompt_head_elision && i + 1 < prompt.size()
                   ? advance(prompt[i], error) : step(prompt[i], logits, error)))
             return false;

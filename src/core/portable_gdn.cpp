@@ -94,7 +94,128 @@ struct PortableGdnLayer::Impl {
     bool state_healthy = true;
     Buffer weights_buffer{nullptr, ggml_backend_buffer_free};
     portable_detail::Scheduler scheduler{nullptr, ggml_backend_sched_free};
-    std::unique_ptr<PortableFfn> ffn;
+    std::unique_ptr<PortableFfn> ffn, chunk_ffn;
+    bool chunk_active = false;
+    size_t chunk_host_bound = 0;
+    PortableLayerChunkWork chunk_work;
+    size_t chunk_graphs() const { return chunk_ffn ? chunk_ffn->graph_bytes() : 0; }
+
+    void prepare(size_t T,std::string& error) {
+        auto& s=*this;
+        require(T>=1&&T<=8,"portable layer: chunk size outside [1,8]");
+        const size_t extra = (s.production() ? 0 : (STATES+HISTORY+(s.options.ple_table?PLE_HISTORY:0))*sizeof(float)) +
+                             (3*T*RESIDUAL+RESIDUAL)*sizeof(float);
+        require(s.host_state_bytes() <= s.options.state_budget && extra <= s.options.state_budget-s.host_state_bytes(),
+                "portable GDN: chunk working state budget exceeded");
+        s.chunk_host_bound = extra;
+        if (T == 1 || (s.chunk_ffn && s.chunk_ffn->tokens() != int64_t(T))) s.chunk_ffn.reset();
+        if (T > 1 && !s.chunk_ffn) {
+            require(s.graphs_size < s.options.execution.graph_budget,"portable GDN: no chunk graph budget");
+            s.chunk_ffn = s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-s.graphs_size);
+            require(bool(s.chunk_ffn),error);
+        }
+    }
+    struct CursorView {
+        const std::vector<float>& state;
+        const std::vector<float>& history;
+        const std::vector<float>& ple_history;
+        const std::array<int32_t,2>& previous;
+    };
+    struct AttentionResult {
+        std::vector<float> residual;
+        std::array<int32_t,2> previous;
+        PortableGdnTrace trace;
+    };
+    AttentionResult attend(int32_t token, const std::vector<float>& residual,
+                           CursorView cursor, bool want_trace, PortableGdnWork* work) {
+        auto& s = *this;
+        std::string error;
+        finite(residual);
+        const bool trace = want_trace;
+        PortableGdnTrace next_trace;
+        auto next_previous = cursor.previous;
+        PortableGdnWork disabled;
+        auto &timing = work ? *work : disabled;
+        std::vector<float> next_residual;
+        {
+            portable_detail::ScopedExpertTimer<> attention_timer(work != nullptr,
+                timing.attention_exchange_ms, timing.attention_exchange_calls);
+            if (s.options.ple_table) {
+                std::vector<float> embedding;
+                std::array<uint32_t, 16> rows{};
+                require(s.options.ple_table->gather(token, cursor.previous, rows, embedding, error), error);
+                write(s.ple_emb, embedding);
+                if (!s.state_buffer)
+                    write(s.ple_hist, cursor.ple_history);
+                next_previous = {{cursor.previous[1], token}};
+                if (trace) {
+                    next_trace.ple_rows = rows;
+                    next_trace.ple_embedding = std::move(embedding);
+                }
+            }
+            write(s.input, residual);
+            if (!s.state_buffer) {
+                write(s.state_input, cursor.state);
+                write(s.history_input, cursor.history);
+            }
+            ggml_status status;
+            {
+                portable_detail::ScopedExpertTimer<> compute_timer(work != nullptr,
+                    timing.attention_compute_ms, timing.attention_compute_calls);
+                status = ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph);
+            }
+            require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
+            if (!s.production()) {
+                read_into(s.state_output, s.candidate_state, work);
+                read_into(s.history_output, s.candidate_history, work);
+            }
+            next_residual = read(s.attn_residual, work);
+            if (s.options.ple_table && !s.production())
+                read_into(s.ple_hist_out, s.candidate_ple_history, work);
+            if (trace) {
+                next_trace.qkv = read(s.qkv);
+                next_trace.convolution = read(s.conv);
+                next_trace.query = read(s.q);
+                next_trace.key = read(s.k);
+                next_trace.value = read(s.v);
+                next_trace.decay = read(s.g);
+                next_trace.beta = read(s.beta);
+                next_trace.attention = read(s.attention);
+                if (s.options.ple_table) {
+                    next_trace.ple_key = read(s.ple_key);
+                    next_trace.ple_value = read(s.ple_value);
+                    next_trace.ple_gate = read(s.ple_gate);
+                    next_trace.ple_normalized = read(s.ple_norm);
+                    next_trace.ple_convolution = read(s.ple_conv);
+                    next_trace.ple_residual = read(s.ple_result);
+                }
+            }
+        }
+        return {std::move(next_residual),next_previous,std::move(next_trace)};
+    }
+    void commit_device(PortableGdnWork* work) {
+        auto& s = *this;
+        PortableGdnWork disabled;
+        auto& timing = work ? *work : disabled;
+        if (s.state_buffer) {
+            // Retain separate synchronous copies on this backend API. Diagnostics
+            // validate full candidates; production only reads the FFN residual.
+            // T1 invokes this after FFN. A chunk invokes it after each causal
+            // attention step to advance its working cursor before batched FFN.
+            // A recoverable copy exception poisons device state until reset;
+            // public mirrors still describe the last successful token.
+            portable_detail::ScopedExpertTimer<> commit_timer(work != nullptr,
+                timing.state_commit_ms, timing.state_commit_calls);
+            s.state_healthy = false;
+            ggml_backend_tensor_copy(s.state_output, s.state_input);
+            ggml_backend_tensor_copy(s.history_output, s.history_input);
+            if (s.options.ple_table)
+                ggml_backend_tensor_copy(s.ple_hist_out, s.ple_hist);
+            ggml_backend_synchronize(s.options.execution.accelerator);
+            s.state_healthy = true;
+        }
+    }
+
     ggml_cgraph *graph = nullptr;
     ggml_tensor *input = nullptr, *state_input = nullptr, *history_input = nullptr, *attn_residual = nullptr;
     ggml_tensor *state_output = nullptr, *history_output = nullptr, *qkv = nullptr, *conv = nullptr, *q = nullptr,
@@ -412,6 +533,16 @@ bool PortableGdnLayer::reset(std::string &error) {
     error.clear();
     try {
         impl_->state_healthy = false;
+        require(!impl_->chunk_active, "portable GDN: chunk execution active");
+        std::vector<PortablePlacement> next_placement;
+        if(impl_->chunk_host_bound) {
+            next_placement=impl_->placement;
+            next_placement.erase(std::remove_if(next_placement.begin(),next_placement.end(),[](const auto& p){
+                return p.phase != "gdn-attention";
+            }),next_placement.end());
+            next_placement.insert(next_placement.begin(),impl_->ffn->placements().begin(),impl_->ffn->placements().end());
+        }
+        impl_->chunk_ffn.reset(); impl_->chunk_host_bound = 0;
         std::vector<float> zero(RESIDUAL, 0);
         require(impl_->ffn->reset(zero, error), error);
         if (impl_->state_buffer) {
@@ -428,6 +559,7 @@ bool PortableGdnLayer::reset(std::string &error) {
         impl_->previous = {{-1, -1}};
         impl_->last.clear();
         impl_->count = 0;
+        if(!next_placement.empty()) impl_->placement.swap(next_placement);
         impl_->state_healthy = true;
         return true;
     } catch (const std::exception &e) {
@@ -447,70 +579,17 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         *trace = {};
     try {
         auto &s = *impl_;
+        require(!s.chunk_active, "portable GDN: chunk execution active");
         require(s.state_healthy, "portable GDN: resident state poisoned; reset required");
         require(!s.production() || !trace, "portable GDN: trace requires eager diagnostic policy");
         require(residual.size() == RESIDUAL && bool(dispatch), "portable GDN: residual/callback required");
         require(s.count < UINT64_MAX, "portable GDN: token counter exhausted");
-        finite(residual);
-        PortableGdnTrace next_trace;
-        auto next_previous = s.previous;
+        auto attended = s.attend(token, residual, {s.state,s.history,s.ple_history,s.previous}, trace != nullptr, work);
+        auto next_residual = std::move(attended.residual);
+        auto next_previous = attended.previous;
+        auto next_trace = std::move(attended.trace);
         PortableGdnWork disabled;
         auto &timing = work ? *work : disabled;
-        std::vector<float> next_residual;
-        {
-            portable_detail::ScopedExpertTimer<> attention_timer(work != nullptr,
-                timing.attention_exchange_ms, timing.attention_exchange_calls);
-            if (s.options.ple_table) {
-                std::vector<float> embedding;
-                std::array<uint32_t, 16> rows{};
-                require(s.options.ple_table->gather(token, s.previous, rows, embedding, error), error);
-                write(s.ple_emb, embedding);
-                if (!s.state_buffer)
-                    write(s.ple_hist, s.ple_history);
-                next_previous = {{s.previous[1], token}};
-                if (trace) {
-                    next_trace.ple_rows = rows;
-                    next_trace.ple_embedding = std::move(embedding);
-                }
-            }
-            write(s.input, residual);
-            if (!s.state_buffer) {
-                write(s.state_input, s.state);
-                write(s.history_input, s.history);
-            }
-            ggml_status status;
-            {
-                portable_detail::ScopedExpertTimer<> compute_timer(work != nullptr,
-                    timing.attention_compute_ms, timing.attention_compute_calls);
-                status = ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph);
-            }
-            require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
-            if (!s.production()) {
-                read_into(s.state_output, s.candidate_state, work);
-                read_into(s.history_output, s.candidate_history, work);
-            }
-            next_residual = read(s.attn_residual, work);
-            if (s.options.ple_table && !s.production())
-                read_into(s.ple_hist_out, s.candidate_ple_history, work);
-            if (trace) {
-                next_trace.qkv = read(s.qkv);
-                next_trace.convolution = read(s.conv);
-                next_trace.query = read(s.q);
-                next_trace.key = read(s.k);
-                next_trace.value = read(s.v);
-                next_trace.decay = read(s.g);
-                next_trace.beta = read(s.beta);
-                next_trace.attention = read(s.attention);
-                if (s.options.ple_table) {
-                    next_trace.ple_key = read(s.ple_key);
-                    next_trace.ple_value = read(s.ple_value);
-                    next_trace.ple_gate = read(s.ple_gate);
-                    next_trace.ple_normalized = read(s.ple_norm);
-                    next_trace.ple_convolution = read(s.ple_conv);
-                    next_trace.ple_residual = read(s.ple_result);
-                }
-            }
-        }
         PortableRoute candidate;
         {
             portable_detail::ScopedExpertTimer<> ffn_timer(work != nullptr, timing.ffn_ms, timing.ffn_calls);
@@ -519,22 +598,15 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
             require(ok, error);
             next_residual = s.ffn->residual(); // allocate before the no-throw public commit
         }
-        if (s.state_buffer) {
-            // Retain separate synchronous copies on this backend API. Diagnostics
-            // validate full candidates; production only reads the FFN residual.
-            // Copies follow the callback and potentially throwing allocations.
-            // A recoverable copy exception poisons device state until reset;
-            // public mirrors still describe the last successful token.
-            portable_detail::ScopedExpertTimer<> commit_timer(work != nullptr,
-                timing.state_commit_ms, timing.state_commit_calls);
-            s.state_healthy = false;
-            ggml_backend_tensor_copy(s.state_output, s.state_input);
-            ggml_backend_tensor_copy(s.history_output, s.history_input);
-            if (s.options.ple_table)
-                ggml_backend_tensor_copy(s.ple_hist_out, s.ple_hist);
-            ggml_backend_synchronize(s.options.execution.accelerator);
-            s.state_healthy = true;
+        std::vector<PortablePlacement> next_placement;
+        if(s.chunk_host_bound) {
+            next_placement=s.placement;
+            next_placement.erase(std::remove_if(next_placement.begin(),next_placement.end(),[](const auto& p){
+                return p.phase != "gdn-attention";
+            }),next_placement.end());
+            next_placement.insert(next_placement.begin(),s.ffn->placements().begin(),s.ffn->placements().end());
         }
+        s.commit_device(work);
         if (!s.production()) {
             s.ple_history.swap(s.candidate_ple_history);
             s.state.swap(s.candidate_state);
@@ -543,6 +615,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         s.previous = next_previous;
         s.last.swap(next_residual);
         ++s.count;
+        if(!next_placement.empty()) s.placement.swap(next_placement);
         route = std::move(candidate);
         if (trace)
             *trace = std::move(next_trace);
@@ -559,6 +632,75 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         return false;
     }
 }
+bool PortableGdnLayer::prepare_chunk(size_t tokens,std::string& error) {
+    error.clear();
+    try { require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
+    catch(const std::exception& e) { error=e.what(); return false; }
+}
+bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t position0,
+    std::vector<float>& residual_rows, const PortableExpertRowsBatch& dispatch,
+    std::vector<PortableRoute>& routes, std::string& error) {
+    routes.clear(); error.clear();
+    auto& s = *impl_;
+    try {
+        require(s.state_healthy && !s.chunk_active, "portable GDN: poisoned or active chunk; reset required");
+        const size_t T = tokens.size();
+        require(T >= 1 && T <= 8 && residual_rows.size() == T*RESIDUAL && bool(dispatch),
+                "portable GDN: invalid chunk shape/callback");
+        require(position0 == s.count && T <= UINT64_MAX-s.count && T <= UINT64_MAX-s.chunk_work.tokens,
+                "portable GDN: noncontiguous/exhausted chunk");
+        struct Active { bool& flag; explicit Active(bool& f):flag(f){flag=true;} ~Active(){flag=false;} } active(s.chunk_active);
+        s.prepare(T,error);
+        auto state = s.state, history = s.history, ple_history = s.ple_history;
+        auto previous = s.previous;
+        std::vector<float> attended_rows; attended_rows.reserve(T*RESIDUAL);
+        for(size_t t=0;t<T;++t) {
+            std::vector<float> input(residual_rows.begin()+t*RESIDUAL,residual_rows.begin()+(t+1)*RESIDUAL);
+            auto next = s.attend(tokens[t],input,{state,history,ple_history,previous},false,nullptr);
+            // The recurrence/conv/PLE cursor advances now, before the next
+            // attention. Public diagnostic banks remain unchanged until FFN.
+            s.commit_device(nullptr);
+            if(!s.production()) {
+                state.swap(s.candidate_state); history.swap(s.candidate_history);
+                ple_history.swap(s.candidate_ple_history);
+            }
+            previous = next.previous;
+            attended_rows.insert(attended_rows.end(),next.residual.begin(),next.residual.end());
+        }
+        auto& ffn = T == 1 ? *s.ffn : *s.chunk_ffn;
+        const auto before = ffn.work();
+        require(ffn.reset(attended_rows,error),error);
+        std::vector<PortableRoute> candidate;
+        if(T == 1) {
+            PortableRoute route;
+            require(ffn.step([&](int64_t l,const PortableRoute& r,std::vector<float>& rows,std::string& e) {
+                return dispatch(l,{r},rows,e);
+            },route,error),error);
+            candidate.push_back(std::move(route));
+        } else require(ffn.step_batch(dispatch,candidate,error),error);
+        auto completed = ffn.residual();
+        std::vector<float> last(completed.end()-RESIDUAL,completed.end());
+        auto placement = s.placement;
+        placement.erase(std::remove_if(placement.begin(),placement.end(),[](const auto& p){
+            return p.phase != "gdn-attention";
+        }),placement.end());
+        placement.insert(placement.begin(),ffn.placements().begin(),ffn.placements().end());
+        const auto after = ffn.work();
+        auto work = s.chunk_work;
+        ++work.chunks; work.tokens += T; work.attention_calls += T;
+        work.ffn_pre_calls += after.pre_graph_calls-before.pre_graph_calls;
+        work.provider_calls += after.provider_calls-before.provider_calls;
+        work.ffn_post_calls += after.post_graph_calls-before.post_graph_calls;
+        require(s.state_healthy,"portable GDN: chunk invalidated; reset required");
+        if(!s.production()) { s.state.swap(state); s.history.swap(history); s.ple_history.swap(ple_history); }
+        s.previous = previous; s.last.swap(last); s.count += T;
+        s.placement.swap(placement); s.chunk_work = work;
+        residual_rows.swap(completed); routes.swap(candidate);
+        return true;
+    } catch(const std::exception& e) { s.state_healthy=false; error=e.what(); return false; }
+      catch(...) { s.state_healthy=false; error="portable GDN: unknown chunk failure; reset required"; return false; }
+}
+PortableLayerChunkWork PortableGdnLayer::chunk_work() const { return impl_->chunk_work; }
 bool PortableGdnLayer::poisoned() const { return !impl_->state_healthy; }
 PortableGdnPolicy PortableGdnLayer::policy() const { return impl_->options.policy; }
 const std::vector<float> &PortableGdnLayer::ple_convolution_history() const {
@@ -578,11 +720,12 @@ const std::vector<float> &PortableGdnLayer::last_residual() const { return impl_
 uint64_t PortableGdnLayer::tokens() const { return impl_->count; }
 const std::vector<PortablePlacement> &PortableGdnLayer::placements() const { return impl_->placement; }
 size_t PortableGdnLayer::weight_bytes() const { return impl_->weights_size; }
-size_t PortableGdnLayer::graph_bytes() const { return impl_->graphs_size; }
-size_t PortableGdnLayer::state_bytes() const { return impl_->host_state_bytes(); }
+size_t PortableGdnLayer::graph_bytes() const { return impl_->graphs_size+impl_->chunk_graphs(); }
+size_t PortableGdnLayer::state_bytes() const { return impl_->host_state_bytes()+impl_->chunk_host_bound; }
 PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     const auto &s = *impl_;
     auto m = s.ffn->memory_usage();
+    if(s.chunk_ffn) { std::string error; require(s.ffn->combined_memory_usage(*s.chunk_ffn,m,error),error); }
     m.device_state += s.device_state_size;
     // Extra metadata context plus the copy API's bounded host staging fallback.
     if (s.state_buffer)
@@ -593,7 +736,7 @@ PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     if (s.options.execution.accelerator && s.options.execution.request_accelerator)
         m.device_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.options.execution.accelerator);
     const size_t buffers = m.host_graph + m.device_graph;
-    const size_t allowance = s.graphs_size > buffers ? s.graphs_size - buffers : 0;
+    const size_t allowance = graph_bytes() > buffers ? graph_bytes() - buffers : 0;
     m.host_extra_bound += state_bytes() + (8u << 20) + allowance +
                           ggml_graph_plan(s.graph, s.options.execution.threads, nullptr).work_size;
     if (s.options.execution.request_accelerator) {

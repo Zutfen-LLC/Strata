@@ -1,3 +1,4 @@
+#include "portable_layer_chunk_fixture.hpp"
 #include "gguf_fixture.hpp"
 #include "ggml-cpu.h"
 #include "ggml-backend-impl.h"
@@ -154,6 +155,15 @@ int main() {
         refused_state.resident_state_budget = 1;
         check(!PortableGdnLayer::create(0, f.views, refused_state, error) &&
               error.find("resident state budget") != std::string::npos, "state allocation admission refusal");
+        for(bool production:{false,true}) {
+            auto chunk_opts=trial_options;
+            chunk_opts.policy=production?PortableGdnPolicy::device_production:PortableGdnPolicy::eager_diagnostic;
+            auto chunk=PortableGdnLayer::create(0,f.views,chunk_opts,error);
+            auto serial=PortableGdnLayer::create(0,f.views,chunk_opts,error);
+            check(bool(chunk)&&bool(serial),error);
+            layer_chunk_fixture::exercise(*chunk,*serial,f,experts(),selected.get(),
+                chunk_opts.execution.graph_budget,chunk_opts.state_budget,production?"GDN production CPU-selected":"GDN diagnostic resident CPU-selected");
+        }
         production_policy(f, trial_options);
         {
             auto opts = trial_options;

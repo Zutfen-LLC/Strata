@@ -30,7 +30,7 @@ struct PortableGdnTrace {
     std::vector<float> ple_embedding, ple_key, ple_value, ple_gate, ple_normalized, ple_convolution, ple_residual;
 };
 
-// Complete qwen4exp non-QSA layers 0..47, T=1: configured PLE, HC/GDN,
+// Complete qwen4exp non-QSA layers 0..47, T1 and causal T1..8 chunks: configured PLE, HC/GDN,
 // PortableFfn. Exact fleet geometry only. QSA layers are rejected.
 class PortableGdnLayer {
   public:
@@ -54,6 +54,16 @@ class PortableGdnLayer {
     // does not clear recurrent/convolution state. reset() starts a new sequence.
     bool step(int32_t token, const std::vector<float> &residual, const PortableExpertRows &dispatch,
               PortableRoute &route, std::string &error, PortableGdnTrace *trace = nullptr, PortableGdnWork *work = nullptr);
+    // Opt-in causal layer chunk, T1..8. residual_rows is [H,HC,T] and is
+    // replaced only on success. Position must match tokens(). Failed chunks
+    // poison either policy until reset/replay; public metadata stays committed.
+    bool run_chunk(const std::vector<int32_t>& tokens, uint64_t position0,
+                   std::vector<float>& residual_rows, const PortableExpertRowsBatch& dispatch,
+                   std::vector<PortableRoute>& routes, std::string& error);
+    // Allocate/replace one chunk shape without advancing sequence state.
+    // Caller pre-admits the module bound before invoking this planning seam.
+    bool prepare_chunk(size_t tokens, std::string& error);
+    PortableLayerChunkWork chunk_work() const;
     // Tensor-state observers require eager_diagnostic and throw in production.
     // Token history and last_residual remain current in both policies. Production
     // rejects traces, poisons on any failed step, and requires successful reset.

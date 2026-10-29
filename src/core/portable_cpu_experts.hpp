@@ -135,6 +135,88 @@ class CpuExperts {
             return true;
         } catch (const std::exception& e) { blob.clear(); error=e.what(); return false; }
     }
+    // Same native grouping as Prefill: each expert owns ordered token inputs,
+    // while its outputs point back to [token,original slot,H]. MAXT=8 and K=10
+    // bound the job list at 80, below the pool's 96-expert scratch allocation.
+    // Verification reuses the existing K-blob arena. Mapped jobs can share one
+    // verification slot; the staging oracle executes at most K jobs per wave.
+    bool run_batch(int64_t layer, const std::vector<PortableRoute>& routes,
+                   std::vector<float>& rows, std::string& error,
+                   const std::vector<std::array<bool, K>>* active = nullptr) {
+        error.clear(); rows.clear();
+        try {
+            const size_t T = routes.size();
+            require(layer >= 0 && layer < int64_t(L) && T >= 1 && T <= 8 &&
+                    (!active || active->size() == T), "portable model: invalid expert batch");
+            std::array<std::vector<std::pair<size_t, size_t>>, NE> groups;
+            for (size_t t = 0; t < T; ++t) {
+                const auto& r = routes[t];
+                require(r.ids.size() == K && r.activation.size() == H,
+                        "portable model: invalid expert request");
+                finite(r.activation, "expert activation");
+                std::set<int32_t> seen;
+                for (size_t slot = 0; slot < K; ++slot) {
+                    const auto id = r.ids[slot];
+                    require(id >= 0 && id < int32_t(NE) && seen.insert(id).second,
+                            "portable model: expert ID duplicate/out of range");
+                    if (!active || (*active)[t][slot]) groups[size_t(id)].emplace_back(t, slot);
+                }
+            }
+            check_sources();
+            alignas(64) std::array<std::array<uint8_t, kernels::cpu::kNativeActBytes>, 8> activations{};
+            for (size_t t = 0; t < T; ++t) {
+                bool needed = !active;
+                if (active) for (bool slot : (*active)[t]) needed |= slot;
+                if (needed) kernels::cpu::native_quant_act(fmt, routes[t].activation.data(), activations[t].data());
+            }
+            std::vector<float> result(T*K*H, 0);
+            std::array<kernels::cpu::ExpertJobMulti, 80> jobs{};
+            const size_t offsets[]{0, fmt.up_off, fmt.down_off};
+            const size_t sizes[]{fmt.up_off, fmt.up_off, fmt.bytes-fmt.down_off};
+            const size_t l = size_t(layer);
+            size_t job_count = 0, wave_start = 0;
+            auto flush = [&] {
+                if (wave_start == job_count) return;
+                ++counters.native_batches;
+                pool->run_split_multi_native(fmt, jobs.data()+wave_start, int(job_count-wave_start));
+                counters.batch_native_jobs += job_count-wave_start;
+                for(size_t j=wave_start;j<job_count;++j)
+                    counters.batch_max_nt = std::max(counters.batch_max_nt,uint64_t(jobs[j].nt));
+                wave_start = job_count;
+            };
+            for (size_t e = 0; e < NE; ++e) {
+                const auto& group = groups[e];
+                if (group.empty()) continue;
+                const size_t staging_slot = compare_staging ? job_count-wave_start : 0;
+                auto* blob = staging.data() + staging_slot*fmt.bytes;
+                if (compare_staging || !verified[l][e]) {
+                    for (size_t role = 0; role < 3; ++role)
+                        std::memcpy(blob+offsets[role],
+                            static_cast<const uint8_t*>(weights[l][role].data)+e*sizes[role], sizes[role]);
+                    counters.copied_bytes += fmt.bytes; counters.digest_bytes += fmt.bytes;
+                    ++counters.verifications;
+                    require(worker::blob_digest(blob, fmt.bytes) == manifest.digests[l*NE+e],
+                            "portable model: selected expert digest mismatch at layer " +
+                            std::to_string(layer) + " expert " + std::to_string(e));
+                    verified[l][e] = true;
+                } else ++counters.hits;
+                auto& job = jobs[job_count++];
+                job.blob = compare_staging ? blob : static_cast<const uint8_t*>(weights[l][0].data)+e*sizes[0];
+                job.fmt = compare_staging ? nullptr : &mapped_fmt[l];
+                job.nt = int(group.size());
+                for (size_t n = 0; n < group.size(); ++n) {
+                    const auto [t, slot] = group[n];
+                    job.nact[n] = activations[t].data();
+                    job.out[n] = result.data() + (t*K+slot)*H;
+                }
+                if (compare_staging && job_count-wave_start == K) flush();
+            }
+            flush();
+            finite(result, "expert rows");
+            rows.swap(result); counters.batch_logical_rows += T;
+            return true;
+        } catch (const std::exception& e) { rows.clear(); error = e.what(); return false; }
+    }
     bool run(int64_t layer, const PortableRoute &route, std::vector<float> &rows, std::string &error,
              const std::array<bool, K>* active = nullptr) {
         error.clear();

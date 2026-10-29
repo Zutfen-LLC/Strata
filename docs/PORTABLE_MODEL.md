@@ -9,6 +9,139 @@ The initial implementation supports one serial text sequence, all 48 layers,
 and context limits from 1 to 256 tokens. Defaults remain off. The existing
 CUDA production executable and allocations are separate.
 
+## Bounded prompt chunks
+
+`--prompt-chunk-size N` opts into layer-major prompt advancement for N=2–8.
+It implies prompt head elision. The first `prompt_length - 1` tokens are split
+into chunks of at most N; a one-token tail uses the existing T1 FFN. Each chunk
+advances ordered attention through one layer, then runs that layer's T-column
+FFN and grouped CPU experts before moving to the next layer. Native CPU jobs
+quantize each needed activation once and group tokens by expert ID. Resident
+GPU experts still use the existing single-row graph per entry; this flag does
+not add batched GPU expert kernels or independent request batching.
+
+The last prompt token, every generated token and the terminal feed remain on
+the existing T1 head path, including `--max-new 0` and context boundaries. Input
+tokenizer EOS remains a separator; PLE keeps its separate EOS/image predecessor
+rules. The default and standalone `--prompt-head-elision` paths stay serial.
+`--dump-logits` is incompatible with either policy that omits prompt heads.
+
+C++ callers set `PortableModelOptions::prompt_chunk_size` (zero disables it).
+`generate` applies the policy automatically. `advance_chunk` is an input-only
+seam for one nonempty segment of at most the configured size; arbitrary smaller
+segments are allowed. It exposes no logits. A failure poisons the model until
+reset/replay because earlier layers may already have advanced. Position, skipped
+heads and completed model chunk counters publish only after all 48 layers
+succeed. Route diagnostics are staged until then. The CLI emits no completed
+rows for a failed chunk. Exhaustive T1 `step` remains available.
+
+### Executed-head numerical diagnostics
+
+Fresh head-elision runs, including chunk mode, can use
+`--dump-executed-logits EMPTY_DIRECTORY`. The directory must already exist and
+be empty. This separate opt-in writes the existing little-endian raw F32
+`pos-N.f32` format for executed heads only. It does not add intermediate prompt
+heads or alter generation. It excludes stdio and exhaustive `--dump-logits`;
+the existing exhaustive option and its policy restrictions are unchanged.
+
+The existing `portable_quality_v1.py portable` adapter accepts a boolean
+`--dump-executed-logits` switch with head elision. It creates each case's empty
+`executed-logits` directory, forwards the model option, records the actual argv
+and validates the manifest against prompt/output receipts. Use `--single-case`
+for one fresh case1 capture per policy. Its existing resource sampling, deadline
+and owned-process cleanup remain active throughout model execution.
+
+A `manifest.json` is written after the complete forward sequence. Its
+`executed_heads_f32le_v1` format binds prompt token IDs, vocabulary, output
+count, stop reason, head policy and chunk policy/size. Each frame records its
+position, consumed token, filename and role: `final_prompt`, `generated` or
+`terminal`. With no generated tokens, the final prompt is the only frame.
+Otherwise the final generated token is the terminal feed, including EOS.
+Skipped prompt positions have no files and must never be interpreted as zeros.
+A failed or interrupted dump without a valid complete manifest is unusable.
+
+Compare serial head elision with chunk size2 using:
+
+```sh
+python tools/validation-harness/executed_logits_v1.py \
+  --baseline "$SERIAL_DUMP" --candidate "$CHUNK_DUMP" \
+  --baseline-chunk-size 0 --candidate-chunk-size 2
+```
+
+The reader rejects missing/extra/duplicate frames or files, policy mismatches,
+nonfinite/wrong-size rows and inconsistent greedy token progression. Both sides
+must have identical prompt IDs, consumed tokens, positions, roles and stop.
+Use `--max-new 0` for an isolated final-prompt comparison. For a continuation
+comparison, retain every generated/terminal frame. The helper calls the existing
+`compare_logits.py` comparison directly: absolute logit floor0.01 plus
+0.0001 times baseline scale, relative L2 at most0.0001, maximum probability
+difference0.001 and KL at most0.00001. It reports each frame's measurements and
+top1 agreement; no limit is fitted to observed outputs. Token mismatch or a
+failed numerical gate prevents a parity claim.
+
+### Admission before allocation
+
+For the enabled policy, construction pre-admits a conservative complete module
+bound **before** allocating each layer or chunk shape. This reserves two aggregate
+layer graph caps (fieldwise maxima can combine graph and unused-workspace high
+waters), the existing private/state/resident-weight bounds and the additional
+FFN private allowance. It then prepares T1 through N one at a time, using one
+shared immutable FFN weight allocation and at most one active chunk execution.
+The fieldwise memory envelope is charged before the next layer, head or resident
+expert allocation. Runtime may select only one of those admitted shapes.
+
+No caps are increased and no per-T execution cache is retained. Changing tail
+size releases the previous chunk execution. The model also reserves bounded
+embedding/row/route staging. `report().chunk_memory_is_shape_envelope` identifies
+this policy: scheduler and workspace entries are admission envelopes rather
+than claims about current allocation/RSS. CLI stderr labels scheduler values as
+`scheduler_shape_envelope_bytes` and emits `prompt_chunk_admission shape_envelope=1`.
+Actual weight and persistent-state allocations remain counted once. Conservative
+preflight can reject a configuration that a tighter peak plan could fit; do not
+raise caps or reassign experts to make a rejected configuration pass.
+
+### Receipts and timing
+
+Chunk token rows retain PR76 schema 2, `head_policy: "prompt_head_elision"`,
+`logits_available: false` and `greedy_next: null` at skipped positions. They also
+bind `chunk_policy: "layer_major_v1"` and integer `prompt_chunk_size: N`. Final
+prompt and generated rows carry available predictions with the same policy.
+Stop rows retain their existing fields. Fresh and resident adapters bind the
+size/policy in summaries and argv, and reject mismatched, missing, duplicated,
+foreign or incorrectly typed enabled references. Older references remain usable
+only with chunking disabled.
+
+For canonical CLI/`generate` segmentation with P prompt tokens, G actual generated
+feeds and chunk bound N, let
+C = ceil((P-1)/N), including any T1 tail, and F = C+G+1. The enabled policy exposes:
+
+- `logical_tokens_delta = P+G`, `prompt_chunk_tokens_delta = P-1`;
+- `prompt_chunks_delta = C`, `model_forward_calls_delta = F`;
+- `chunk_layer_calls_delta`, `chunk_ffn_pre_calls_delta`,
+  `chunk_provider_calls_delta`, `chunk_ffn_post_calls_delta` = 48C;
+- `model_layer_calls_delta`, `ffn_pre_calls_delta`, `provider_calls_delta`,
+  `ffn_post_calls_delta` = 48F.
+
+These unconditional counters describe completed model work. Existing timed
+`model_step_calls_delta`, GDN/QSA layer calls and expert provider calls count
+actual forward/coordinator executions under this policy, not P+G T1 steps.
+Legacy `prompt_steps` and `selection_prompt_steps` remain logical positions and
+selection boundaries. Head counts remain G+1 executed and P-1 skipped.
+
+Coarse model/layer/provider wall scopes remain available. Detailed GDN
+subphase/readback/commit timers are not captured for chunk execution: enabled
+receipts explicitly set `gdn_subphases_available: false` and omit the entire
+T1-only detail group. The harness rejects that group if presented as chunk
+totals. It does not substitute zeros or require legacy 109/36-per-row diagnostics.
+Fresh chunk runs request a timing receipt even outside benchmark mode so their
+execution counters can be checked; no pooled performance claim is added.
+
+The assembled sparse-model fixture compares T2–8, tails, mixed segmentation,
+per-token/layer route IDs, requested full-vocabulary logits, continuation, A/B/A,
+late provider failure/reset, admission rejection and actual native `nt > 1`.
+The existing Q8 numerical gate is fixed independently of observed results.
+Real-model numerical/quality screens and Vulkan execution remain separate gates.
+
 ## Prompt head elision
 
 `--prompt-head-elision` is default off. It runs the same serial T1 embedding,

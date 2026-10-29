@@ -7,7 +7,7 @@
 using namespace strata::core;
 using namespace model_fixture;
 namespace {
-struct State { int prepares=0,releases=0,inferences=0; bool fail=false,bad=false,nonfinite=false; float bad_value=NAN; size_t bad_offset=0; };
+struct State { int prepares=0,releases=0,inferences=0; size_t last_T=0; bool fail=false,bad=false,nonfinite=false; float bad_value=NAN; size_t bad_offset=0; };
 class Fake final:public strata::worker::GpuExecutor {
     State& s;
 public:
@@ -32,7 +32,10 @@ public:
                strata::worker::InferReply&,std::string&)override{return false;}
     bool infer_rows(const strata::worker::GpuPlan&,const strata::worker::InferRequest& r,
                     strata::worker::EntryRowsReply& out,std::string& error) override {
-        ++s.inferences;if(s.fail){error="controlled GPU failure";return false;}
+        ++s.inferences;s.last_T=r.T;
+        check(r.ids.size()==size_t(r.T)*r.K&&r.mask.size()==r.ids.size()&&
+              r.activations.size()==size_t(r.T)*2560,"flattened executor request");
+        if(s.fail){error="controlled GPU failure";return false;}
         out={};out.session=r.session;out.sequence=r.sequence;
         for(size_t i=0;i<r.mask.size();++i)if(r.mask[i]) {
             out.indices.push_back(uint16_t(i));
@@ -109,6 +112,35 @@ int main(){
                       "resident ID diagnostic");
             }
             check(state.inferences==before_inferences,"invalid route stops before GPU dispatch");
+            for(size_t T=1;T<=8;++T) {
+                std::vector<PortableRoute> routes(T,route);
+                for(size_t t=0;t<T;++t) std::rotate(routes[t].ids.begin(),routes[t].ids.begin()+t,routes[t].ids.end());
+                const auto before=state.inferences;
+                const auto gpu_before=local.gpu_entries(), cpu_before_batch=local.cpu_entries();
+                check(local.run_batch(0,routes,rows,error),error);
+                check(state.inferences==before+2&&state.last_T==T,"one T-column request per participating die");
+                check(local.gpu_entries()==gpu_before+3*T&&local.cpu_entries()==cpu_before_batch+7*T,
+                      "batch counts actual flattened hot/cold entries");
+                for(size_t t=0;t<T;++t) {
+                    std::vector<float> cold_rows;check(cpu.run(0,routes[t],cold_rows,error),error);
+                    for(size_t k=0;k<10;++k) for(size_t h=0;h<2560;++h) {
+                        const int id=routes[t].ids[k];
+                        const float expected=(id==1||id==3||id==5)?float(id+1):cold_rows[k*2560+h];
+                        check(rows[(t*10+k)*2560+h]==expected,"batch original token/slot scatter");
+                    }
+                }
+            }
+            std::vector<PortableRoute> bad_batch(8,route);bad_batch.back().ids.back()=512;
+            const auto calls_before_bad_batch=state.inferences;
+            check(!local.run_batch(0,bad_batch,rows,error)&&rows.empty()&&
+                  state.inferences==calls_before_bad_batch,"validate all batch routes before GPU");
+            state.bad=true;
+            check(!local.run_batch(0,std::vector<PortableRoute>(8,route),rows,error)&&rows.empty(),
+                  "batch duplicate flattened reply slot rejects publication");state.bad=false;
+            state.fail=true;
+            check(!local.run_batch(0,std::vector<PortableRoute>(8,route),rows,error)&&rows.empty(),
+                  "batch device failure cannot fall back or publish");state.fail=false;
+            std::puts("Local expert T1-8 flattened requests and hot/cold original-slot scatter passed; GPU graphs remain per-entry");
             state.bad=true;check(!local.run(0,route,rows,error)&&rows.empty()&&
                 error=="resident reply duplicate/unowned slot","duplicate reply slot diagnostic");state.bad=false;
             const auto cpu_before=local.cpu_entries();
@@ -151,12 +183,40 @@ int main(){
         bad=opts;bad.expert_devices[1].accelerator=0;rejected(bad,"duplicate die refusal");
         free=1;rejected(opts,"per-die memory refusal");free=7ull<<30;
         // Real existing executor, CPU graph substitution: direct loader, no disk GpuCache.
-        strata::worker::GpuPlan p;check(strata::worker::read_gpu_plan(a.plan_path,p,error),error);
+        strata::worker::GpuPlan p;check(strata::worker::make_gpu_plan(cpu.identity(),{{0,0},{0,1},{0,3}},p,error),error);
         auto executor=strata::worker::create_vulkan_executor_cpu_test(32u<<20);
         strata::worker::GpuCounters counters;
         auto reader=[&](const strata::worker::GpuAsset& asset,std::vector<uint8_t>& blob,std::string& e){return cpu.load_blob(asset.layer,asset.expert,blob,e);};
         check(executor->prepare_source(p,reader,counters,error),error);
-        check(counters.gpu_weight_bytes==2*5222400 && counters.gpu_allocated_bytes<=32u<<20,"actual tensor accounting");
+        check(counters.gpu_weight_bytes==3*5222400 && counters.gpu_allocated_bytes<=32u<<20,"actual tensor accounting");
+        {
+            strata::worker::InferRequest request;
+            request.model_id=p.model_id;request.partition_id=p.placement_id.a;
+            request.session=1;request.sequence=1;request.layer=0;request.T=8;request.K=10;
+            for(size_t t=0;t<8;++t) {
+                auto token=route;std::rotate(token.ids.begin(),token.ids.begin()+t,token.ids.end());
+                request.ids.insert(request.ids.end(),token.ids.begin(),token.ids.end());
+                request.weights.insert(request.weights.end(),token.weights.begin(),token.weights.end());
+                for(auto& value:token.activation)value+=float(t)*0.02f;
+                request.activations.insert(request.activations.end(),token.activation.begin(),token.activation.end());
+                for(auto id:token.ids)request.mask.push_back(p.owns(0,id));
+            }
+            strata::worker::EntryRowsReply reply;
+            check(executor->infer_rows(p,request,reply,error),error);
+            check(reply.indices.size()==24&&reply.rows.size()==24*2560,"real executor T8 indexed rows");
+            for(size_t t=0;t<8;++t) {
+                auto token=route;
+                token.ids.assign(request.ids.begin()+t*10,request.ids.begin()+(t+1)*10);
+                token.activation.assign(request.activations.begin()+t*2560,request.activations.begin()+(t+1)*2560);
+                std::vector<float> expected;check(cpu.run(0,token,expected,error),error);
+                for(size_t n=0;n<reply.indices.size();++n) {
+                    const size_t slot=reply.indices[n];if(slot/10!=t)continue;
+                    for(size_t h=0;h<2560;++h)
+                        check(std::abs(reply.rows[n*2560+h]-expected[(slot%10)*2560+h])<=
+                              0.003f*(1+std::abs(expected[(slot%10)*2560+h])),"real executor T8 rows versus native CPU");
+                }
+            }
+        }
         executor->release(counters);check(!counters.gpu_allocated_bytes,"direct executor release");
         strata::worker::InferRequest request;
         request.model_id=p.model_id;request.partition_id=p.placement_id.a;request.session=1;request.sequence=1;

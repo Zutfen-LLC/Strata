@@ -1,3 +1,4 @@
+#include "portable_layer_chunk_fixture.hpp"
 #include "ggml-vulkan.h"
 #include "portable_qsa_selection.hpp"
 #include "portable_qsa_production_fixture.hpp"
@@ -28,6 +29,18 @@ int main(int argc, char **argv) {
                                                                            ggml_backend_free);
         check(bool(device) && !ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "distinct Vulkan buffers required");
+        // Same-device serial control isolates multirow FFN kernel differences.
+        for(int mode=0;mode<3;++mode) {
+            Fixture fixture;std::string error;PortableQsaOptions options;options.capacity=10;
+            options.execution.accelerator=device.get();options.execution.request_accelerator=true;
+            options.execution.allow_cpu_fallback=false;options.execution.resident_dense_weights=true;
+            options.reuse_attention=mode>0;options.production=mode==2;
+            auto chunk=PortableQsaLayer::create(3,fixture.views,options,error);
+            auto serial=PortableQsaLayer::create(3,fixture.views,options,error);
+            check(bool(chunk)&&bool(serial),error);
+            layer_chunk_fixture::exercise(*chunk,*serial,fixture,experts(),device.get(),
+                options.execution.graph_budget,options.state_budget,mode==2?"QSA production Vulkan":mode==1?"QSA reuse Vulkan":"QSA legacy Vulkan",true);
+        }
         for (bool reuse : {false, true})
         for (bool resident : {false, true}) {
             std::printf("dense weight fixture: resident=%d\n", int(resident));
