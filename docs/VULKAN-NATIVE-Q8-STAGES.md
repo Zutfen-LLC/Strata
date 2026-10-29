@@ -253,3 +253,74 @@ magic `0x3156384e`, then five little-endian length-prefixed byte arrays in
 input/gate/up/hidden/packed order. Observation retains stage and final view
 receipts even when its sentinel checks fail, then returns a failure. Full
 original fixture cases and inactive-output sentinels are preserved.
+
+## Paired native Q8_0 consumer diagnostic
+
+`native_q8_consumer` tests the numerical consequence of the specific block-5
+code mismatch. It does not test a new Vulkan operation and does not waive the
+original byte failure. Use the hash-checking launcher, rather than invoking
+the CUDA executable directly.
+
+The launcher checks SHA-256 values against the **retained evidence receipts**,
+then snapshots the full original fixture and both captures into a fresh output
+directory. Use the observation **capture's** hash, not the effective-SPIR-V
+hash. It requires the original 832-element fixture shape and subnormal block,
+correct native/observation encodings, intact sentinels, exactly the 32 expected
+input-code differences, zero block-5 metadata, and identical other sections.
+It saves the complete original comparison, still failed and unqualified.
+
+The executable independently checks capture structure and the prescribed
+mismatch before any CUDA call. It feeds the first eight Q8_1 blocks of each
+capture directly through `x_q8_1`, without input requantization. The common
+signal blocks stay untouched. One finite synthetic Q8_0 expert and one group
+serve two entries, with `n_embd=256` and `n_ff=32`, through the unchanged
+`native_expert_grouped` entry point. These are its minimum supported dimensions.
+There is no new kernel, dequantization simulation or forced native variant.
+The original full-fixture report remains separate from this causal check.
+
+The weight blob is 26,112 bytes: signed int8 codes restricted to +/-1 and
+half scales restricted to +2^-11 or -0. Every scale is checked finite. Positive,
+negative, alternating and zero-scale rows exercise signs and retain nonzero
+common signal. Native gate/up and final output arrays must be finite and
+nondegenerate. Their raw F32 bits are compared entry-by-entry, including zero
+signs, with no tolerance. Gate/up are materialized by this Q8/dimension path;
+unwritten scratch remains NaN and fails the finite check.
+
+Build against the existing native CUDA Release configuration and unchanged
+kernel/toolchain settings. This target is CUDA-only; no HIP/SYCL support is
+implied. The CPU parser/weight test needs no CUDA:
+
+```sh
+cmake --build CUDA_BUILD --target native_q8_consumer -j4
+cmake --build HOST_BUILD --target native_q8_consumer_input_test -j4
+ctest --test-dir HOST_BUILD -R '^native_q8_consumer_input_test$' --output-on-failure
+```
+
+For one separately reviewed bounded run, replace all paths, hashes and device
+placeholders with verified retained values. The fresh output directory must
+not exist; its parent must exist. The launcher records the launched child PID
+and collects its actual return code directly, with a 30-second deadline.
+
+```sh
+python tools/native_q8_consumer.py --consumer CUDA_BUILD/native_q8_consumer \
+  --device CUDA_INDEX --expect-device DEVICE_SUBSTRING \
+  --fixture RETAINED_FIXTURE --fixture-sha256 EXPECTED_FIXTURE_SHA256 \
+  --native RETAINED_NATIVE_CAPTURE --native-sha256 EXPECTED_NATIVE_SHA256 \
+  --observation RETAINED_OBSERVATION_CAPTURE \
+  --observation-sha256 EXPECTED_OBSERVATION_CAPTURE_SHA256 \
+  --output FRESH_OUTPUT_DIRECTORY
+```
+
+`receipt.json` preserves source revision, executable/input/output/weight hashes,
+argv, relevant native environment flags, child identity and exit/timeout state.
+`consumer.log` records device/PCI identity, per-stage mismatch counts and exact
+bits for differing rows. `native-consumer.raw` stores magic `0x3143384e`, then
+three little-endian count-prefixed F32-bit arrays: gate (64), up (64), output
+(512), first native-input entry then observation-input entry. The synthetic
+weight bytes are saved alongside it. Raw results are saved before comparisons.
+
+A consumer exit zero means only that these paired native row bits match, with
+finite weights and common nonzero signal. The receipt still says
+`qualified=false`, `fp32_denorm_mode=unspecified` (referring to the retained
+observation), and `original_comparator_exit=1`. It does not establish packed-byte
+parity, a Vulkan guarantee, other-format behavior or product qualification.

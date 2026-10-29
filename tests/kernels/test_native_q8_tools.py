@@ -70,6 +70,47 @@ class Tools(unittest.TestCase):
             self.assertEqual(compare.comparison_exit(report), 1)
             with self.assertRaises(ValueError):compare.compare(f, obs, native)
 
+    def test_consumer_uses_native_entry_without_new_kernel_or_requantization(self):
+        text = (ROOT / 'tests/kernels/native_q8_consumer.cpp').read_text()
+        self.assertEqual(text.count('native_expert_grouped('), 1)
+        self.assertNotIn('quantize_q8_1_rows(', text)
+        self.assertNotIn('__global__', text)
+        self.assertNotIn('iq_set_old_kernels(', text)
+        self.assertIn('read(gate.data(),scratch.p', text)
+        self.assertIn('bits(v[i])!=bits(v[per_entry+i])', text)
+
+    def test_consumer_preflight_hashes_roles_and_exact_difference(self):
+        consumer = module('native_q8_consumer')
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory);f = d / 'fixture';n = d / 'native';o = d / 'observation'
+            # Synthetic parser data only; never claimed as GPU capture evidence.
+            inputs = [0] * 832
+            inputs[160:192] = range(1, 33)
+            f.write_bytes(struct.pack('<8I', 0x3151384e, 64, 832, 4, 2, 5, 5, 9) +
+                          struct.pack('<' + 'I' * 832, *inputs) + bytes(832 * 8))
+            packed = bytearray(936);packed[3 * 36 + 1] = 0x3c;packed[3 * 36 + 4] = 127
+            packed[184:216] = bytes([127] * 32)
+            fused = bytearray([0xa5] * 936);fused[4 * 36:18 * 36] = bytes(14 * 36)
+            parts = [bytes(packed), bytes(3328), bytes(936), bytes(fused), bytes([0xa5] * 936)]
+            def write(path, observation, sections):
+                header = struct.pack('<II', 0x3252384e, 1) if observation else struct.pack('<I', 0x3152384e)
+                path.write_bytes(header + b''.join(struct.pack('<I', len(x)) + x for x in sections))
+            write(n, False, parts)
+            changed = bytearray(packed);changed[184:216] = bytes(32)
+            observed = [bytes(changed)] + parts[1:];write(o, True, observed)
+            report = consumer.validate(f, n, o)
+            self.assertFalse(report['qualified'])
+            self.assertEqual(report['sections']['input_q8']['different_bytes'], 32)
+            self.assertEqual(consumer.checked_bytes(f, hashlib.sha256(f.read_bytes()).hexdigest()), f.read_bytes())
+            with self.assertRaises(ValueError):consumer.checked_bytes(f, '0' * 64)
+            with self.assertRaises(ValueError):consumer.checked_bytes(f, 'bad hash')
+            changed[216] = 1;write(o, True, [bytes(changed)] + parts[1:])
+            with self.assertRaises(ValueError):consumer.validate(f, n, o)
+            write(o, False, observed)
+            with self.assertRaises(ValueError):consumer.validate(f, n, o)
+            write(o, True, [observed[0], bytes(936)] + observed[2:])
+            with self.assertRaises(ValueError):consumer.validate(f, n, o)
+
     def test_native_conversion_holes_are_not_qualified(self):
         compare = module('compare_native_q8_stages')
         self.assertEqual(compare.contract_exceptions([0] * 32, bytes(36)), [])
