@@ -190,32 +190,32 @@ int main(){
         check(executor->prepare_source(p,reader,counters,error),error);
         check(counters.gpu_weight_bytes==3*5222400 && counters.gpu_allocated_bytes<=32u<<20,"actual tensor accounting");
         {
-        strata::worker::InferRequest request;
-        request.model_id=p.model_id;request.partition_id=p.placement_id.a;
-        request.session=1;request.sequence=1;request.layer=0;request.T=8;request.K=10;
-        for(size_t t=0;t<8;++t) {
-            auto token=route;std::rotate(token.ids.begin(),token.ids.begin()+t,token.ids.end());
-            request.ids.insert(request.ids.end(),token.ids.begin(),token.ids.end());
-            request.weights.insert(request.weights.end(),token.weights.begin(),token.weights.end());
-            for(auto& value:token.activation)value+=float(t)*0.02f;
-            request.activations.insert(request.activations.end(),token.activation.begin(),token.activation.end());
-            for(auto id:token.ids)request.mask.push_back(p.owns(0,id));
-        }
-        strata::worker::EntryRowsReply reply;
-        check(executor->infer_rows(p,request,reply,error),error);
-        check(reply.indices.size()==24&&reply.rows.size()==24*2560,"real executor T8 indexed rows");
-        for(size_t t=0;t<8;++t) {
-            auto token=route;
-            token.ids.assign(request.ids.begin()+t*10,request.ids.begin()+(t+1)*10);
-            token.activation.assign(request.activations.begin()+t*2560,request.activations.begin()+(t+1)*2560);
-            std::vector<float> expected;check(cpu.run(0,token,expected,error),error);
-            for(size_t n=0;n<reply.indices.size();++n) {
-                const size_t slot=reply.indices[n];if(slot/10!=t)continue;
-                for(size_t h=0;h<2560;++h)
-                    check(std::abs(reply.rows[n*2560+h]-expected[(slot%10)*2560+h])<=
-                          0.003f*(1+std::abs(expected[(slot%10)*2560+h])),"real executor T8 rows versus native CPU");
+            strata::worker::InferRequest request;
+            request.model_id=p.model_id;request.partition_id=p.placement_id.a;
+            request.session=1;request.sequence=1;request.layer=0;request.T=8;request.K=10;
+            for(size_t t=0;t<8;++t) {
+                auto token=route;std::rotate(token.ids.begin(),token.ids.begin()+t,token.ids.end());
+                request.ids.insert(request.ids.end(),token.ids.begin(),token.ids.end());
+                request.weights.insert(request.weights.end(),token.weights.begin(),token.weights.end());
+                for(auto& value:token.activation)value+=float(t)*0.02f;
+                request.activations.insert(request.activations.end(),token.activation.begin(),token.activation.end());
+                for(auto id:token.ids)request.mask.push_back(p.owns(0,id));
             }
-        }
+            strata::worker::EntryRowsReply reply;
+            check(executor->infer_rows(p,request,reply,error),error);
+            check(reply.indices.size()==24&&reply.rows.size()==24*2560,"real executor T8 indexed rows");
+            for(size_t t=0;t<8;++t) {
+                auto token=route;
+                token.ids.assign(request.ids.begin()+t*10,request.ids.begin()+(t+1)*10);
+                token.activation.assign(request.activations.begin()+t*2560,request.activations.begin()+(t+1)*2560);
+                std::vector<float> expected;check(cpu.run(0,token,expected,error),error);
+                for(size_t n=0;n<reply.indices.size();++n) {
+                    const size_t slot=reply.indices[n];if(slot/10!=t)continue;
+                    for(size_t h=0;h<2560;++h)
+                        check(std::abs(reply.rows[n*2560+h]-expected[(slot%10)*2560+h])<=
+                              0.003f*(1+std::abs(expected[(slot%10)*2560+h])),"real executor T8 rows versus native CPU");
+                }
+            }
         }
         executor->release(counters);check(!counters.gpu_allocated_bytes,"direct executor release");
         strata::worker::InferRequest request;

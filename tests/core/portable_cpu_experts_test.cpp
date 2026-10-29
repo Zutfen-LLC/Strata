@@ -129,6 +129,8 @@ int main() {
                       "grouped mapped output bytes and original slots equal serial");
                 check(staged==mapped,"bounded staging waves equal mapped batch");
                 check(candidate.work().native_batches==before.native_batches+1,"single native pool call per mapped chunk");
+                if(!masked) check(candidate.work().batch_native_jobs==before.batch_native_jobs+(disjoint?T*10:10),
+                                  "actual distinct expert count, including all 80 jobs at T8");
                 check(candidate.work().batch_logical_rows==before.batch_logical_rows+T,"logical rows distinct from jobs");
                 if(T==8&&!disjoint&&!masked) check(candidate.work().batch_max_nt==8,"actual native nt=8 receipt");
                 auto replay=mapped;
