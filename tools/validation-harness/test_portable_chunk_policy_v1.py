@@ -93,16 +93,18 @@ class ChunkPolicy(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);binary=root/'binary';binary.write_bytes(b'mocked child')
                 args=SimpleNamespace(suite=root/'suite',binary=binary,binary_sha256=P.Q.bundle.sha(binary),
-                    out=root/'out',prompt_chunk_size=2,benchmark=False,dump_executed_logits=True,gdn_batch_input_projections=batched,gdn_causal_chunk=causal,gdn_production=causal)
+                    out=root/'out',prompt_chunk_size=2,benchmark=False,dump_executed_logits=True,gdn_batch_input_projections=batched,gdn_causal_chunk=causal,gdn_production=causal,qsa_device_combine=causal,qsa_production=causal,qsa_reuse_attention=causal)
                 rows=[dict(position=i,token=t,generated=i==3,greedy_next=None if i<2 else 248046,
                     schema=2,head_policy='prompt_head_elision',logits_available=i>=2,
                     chunk_policy='layer_major_v1',prompt_chunk_size=2) for i,t in enumerate([5,6,7,248046])]
                 timing=metrics(2,3,4)
                 if batched and not missing:timing['gdn_batch_input_projections']=True
                 if causal and not missing:timing['gdn_causal_chunk']=True
+                if causal:timing['qsa_device_combine']=True
                 def launch(argv,stdout,stderr,**kwargs):
                     self.assertEqual(argv.count(P.GDN_PROJECTION_FLAG),int(batched))
                     self.assertEqual(argv.count(P.GDN_CAUSAL_FLAG),int(causal))
+                    self.assertEqual(argv.count(P.QSA_COMBINE_FLAG),int(causal))
                     self.assertEqual(argv.count('--timings'),1)
                     Path(argv[argv.index('--timings')+1]).write_text(json.dumps(timing))
                     import array
@@ -285,6 +287,43 @@ class ChunkPolicy(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):R.reference_rows(*args,residency=policy,prompt_chunk_size=8)
 
+    def test_combine_fresh_reference_policy_mutations(self):
+        for mutation in ('none','summary_missing','summary_false','summary_number','argv_missing','argv_duplicate',
+                         'timing_missing','timing_false','timing_number','saved_timing','off'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                tok,suite,prompts,binding,ref,binary,plans,records=ResidentTests.SuiteControls().fixtures(root)
+                summary=json.loads((ref/'summary.json').read_text())
+                summary.update(head_policy='prompt_head_elision',prompt_chunk_size=8,chunk_policy='layer_major_v1',
+                               qsa_device_combine=True,qsa_policy='device_production',qsa_reuse_attention=True)
+                for index,(record,prompt) in enumerate(zip(records,prompts),1):
+                    case=ref/f'case-{index:02d}'
+                    argv=json.loads((case/'argv.json').read_text())+['--prompt-head-elision','--prompt-chunk-size','8',P.QSA_COMBINE_FLAG,'--qsa-production','--qsa-reuse-attention']
+                    if index==1 and mutation=='argv_missing':argv.remove(P.QSA_COMBINE_FLAG)
+                    if index==1 and mutation=='argv_duplicate':argv.append(P.QSA_COMBINE_FLAG)
+                    (case/'argv.json').write_text(json.dumps(argv))
+                    for i,row in enumerate(record['rows']):
+                        row.update(schema=2,head_policy='prompt_head_elision',logits_available=i+1>=len(prompt),
+                                   prompt_chunk_size=8,chunk_policy='layer_major_v1')
+                        if i+1<len(prompt):row['greedy_next']=None
+                    (case/'stdout.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in record['rows']+[record['stop']]))
+                    timing=dict(metrics(8,len(prompt),len(record['rows'])),qsa_device_combine=True)
+                    summary['requests'][index-1]['chunk_work']=copy.deepcopy(timing)
+                    if index==1 and mutation=='saved_timing':summary['requests'][0]['chunk_work']['qsa_device_combine']=False
+                    if index==1 and mutation=='timing_missing':del timing['qsa_device_combine']
+                    if index==1 and mutation=='timing_false':timing['qsa_device_combine']=False
+                    if index==1 and mutation=='timing_number':timing['qsa_device_combine']=1
+                    (case/'timings.json').write_text(json.dumps(timing))
+                if mutation=='summary_missing':del summary['qsa_device_combine']
+                if mutation=='summary_false':summary['qsa_device_combine']=False
+                if mutation=='summary_number':summary['qsa_device_combine']=1
+                (ref/'summary.json').write_text(json.dumps(summary))
+                args=(ref,binding,prompts,len(tok.tokens),R.Q.bundle.sha(binary),plans,'5529,5529')
+                policy={'--prompt-head-elision':True,P.QSA_COMBINE_FLAG:mutation!='off','--qsa-production':True,'--qsa-reuse-attention':True}
+                if mutation=='none':self.assertEqual(R.reference_rows(*args,residency=policy,prompt_chunk_size=8),records)
+                else:
+                    with self.assertRaises(ValueError):R.reference_rows(*args,residency=policy,prompt_chunk_size=8)
+
     def test_resident_main_projection_forwarding_and_early_rejection(self):
         import sys
         from contextlib import ExitStack
@@ -295,7 +334,7 @@ class ChunkPolicy(unittest.TestCase):
             out=root/'out'
             argv=['resident','--binary',sys.executable,'--binary-sha256',R.Q.bundle.sha(sys.executable),
                   '--out',str(out),'--tokens-file',str(tokens),'--max-new','0',
-                  '--plan',str(plans[0]),'--plan',str(plans[1]),'--prompt-chunk-size','8',P.GDN_PROJECTION_FLAG,P.GDN_CAUSAL_FLAG,'--gdn-production']
+                  '--plan',str(plans[0]),'--plan',str(plans[1]),'--prompt-chunk-size','8',P.GDN_PROJECTION_FLAG,P.GDN_CAUSAL_FLAG,'--gdn-production',P.QSA_COMBINE_FLAG,'--qsa-production','--qsa-reuse-attention']
             commands=[]
             def launch(command,path,tick):
                 commands.append(command);(path/'stderr.log').write_text('fixture')
@@ -304,7 +343,7 @@ class ChunkPolicy(unittest.TestCase):
                 del runner.cleanup_guard_error
                 def request(tokens,max_new,index):
                     return dict(rows=[{'fixture':True}],stop={'stop':'max_new'},metrics=dict(
-                        gdn_batch_input_projections=True,gdn_causal_chunk=True,gpu_entries_per_device_delta=[1,1],cpu_verifications_delta=0,
+                        qsa_device_combine=True,gdn_batch_input_projections=True,gdn_causal_chunk=True,gpu_entries_per_device_delta=[1,1],cpu_verifications_delta=0,
                         cpu_copied_bytes_delta=0,cpu_digest_bytes_delta=0,source_invalidations_delta=0))
                 runner.request.side_effect=request
                 return runner
@@ -320,6 +359,7 @@ class ChunkPolicy(unittest.TestCase):
             self.assertEqual(commands[0].count(P.GDN_PROJECTION_FLAG),1)
             self.assertTrue(P.projection_argv(commands[0]))
             self.assertTrue(P.causal_argv(commands[0]))
+            self.assertTrue(P.combine_argv(commands[0]))
             summary=json.loads((out/'summary.json').read_text())
             self.assertEqual(summary['status'],'complete');self.assertIs(summary['gdn_batch_input_projections'],True)
             self.assertIs(summary['gdn_causal_chunk'],True)

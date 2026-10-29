@@ -14,6 +14,10 @@ struct PortableQsaOptions {
     bool reuse_attention = false;
     // Device-authoritative state; requires reuse and strict selected accelerator.
     bool production = false;
+    bool device_combine = false; // production only; append combine to exact active attention graph
+};
+struct PortableQsaGraphWork {
+    uint64_t attention_submissions = 0, combine_submissions = 0, device_handoffs = 0;
 };
 // Explicit diagnostic download, including unused capacity, never a host mirror.
 struct PortableQsaState {
@@ -52,6 +56,8 @@ class PortableQsaLayer {
     // Caller pre-admits the module bound before invoking this planning seam.
     bool prepare_chunk(size_t tokens, std::string& error);
     PortableLayerChunkWork chunk_work() const;
+    // Actual successful graph submissions since construction (includes failed steps).
+    PortableQsaGraphWork graph_work() const;
     bool reset(std::string &error);
     uint64_t tokens() const;
     bool poisoned() const;

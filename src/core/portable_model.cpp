@@ -140,6 +140,7 @@ struct PortableModelSession::Impl {
                 "portable model: context [1,256]/thread limits");
         require(opts.accelerators.size() <= 2 && opts.device_caps.size() == opts.accelerators.size(),
                 "portable model: supply a separate cap for each of at most two accelerators");
+        require(!opts.qsa_device_combine || opts.qsa_production, "portable model: QSA device combine requires production");
         require(!opts.qsa_production || (opts.qsa_reuse_attention && !opts.accelerators.empty() && !opts.allow_cpu_fallback),
                 "portable model: QSA production requires reuse and strict accelerators");
         require(!opts.gdn_production || (opts.gdn_resident_state && !opts.accelerators.empty() &&
@@ -248,6 +249,7 @@ struct PortableModelSession::Impl {
                 o.capacity = opts.context;
                 o.reuse_attention = opts.qsa_reuse_attention;
                 o.production = opts.qsa_production;
+                o.device_combine = opts.qsa_device_combine;
                 layer.qsa = PortableQsaLayer::from_gguf(model, int64_t(l), o, error);
                 require(bool(layer.qsa), "portable model: layer " + std::to_string(l) + ": " + error);
             } else {
@@ -589,6 +591,12 @@ PortableModelWork PortableModelSession::model_work() const {
         work.gdn_causal_submissions+=layer.gdn->causal_chunk_calls();
         work.gdn_causal_residual_handoffs+=layer.gdn->causal_residual_handoffs();
         work.gdn_causal_state_commits+=layer.gdn->causal_state_commits();
+    }
+    for(const auto& layer:impl_->layers) if(layer.qsa) {
+        const auto qsa=layer.qsa->graph_work();
+        work.qsa_attention_submissions+=qsa.attention_submissions;
+        work.qsa_combine_submissions+=qsa.combine_submissions;
+        work.qsa_device_handoffs+=qsa.device_handoffs;
     }
     return work;
 }

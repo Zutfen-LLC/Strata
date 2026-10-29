@@ -70,6 +70,7 @@ struct PortableModelOptions {
     bool gdn_batch_input_projections = false; // requires prompt chunks; non-PLE layers only
     size_t prompt_chunk_size = 0; // default off; 2..8 implies prompt head elision
     bool prompt_head_elision = false; // opt-in: only final prompt position projects vocabulary
+    bool qsa_device_combine = false; // requires QSA production; default off
     bool qsa_production = false; // device KV/indexer authority; requires strict accelerator and reuse
     bool qsa_reuse_attention = false; // capacity-primed execution/scratch; default off
     bool gdn_production = false; // opt-in device authority; requires strict resident accelerator execution
@@ -94,6 +95,7 @@ struct PortableModelWork {
     uint64_t completed_ffn_pre_calls = 0, completed_provider_calls = 0, completed_ffn_post_calls = 0;
     uint64_t logical_tokens = 0, prompt_chunks = 0, prompt_chunk_tokens = 0;
     uint64_t chunk_layer_calls = 0, chunk_ffn_pre_calls = 0, chunk_provider_calls = 0, chunk_ffn_post_calls = 0;
+    uint64_t qsa_attention_submissions = 0, qsa_combine_submissions = 0, qsa_device_handoffs = 0;
     uint64_t gdn_causal_submissions = 0, gdn_causal_residual_handoffs = 0, gdn_causal_state_commits = 0;
     PortableGdnWork gdn_phases; // nested GDN scopes; enabled only by expert_timings
     double step_ms = 0, gdn_ms = 0, qsa_ms = 0, head_ms = 0;

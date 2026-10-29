@@ -30,16 +30,14 @@ int main(int argc, char **argv) {
         check(bool(device) && !ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "distinct Vulkan buffers required");
         // Same-device serial control isolates multirow FFN kernel differences.
-        for(int mode=0;mode<3;++mode) {
+        for(int mode=0;mode<4;++mode) {
             Fixture fixture;std::string error;PortableQsaOptions options;options.capacity=10;
             options.execution.accelerator=device.get();options.execution.request_accelerator=true;
             options.execution.allow_cpu_fallback=false;options.execution.resident_dense_weights=true;
-            options.reuse_attention=mode>0;options.production=mode==2;
-            auto chunk=PortableQsaLayer::create(3,fixture.views,options,error);
-            auto serial=PortableQsaLayer::create(3,fixture.views,options,error);
-            check(bool(chunk)&&bool(serial),error);
+            options.reuse_attention=mode>0;options.production=mode>=2;options.device_combine=mode==3;
+            auto [chunk,serial]=chunk_pair(fixture.views,options);
             layer_chunk_fixture::exercise(*chunk,*serial,fixture,experts(),device.get(),
-                options.execution.graph_budget,options.state_budget,mode==2?"QSA production Vulkan":mode==1?"QSA reuse Vulkan":"QSA legacy Vulkan",true);
+                options.execution.graph_budget,options.state_budget,mode==3?"QSA device combine":mode==2?"QSA production Vulkan":mode==1?"QSA reuse Vulkan":"QSA legacy Vulkan",true);
         }
         for (bool reuse : {false, true})
         for (bool resident : {false, true}) {
@@ -154,7 +152,10 @@ int main(int argc, char **argv) {
                         "checks/CPU parity/rollback/reset device=%s weights=%zu graphs_with_workspace=%zu state=%zu reuse=%d\n",
                         mat, rope, description, layer->weight_bytes(), peak_graph_bytes, layer->state_bytes(), int(reuse));
             if (reuse) {
-                production_tests(options, f.views, [&](int t){return f.input(t);});
+                for (bool combine : {false, true}) {
+                    options.device_combine=combine;
+                    production_tests(options, f.views, [&](int t){return f.input(t);});
+                }
                 selection_tests(options.execution, true, true);
                 std::printf("PASS strict Vulkan device-state selection width2051 boundaries/ties device=%s\n", description);
             }

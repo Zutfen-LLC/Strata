@@ -143,9 +143,25 @@ inline void selection_tests(PortableFfnOptions options, bool reuse = false, bool
                 for (auto *t : {ki, vi}) ggml_set_input(t);
             auto *attention = portable_detail::qsa_dense_attention(c, ki, vi, qi, output);
             ggml_set_output(attention);
+            ggml_tensor *combined = nullptr, *combined_gate = nullptr, *combine_gate = nullptr,
+                        *combine_weight = nullptr, *combine_residual = nullptr, *combine_inject = nullptr;
+            if (external_state) {
+                combine_gate = ggml_new_tensor_1d(c, GGML_TYPE_F32, 6144);
+                combine_weight = ggml_new_tensor_2d(c, GGML_TYPE_F32, 6144, 8);
+                combine_residual = ggml_new_tensor_3d(c, GGML_TYPE_F32, 8, 4, 1);
+                combine_inject = ggml_new_tensor_1d(c, GGML_TYPE_F32, 4);
+                for (auto *t : {combine_gate, combine_weight, combine_residual, combine_inject}) ggml_set_input(t);
+                auto outputs = portable_detail::qsa_combine(c, attention, combine_gate, combine_weight, combine_residual, combine_inject);
+                combined_gate = outputs.first; combined = outputs.second;
+                ggml_set_output(combined_gate); ggml_set_output(combined);
+            }
             auto *graph = ggml_new_graph(c);
             ggml_build_forward_expand(graph, output);
             ggml_build_forward_expand(graph, attention);
+            if (combined) {
+                ggml_build_forward_expand(graph, combined_gate);
+                ggml_build_forward_expand(graph, combined);
+            }
             std::vector<PortablePlacement> placement;
             size_t bytes = 0;
             portable_detail::Scheduler temporary{nullptr, ggml_backend_sched_free};
@@ -196,6 +212,17 @@ inline void selection_tests(PortableFfnOptions options, bool reuse = false, bool
             ggml_backend_tensor_set(ki, keys.data(), 0, keys.size() * 2);
             ggml_backend_tensor_set(vi, values.data(), 0, values.size() * 2);
             ggml_backend_tensor_set(qi, query.data(), 0, query.size() * 4);
+            std::vector<float> output_weights(6144 * 8), raw_gate(6144), residual(32), injection(4);
+            if (combined) {
+                for (size_t i=0;i<output_weights.size();++i) output_weights[i]=float(int(i%13)-6)*0.001f;
+                for (size_t i=0;i<raw_gate.size();++i) raw_gate[i]=float(int(i%9)-4)*0.1f;
+                for (size_t i=0;i<residual.size();++i) residual[i]=float(i)*0.01f;
+                injection={-1,0,1,2};
+                ggml_backend_tensor_set(combine_gate,raw_gate.data(),0,raw_gate.size()*4);
+                ggml_backend_tensor_set(combine_weight,output_weights.data(),0,output_weights.size()*4);
+                ggml_backend_tensor_set(combine_residual,residual.data(),0,residual.size()*4);
+                ggml_backend_tensor_set(combine_inject,injection.data(),0,injection.size()*4);
+            }
             check(ggml_backend_sched_graph_compute(sched.get(), graph) == GGML_STATUS_SUCCESS,
                   "selection compute");
             std::vector<float> actual(size_t(n), 0), expected(size_t(n), 0);
@@ -236,6 +263,19 @@ inline void selection_tests(PortableFfnOptions options, bool reuse = false, bool
             }
             close(actual_attention, expected_attention, 0.0002f,
                   ("selected full-cache attention n=" + std::to_string(n)).c_str());
+            if (combined) {
+                std::vector<float> actual_gate(6144), expected_gate(6144), actual_residual(32), expected_residual(32);
+                ggml_backend_tensor_get(combined_gate,actual_gate.data(),0,actual_gate.size()*4);
+                ggml_backend_tensor_get(combined,actual_residual.data(),0,actual_residual.size()*4);
+                for(size_t i=0;i<6144;++i) expected_gate[i]=actual_attention[i]/(1+std::exp(-raw_gate[i]));
+                for(size_t h=0;h<4;++h) for(size_t d=0;d<8;++d) {
+                    double sum=0;
+                    for(size_t i=0;i<6144;++i) sum+=double(expected_gate[i])*output_weights[d*6144+i];
+                    expected_residual[h*8+d]=residual[h*8+d]+float(sum)*2/(1+std::exp(-injection[h]*0.25f));
+                }
+                close(actual_gate,expected_gate,0.0002f,"merged sparse attention gate");
+                close(actual_residual,expected_residual,0.0002f,"merged sparse attention residual");
+            }
             if (mode == 2) {
                 size_t topk = 0, mats = 0;
                 for (const auto &p : placement) {

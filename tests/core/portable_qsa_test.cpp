@@ -9,15 +9,13 @@ int main() {
             Fixture fixture;
             std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> selected(ggml_backend_cpu_init(),ggml_backend_free);
             std::string error;
-            for(int mode=0;mode<3;++mode) {
+            for(int mode=0;mode<4;++mode) {
                 PortableQsaOptions options;options.capacity=10;
                 options.execution.accelerator=selected.get();options.execution.request_accelerator=true;
-                options.reuse_attention=mode>0;options.production=mode==2;
-                auto chunk=PortableQsaLayer::create(3,fixture.views,options,error);
-                auto serial=PortableQsaLayer::create(3,fixture.views,options,error);
-                check(bool(chunk)&&bool(serial),error);
+                options.reuse_attention=mode>0;options.production=mode>=2;options.device_combine=mode==3;
+                auto [chunk,serial]=chunk_pair(fixture.views,options);
                 layer_chunk_fixture::exercise(*chunk,*serial,fixture,experts(),selected.get(),
-                    options.execution.graph_budget,options.state_budget,mode==2?"QSA production CPU-selected":mode==1?"QSA diagnostic reuse CPU-selected":"QSA diagnostic legacy CPU-selected");
+                    options.execution.graph_budget,options.state_budget,mode==3?"QSA device combine":mode==2?"QSA production CPU-selected":mode==1?"QSA diagnostic reuse CPU-selected":"QSA diagnostic legacy CPU-selected");
             }
         }
         spare_high_score_test({});

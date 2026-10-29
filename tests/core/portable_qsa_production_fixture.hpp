@@ -1,7 +1,51 @@
 #pragma once
 #include "portable_qsa_fixture.hpp"
 #include <algorithm>
+#include <map>
+#include <set>
+#include <sstream>
+#include "ggml-backend.h"
 namespace qsa_fixture {
+// Loader conversions are explicit host work, not scheduled graph operations.
+// Validate their exact source roles instead of exempting arbitrary CPU records.
+inline std::string placement_diagnostic(const PortablePlacement& p,const std::string& expected_backend) {
+    std::ostringstream out;
+    out << "strict production placement: phase=" << p.phase << " operation=" << p.operation
+        << " tensor=" << p.tensor << " type=" << p.type << " shape=[";
+    for(size_t i=0;i<p.shape.size();++i) out << (i?",":"") << p.shape[i];
+    out << "] actual_backend=" << p.backend << " expected_backend=" << expected_backend
+        << " metadata_only=" << p.metadata_only << " fallback=[" << p.fallback_reason << "]";
+    return out.str();
+}
+inline size_t strict_production_placement(const std::vector<PortablePlacement>& placements,
+    const std::string& expected_backend,bool device_combine,const std::vector<PortableTensorView>& views) {
+    std::map<std::string,const PortableTensorView*> expected_loads;
+    for(const auto& v:views) if(v.type==30) {
+        const bool query=v.name=="blk.3.indexer.q_proj.weight", key=v.name=="blk.3.indexer.k_proj.weight";
+        check((query||key)&&v.shape==std::vector<int64_t>{2560,query?512:128} &&
+              expected_loads.emplace(v.name,&v).second,"unexpected BF16 source role for placement: "+v.name);
+    }
+    std::set<std::string> loaded;
+    for(const auto& p:placements) {
+        if(p.phase=="load") {
+            const auto source=expected_loads.find(p.tensor);
+            check(source!=expected_loads.end() && p.operation=="BF16_TO_F32_EXACT" && p.type=="BF16->F32" &&
+                  p.backend=="CPU" && p.fallback_reason.empty() && !p.metadata_only &&
+                  p.shape==source->second->shape && loaded.insert(p.tensor).second,
+                  placement_diagnostic(p,"CPU")+" expected_load=one exact BF16 indexer conversion; selected_backend="+expected_backend);
+            continue;
+        }
+        if(!p.metadata_only && p.phase!="host") {
+            check(!device_combine || p.phase!="qsa-combine",
+                  placement_diagnostic(p,expected_backend)+" expected_phase=no standalone qsa-combine in merged mode");
+            check(p.backend==expected_backend && p.fallback_reason.empty(),placement_diagnostic(p,expected_backend));
+        }
+    }
+    for(const auto& source:expected_loads)
+        check(loaded.count(source.first)==1,"strict production placement: missing BF16_TO_F32_EXACT tensor="+
+              source.first+" actual_backend=missing expected_backend=CPU; selected_backend="+expected_backend);
+    return loaded.size();
+}
 // Run against a strict selected backend (CPU-backed selection for local tests,
 // actual Vulkan for the hardware fixture). Compare complete active state and
 // unused capacity; getters deliberately never expose a production mirror.
@@ -13,10 +57,12 @@ void production_tests(PortableQsaOptions opts, const std::vector<PortableTensorV
     std::string error;
     auto layer = PortableQsaLayer::create(3, views, opts, error);
     check(bool(layer), error);
-    auto diagnostic = opts; diagnostic.production = false;
+    auto diagnostic = opts; diagnostic.production = false; diagnostic.device_combine = false;
     auto control = PortableQsaLayer::create(3, views, diagnostic, error);
     check(bool(control), error);
-    auto invalid = opts; invalid.reuse_attention = false;
+    auto invalid = opts; invalid.production = false; invalid.device_combine = true;
+    check(!PortableQsaLayer::create(3, views, invalid, error), "device combine requires production");
+    invalid = opts; invalid.reuse_attention = false;
     check(!PortableQsaLayer::create(3, views, invalid, error), "production requires reuse");
     invalid = opts; invalid.execution.allow_cpu_fallback = true;
     check(!PortableQsaLayer::create(3, views, invalid, error), "production forbids fallback");
@@ -79,7 +125,15 @@ void production_tests(PortableQsaOptions opts, const std::vector<PortableTensorV
                 for (size_t j = 0; j < t; ++j)
                     check(layer->step(j, input(int(j) + sequence), experts(), route, error), error);
             }
+            const auto work = layer->graph_work();
             check(layer->step(t, input(int(t) + sequence), experts(), route, error), error);
+            const auto next = layer->graph_work();
+            check(next.attention_submissions == work.attention_submissions + 1 &&
+                  next.combine_submissions == work.combine_submissions + !opts.device_combine &&
+                  next.device_handoffs == work.device_handoffs + opts.device_combine,
+                  "actual attention/combine submission and device handoff deltas");
+            strict_production_placement(layer->placements(),ggml_backend_name(opts.execution.accelerator),
+                                        opts.device_combine,views);
             check(control->step(t, input(int(t) + sequence), experts(), expected, error), error);
             verify();
         }
@@ -93,6 +147,9 @@ void production_tests(PortableQsaOptions opts, const std::vector<PortableTensorV
     const auto after = layer->memory_usage();
     check(after.device_state == before.device_state && after.host_graph == before.host_graph &&
           after.device_graph == before.device_graph, "reset retains admitted state and scheduler allocations");
+    std::printf("PASS QSA device_combine=%d attention_submissions=%llu combine_submissions=%llu device_handoffs=%llu\n",
+        int(opts.device_combine), (unsigned long long)layer->graph_work().attention_submissions,
+        (unsigned long long)layer->graph_work().combine_submissions, (unsigned long long)layer->graph_work().device_handoffs);
     std::puts("PASS QSA device production exact state, append boundaries, poison/reset A/B/A positions0-8");
 }
 }

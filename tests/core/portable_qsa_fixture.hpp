@@ -5,6 +5,17 @@ namespace qsa_fixture {
 using namespace strata::core;
 using gdn_fixture::check;
 using gdn_fixture::close;
+// Shared CPU/Vulkan chunk/control construction seam.
+inline auto chunk_pair(const std::vector<PortableTensorView>& views, PortableQsaOptions options) {
+    std::string error;
+    auto chunk=PortableQsaLayer::create(3,views,options,error);
+    check(bool(chunk),std::string("QSA ")+(options.device_combine?"device-combine":"separate")+
+          " candidate construction: "+(error.empty()?"failed without a diagnostic":error));
+    options.device_combine=false;
+    auto serial=PortableQsaLayer::create(3,views,options,error);
+    check(bool(serial),"QSA separate control construction: "+(error.empty()?"failed without a diagnostic":error));
+    return std::make_pair(std::move(chunk),std::move(serial));
+}
 struct Fixture {
     gdn_fixture::Fixture base;
     std::vector<std::vector<uint8_t>> data;

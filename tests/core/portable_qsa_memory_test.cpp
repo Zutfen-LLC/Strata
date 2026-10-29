@@ -21,6 +21,15 @@ using namespace qsa_fixture;
 int main(){
     try{
         Fixture f;
+        {
+            PortableQsaOptions invalid; invalid.device_combine=true;
+            std::string caught;
+            try { auto pair=chunk_pair(f.views,invalid); }
+            catch(const std::exception& e) { caught=e.what(); }
+            check(caught.find("candidate construction")!=std::string::npos &&
+                  caught.find("device combine requires production")!=std::string::npos,
+                  "candidate construction diagnostic was lost: ["+caught+"]");
+        }
         for (bool reuse : {false, true}) {
         std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_cpu_init(),ggml_backend_free);
         PortableQsaOptions opts;opts.capacity=9;opts.reuse_attention=reuse;
@@ -59,10 +68,32 @@ int main(){
         {
             std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_cpu_init(),ggml_backend_free);
             PortableQsaOptions opts; opts.execution.accelerator=backend.get(); opts.execution.request_accelerator=true;
-            production_tests(opts, f.views, [&](int t){return f.input(t);});
+            for (bool combine : {false, true}) {
+                // Distinct CPU handles share a buffer type. The runtime
+                // boundary must also validate actual scheduler ownership, or a
+                // CPU-staged INPUT would silently pass this local fixture.
+                opts.device_combine=combine;
+                production_tests(opts, f.views, [&](int t){return f.input(t);});
+            }
+            opts.device_combine=false;
             opts.capacity=256; opts.reuse_attention=true; opts.production=true;
             std::string error;
             auto layer=PortableQsaLayer::create(3,f.views,opts,error); check(bool(layer),error);
+            auto merged_options=opts; merged_options.device_combine=true;
+            auto merged=PortableQsaLayer::create(3,f.views,merged_options,error); check(bool(merged),error);
+            const auto baseline_memory=layer->memory_usage(), merged_memory=merged->memory_usage();
+            const auto device_bound=[](const auto& m) {return m.device_graph+m.device_extra_bound+m.device_token_temporary_bound+m.device_shared_conversion_bound+m.device_state+m.device_weights;};
+            check(device_bound(baseline_memory)==device_bound(merged_memory),"unchanged whole-graph device admission envelope");
+            check(baseline_memory.host_extra_bound+baseline_memory.host_graph+baseline_memory.device_graph==
+                  merged_memory.host_extra_bound+merged_memory.host_graph+merged_memory.device_graph,
+                  "host allowance reconciles the unchanged graph cap");
+            std::printf("QSA C256 selected-CPU admission: old_graph=%zu merged_graph=%zu old_device_bound=%zu merged_device_bound=%zu\n",
+                layer->graph_bytes(),merged->graph_bytes(),device_bound(baseline_memory),device_bound(merged_memory));
+            std::printf("QSA C256 admission host: old=%zu merged=%zu actual_scheduler_device: old=%zu merged=%zu\n",
+                baseline_memory.host_extra_bound+baseline_memory.host_graph,merged_memory.host_extra_bound+merged_memory.host_graph,
+                baseline_memory.device_graph,merged_memory.device_graph);
+            auto tight=merged_options; tight.execution.graph_budget=merged->graph_bytes()-1;
+            check(!PortableQsaLayer::create(3,f.views,tight,error),"merged capacity priming enforces unchanged graph cap");
             PortableQsaState state; check(layer->inspect_state(state,error),error);
             const size_t raw=(state.keys.size()+state.values.size())*2+
                 (state.pooled.size()+state.spare.size()+state.tail.size()+state.bias.size()+state.mapping.size())*4;

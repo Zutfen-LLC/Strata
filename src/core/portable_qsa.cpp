@@ -314,17 +314,24 @@ struct PortableQsaLayer::Impl {
             ggml_backend_tensor_set(mapping, map.data(), 0, n * sizeof(int32_t));
             write(bias, biases);
         }
-        write(qi, q);
-        write(idxq, iq);
+        if (!s.options.device_combine) {
+            write(qi, q);
+            write(idxq, iq);
+        }
         attention.run();
+        ++s.graph_work.attention_submissions;
+        if (s.options.device_combine) ++s.graph_work.device_handoffs;
         auto attn = read(out);
         auto cell_scores = s.options.production ? std::vector<float>{} : read(scores);
         auto selection = s.options.production ? std::vector<float>{} : read(selected);
-        write(s.out_input, attn);
-        write(s.out_gate, gate);
-        write(s.out_residual, residual);
-        write(s.out_inject, inject);
-        s.combine->run();
+        if (!s.options.device_combine) {
+            write(s.out_input, attn);
+            write(s.out_gate, gate);
+            write(s.out_residual, residual);
+            write(s.out_inject, inject);
+            s.combine->run();
+            ++s.graph_work.combine_submissions;
+        }
         auto next_residual = read(s.attn_residual);
         auto gated = read(s.gated);
         PortableQsaTrace next_trace;
@@ -345,6 +352,7 @@ struct PortableQsaLayer::Impl {
     size_t attention_device_weights = 0;
     size_t weights_size = 0, fixed_graphs = 0, graphs_size = 0, states_size = 0, conversion_scratch = 0;
     uint64_t count = 0;
+    PortableQsaGraphWork graph_work;
     bool healthy = true;
     ggml_tensor *device_k = nullptr, *device_v = nullptr, *device_pool = nullptr, *device_spare = nullptr,
                 *device_tail = nullptr, *device_mapping = nullptr, *device_bias = nullptr;
@@ -381,6 +389,37 @@ struct PortableQsaLayer::Impl {
         initialize_state();
     }
 
+    // The project scheduler owns these already allocated outputs/inputs. A leaf
+    // view shares their backend storage without importing the project DAG into
+    // this graph. Project execution and CPU half(k/v) validation finish first.
+    ggml_tensor *boundary(ggml_context *c, ggml_tensor *source) {
+        auto *owner=ggml_backend_sched_get_tensor_backend(project->scheduler.get(),source);
+        if (owner != options.execution.accelerator)
+            require(false,"portable QSA: project handoff tensor "+std::string(ggml_get_name(source))+
+                " owned by "+(owner==cpu.get()?"CPU staging backend ":"backend ")+
+                (owner?ggml_backend_name(owner):"unassigned")+
+                "; expected selected backend "+ggml_backend_name(options.execution.accelerator));
+        if (!source->buffer || ggml_backend_buffer_get_type(source->buffer) !=
+                    ggml_backend_get_default_buffer_type(options.execution.accelerator))
+            require(false,"portable QSA: project handoff tensor "+std::string(ggml_get_name(source))+
+                " buffer "+(source->buffer?ggml_backend_buffer_name(source->buffer):"unallocated")+
+                "; expected selected buffer "+ggml_backend_buft_name(ggml_backend_get_default_buffer_type(options.execution.accelerator)));
+        auto *t = ggml_view_tensor(c, source);
+        t->op = GGML_OP_NONE;
+        std::fill(std::begin(t->src), std::end(t->src), nullptr);
+        require(ggml_backend_view_init(t) == GGML_STATUS_SUCCESS, "portable QSA: project view binding failed");
+        return t;
+    }
+    void build_combine(Phase &phase, ggml_tensor *attention_output, ggml_tensor *raw_gate,
+                       ggml_tensor *residual, ggml_tensor *injection) {
+        auto outputs = portable_detail::qsa_combine(phase.ctx.get(), attention_output, raw_gate,
+            w.at("attn_output.weight"), residual, injection);
+        gated = outputs.first;
+        attn_residual = outputs.second;
+        phase.output(gated, "qsa-gated-attention");
+        phase.output(attn_residual, "qsa-attention-residual");
+    }
+
     struct AttentionInputs {
         ggml_tensor *ki, *vi, *qi, *idxq, *pk, *mapping, *bias, *scores, *selected, *out;
     };
@@ -391,7 +430,8 @@ struct PortableQsaLayer::Impl {
                                       : phase.input({D, KH, cells}, GGML_TYPE_F16);
         auto *vi = options.production ? ggml_view_3d(c, device_v, D, KH, cells, device_v->nb[1], device_v->nb[2], 0)
                                       : phase.input({D, KH, cells}, GGML_TYPE_F16);
-        auto *qi = phase.input({D, 12, KH}), *idxq = phase.input({ID, IH});
+        auto *qi = options.device_combine ? ggml_reshape_3d(c, boundary(c, q), D, 12, KH) : phase.input({D, 12, KH});
+        auto *idxq = options.device_combine ? ggml_reshape_2d(c, boundary(c, iq), ID, IH) : phase.input({ID, IH});
         auto *pk = options.production ? view(c, device_pool, blocks) : phase.input({ID, blocks});
         auto *mapping = options.production ? ggml_view_1d(c, device_mapping, cells, 0) : phase.input({cells}, GGML_TYPE_I32);
         auto *bias = options.production ? ggml_view_1d(c, device_bias, cells, 0) : phase.input({cells});
@@ -404,6 +444,8 @@ struct PortableQsaLayer::Impl {
         phase.output(scores, "qsa-cell-scores");
         phase.output(selected, "qsa-selected-mask");
         phase.output(out, "qsa-attention");
+        if (options.device_combine)
+            build_combine(phase, out, boundary(c, gate), boundary(c, input), boundary(c, inject));
         return {ki, vi, qi, idxq, pk, mapping, bias, scores, selected, out};
     }
 
@@ -414,6 +456,8 @@ struct PortableQsaLayer::Impl {
         require(!options.production || (options.reuse_attention && options.execution.request_accelerator &&
                     options.execution.accelerator && !options.execution.allow_cpu_fallback),
                 "portable QSA: production requires reuse and strict selected accelerator");
+        require(!options.device_combine || options.production,
+                "portable QSA: device combine requires production");
         // Capacity bound also keeps float prefix counts exact. Price committed
         // and active candidate FP16 caches, pooled state, F32 traces, readbacks,
         // residual/FFN staging and fixed metadata. Scheduler storage is separate.
@@ -507,7 +551,12 @@ struct PortableQsaLayer::Impl {
         weights_size = ffn->weight_bytes() + actual_weights;
         project = std::make_unique<Phase>();
         auto *c = project->ctx.get();
-        input = project->input({H, HC, 1});
+        // GGML_TENSOR_FLAG_INPUT places an unallocated leaf on the scheduler's
+        // last (CPU) backend, even when all its compute consumers are strict
+        // device ops. This retained residual instead inherits its consumers'
+        // selected backend; OUTPUT below preserves its storage through combine.
+        input = options.device_combine ? ggml_new_tensor_3d(c, GGML_TYPE_F32, H, HC, 1)
+                                       : project->input({H, HC, 1});
         pos = project->input({4}, GGML_TYPE_I32);
         auto *norm =
             ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, input, 1e-6f), RES, 1), w.at("hc_attn_norm.weight"));
@@ -544,6 +593,9 @@ struct PortableQsaLayer::Impl {
                           {ik, "qsa-index-raw-key"},
                           {inject, "qsa-inject"}})
             project->output(pair.first, pair.second);
+        // An input flag alone does not prevent gallocr's in-place reuse after
+        // its last project consumer. The later graph still needs this residual.
+        if (options.device_combine) project->output(input, "qsa-combine-residual-input");
         project->schedule("qsa-project", options.execution, cpu, fixed_placement, fixed_graphs);
         if (options.production)
             allocate_state();
@@ -563,21 +615,23 @@ struct PortableQsaLayer::Impl {
         pool_output = rope(c, ggml_mul(c, ggml_rms_norm(c, mean, 1e-6f), w.at("indexer.k_norm.weight")), pool_pos);
         pool->output(pool_output, "qsa-pooled-key");
         pool->schedule("qsa-pool", options.execution, cpu, fixed_placement, fixed_graphs);
-        combine = std::make_unique<Phase>();
-        c = combine->ctx.get();
-        out_input = combine->input({D * QH});
-        out_gate = combine->input({D * QH});
-        out_residual = combine->input({H, HC, 1});
-        out_inject = combine->input({HC});
-        gated = ggml_mul(c, out_input, ggml_sigmoid(c, out_gate));
-        auto *projected = ggml_mul_mat(c, w.at("attn_output.weight"), gated);
-        auto *scatter =
-            ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, out_inject, 0.25f)), 2.0f), 1, HC, 1);
-        auto *repeat = ggml_repeat_4d(c, ggml_reshape_3d(c, projected, H, 1, 1), H, HC, 1, 1);
-        attn_residual = ggml_add(c, out_residual, ggml_mul(c, repeat, scatter));
-        combine->output(gated, "qsa-gated-attention");
-        combine->output(attn_residual, "qsa-attention-residual");
-        combine->schedule("qsa-combine", options.execution, cpu, fixed_placement, fixed_graphs);
+        if (!options.device_combine) {
+            combine = std::make_unique<Phase>();
+            c = combine->ctx.get();
+            out_input = combine->input({D * QH});
+            out_gate = combine->input({D * QH});
+            out_residual = combine->input({H, HC, 1});
+            out_inject = combine->input({HC});
+            gated = ggml_mul(c, out_input, ggml_sigmoid(c, out_gate));
+            auto *projected = ggml_mul_mat(c, w.at("attn_output.weight"), gated);
+            auto *scatter =
+                ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, out_inject, 0.25f)), 2.0f), 1, HC, 1);
+            auto *repeat = ggml_repeat_4d(c, ggml_reshape_3d(c, projected, H, 1, 1), H, HC, 1, 1);
+            attn_residual = ggml_add(c, out_residual, ggml_mul(c, repeat, scatter));
+            combine->output(gated, "qsa-gated-attention");
+            combine->output(attn_residual, "qsa-attention-residual");
+            combine->schedule("qsa-combine", options.execution, cpu, fixed_placement, fixed_graphs);
+        }
         if (!options.production) {
             keys.reserve(options.capacity * KV);
             values.reserve(options.capacity * KV);
@@ -844,6 +898,7 @@ bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t pos
     } catch(const std::exception& e) { s.healthy=false; error=e.what(); return false; }
       catch(...) { s.healthy=false; error="portable QSA: unknown chunk failure; reset required"; return false; }
 }
+PortableQsaGraphWork PortableQsaLayer::graph_work() const { return impl_->graph_work; }
 PortableLayerChunkWork PortableQsaLayer::chunk_work() const { return impl_->chunk_work; }
 bool PortableQsaLayer::reset(std::string &error) {
     error.clear();
