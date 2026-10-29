@@ -251,7 +251,7 @@ struct PortableModelSession::Impl {
         require(head_resident_bound <= SIZE_MAX - opts.head_graph_cap,
                 "portable model: resident head preflight overflow");
         preflight(device(L - 1), opts.head_weight_cap, opts.head_graph_cap + head_resident_bound, 64u << 20);
-        head = PortableHead::create({H, HC, 320, int64_t(vocabulary), 1e-6f}, hw, execution(L - 1, true), error, opts.gdn_production || opts.qsa_production);
+        head = PortableHead::create({H, HC, 320, int64_t(vocabulary), 1e-6f}, hw, execution(L - 1, true), error, opts.gdn_production || opts.qsa_production || opts.prompt_head_elision);
         require(bool(head), error);
         account(head->memory_usage(), device(L - 1));
         append_placements(head->placements(), int64_t(L));
@@ -347,7 +347,7 @@ struct PortableModelSession::Impl {
         poison = false;
         return true;
     }
-    bool step(int32_t token, std::vector<float> &logits, std::string &error, PortableTokenKind kind) {
+    bool step(int32_t token, std::vector<float> &logits, std::string &error, PortableTokenKind kind, bool project = true) {
         portable_detail::ScopedExpertTimer<> step_timer(opts.expert_timings, model_work.step_ms, model_work.step_calls);
         error.clear();
         logits.clear();
@@ -394,15 +394,18 @@ struct PortableModelSession::Impl {
                 if (opts.expert_timings)
                     (gdn ? model_work.gdn_provider_ms : model_work.qsa_provider_ms) += provider_ms-provider_before;
             }
-            {
+            if (project) {
+                ++model_work.heads_executed;
                 portable_detail::ScopedExpertTimer<> head_timer(opts.expert_timings, model_work.head_ms, model_work.head_calls);
                 const bool head_ok = head->run(residual, logits, error);
                 require(head_ok, "portable model: output head: " + error);
+            } else {
+                ++model_work.heads_skipped;
             }
             placement.clear();
             for (size_t l = 0; l < layers.size(); ++l)
                 append_placements(layers[l].placements(), int64_t(l));
-            append_placements(head->placements(), int64_t(L));
+            if (project) append_placements(head->placements(), int64_t(L));
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
             if (local_experts) report.expert_devices=local_experts->report();
 #endif
@@ -433,6 +436,10 @@ std::unique_ptr<PortableModelSession> PortableModelSession::open(const std::vect
 }
 bool PortableModelSession::step(int32_t token, std::vector<float> &logits, std::string &error, PortableTokenKind kind) {
     return impl_->step(token, logits, error, kind);
+}
+bool PortableModelSession::advance(int32_t token, std::string &error) {
+    std::vector<float> omitted;
+    return impl_->step(token, omitted, error, PortableTokenKind::input, false);
 }
 bool PortableModelSession::reset(std::string &error) {
     error.clear();
@@ -478,8 +485,9 @@ bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t m
         return false;
     }
     std::vector<float> logits;
-    for (int32_t token : prompt) {
-        if (!step(token, logits, error))
+    for (size_t i = 0; i < prompt.size(); ++i) {
+        if (!(impl_->opts.prompt_head_elision && i + 1 < prompt.size()
+                  ? advance(prompt[i], error) : step(prompt[i], logits, error)))
             return false;
     }
     for (size_t n = 0; n < max_new; ++n) {

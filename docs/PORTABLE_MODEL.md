@@ -9,6 +9,65 @@ The initial implementation supports one serial text sequence, all 48 layers,
 and context limits from 1 to 256 tokens. Defaults remain off. The existing
 CUDA production executable and allocations are separate.
 
+## Prompt head elision
+
+`--prompt-head-elision` is default off. It runs the same serial T1 embedding,
+48 layers, expert routes and state commits for every prompt token, but skips
+the vocabulary head for the first `prompt_length - 1` positions. The final
+prompt head still runs, even with `--max-new 0` or a prompt filling context.
+Generated tokens, including the terminal feed and generated EOS, keep their
+existing full head execution. Input EOS remains an input separator.
+
+This is head elision, not batched prefill: there is no multirow matrix work,
+layer-major chunking or kernel change. It is a dependency for #69, not completion
+of that issue's chunked-prefill acceptance. Native `Prefill::run` advances the
+first `n_prompt - 1` tokens; `src/program/generate.cpp` leaves the final prompt
+token for generation logits. This option adopts only that head boundary.
+
+C++ callers opt in through `PortableModelOptions::prompt_head_elision` for
+`generate()`. `step()` always computes logits. `advance(token, error)` is the
+input-only state-advance seam: it shares the entire step implementation and
+omits only the head, publishing no logits. Failures poison the session and
+require reset/replay, including partial layer failures. Reset retains cumulative
+work counters. `heads_executed` counts head attempts, including failed heads;
+`heads_skipped` counts successful advances reaching the omitted-head boundary.
+These counters work without enabling timers. Head placement records are absent
+on state-only steps rather than exposing the previous head's placement.
+
+The finite-logit guard runs at every executed head under this option, followed
+by the existing host output checks. **No logits check exists at skipped
+positions.** Layer/state finite checks follow the selected GDN/QSA policies.
+A bad head can therefore be detected later than in exhaustive diagnostics.
+`--dump-logits` and head elision are incompatible and rejected before loading:
+omit head elision to request all teacher-forced vocabulary rows. Default
+execution, receipt fields and exhaustive dumps keep their existing behavior.
+
+The option emits schema-2 token receipts at every consumed position:
+
+```json
+{"position":0,"token":5,"generated":false,"schema":2,"head_policy":"prompt_head_elision","logits_available":false,"greedy_next":null}
+```
+
+Only nonfinal prompt positions have `logits_available: false` and a null greedy
+prediction. Final prompt and generated positions have `logits_available: true`
+and a real integer prediction. Default rows retain their original four fields
+with no added schema/policy. Stop receipts remain unchanged. Resident `done`
+receipts add `receipt_schema: 2`, `head_policy: "prompt_head_elision"`,
+`heads_executed_delta` and `heads_skipped_delta`. Completed requests must report
+`generated_count + 1` executed and `prompt_count - 1` skipped heads. Fresh and
+resident runs also write these per-request counts as `prompt_head_work` on
+stderr. Existing head timers count only heads that actually execute; all layer
+and state work counts still follow the number of consumed tokens.
+
+The fresh-quality and resident adapters forward the option and bind
+`head_policy` in summaries and reference argv. Schema-2 rows require an explicit
+matching policy; missing fields, foreign versions/policies, fabricated skipped
+predictions and missing final predictions are rejected. Older references remain
+valid only with elision off. Same-policy reset tests compare every receipt;
+cross-policy comparisons compare prompt IDs, final requested logits, generated
+rows and stops without inventing intermediate predictions. Numerical and GPU
+performance qualification remain separate from host tests and compilation.
+
 ## QSA attention execution reuse trial
 
 `--qsa-reuse-attention` is default off. It retains one attention Phase per QSA

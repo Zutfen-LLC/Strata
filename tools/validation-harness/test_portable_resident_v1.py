@@ -41,6 +41,10 @@ class HarnessTest(unittest.TestCase):
                       gdn_state_commit_ms_delta=.5,gdn_candidate_readback_calls_delta=218,
                       gdn_candidate_finite_calls_delta=218,gdn_state_commit_calls_delta=72)
         M.model_phase_fields(detailed,2)
+        elided=dict(detailed,prompt_count=2,heads_executed_delta=1,heads_skipped_delta=1,output_head_calls_delta=1)
+        M.model_phase_fields(elided,2,'eager_diagnostic','prompt_head_elision')
+        for key,value in (('output_head_calls_delta',2),('heads_executed_delta',2),('heads_skipped_delta',0)):
+            with self.assertRaises(ValueError): M.model_phase_fields(dict(elided,**{key:value}),2,'eager_diagnostic','prompt_head_elision')
         M.model_phase_fields(dict(detailed,gdn_state_commit_ms_delta=0,gdn_state_commit_calls_delta=0),2)
         for key,value in [('gdn_candidate_readback_ms_delta',float('nan')),
                           ('gdn_candidate_finite_ms_delta',-1),('gdn_state_commit_ms_delta',float('inf')),
@@ -82,6 +86,26 @@ class HarnessTest(unittest.TestCase):
                           ('model_residual_ms_delta',2.),('gdn_layer_ms_delta',float('nan')),('model_residual_ms_delta',float('nan'))]:
             bad=dict(m);bad[key]=value
             with self.subTest(key=key),self.assertRaises(ValueError): M.model_phase_fields(bad,2)
+    def test_head_elision_request_policy_and_counts(self):
+        rows=[dict(position=0,token=5,generated=False,greedy_next=None,schema=2,
+                   head_policy='prompt_head_elision',logits_available=False),
+              dict(position=1,token=7,generated=False,greedy_next=1,schema=2,
+                   head_policy='prompt_head_elision',logits_available=True)]
+        done=dict(done=1,prompt_count=2,output_count=0,receipt_schema=2,head_policy='prompt_head_elision',
+                  heads_executed_delta=1,heads_skipped_delta=1)
+        def request(policy, samples):
+            runner=object.__new__(Resident)
+            runner.child=mock.Mock();runner.request_seconds=1;runner.head_policy=policy
+            runner.row=mock.Mock(side_effect=samples)
+            return runner.request([5,7],0,1)
+        samples=rows+[dict(stop='max_new',position=2),done]
+        self.assertEqual(request('prompt_head_elision',samples)['rows'],rows)
+        for key,value in (('receipt_schema',3),('heads_executed_delta',2),('heads_skipped_delta',0),
+                          ('head_policy','foreign'),('heads_executed_delta',True)):
+            bad=copy.deepcopy(samples);bad[-1][key]=value
+            with self.assertRaises(ValueError): request('prompt_head_elision',bad)
+        with self.assertRaises(ValueError): request('eager_diagnostic',samples)
+
     def test_four_requests(self):
         def action(r):
             rows=[r.request([5,7],0,i) for i in range(1,5)]
@@ -350,6 +374,17 @@ for index,line in enumerate(sys.stdin,1):
             for recorded, expected in ((0, True), (1, False), (2, True), (1, True)):
                 with self.subTest(flag=flag,recorded=recorded,expected=expected), tempfile.TemporaryDirectory() as d:
                     tok,suite,prompts,binding,ref,binary,plans,records=self.fixtures(Path(d))
+                    if flag == '--prompt-head-elision':
+                        summary=json.loads((ref/'summary.json').read_text())
+                        summary['head_policy']='prompt_head_elision' if expected else 'eager_diagnostic'
+                        (ref/'summary.json').write_text(json.dumps(summary))
+                        if expected:
+                            for sample,prompt in zip(records,prompts):
+                                for i,row in enumerate(sample['rows']):
+                                    row.update(schema=2,head_policy='prompt_head_elision',logits_available=i+1>=len(prompt))
+                                    if i+1<len(prompt): row['greedy_next']=None
+                            for i,sample in enumerate(records,1):
+                                (ref/f'case-{i:02d}'/'stdout.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in sample['rows']+[sample['stop']]))
                     if flag == '--qsa-production':
                         summary=json.loads((ref/'summary.json').read_text());summary['qsa_policy']='device_production' if expected else 'eager_diagnostic'
                         (ref/'summary.json').write_text(json.dumps(summary))

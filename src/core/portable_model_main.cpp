@@ -114,6 +114,7 @@ int main(int argc, char **argv) {
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
+                             " [--prompt-head-elision (no batching; incompatible with --dump-logits)]\n"
                              " [--dump-logits DIRECTORY] [--placements FILE] [--timings FILE]\n"
                              " Or --stdio [--max-requests 4]: GEN <max_new> <id,id,...> / QUIT; JSONL replies.\n"
                              "T=1 serial text; all 48 layers; fresh embedding per token; CPU experts/host PLE.\n"
@@ -127,6 +128,10 @@ int main(int argc, char **argv) {
             }
             if (key == "--expert-dispatch-oracle") {
                 opts.expert_dispatch_oracle = true;
+                continue;
+            }
+            if (key == "--prompt-head-elision") {
+                opts.prompt_head_elision = true;
                 continue;
             }
             if (key == "--qsa-production") {
@@ -209,6 +214,8 @@ int main(int argc, char **argv) {
             else
                 throw std::runtime_error("unknown option: " + key);
         }
+        if (opts.prompt_head_elision && !dump.empty())
+            throw std::runtime_error("--prompt-head-elision cannot dump skipped logits; omit it for exhaustive --dump-logits");
         if (opts.expert_timings && !resident) throw std::runtime_error("--expert-timings requires --stdio");
         if (resident && (!token_text.empty() || max_new || !dump.empty() || !timings_path.empty()))
             throw std::runtime_error("--stdio takes requests on stdin; --tokens/--max-new/--dump-logits/--timings incompatible");
@@ -372,15 +379,18 @@ int main(int argc, char **argv) {
             tokens=std::move(request.tokens); max_new=request.max_new; ++request_id;
         }
         std::vector<float> logits;
-        auto consume = [&](int32_t token, bool generated) {
+        const auto heads_before = session->model_work();
+        auto consume = [&](int32_t token, bool generated, bool project = true) {
             if(resident) {
                 if(interrupted) throw std::runtime_error("resident interrupted");
                 sources->check();
             }
             const uint64_t pos = session->position();
-            if (!session->step(token, logits, error,
+            if (!project) logits.clear();
+            if (!(project ? session->step(token, logits, error,
                                generated ? strata::core::PortableTokenKind::generated
-                                         : strata::core::PortableTokenKind::input))
+                                         : strata::core::PortableTokenKind::input)
+                          : session->advance(token, error)))
                 throw std::runtime_error(error);
             if(resident && interrupted) throw std::runtime_error("resident interrupted during token");
             device_memory("token-complete", pos);
@@ -394,7 +404,7 @@ int main(int argc, char **argv) {
                           << " cpu_entries=" << work.cpu_entries << '\n';
                 expert_report("token-complete",pos);
             }
-            if (!dump.empty()) {
+            if (project && !dump.empty()) {
                 // compare_logits.py consumes little-endian raw F32. This CLI is
                 // for the existing little-endian x86 CPU/Vulkan execution path.
                 const uint16_t one = 1;
@@ -407,9 +417,14 @@ int main(int argc, char **argv) {
                     throw std::runtime_error("logit dump write failed");
             }
             std::cout << "{\"position\":" << pos << ",\"token\":" << token
-                      << ",\"generated\":" << (generated ? "true" : "false")
-                      << ",\"greedy_next\":" << std::max_element(logits.begin(), logits.end()) - logits.begin()
-                      << "}\n";
+                      << ",\"generated\":" << (generated ? "true" : "false");
+            if (opts.prompt_head_elision)
+                std::cout << ",\"schema\":2,\"head_policy\":\"prompt_head_elision\",\"logits_available\":"
+                          << (project ? "true" : "false");
+            std::cout << ",\"greedy_next\":";
+            if (project) std::cout << std::max_element(logits.begin(), logits.end()) - logits.begin();
+            else std::cout << "null";
+            std::cout << "}\n";
         };
         if (resident || !timings_path.empty())
             prompt_start = Clock::now();
@@ -418,7 +433,7 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < tokens.size(); ++i) {
             if ((resident || !timings_path.empty()) && i + 1 == tokens.size())
                 last_prompt_start = Clock::now();
-            consume(tokens[i], false);
+            consume(tokens[i], false, !opts.prompt_head_elision || i + 1 == tokens.size());
         }
         if (resident || !timings_path.empty())
             decode_start = Clock::now();
@@ -432,6 +447,11 @@ int main(int argc, char **argv) {
         }
         if (resident || !timings_path.empty())
             decode_end = Clock::now();
+        if (opts.prompt_head_elision) {
+            const auto heads = session->model_work();
+            std::cerr << "prompt_head_work executed=" << heads.heads_executed-heads_before.heads_executed
+                      << " skipped=" << heads.heads_skipped-heads_before.heads_skipped << '\n';
+        }
         const char *stop = session->ended() ? "eos" : session->position() == opts.context ? "context" : "max_new";
         std::cout << "{\"stop\":\"" << stop << "\",\"position\":" << session->position() << "}\n";
         if(resident) {
@@ -462,6 +482,12 @@ int main(int argc, char **argv) {
             for(size_t i=0;i<device_entries_before.size();++i)
                 std::cout << (i ? "," : "") << session->report().expert_devices[i].entries-device_entries_before[i];
             std::cout << "]";
+            if (opts.prompt_head_elision) {
+                const auto heads = session->model_work();
+                std::cout << ",\"head_policy\":\"prompt_head_elision\",\"receipt_schema\":2"
+                          << ",\"heads_executed_delta\":" << heads.heads_executed-heads_before.heads_executed
+                          << ",\"heads_skipped_delta\":" << heads.heads_skipped-heads_before.heads_skipped;
+            }
             if(opts.expert_timings) {
                 std::cout << ",\"expert_provider_ms_delta\":" << after.provider_ms-before.provider_ms
                     << ",\"expert_provider_calls_delta\":" << after.provider_calls-before.provider_calls

@@ -13,7 +13,7 @@ import quality as Q
 import portable_model_smoke_v1 as S
 
 
-RESIDENCY_FLAGS = ('--qsa-production', '--qsa-reuse-attention', '--gdn-production', '--gdn-resident-weights', '--gdn-resident-state', '--dense-resident-weights')
+RESIDENCY_FLAGS = ('--prompt-head-elision', '--qsa-production', '--qsa-reuse-attention', '--gdn-production', '--gdn-resident-weights', '--gdn-resident-state', '--dense-resident-weights')
 
 
 def residency_arguments(parser):
@@ -46,18 +46,36 @@ def frozen(tok, root):
     return [[int(t) for t in line.split()[2:]] for line in lines], binding
 
 
-def completion(records, prompt, vocabulary):
+def token_receipt(row, position, prompt_count, vocabulary, head_policy='eager_diagnostic'):
+    if head_policy not in ('eager_diagnostic', 'prompt_head_elision'):
+        raise ValueError('unknown head policy')
+    fields = {'position', 'token', 'generated', 'greedy_next'}
+    elision = head_policy == 'prompt_head_elision'
+    available = not elision or position + 1 >= prompt_count
+    if elision:
+        fields |= {'schema', 'head_policy', 'logits_available'}
+        if (type(row.get('schema')) is not int or row['schema'] != 2 or
+                row.get('head_policy') != head_policy or
+                row.get('logits_available') is not available):
+            raise ValueError('head receipt policy/availability mismatch')
+    if set(row) != fields:
+        raise ValueError('unknown/malformed token receipt')
+    if (type(row['position']) is not int or row['position'] != position or
+            type(row['generated']) is not bool or row['generated'] != (position >= prompt_count) or
+            type(row['token']) is not int or not 0 <= row['token'] < vocabulary or
+            (available and (type(row['greedy_next']) is not int or not 0 <= row['greedy_next'] < vocabulary)) or
+            (not available and row['greedy_next'] is not None)):
+        raise ValueError('invalid token or greedy ID')
+
+
+def completion(records, prompt, vocabulary, head_policy='eager_diagnostic'):
+    if not prompt:
+        raise ValueError('empty prompt')
     if not records or set(records[-1]) != {'stop', 'position'}:
         raise ValueError('missing final stop receipt')
     rows = records[:-1]
-    if any(set(r) != {'position', 'token', 'generated', 'greedy_next'} for r in rows):
-        raise ValueError('unknown/malformed token receipt')
-    if [r['position'] for r in rows] != list(range(len(rows))):
-        raise ValueError('noncontiguous positions')
-    if any(type(r['generated']) is not bool or type(r['token']) is not int or
-           not 0 <= r['token'] < vocabulary or type(r['greedy_next']) is not int or
-           not 0 <= r['greedy_next'] < vocabulary for r in rows):
-        raise ValueError('invalid token or greedy ID')
+    for i, row in enumerate(rows):
+        token_receipt(row, i, len(prompt), vocabulary, head_policy)
     if len(rows) <= len(prompt) or [r['token'] for r in rows[:len(prompt)]] != prompt or \
        any(r['generated'] != (i >= len(prompt)) for i, r in enumerate(rows)):
         raise ValueError('prompt/generated boundary mismatch')
@@ -117,6 +135,7 @@ def run_portable(args, tok):
     args.out.mkdir(mode=0o700, exist_ok=False)
     summary = dict(status='STOP', source='ac85ff3fdf0834c13437b69b1568d8704e9b0717',
                    binary_sha256=args.binary_sha256, suite=binding, requests=[],
+                   head_policy='prompt_head_elision' if getattr(args, 'prompt_head_elision', False) else 'eager_diagnostic',
                    qsa_policy='device_production' if getattr(args, 'qsa_production', False) else 'eager_diagnostic',
                    qsa_reuse_attention=bool(getattr(args, 'qsa_reuse_attention', False)),
                    gdn_policy='device_production' if getattr(args, 'gdn_production', False) else 'eager_diagnostic')
@@ -180,7 +199,7 @@ def run_portable(args, tok):
                     raise RuntimeError(f'portable_model exited{status}')
                 participation = S.placements(case / 'placements.tsv', [0, 1], 32)
                 records = [json.loads(line) for line in (case / 'stdout.jsonl').read_text().splitlines()]
-                ids, stop = completion(records, prompt, len(tok.tokens))
+                ids, stop = completion(records, prompt, len(tok.tokens), summary['head_policy'])
                 summary['requests'].append(dict(index=index, tokens=ids, finish=stop, seconds=time.monotonic()-began,
                     tensor_operations_by_device=participation, sampled_peak_vram=peak,
                     minimum_effective_available=minimum))
