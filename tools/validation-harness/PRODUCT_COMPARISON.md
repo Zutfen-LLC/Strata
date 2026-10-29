@@ -35,10 +35,14 @@ supply the external temperature/clock guard. Stop on first failure; do not raise
 caps, change tolerances or retry to obtain a pass.
 
 Latest GDN projection/causal chunk and QSA residency/reuse policies still need
-focused NVIDIA qualification. Build and run existing FFN, GDN, PLE, QSA and BF16
-fixtures on each selected NVIDIA device with their strict backend/numerical and
-route/state gates before a model capture. Use the fixture CLI's supported device
-options (`--device INDEX --expect-device DESCRIPTION`, BF16 `--vulkan INDEX`).
+focused NVIDIA qualification. Build and run existing FFN, GDN, PLE, QSA, BF16
+and head fixtures on each selected NVIDIA device with their strict
+backend/numerical and route/state gates before any production-model capture.
+Include `portable_head_test --vulkan INDEX` to qualify the raw integer status
+and scheduled nonfinite head guard on that backend. Use the other fixtures'
+supported device options (`--device INDEX --expect-device DESCRIPTION`, BF16
+`--vulkan INDEX`). BF16 and head lack `--expect-device`; bind those runs to the
+external verified Vulkan index/PCI inventory.
 Record actual binary hashes and metrics; then qualify the exact opt-in policy
 with the existing fresh executed-head capture/comparator and functional checks.
 Previous AMD qualifications remain evidence for unchanged runtime on AMD; this
