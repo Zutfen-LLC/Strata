@@ -48,13 +48,17 @@ struct PortableExpertDeviceReport {
     double infer_rows_ms = 0; // optional host-call wall time, includes existing executor waits
     uint64_t infer_rows_calls = 0;
 };
+enum class PortableDenseTopology { split, primary };
 struct PortableModelOptions {
     size_t context = 16; // bounded initial proof, at most 256 text positions
     int threads = 1, expert_workers = 1;
     // Borrowed accelerator lifetimes must cover the session. Empty = CPU.
-    // One accelerator owns all layers; two use [0,split) and [split,48).
+    // Default: one owns all layers; two use [0,split) and [split,48).
+    // primary: slot 0 owns every dense layer/state/head; slot 1 serves only
+    // its explicit expert plan. Expert ownership never follows the dense split.
     std::vector<ggml_backend *> accelerators;
     size_t split = 32;
+    PortableDenseTopology dense_topology = PortableDenseTopology::split;
     bool allow_cpu_fallback = false;
     // Separate caps per die; explicit caller limits, never pooled VRAM.
     std::vector<size_t> device_caps;

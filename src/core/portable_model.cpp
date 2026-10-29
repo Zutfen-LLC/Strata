@@ -1,6 +1,7 @@
 #include "strata/core/portable_model.hpp"
 #include "portable_graph.hpp"
 #include "portable_memory.hpp"
+#include "portable_topology.hpp"
 #include "portable_cpu_experts.hpp"
 #include "portable_expert_timer.hpp"
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
@@ -148,8 +149,7 @@ struct PortableModelSession::Impl {
         require(!opts.gdn_production || (opts.gdn_resident_state && !opts.accelerators.empty() &&
                     !opts.allow_cpu_fallback),
                 "portable model: GDN production requires resident state and strict accelerators");
-        require(opts.accelerators.size() < 2 || (opts.split >= 1 && opts.split < L),
-                "portable model: invalid contiguous split");
+        portable_detail::validate_dense_topology(opts);
         std::set<ggml_backend_dev_t> devices;
         for (auto *a : opts.accelerators) {
             require(a != nullptr, "portable model: missing requested accelerator");
@@ -371,7 +371,7 @@ struct PortableModelSession::Impl {
             placement.push_back(std::move(p));
         }
     }
-    size_t device(size_t layer) const { return opts.accelerators.size() == 2 && layer >= opts.split ? 1 : 0; }
+    size_t device(size_t layer) const { return portable_detail::dense_device(opts, layer); }
     void preflight(size_t die, size_t layer, const char* module, size_t weight, size_t graph, size_t state,
                    size_t device_next = 0) const {
         // Bound one new module before creating its scheduler/device copies.

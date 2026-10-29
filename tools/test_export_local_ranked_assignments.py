@@ -1,5 +1,6 @@
 import hashlib
 import json
+import random
 from pathlib import Path
 import struct
 import tempfile
@@ -105,6 +106,82 @@ class LocalRankedAssignments(unittest.TestCase):
             'selected-ranks.tsv': '56008b8633122962def2b809cba207e80a4219ccb62c18169010ca7eca672b3a',
         }
         self.assertEqual({p.name: M.sha(p.read_bytes()) for p in out.iterdir()}, expected)
+
+    def test_native_primary_then_remaining_helper_exact_ids(self):
+        # A full hot layer occurs first. Native fill skips its full quota and
+        # continues to all other layers; helper has no uniform layer quota.
+        ranked = [(l, e) for l in reversed(range(48)) for e in reversed(range(50))]
+        ranked = ranked[:7] + ranked + ranked[:7]
+        raw = self.raw(ranked)
+        out = self.root/'native'
+        report = M.export(self.profile, M.sha(raw), out, native_primary_per_layer=20, native_helper_slots=1378)
+        a, b = [set(tuple(map(int, row.split())) for row in (out/f'assignments-{die}.txt').read_text().splitlines())
+                for die in range(2)]
+        self.assertEqual(a, {(l, e) for l in range(48) for e in range(30, 50)})
+        remaining = [(l, e) for l in reversed(range(48)) for e in reversed(range(30))]
+        self.assertEqual(b, set(remaining[:1378]))
+        self.assertFalse(a & b)
+        self.assertEqual(report['experts_per_die'], [960, 1378])
+        self.assertEqual(report['per_device_layer_counts'][0], [20]*48)
+        self.assertEqual(report['per_device_layer_counts'][1], [0, 0, 28] + [30]*45)
+        self.assertEqual(report, M.export(self.profile, M.sha(raw), self.root/'repeat-native',
+                                         native_primary_per_layer=20, native_helper_slots=1378))
+        _, selected, _ = M.partition(ranked, native_primary_per_layer=20, native_helper_slots=1378)
+        for rank, owner, layer, expert in selected:
+            self.assertEqual(ranked.index((layer, expert)), rank)
+            self.assertIn((layer, expert), (a, b)[owner])
+        self.assertEqual(report['source_weight_read'], 0)
+
+    def test_native_selection_matches_cache_admit_and_remote_open_semantics(self):
+        # Reference models the residency slots in ExpertCache::admit, followed
+        # by the picked/primary tests in RemoteExperts::open (fixed slots, one
+        # helper). It does not use the exporter's partition implementation.
+        ranked = [(l, e) for l in range(48) for e in range(60)]
+        random.Random(42).shuffle(ranked)
+        ranked[5:5] = ranked[:4]
+        quota, capacity = 20, 1378
+        residency, next_slot = {}, [l*quota for l in range(48)]
+        for pair in ranked:
+            layer, expert = pair
+            if pair in residency or next_slot[layer] == (layer+1)*quota:
+                continue
+            residency[pair] = next_slot[layer]
+            next_slot[layer] += 1
+        helper = []
+        picked = set()
+        for pair in ranked:
+            if pair not in residency and pair not in picked:
+                helper.append(pair)
+                picked.add(pair)
+                if len(helper) >= capacity:
+                    break
+        assignments, _, _ = M.partition(ranked, native_primary_per_layer=quota, native_helper_slots=capacity)
+        self.assertEqual(assignments, [sorted(residency), sorted(helper)])
+
+    def test_native_short_profile_and_invalid_options(self):
+        # Native accepts partially filled caches and helpers; it rejects an
+        # empty helper. Do not invent extra unranked pairs or balance layers.
+        ranked = [(0, 4), (0, 3), (0, 2), (0, 4)]
+        a, selected, _ = M.partition(ranked, native_primary_per_layer=2, native_helper_slots=1378)
+        self.assertEqual(a, [[(0, 3), (0, 4)], [(0, 2)]])
+        self.assertEqual(selected, [(0, 0, 0, 4), (1, 0, 0, 3), (2, 1, 0, 2)])
+        for quota, slots in ((None, 1), (20, None), (0, 1), (513, 1), (True, 1), (20, 0), (20, 2**31)):
+            with self.subTest(quota=quota, slots=slots), self.assertRaises(ValueError):
+                M.partition(ranked, native_primary_per_layer=quota, native_helper_slots=slots)
+        with self.assertRaisesRegex(ValueError, 'no unclaimed'):
+            M.partition(ranked, native_primary_per_layer=3, native_helper_slots=1)
+        with self.assertRaisesRegex(ValueError, 'excludes'):
+            M.partition(ranked, 2, 2, 1)
+        raw = self.raw(ranked)
+        out = self.root/'bad-native'
+        with self.assertRaises(ValueError):
+            M.export(self.profile, M.sha(raw), out, native_primary_per_layer=3, native_helper_slots=1)
+        self.assertFalse(out.exists())
+        argv = ['export', '--profile', str(self.profile), '--profile-sha256', M.sha(raw),
+                '--out', str(self.root/'native-cli'), '--native-primary-per-layer', '2', '--native-helper-slots', '1']
+        with patch('sys.argv', argv), patch('builtins.print'):
+            M.main()
+        self.assertEqual(json.loads((self.root/'native-cli/assignments.json').read_text())['experts_per_die'], [2, 1])
 
     def test_per_layer_quota_uses_layer_rank_before_serialization(self):
         pairs = self.ranked[:17] + self.ranked + self.ranked[:3]
