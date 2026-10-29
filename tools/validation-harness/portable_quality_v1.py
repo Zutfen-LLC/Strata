@@ -14,10 +14,12 @@ import quality as Q
 import portable_model_smoke_v1 as S
 
 
+GDN_PROJECTION_FLAG = '--gdn-batch-input-projections'
 RESIDENCY_FLAGS = ('--prompt-head-elision', '--qsa-production', '--qsa-reuse-attention', '--gdn-production', '--gdn-resident-weights', '--gdn-resident-state', '--dense-resident-weights')
 
 
 def residency_arguments(parser):
+    parser.add_argument(GDN_PROJECTION_FLAG,action='store_true',help='batch independent GDN projections; requires prompt chunks')
     parser.add_argument('--prompt-chunk-size',type=int,choices=range(2,9),default=0,help='bounded layer-major prompt chunks; implies head elision')
     for flag in RESIDENCY_FLAGS:
         parser.add_argument(flag, action='store_true', help='forward opt-in model residency policy')
@@ -25,8 +27,10 @@ def residency_arguments(parser):
 
 def residency_flags(args):
     size=chunk_size(args)
+    projections=projection_policy(args)
     flags=[flag for flag in RESIDENCY_FLAGS if getattr(args,flag[2:].replace('-','_'),False) or
            (flag=='--prompt-head-elision' and size)]
+    if projections:flags += [GDN_PROJECTION_FLAG]
     if size: flags += ['--prompt-chunk-size',str(size)]
     return flags
 
@@ -46,6 +50,24 @@ def chunk_argv(command):
     value=command[command.index(flag)+1]
     if value not in tuple(map(str,range(2,9))):raise ValueError('invalid chunk argv size')
     return int(value)
+
+def projection_policy(args):
+    enabled=getattr(args,'gdn_batch_input_projections',False)
+    if type(enabled) is not bool or (enabled and not chunk_size(args)):
+        raise ValueError('GDN batch input projections require prompt chunks and a boolean policy')
+    return enabled
+
+def projection_argv(command):
+    count=command.count('--gdn-batch-input-projections')
+    if count>1 or (count and not chunk_argv(command)):
+        raise ValueError('duplicate GDN batch input projections or missing prompt chunks')
+    return bool(count)
+
+def projection_binding(record,enabled):
+    value=record.get('gdn_batch_input_projections',False)
+    if type(enabled) is not bool or type(value) is not bool or value is not enabled:
+        raise ValueError('GDN batch input projection policy mismatch')
+
 
 def chunk_binding(record,size):
     if type(size) is not int or size not in (0,2,3,4,5,6,7,8):raise ValueError('invalid expected chunk size')
@@ -182,6 +204,7 @@ def run_portable(args, tok):
     binary = args.binary.resolve(strict=True)
     if Q.bundle.sha(binary) != args.binary_sha256:
         raise ValueError('portable binary digest mismatch')
+    projections=projection_policy(args)
     args.out.mkdir(mode=0o700, exist_ok=False)
     summary = dict(status='STOP', source='ac85ff3fdf0834c13437b69b1568d8704e9b0717',
                    binary_sha256=args.binary_sha256, suite=binding, requests=[],
@@ -189,6 +212,7 @@ def run_portable(args, tok):
                    qsa_policy='device_production' if getattr(args, 'qsa_production', False) else 'eager_diagnostic',
                    qsa_reuse_attention=bool(getattr(args, 'qsa_reuse_attention', False)),
                    gdn_policy='device_production' if getattr(args, 'gdn_production', False) else 'eager_diagnostic')
+    if projections:summary['gdn_batch_input_projections']=True
     size=chunk_size(args)
     capture=getattr(args,'dump_executed_logits',False)
     if capture and summary['head_policy']!='prompt_head_elision':raise ValueError('executed-head capture requires head elision')
@@ -270,9 +294,11 @@ def run_portable(args, tok):
                 if size:
                     timing=json.loads((case/'timings.json').read_text())
                     chunk_fields(timing,len(prompt),len(records)-1,size)
+                    projection_binding(timing,projections)
                     summary['requests'][-1]['chunk_work']=timing
                 if benchmark:
                     timing = json.loads((case / 'timings.json').read_text())
+                    projection_binding(timing,projections)
                     timing_fields(timing, prompt, ids)
                     for key in ('selection_prompt_ms', 'selection_decode_ms', 'terminal_feed_ms'):
                         value = timing.get(key)

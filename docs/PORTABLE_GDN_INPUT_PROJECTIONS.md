@@ -59,3 +59,31 @@ T1–8/tail/reset sequences. GPU injected failure checks remain zero; CPU fixtur
 own fault injection. Stop on first admission, placement, state, route or numerical
 failure. Do not infer assembled GPU model correctness or performance from this
 component check.
+
+## Adapter policy and bounded model comparison
+
+Both `portable_quality_v1.py portable` and `portable_resident_v1.py` accept
+`--gdn-batch-input-projections` and require a prompt chunk size. Enabled runs
+record the boolean policy in their summaries and require the runtime timing/done
+receipt to report the same policy. Disabled runs preserve the existing output
+format and reject foreign enabled receipts. Suite references bind the fresh
+summary, each saved command, and each enabled case's runtime timing and saved
+chunk-work receipt; missing, mismatched, non-boolean or duplicate evidence stops
+the comparison before resident execution.
+
+After the component gate, a small model check can compare the same binary and
+retained plans with chunk size 8 in both arms, adding the projection option only
+to the candidate. Use `portable_quality_v1.py --gguf FIRST_SHARD portable` with
+`--single-case --dump-executed-logits` and the existing guarded policy/cap
+arguments. Compare the two `case-01/executed-logits` directories with
+`executed_logits_v1.py --baseline-chunk-size 8 --candidate-chunk-size 8` and
+unchanged numerical gates. Token rows and executed-logit manifests keep their
+existing schemas; skipped prefix predictions remain explicitly unavailable.
+
+For a subsequent short timing comparison, use `portable_resident_v1.py` with
+`--tokens-file` containing the retained case 1 IDs, unchanged `--max-new`, the
+same binary/plans and chunk size 8. Only the candidate adds the projection flag.
+Each arm runs four requests and excludes the first. Capture is off. Check exact
+rows/stops and available predictions against the corresponding fresh arm, and
+retain the existing warm-zero expert-work checks and resource guards. These
+commands describe a bounded follow-up, not evidence of hardware or model results.
