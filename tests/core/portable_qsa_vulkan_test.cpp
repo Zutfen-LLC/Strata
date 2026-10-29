@@ -35,10 +35,7 @@ int main(int argc, char **argv) {
             options.execution.accelerator=device.get();options.execution.request_accelerator=true;
             options.execution.allow_cpu_fallback=false;options.execution.resident_dense_weights=true;
             options.reuse_attention=mode>0;options.production=mode>=2;options.device_combine=mode==3;
-            auto chunk=PortableQsaLayer::create(3,fixture.views,options,error);
-            options.device_combine=false;
-            auto serial=PortableQsaLayer::create(3,fixture.views,options,error);
-            check(bool(chunk)&&bool(serial),error);
+            auto [chunk,serial]=chunk_pair(fixture.views,options);
             layer_chunk_fixture::exercise(*chunk,*serial,fixture,experts(),device.get(),
                 options.execution.graph_budget,options.state_budget,mode==3?"QSA device combine":mode==2?"QSA production Vulkan":mode==1?"QSA reuse Vulkan":"QSA legacy Vulkan",true);
         }

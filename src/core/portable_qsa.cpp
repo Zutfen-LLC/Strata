@@ -393,9 +393,17 @@ struct PortableQsaLayer::Impl {
     // view shares their backend storage without importing the project DAG into
     // this graph. Project execution and CPU half(k/v) validation finish first.
     ggml_tensor *boundary(ggml_context *c, ggml_tensor *source) {
-        require(source->buffer && ggml_backend_buffer_get_type(source->buffer) ==
-                    ggml_backend_get_default_buffer_type(options.execution.accelerator),
-                "portable QSA: project handoff must stay on selected backend");
+        auto *owner=ggml_backend_sched_get_tensor_backend(project->scheduler.get(),source);
+        if (owner != options.execution.accelerator)
+            require(false,"portable QSA: project handoff tensor "+std::string(ggml_get_name(source))+
+                " owned by "+(owner==cpu.get()?"CPU staging backend ":"backend ")+
+                (owner?ggml_backend_name(owner):"unassigned")+
+                "; expected selected backend "+ggml_backend_name(options.execution.accelerator));
+        if (!source->buffer || ggml_backend_buffer_get_type(source->buffer) !=
+                    ggml_backend_get_default_buffer_type(options.execution.accelerator))
+            require(false,"portable QSA: project handoff tensor "+std::string(ggml_get_name(source))+
+                " buffer "+(source->buffer?ggml_backend_buffer_name(source->buffer):"unallocated")+
+                "; expected selected buffer "+ggml_backend_buft_name(ggml_backend_get_default_buffer_type(options.execution.accelerator)));
         auto *t = ggml_view_tensor(c, source);
         t->op = GGML_OP_NONE;
         std::fill(std::begin(t->src), std::end(t->src), nullptr);
@@ -543,7 +551,12 @@ struct PortableQsaLayer::Impl {
         weights_size = ffn->weight_bytes() + actual_weights;
         project = std::make_unique<Phase>();
         auto *c = project->ctx.get();
-        input = project->input({H, HC, 1});
+        // GGML_TENSOR_FLAG_INPUT places an unallocated leaf on the scheduler's
+        // last (CPU) backend, even when all its compute consumers are strict
+        // device ops. This retained residual instead inherits its consumers'
+        // selected backend; OUTPUT below preserves its storage through combine.
+        input = options.device_combine ? ggml_new_tensor_3d(c, GGML_TYPE_F32, H, HC, 1)
+                                       : project->input({H, HC, 1});
         pos = project->input({4}, GGML_TYPE_I32);
         auto *norm =
             ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, input, 1e-6f), RES, 1), w.at("hc_attn_norm.weight"));

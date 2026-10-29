@@ -10,7 +10,13 @@ accepted only when the option is off.
 The option appends the existing gate, output projection and HC residual combine
 to the exact active attention graph. It consumes backend views of the projection
 outputs and original residual. The projection input is retained as an output so
-GGML cannot reuse it before the later graph consumes it. The view leaves do not
+GGML cannot reuse it before the later graph consumes it. In this mode it is an
+unflagged leaf, staged directly with `ggml_backend_tensor_set`. The pinned
+scheduler assigns an unallocated `GGML_TENSOR_FLAG_INPUT` leaf to its CPU
+staging backend; that flag would defeat the device handoff. Without it, the
+leaf inherits its strict device consumers' backend. The boundary checks actual
+scheduler ownership as well as the selected buffer type, including when two
+CPU handles share a buffer type during local tests. The view leaves do not
 import the projection DAG. They must use the selected backend's default buffer
 type. The standalone combine scheduler is not allocated in this mode.
 
@@ -49,6 +55,10 @@ ties and incomplete tails, with unchanged numerical thresholds. It retains the
 24-head F32 attention path. The small output projection in the cutoff fixture
 isolates selection/combine semantics; full model-width projection is covered
 by the layer fixture.
+
+CPU and Vulkan chunk fixtures share construction checks that stop immediately
+on a failed candidate, preserving its error before constructing the control.
+A regression rejects an invalid candidate and checks its original diagnostic.
 
 Run the portable Python tests, `portable_stdio_cli_test`,
 `portable_timing_cli_test` and `portable_logits_guard_build_test`. Build the

@@ -21,6 +21,15 @@ using namespace qsa_fixture;
 int main(){
     try{
         Fixture f;
+        {
+            PortableQsaOptions invalid; invalid.device_combine=true;
+            std::string caught;
+            try { auto pair=chunk_pair(f.views,invalid); }
+            catch(const std::exception& e) { caught=e.what(); }
+            check(caught.find("candidate construction")!=std::string::npos &&
+                  caught.find("device combine requires production")!=std::string::npos,
+                  "candidate construction diagnostic was lost: ["+caught+"]");
+        }
         for (bool reuse : {false, true}) {
         std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_cpu_init(),ggml_backend_free);
         PortableQsaOptions opts;opts.capacity=9;opts.reuse_attention=reuse;
@@ -60,6 +69,9 @@ int main(){
             std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_cpu_init(),ggml_backend_free);
             PortableQsaOptions opts; opts.execution.accelerator=backend.get(); opts.execution.request_accelerator=true;
             for (bool combine : {false, true}) {
+                // Distinct CPU handles share a buffer type. The runtime
+                // boundary must also validate actual scheduler ownership, or a
+                // CPU-staged INPUT would silently pass this local fixture.
                 opts.device_combine=combine;
                 production_tests(opts, f.views, [&](int t){return f.input(t);});
             }

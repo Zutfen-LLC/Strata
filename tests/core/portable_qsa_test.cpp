@@ -13,10 +13,7 @@ int main() {
                 PortableQsaOptions options;options.capacity=10;
                 options.execution.accelerator=selected.get();options.execution.request_accelerator=true;
                 options.reuse_attention=mode>0;options.production=mode>=2;options.device_combine=mode==3;
-                auto chunk=PortableQsaLayer::create(3,fixture.views,options,error);
-                options.device_combine=false;
-                auto serial=PortableQsaLayer::create(3,fixture.views,options,error);
-                check(bool(chunk)&&bool(serial),error);
+                auto [chunk,serial]=chunk_pair(fixture.views,options);
                 layer_chunk_fixture::exercise(*chunk,*serial,fixture,experts(),selected.get(),
                     options.execution.graph_budget,options.state_budget,mode==3?"QSA device combine":mode==2?"QSA production CPU-selected":mode==1?"QSA diagnostic reuse CPU-selected":"QSA diagnostic legacy CPU-selected");
             }
