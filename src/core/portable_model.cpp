@@ -129,6 +129,8 @@ struct PortableModelSession::Impl {
         : opts(std::move(options)), model(shards) {
         require(opts.prompt_chunk_size==0 || (opts.prompt_chunk_size>=2&&opts.prompt_chunk_size<=8),
                 "portable model: prompt chunk size must be zero or [2,8]");
+        require(!opts.gdn_batch_input_projections || opts.prompt_chunk_size,
+                "portable model: batched GDN input projections require prompt chunks");
         if(opts.prompt_chunk_size) opts.prompt_head_elision=true;
         report.chunk_memory_is_shape_envelope=opts.prompt_chunk_size!=0;
         require(shards.size() == 6 && model.size() == 6, "portable model: this fleet path requires all six shards");
@@ -248,6 +250,7 @@ struct PortableModelSession::Impl {
                 require(bool(layer.qsa), "portable model: layer " + std::to_string(l) + ": " + error);
             } else {
                 PortableGdnOptions o;
+                o.batch_input_projections = opts.gdn_batch_input_projections;
                 o.resident_state = opts.gdn_resident_state;
                 o.policy = opts.gdn_production ? PortableGdnPolicy::device_production : PortableGdnPolicy::eager_diagnostic;
                 o.resident_attention_weights = opts.gdn_resident_weights;

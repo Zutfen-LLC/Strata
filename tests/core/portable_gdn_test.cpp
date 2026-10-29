@@ -155,14 +155,43 @@ int main() {
         refused_state.resident_state_budget = 1;
         check(!PortableGdnLayer::create(0, f.views, refused_state, error) &&
               error.find("resident state budget") != std::string::npos, "state allocation admission refusal");
-        for(bool production:{false,true}) {
+        for(bool batched:{false,true}) for(bool production:{false,true}) {
             auto chunk_opts=trial_options;
             chunk_opts.policy=production?PortableGdnPolicy::device_production:PortableGdnPolicy::eager_diagnostic;
+            chunk_opts.batch_input_projections=batched;
             auto chunk=PortableGdnLayer::create(0,f.views,chunk_opts,error);
+            chunk_opts.batch_input_projections=false;
             auto serial=PortableGdnLayer::create(0,f.views,chunk_opts,error);
             check(bool(chunk)&&bool(serial),error);
             layer_chunk_fixture::exercise(*chunk,*serial,f,experts(),selected.get(),
-                chunk_opts.execution.graph_budget,chunk_opts.state_budget,production?"GDN production CPU-selected":"GDN diagnostic resident CPU-selected");
+                chunk_opts.execution.graph_budget,chunk_opts.state_budget,production?"GDN production CPU-selected":"GDN diagnostic resident CPU-selected",false,batched);
+        }
+        // A projection submission failure occurs before any causal state commit.
+        // Check execution, admission and recovery through the existing backend seam.
+        {
+            auto opts=trial_options; opts.batch_input_projections=true;
+            auto candidate=PortableGdnLayer::create(0,f.views,opts,error);
+            check(bool(candidate)&&candidate->prepare_chunk(3,error),error);
+            const auto before=layer_chunk_fixture::snapshot(*candidate);
+            std::vector<float> input;
+            for(int t=0;t<3;++t) {const auto row=f.input(t);input.insert(input.end(),row.begin(),row.end());}
+            const auto saved=input;
+            const auto original=selected->iface.graph_compute;
+            layer_chunk_fixture::PostFault::original=original;
+            layer_chunk_fixture::PostFault::calls=0;layer_chunk_fixture::PostFault::fail_at=1;
+            selected->iface.graph_compute=layer_chunk_fixture::PostFault::compute;
+            bool called=false; std::vector<PortableRoute> routes;
+            const bool ok=candidate->run_chunk({1,2,3},0,input,[&](auto,auto&,auto&,auto&) {called=true;return false;},routes,error);
+            selected->iface.graph_compute=original;
+            check(!ok&&!called&&candidate->poisoned()&&error=="portable GDN: input projection graph failed",
+                  "projection failure must stop before recurrence/provider");
+            check(candidate->input_projection_calls()==0&&candidate->input_projection_columns()==0&&input==saved&&routes.empty(),
+                  "failed projection published a successful submission");
+            layer_chunk_fixture::same(layer_chunk_fixture::snapshot(*candidate),before);
+            check(candidate->reset(error)&&!candidate->poisoned(),error);
+            auto denied=opts;denied.execution.graph_budget=candidate->graph_bytes()-1;
+            auto budgeted=PortableGdnLayer::create(0,f.views,denied,error);
+            check(!budgeted||!budgeted->prepare_chunk(3,error),"projection graph cap must reject before execution");
         }
         production_policy(f, trial_options);
         {

@@ -61,8 +61,12 @@ struct PostFault {
         return original(backend,graph);
     }
 };
+inline uint64_t projection_calls(const PortableGdnLayer& l) { return l.input_projection_calls(); }
+inline uint64_t projection_calls(const PortableQsaLayer&) { return 0; }
+inline uint64_t projection_columns(const PortableGdnLayer& l) { return l.input_projection_columns(); }
+inline uint64_t projection_columns(const PortableQsaLayer&) { return 0; }
 template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,const Fixture& fixture,
-    const PortableExpertRows& provider,ggml_backend_t backend,size_t graph_cap,size_t state_cap,const char* label,bool gpu=false) {
+    const PortableExpertRows& provider,ggml_backend_t backend,size_t graph_cap,size_t state_cap,const char* label,bool gpu=false,bool batched_projections=false) {
     std::string error;double maximum=0,square=0,norm=0;size_t elements=0,completed_chunks=0,attention_tokens=0;
     const std::vector<int32_t> ids{5,248044,6,248056,0,8,9,7,11};
     const auto weight_bytes=chunk.weight_bytes();
@@ -92,7 +96,19 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
                     return true;
                 };
                 std::vector<PortableRoute> routes;
+                const auto projected_before=projection_calls(chunk), columns_before=projection_columns(chunk);
                 check(chunk.run_chunk({ids.begin()+pos,ids.begin()+pos+T},pos,input,dispatch,routes,error),error);
+                const bool projected=batched_projections&&T>1;
+                check(projection_calls(chunk)==projected_before+size_t(projected) &&
+                      projection_columns(chunk)==columns_before+(projected?T:0),"actual projection submissions and columns");
+                size_t projection_matrices=0;
+                for(const auto& p:chunk.placements()) if(p.phase=="gdn-input-projections"&&p.operation=="MUL_MAT") {
+                    check(projected&&p.shape.size()>1&&p.shape[1]==int64_t(T),"projection matrix lacks actual T columns");
+                    if(gpu)check(p.backend==ggml_backend_name(backend)&&p.fallback_reason.empty(),"input projection matrix not on Vulkan");
+                    if(p.tensor=="attn_qkv.weight"||p.tensor=="attn_gate.weight"||p.tensor=="ssm_alpha.weight"||p.tensor=="ssm_beta.weight")
+                        ++projection_matrices;
+                }
+                check(projection_matrices==(projected?4u:0u),"four actual GDN input projection matrices");
                 check(calls==1&&routes.size()==T,"one provider per completed layer chunk");
                 ++completed_chunks;attention_tokens+=T;
                 const auto after=chunk.chunk_work();
@@ -159,6 +175,10 @@ template<class Layer,class Fixture> void exercise(Layer& chunk,Layer& serial,con
         const auto row=fixture.input(0);auto next=row;
         check(chunk.run_chunk({5},0,next,[&](int64_t l,const auto& rs,auto& out,auto& e){return provider(l,rs[0],out,e);},routes,error),error);
     }
+    if(batched_projections) check(projection_calls(chunk)==(gpu?48u:51u)&&projection_columns(chunk)==(gpu?180u:189u),
+                                  "bounded projection submission totals including failed chunks");
+    if(batched_projections) std::printf("GDN input projection receipts: enabled=%d calls=%llu columns=%llu\n",int(batched_projections),
+                (unsigned long long)projection_calls(chunk),(unsigned long long)projection_columns(chunk));
     std::printf("%s layer chunks T1-8/tails: max_abs=%.9g relative_l2=%.9g elements=%zu completed_chunks=%zu attention_tokens=%zu; causal state, routes, T-column execution, A/B/A passed; injected_failure_checks=%d\n",
                 label,maximum,std::sqrt(square/(norm+1e-30)),elements,completed_chunks,attention_tokens,gpu?0:4);
 }

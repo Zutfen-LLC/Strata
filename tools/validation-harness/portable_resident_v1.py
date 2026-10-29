@@ -19,6 +19,7 @@ class Resident:
     """Owned finite child. tick runs throughout load, requests and cleanup waits."""
     def __init__(self, command, out, tick=lambda _pid: None, load_seconds=180, request_seconds=180, total_seconds=960):
         self.prompt_chunk_size=P.chunk_argv(command)
+        self.gdn_batch_input_projections=P.projection_argv(command)
         self.head_policy = 'prompt_head_elision' if '--prompt-head-elision' in command or self.prompt_chunk_size else 'eager_diagnostic'
         self.out, self.tick = out, tick
         self.request_seconds, self.load_seconds = request_seconds, load_seconds
@@ -75,6 +76,7 @@ class Resident:
                     raise ValueError('actual token counts')
                 if stop.get('position')!=len(rows) or len(rows)<len(tokens): raise ValueError('stop position')
                 P.chunk_fields(row,len(tokens),len(rows),getattr(self,'prompt_chunk_size',0))
+                P.projection_binding(row,getattr(self,'gdn_batch_input_projections',False))
                 if self.head_policy == 'prompt_head_elision':
                     if (row.get('head_policy') != self.head_policy or type(row.get('receipt_schema')) is not int or
                             row['receipt_schema'] != 2 or
@@ -229,6 +231,9 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
         pins[name] = digest
     P.chunk_binding(summary,prompt_chunk_size)
     expected_residency = residency or {flag: False for flag in P.RESIDENCY_FLAGS}
+    projections=expected_residency.get('--gdn-batch-input-projections',False)
+    P.projection_policy(argparse.Namespace(gdn_batch_input_projections=projections,prompt_chunk_size=prompt_chunk_size))
+    P.projection_binding(summary,projections)
     expected_head = 'prompt_head_elision' if expected_residency.get('--prompt-head-elision', False) else 'eager_diagnostic'
     if summary.get('head_policy', 'eager_diagnostic') != expected_head:
         raise ValueError('reference residency policy mismatch: head summary')
@@ -243,6 +248,7 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
         case = root/f'case-{index:02d}'
         argv = json.loads((case/'argv.json').read_text())
         if P.chunk_argv(argv)!=prompt_chunk_size:raise ValueError('reference chunk argv mismatch')
+        if P.projection_argv(argv) is not projections:raise ValueError('reference GDN projection argv mismatch')
         for flag in P.RESIDENCY_FLAGS:
             if argv.count(flag) != int(expected_residency.get(flag, False)):
                 raise ValueError('reference residency policy mismatch: '+flag)
@@ -264,9 +270,15 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
             slot, name = record.split(':',1)
             if slot != str(die) or pins.get(name) != Q.bundle.sha(plan):
                 raise ValueError('reference plan hash mismatch')
+        saved=summary['requests'][index-1]
+        P.projection_binding(saved.get('chunk_work',{}),projections)
+        if projections or (case/'timings.json').exists():
+            timing=json.loads((case/'timings.json').read_text())
+            P.projection_binding(timing,projections)
+            P.chunk_binding(timing,prompt_chunk_size)
+            if projections and saved['chunk_work']!=timing:raise ValueError('reference GDN projection timing/summary mismatch')
         records = [json.loads(line) for line in (case/'stdout.jsonl').read_text().splitlines()]
         ids, stop = P.completion(records,prompt,vocabulary,expected_head,prompt_chunk_size)
-        saved = summary['requests'][index-1]
         if saved['tokens'] != ids or saved['finish'] != stop:
             raise ValueError('reference summary/rows mismatch')
         rows.append(dict(rows=records[:-1],stop=records[-1]))
@@ -314,6 +326,7 @@ def run_suite(runner, out, prompts, references, binding, vocabulary, binary_sha,
                        qsa_policy=receipt.get('qsa_policy', 'eager_diagnostic'),
                        qsa_reuse_attention=receipt.get('qsa_reuse_attention', False))
         if receipt.get('prompt_chunk_size',0):summary.update(prompt_chunk_size=receipt['prompt_chunk_size'],chunk_policy='layer_major_v1')
+        if receipt.get('gdn_batch_input_projections',False):summary['gdn_batch_input_projections']=True
         receipt['passes'].append(summary)
         began=time.monotonic()
         try:
@@ -328,6 +341,7 @@ def run_suite(runner, out, prompts, references, binding, vocabulary, binary_sha,
                 expected=references[case_id-1]
                 if result['rows'] != expected['rows'] or result['stop'] != expected['stop']:
                     raise ValueError(f'fresh reference mismatch: pass {pass_id} case {case_id}')
+                P.projection_binding(result['metrics'],receipt.get('gdn_batch_input_projections',False))
                 suite_metrics(result['metrics'],prompt,ids,len(result['rows']),pass_id==2,receipt['gdn_policy'],summary['head_policy'],receipt.get('prompt_chunk_size',0))
                 summary['requests'].append(dict(index=case_id,request_id=request_id,tokens=ids,finish=stop,
                     consumed_rows=len(result['rows']),timing=result['metrics']))
@@ -353,6 +367,7 @@ def main():
     p.add_argument('--expert-tensor-mib', default='2404,2404')
     p.add_argument('--expert-timings', action='store_true', help='coarse provider and per-device executor call timing')
     p.add_argument('--prompt-chunk-size',type=int,choices=range(2,9),default=0)
+    p.add_argument('--gdn-batch-input-projections',action='store_true',help='batch independent GDN projections; requires prompt chunks and matching fresh references')
     p.add_argument('--prompt-head-elision', action='store_true', help='omit nonfinal prompt heads; requires matching schema-2 references')
     p.add_argument('--gdn-resident-weights', action='store_true', help='forward the opt-in GDN attention weight placement trial')
     p.add_argument('--qsa-production', action='store_true', help='device-owned QSA state; requires reuse and matching production references')
@@ -364,6 +379,7 @@ def main():
     S.device_arguments(p)
     args=p.parse_args()
     if args.prompt_chunk_size:args.prompt_head_elision=True
+    if args.gdn_batch_input_projections and not args.prompt_chunk_size:p.error('--gdn-batch-input-projections requires --prompt-chunk-size')
     selected,physical=S.device_selection(p,args)
     if len(args.plan)!=2: p.error('two plans required')
     caps=args.expert_tensor_mib.split(',')
@@ -384,7 +400,7 @@ def main():
                                   {'--model':str(args.gguf),'--manifest':args.manifest,'--vulkan':args.devices,
                                    '--split':str(args.split),'--device-cap-mib':','.join([str(args.device_cap_mib)]*2),
                                    '--threads':'4','--expert-workers':'12','--host-cap-mib':'32768'},
-                                  {flag:flag in P.residency_flags(args) for flag in P.RESIDENCY_FLAGS},P.chunk_size(args))
+                                  {flag:flag in P.residency_flags(args) for flag in (*P.RESIDENCY_FLAGS,P.GDN_PROJECTION_FLAG)},P.chunk_size(args))
         args.max_new=Q.MAX_NEW
         args.expert_timings=True
     else:
@@ -398,6 +414,7 @@ def main():
     args.out.mkdir(mode=0o700,exist_ok=False)
     receipt=dict(head_policy='prompt_head_elision' if args.prompt_head_elision else 'eager_diagnostic',qsa_policy='device_production' if args.qsa_production else 'eager_diagnostic',qsa_reuse_attention=args.qsa_reuse_attention,gdn_policy='device_production' if args.gdn_production else 'eager_diagnostic', status='STOP',binary_sha256=args.binary_sha256,prompt=tokens,max_new=args.max_new,
                  excluded_warmups=1,measured_requests=3)
+    if args.gdn_batch_input_projections:receipt['gdn_batch_input_projections']=True
     if P.chunk_size(args):receipt.update(prompt_chunk_size=P.chunk_size(args),chunk_policy='layer_major_v1')
     if args.suite:
         receipt.update(mode='suite',suite=binding,reference_root=str(args.reference_root),
@@ -449,6 +466,7 @@ def main():
                  '--expert-free-reserve-mib','512,512','--placements',str(args.out/'placements.tsv')]
         for i,plan in enumerate(args.plan): command+=['--expert-plan',f'{i}:{plan.resolve(strict=True)}']
         if args.expert_timings: command += ['--expert-timings']
+        if args.gdn_batch_input_projections:command+=['--gdn-batch-input-projections']
         if args.prompt_head_elision: command += ['--prompt-head-elision']
         if P.chunk_size(args):command+=['--prompt-chunk-size',str(P.chunk_size(args))]
         if args.gdn_resident_weights: command += ['--gdn-resident-weights']
@@ -469,6 +487,7 @@ def main():
         else:
             for index in range(1,5):
                 result=runner.request(tokens,args.max_new,index)
+                P.projection_binding(result['metrics'],args.gdn_batch_input_projections)
                 if args.expert_timings:
                     m=result['metrics']
                     model_phase_fields(m,len(result['rows']),receipt['gdn_policy'],receipt['head_policy'],P.chunk_size(args))
