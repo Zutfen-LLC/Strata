@@ -39,13 +39,20 @@ inline ggml_backend_t weight_backend(const PortableFfnOptions &options, ggml_bac
 inline bool metadata_only(ggml_tensor *t) {
     return t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;
 }
-inline Scheduler schedule(ggml_cgraph *graph, const char *phase, const PortableFfnOptions &options, Backend &cpu,
-                          std::vector<PortablePlacement> &placement, size_t &graphs_size) {
+inline void schedule_reusing(ggml_cgraph *graph, const char *phase, const PortableFfnOptions &options, Backend &cpu,
+                             std::vector<PortablePlacement> &placement, size_t &graphs_size, Scheduler &sched) {
     ggml_backend_t backends[] = {options.accelerator, cpu.get()};
     auto *list = options.accelerator && options.request_accelerator ? backends : backends + 1;
     const int count = list == backends ? 2 : 1;
-    Scheduler sched(ggml_backend_sched_new(list, nullptr, count, GGML_DEFAULT_GRAPH_SIZE, false, false),
-                    ggml_backend_sched_free);
+    size_t retained = 0;
+    if (sched) {
+        // Caller must keep backends/options fixed and reset before replacing graph metadata.
+        for (int i = 0; i < count; ++i)
+            retained += ggml_backend_sched_get_buffer_size(sched.get(), list[i]);
+        ggml_backend_sched_reset(sched.get());
+    } else {
+        sched.reset(ggml_backend_sched_new(list, nullptr, count, GGML_DEFAULT_GRAPH_SIZE, false, false));
+    }
     require(bool(sched), "portable graph: scheduler creation failed");
     const size_t begin = placement.size();
     std::vector<ggml_backend_t> assignments;
@@ -88,6 +95,7 @@ inline Scheduler schedule(ggml_cgraph *graph, const char *phase, const PortableF
     // without private ggml APIs or allocating a trial device graph first.
     size_t bound = 0;
     const size_t remaining = options.graph_budget - graphs_size;
+    require(retained <= remaining, "portable graph: retained buffers exceed graph budget");
     auto account = [&](ggml_backend_t backend, ggml_tensor *t) {
         while (t->view_src)
             t = t->view_src;
@@ -123,7 +131,7 @@ inline Scheduler schedule(ggml_cgraph *graph, const char *phase, const PortableF
             }
     }
     assign();
-    // Fresh-scheduler alloc_graph reserves backing buffers internally. This
+    // alloc_graph reserves or reuses backing buffers internally. This
     // is a single split/allocation pass: no reserve_size reset can discard
     // pins, and no earlier split can leave temporary copy sources in this
     // owning graph before the scheduler rebuilds its context.
@@ -149,8 +157,14 @@ inline Scheduler schedule(ggml_cgraph *graph, const char *phase, const PortableF
     size_t allocated = 0;
     for (int i = 0; i < count; ++i)
         allocated += ggml_backend_sched_get_buffer_size(sched.get(), list[i]);
-    require(allocated <= bound && allocated <= remaining, "portable graph: allocated graph exceeds admitted bound");
+    require(allocated <= std::max(bound, retained) && allocated <= remaining,
+            "portable graph: allocated graph exceeds admitted bound");
     graphs_size += allocated;
+}
+inline Scheduler schedule(ggml_cgraph *graph, const char *phase, const PortableFfnOptions &options, Backend &cpu,
+                          std::vector<PortablePlacement> &placement, size_t &graphs_size) {
+    Scheduler sched{nullptr, ggml_backend_sched_free};
+    schedule_reusing(graph, phase, options, cpu, placement, graphs_size, sched);
     return sched;
 }
 

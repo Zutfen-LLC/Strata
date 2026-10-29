@@ -107,6 +107,7 @@ int main(int argc, char **argv) {
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
                              " [--gdn-production (requires --gdn-resident-state and strict Vulkan)]\n"
+                             " [--qsa-reuse-attention (trial, default off)]\n"
                              " [--gdn-resident-state (trial, default off)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
@@ -125,6 +126,10 @@ int main(int argc, char **argv) {
             }
             if (key == "--expert-dispatch-oracle") {
                 opts.expert_dispatch_oracle = true;
+                continue;
+            }
+            if (key == "--qsa-reuse-attention") {
+                opts.qsa_reuse_attention = true;
                 continue;
             }
             if (key == "--gdn-production") {

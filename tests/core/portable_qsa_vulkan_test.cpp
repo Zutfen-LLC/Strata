@@ -27,11 +27,13 @@ int main(int argc, char **argv) {
                                                                            ggml_backend_free);
         check(bool(device) && !ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "distinct Vulkan buffers required");
+        for (bool reuse : {false, true})
         for (bool resident : {false, true}) {
             std::printf("dense weight fixture: resident=%d\n", int(resident));
             PortableQsaOptions options;
             options.execution.resident_dense_weights = resident;
             options.capacity = 9;
+            options.reuse_attention = reuse;
             options.execution.accelerator = device.get();
             options.execution.request_accelerator = true;
             // Strict policy: selection failures are failures, never replaced by CPU results.
@@ -45,14 +47,21 @@ int main(int argc, char **argv) {
                   "QSA actual weight reconciliation");
             auto cpu_options = options;
             cpu_options.execution = {};
+            cpu_options.reuse_attention = false;
             auto cpu = PortableQsaLayer::create(3, f.views, cpu_options, error);
             check(bool(cpu), error);
             PortableRoute route, control_route;
             PortableQsaTrace trace;
             Oracle oracle;
+            // Same-backend legacy control separates reuse from cross-backend numerics.
+            auto legacy_options = options;
+            legacy_options.reuse_attention = false;
+            auto legacy = PortableQsaLayer::create(3, f.views, legacy_options, error);
+            check(bool(legacy), error);
+            const auto initial_memory = layer->memory_usage();
             size_t peak_graph_bytes = 0;
             for (size_t t = 0; t < 9; ++t) {
-                if (t == 0 || t == 3 || t == 4) {
+                if (t == 0 || t == 1 || t == 3 || t == 4 || t == 7 || t == 8) {
                     const auto keys = layer->keys(), values = layer->values();
                     const auto pooled = layer->pooled_keys(), tail = layer->indexer_tail(),
                                last = layer->last_residual();
@@ -81,6 +90,16 @@ int main(int argc, char **argv) {
                 } catch (const std::exception &e) {
                     throw std::runtime_error("token=" + std::to_string(t) + " " + e.what());
                 }
+                check(legacy->step(t, f.input(int(t)), experts(), control_route, error), error);
+                check(legacy->keys() == layer->keys() && legacy->values() == layer->values() &&
+                      legacy->pooled_keys() == layer->pooled_keys() && legacy->indexer_tail() == layer->indexer_tail() &&
+                      legacy->last_residual() == layer->last_residual() && control_route.ids == route.ids &&
+                      control_route.weights == route.weights, "same Vulkan exact reuse parity");
+                if (reuse) {
+                    auto memory = layer->memory_usage();
+                    check(memory.host_graph == initial_memory.host_graph && memory.device_graph == initial_memory.device_graph,
+                          "Vulkan capacity-primed buffers do not grow");
+                }
                 check(cpu->step(t, f.input(int(t)), experts(), control_route, error), error);
                 close(layer->last_residual(), cpu->last_residual(), 0.01f, "CPU/Vulkan complete layer residual");
                 close(route.weights, control_route.weights, 0.003f, "CPU/Vulkan route weights");
@@ -101,16 +120,25 @@ int main(int argc, char **argv) {
                         ++rope;
                 }
             check(mat == 8 && rope == 3, "QSA projection coverage");
+            check(!layer->step(9, f.input(9), experts(), route, error) && layer->tokens() == 9,
+                  "Vulkan capacity rejection retains committed state");
             check(layer->reset(error), error);
             check(layer->step(0, f.input(0), experts(), route, error, &trace), error);
+            auto first = layer->last_residual();
+            check(layer->reset(error), error);
+            for (size_t t = 0; t < 9; ++t)
+                check(layer->step(t, f.input(int(t + 9)), experts(), route, error), error);
+            check(layer->reset(error) && layer->step(0, f.input(0), experts(), route, error, &trace), error);
+            check(layer->last_residual() == first, "Vulkan A/B/A replay");
+            check(!layer->step(9, f.input(9), experts(), route, error), "Vulkan noncontiguous rejection");
             Oracle reset;
             reset.check_step(f, 0, f.input(0), trace, *layer);
             spare_high_score_test(options.execution);
-            selection_tests(options.execution);
+            selection_tests(options.execution, reuse);
             std::printf("PASS strict Vulkan selection width2051 boundaries/ties device=%s\n", description);
             std::printf("PASS strict Vulkan QSA H2560 layer3 positions0-8 projection_MUL_MAT=%zu ROPE=%zu, scalar "
-                        "checks/CPU parity/rollback/reset device=%s weights=%zu graphs_with_workspace=%zu state=%zu\n",
-                        mat, rope, description, layer->weight_bytes(), peak_graph_bytes, layer->state_bytes());
+                        "checks/CPU parity/rollback/reset device=%s weights=%zu graphs_with_workspace=%zu state=%zu reuse=%d\n",
+                        mat, rope, description, layer->weight_bytes(), peak_graph_bytes, layer->state_bytes(), int(reuse));
         } // validate streamed and resident dense weights
     } catch (const std::exception &e) {
         std::fprintf(stderr, "FAIL strict Vulkan QSA: %s\n", e.what());

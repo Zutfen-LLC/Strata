@@ -95,6 +95,7 @@ int main() {
         std::filesystem::temp_directory_path() /
         ("strata-qsa-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
+        for (bool reuse : {false, true}) {
         std::filesystem::create_directory(root);
         const auto path = root / "layer.gguf";
         const auto kv = metadata();
@@ -102,6 +103,7 @@ int main() {
         std::string error;
         PortableQsaOptions options;
         options.capacity = 2;
+        options.reuse_attention = reuse;
         model_file(path, kv, f.views);
         std::unique_ptr<PortableQsaLayer> bound;
         {
@@ -206,7 +208,8 @@ int main() {
         }
         std::filesystem::remove_all(root);
         std::printf("PASS portable QSA GGUF actual Q8_0/F32 owned binding; required metadata and unsupported "
-                    "scaling/type rejection\n");
+                    "scaling/type rejection reuse=%d\n", int(reuse));
+        }
     } catch (const std::exception &e) {
         std::filesystem::remove_all(root);
         std::fprintf(stderr, "FAIL GGUF QSA: %s\n", e.what());

@@ -66,6 +66,7 @@ struct PortableModelOptions {
     bool gdn_resident_weights = false; // opt-in GDN attention only
     bool gdn_resident_state = false; // opt-in; independent of weight residency
     bool dense_resident_weights = false; // opt-in attention, FFN and head weights
+    bool qsa_reuse_attention = false; // capacity-primed execution/scratch; host KV staging remains
     bool gdn_production = false; // opt-in device authority; requires strict resident accelerator execution
 };
 struct PortableExpertWork {

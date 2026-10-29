@@ -88,12 +88,18 @@ inline void spare_high_score_test(PortableFfnOptions options) {
                   "strict high-score placement");
     std::printf("PASS high-score spare cached_cells=2055 width=2051 tails2052-2054 complete0-2047\n");
 }
-inline void selection_tests(PortableFfnOptions options) {
+inline void selection_tests(PortableFfnOptions options, bool reuse = false) {
     // The shared scheduler prices a full backing root per view consumer.
     // Explicitly admit this conservative bound for the 24-head boundary fixture;
     // actual buffers remain small and are checked against this same limit.
     options.graph_budget = 1ull << 30;
-    for (int n : {2, 2050, 2051, 2052, 2055, 2056})
+    portable_detail::Backend retained_cpu(ggml_backend_cpu_init(), ggml_backend_free);
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> retained_ctx(ggml_init({2u << 20, nullptr, true}), ggml_free);
+    portable_detail::Scheduler retained_sched{nullptr, ggml_backend_sched_free};
+    size_t retained_buffers = 0;
+    ggml_backend_buffer_t key_buffer = nullptr, value_buffer = nullptr;
+    for (int sweep = 0; sweep < (reuse ? 2 : 1); ++sweep)
+    for (int n : {2056, 2, 2050, 2051, 2052, 2055, 2056})
         for (int mode = 0; mode < 3; ++mode) {
             std::vector<float> scores(size_t(n), 0);
             for (int i = 0; i < n; ++i)
@@ -103,7 +109,11 @@ inline void selection_tests(PortableFfnOptions options) {
             portable_detail::Backend cpu(ggml_backend_cpu_init(), ggml_backend_free);
             std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init({2u << 20, nullptr, true}),
                                                                     ggml_free);
-            auto *c = ctx.get();
+            if (reuse && retained_sched)
+                ggml_backend_sched_reset(retained_sched.get());
+            if (reuse)
+                ggml_reset(retained_ctx.get());
+            auto *c = reuse ? retained_ctx.get() : ctx.get();
             auto *input = ggml_new_tensor_1d(c, GGML_TYPE_F32, n);
             ggml_set_input(input);
             auto *output = portable_detail::qsa_selection(c, input);
@@ -120,7 +130,22 @@ inline void selection_tests(PortableFfnOptions options) {
             ggml_build_forward_expand(graph, attention);
             std::vector<PortablePlacement> placement;
             size_t bytes = 0;
-            auto sched = portable_detail::schedule(graph, "qsa-selection", options, cpu, placement, bytes);
+            portable_detail::Scheduler temporary{nullptr, ggml_backend_sched_free};
+            auto &sched = reuse ? retained_sched : temporary;
+            auto &execution_cpu = reuse ? retained_cpu : cpu;
+            portable_detail::schedule_reusing(graph, "qsa-selection", options, execution_cpu, placement, bytes, sched);
+            if (reuse) {
+                if (!key_buffer) {
+                    key_buffer = ki->buffer;
+                    value_buffer = vi->buffer;
+                }
+                check(ki->buffer == key_buffer && vi->buffer == value_buffer,
+                      "selection exact shapes retain backing buffer identities");
+                if (sweep == 1)
+                    check(bytes == retained_buffers, "selection sweep retains bounded scheduler buffers");
+                else
+                    retained_buffers = bytes;
+            }
             if (n > 2051)
                 ggml_backend_tensor_set(input, scores.data(), 0, scores.size() * sizeof(float));
             std::vector<uint16_t> keys(size_t(n) * 512, 0), values(size_t(n) * 512);
