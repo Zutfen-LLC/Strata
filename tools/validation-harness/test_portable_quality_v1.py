@@ -113,10 +113,12 @@ class QualityAdapter(unittest.TestCase):
             root=Path(d); suite=root/'suite'; P.Q.prepare(Tokenizer(),suite)
             binary=root/'binary';binary.write_bytes(b'not an executable: mock launch only')
             args=SimpleNamespace(suite=suite,binary=binary,binary_sha256=P.Q.bundle.sha(binary),out=root/'run',
+                                 devices='0,1',pci=','.join(P.S.PCI),split=32,device_cap_mib=7680,
                                  dense_resident_weights=True,gdn_resident_state=True,gdn_production=True,qsa_reuse_attention=True,qsa_production=True,prompt_head_elision=True)
             child=SimpleNamespace(pid=123456789,poll=lambda:None,wait=lambda timeout:0)
             with patch.object(P.S,'host_memory',return_value={'effective_available':1<<40}), \
                  patch.object(P.S,'model_working_set',return_value={'working_set_bound_bytes':0}), \
+                 patch.object(P.S,'verified_devices',return_value=[{'total':9<<30}]*2), \
                  patch.object(P.S,'vram',return_value={'used':0,'total':9<<30}), \
                  patch.object(P.S,'rss',return_value={}), \
                  patch.object(P.S,'guard_host',side_effect=ValueError('pressure')), \
@@ -139,6 +141,90 @@ class QualityAdapter(unittest.TestCase):
             self.assertEqual(receipt['qsa_policy'],'device_production')
             self.assertEqual(receipt['requests'],[])
             self.assertEqual(receipt['error'],'pressure')
+
+    def test_fresh_cli_exposes_shared_device_options(self):
+        import sys
+        for options,devices,split,cap in (([], '0,1',32,7680),
+            (['--devices','3,2','--pci','0000:21:00.0,0000:41:00.0',
+              '--split','24','--device-cap-mib','4096'], '3,2',24,4096)):
+            argv=['portable_quality_v1.py','--gguf','metadata','portable',
+                  '--binary','binary','--binary-sha256','digest','--suite','suite','--out','out']+options
+            with patch.object(sys,'argv',argv), patch.object(P.Q,'tokenizer'), \
+                 patch.object(P,'run_portable') as run:
+                self.assertEqual(P.main(),0)
+                args=run.call_args.args[0]
+                self.assertEqual((args.devices,args.split,args.device_cap_mib),(devices,split,cap))
+                if options:self.assertEqual(args.pci,'0000:21:00.0,0000:41:00.0')
+
+    def test_selected_devices_bind_fresh_launch_observation_and_placement(self):
+        import argparse
+        from types import SimpleNamespace
+        for benchmark in (False, True):
+            for custom in (False, True):
+                with self.subTest(benchmark=benchmark, custom=custom), tempfile.TemporaryDirectory() as d:
+                    root = Path(d)
+                    binary = root/'binary'; binary.write_bytes(b'mocked child')
+                    parser = argparse.ArgumentParser()
+                    P.S.device_arguments(parser)
+                    options = (['--devices','3,2','--pci','0000:21:00.0,0000:41:00.0',
+                                '--split','24','--device-cap-mib','4096'] if custom else [])
+                    args = parser.parse_args(options)
+                    args.__dict__.update(suite=root/'suite', binary=binary,
+                        binary_sha256=P.Q.bundle.sha(binary), out=root/'out', benchmark=benchmark)
+                    selected, physical = P.S.device_selection(parser, args)
+                    mapping = [dict(index=i,pci=p,total=9<<30) for i,p in zip(selected,physical)]
+                    child = SimpleNamespace(pid=123456789,poll=lambda:0)
+                    def launch(argv, stdout, stderr, **kwargs):
+                        stdout.write('{}\n'); stdout.flush()
+                        if benchmark:
+                            Path(argv[argv.index('--timings')+1]).write_text(json.dumps(dict(
+                                setup_ms=1,prompt_ms=2,decode_ms=3,prompt_count=2,output_count=1,
+                                selection_prompt_ms=0,selection_decode_ms=0,terminal_feed_ms=0,
+                                selection_prompt_steps=1,selection_decode_steps=1)))
+                        return child
+                    with patch.object(P,'frozen',return_value=([[1,2]],{})), \
+                         patch.object(P,'completion',return_value=([248046],'eos')), \
+                         patch.object(P.S,'host_memory',return_value={'effective_available':1<<40}), \
+                         patch.object(P.S,'model_working_set',return_value={'working_set_bound_bytes':0}), \
+                         patch.object(P.S,'verified_devices',return_value=mapping) as verify, \
+                         patch.object(P.S,'vram',side_effect=lambda pci:dict(pci=pci,used=0,total=9<<30)) as observe, \
+                         patch.object(P.S,'rss',return_value={}), patch.object(P.S,'guard_host'), \
+                         patch.object(P.S,'placements',return_value={}) as placement, \
+                         patch.object(P.subprocess,'Popen',side_effect=launch) as popen:
+                        P.run_portable(args, SimpleNamespace(tokens=range(248320)))
+                    verify.assert_called_once_with(binary,selected,physical)
+                    self.assertEqual({call.args[0] for call in observe.call_args_list},set(physical))
+                    self.assertEqual(len(observe.call_args_list),4*len(popen.call_args_list))
+                    for call in popen.call_args_list:
+                        argv = call.args[0]
+                        for flag,value in (('--vulkan',args.devices),('--split',str(args.split)),
+                                           ('--device-cap-mib',','.join([str(args.device_cap_mib)]*2))):
+                            self.assertEqual(argv[argv.index(flag)+1],value)
+                    for call in placement.call_args_list:
+                        self.assertEqual(call.args[1:],(selected,args.split))
+                    summary=json.loads((args.out/'summary.json').read_text())
+                    self.assertEqual(summary['selected_devices'],mapping)
+                    self.assertEqual(summary['device_policy']['pci'],physical)
+                    self.assertEqual(summary['status'],'complete')
+
+    def test_selected_identity_failure_stops_before_model_launch(self):
+        import argparse
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d); binary=root/'binary'; binary.write_bytes(b'mocked child')
+            parser=argparse.ArgumentParser(); P.S.device_arguments(parser)
+            args=parser.parse_args([])
+            args.__dict__.update(suite=root/'suite',binary=binary,
+                binary_sha256=P.Q.bundle.sha(binary),out=root/'out')
+            with patch.object(P,'frozen',return_value=([[1]],{})), \
+                 patch.object(P.S,'host_memory',return_value={'effective_available':1<<40}), \
+                 patch.object(P.S,'model_working_set',return_value={'working_set_bound_bytes':0}), \
+                 patch.object(P.S,'verified_devices',side_effect=ValueError('PCI mismatch')), \
+                 patch.object(P.subprocess,'Popen') as launch:
+                with self.assertRaisesRegex(ValueError,'PCI mismatch'):
+                    P.run_portable(args,SimpleNamespace(tokens=[]))
+                launch.assert_not_called()
+            self.assertEqual(json.loads((args.out/'summary.json').read_text())['error'],'PCI mismatch')
 
     def test_score_outcomes_preserve_gold_and_failed_numeric_status(self):
         from types import SimpleNamespace

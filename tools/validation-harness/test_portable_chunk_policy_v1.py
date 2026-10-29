@@ -93,6 +93,7 @@ class ChunkPolicy(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);binary=root/'binary';binary.write_bytes(b'mocked child')
                 args=SimpleNamespace(suite=root/'suite',binary=binary,binary_sha256=P.Q.bundle.sha(binary),
+                    devices='0,1',pci=','.join(P.S.PCI),split=32,device_cap_mib=7680,
                     out=root/'out',prompt_chunk_size=2,benchmark=False,dump_executed_logits=True,gdn_batch_input_projections=batched,gdn_causal_chunk=causal,gdn_production=causal)
                 rows=[dict(position=i,token=t,generated=i==3,greedy_next=None if i<2 else 248046,
                     schema=2,head_policy='prompt_head_elision',logits_available=i>=2,
@@ -121,7 +122,7 @@ class ChunkPolicy(unittest.TestCase):
                 with ExitStack() as stack:
                     for name,value in [('frozen',([[5,6,7]],{}))]:stack.enter_context(mock.patch.object(P,name,return_value=value))
                     for name,value in [('host_memory',{'effective_available':1<<40}),('model_working_set',{'working_set_bound_bytes':0}),
-                        ('vram',{'used':0,'total':9<<30}),('rss',{}),('placements',{'fixture':1})]:
+                        ('verified_devices',[{'total':9<<30}]*2),('vram',{'used':0,'total':9<<30}),('rss',{}),('placements',{'fixture':1})]:
                         stack.enter_context(mock.patch.object(P.S,name,return_value=value))
                     stack.enter_context(mock.patch.object(P.S,'guard_host'))
                     stack.enter_context(mock.patch.object(P.S,'admit_host'))
