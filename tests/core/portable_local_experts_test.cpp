@@ -3,11 +3,12 @@
 #include "../../src/worker/vulkan_expert_graph.hpp"
 #include "portable_model_fixture.hpp"
 #include <cstdio>
+#include "ggml-cpu.h"
 #include <limits>
 using namespace strata::core;
 using namespace model_fixture;
 namespace {
-struct State { int prepares=0,releases=0,inferences=0; size_t last_T=0; bool fail=false,bad=false,nonfinite=false; float bad_value=NAN; size_t bad_offset=0; };
+struct State { std::function<void(size_t,strata::worker::GpuCounters&)> prepared_entry; int prepares=0,releases=0,inferences=0; size_t last_T=0; bool fail=false,bad=false,nonfinite=false; float bad_value=NAN; size_t bad_offset=0; };
 class Fake final:public strata::worker::GpuExecutor {
     State& s;
 public:
@@ -19,10 +20,13 @@ public:
     bool prepare_source(const strata::worker::GpuPlan& p,const strata::worker::GpuAssetReader& reader,
                         strata::worker::GpuCounters& c,std::string& error) override {
         ++s.prepares;live=true;
+        size_t entry=0;
         for(const auto& a:p.assets) {
             std::vector<uint8_t> b;
             if(!reader(a,b,error)) return false;
             check(b.size()==a.bytes && strata::worker::blob_digest(b)==a.digest,"direct mapped digest");
+            if(s.prepared_entry)s.prepared_entry(entry,c);
+            ++entry;
         }
         c.gpu_allocated_bytes=p.assigned_bytes()+4096;
         c.gpu_weight_bytes=p.assigned_bytes();return true;
@@ -68,7 +72,10 @@ int main(){
             check(strata::worker::make_gpu_plan(cpu.identity(),ids,p,e),e);
             const auto path=(f.root/name).string();check(strata::worker::write_gpu_plan(path,p,e),e);return path;
         };
-        opts.accelerators={reinterpret_cast<ggml_backend_t>(uintptr_t(1)),reinterpret_cast<ggml_backend_t>(uintptr_t(2))};
+        std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> first_backend(ggml_backend_cpu_init(),ggml_backend_free),
+            second_backend(ggml_backend_cpu_init(),ggml_backend_free);
+        check(bool(first_backend)&&bool(second_backend),"CPU test backend identities");
+        opts.accelerators={first_backend.get(),second_backend.get()};
         PortableExpertDevice a,b;a.plan_path=plan("a",{{0,1},{0,3}});b.plan_path=plan("b",{{0,5}});b.accelerator=1;
         opts.expert_timings=true;
         opts.expert_devices={a,b};State state;size_t free=7ull<<30;
@@ -182,6 +189,62 @@ int main(){
         bad=opts;bad.expert_devices[0].tensor_cap=1;rejected(bad,"tensor cap refusal");
         bad=opts;bad.expert_devices[1].accelerator=0;rejected(bad,"duplicate die refusal");
         free=1;rejected(opts,"per-die memory refusal");free=7ull<<30;
+        // Baselines are sampled independently just before each executor factory.
+        // Existing dense allocations are already reflected in these values.
+        {
+            const size_t primary_free=(7ull<<30)-123456,helper_free=(6ull<<30)-654321;
+            auto separate_memory=[&](ggml_backend_t backend){return std::make_pair(backend==first_backend.get()?primary_free:helper_free,size_t(8ull<<30));};
+            portable_detail::LocalExperts local(model,cpu,opts,factory,separate_memory);
+            check(local.report()[0].free_before==primary_free && local.report()[1].free_before==helper_free,
+                  "each executor snapshots the selected device after existing allocations");
+        }
+        const auto fields=[&](const std::string& message,const std::vector<std::string>& required){
+            for(const auto& field:required)check(message.find(field)!=std::string::npos,"expert guard diagnostic missing "+field+" in "+message);
+        };
+        // Growth exactly equal to tensors + workspace is still admitted; one
+        // extra byte rejects before another entry is read or executor is made.
+        for(size_t extra:{size_t(0),size_t(1)}) {
+            free=7ull<<30;const size_t baseline=free,charged=1234;
+            const int prepares_before=state.prepares;
+            state.prepared_entry=[&](size_t entry,strata::worker::GpuCounters& c){
+                if(entry==0) {c.gpu_allocated_bytes=charged;c.gpu_allocation_count=1;free=baseline-charged-a.workspace_cap-extra;}
+            };
+            std::string refusal;
+            try {portable_detail::LocalExperts local(model,cpu,opts,factory,memory);}
+            catch(const std::exception& e){refusal=e.what();}
+            state.prepared_entry={};free=7ull<<30;
+            if(extra) {
+                fields(refusal,{"resident expert tensor/runtime growth budget exceeded","slot=0","backend=\"CPU\"",
+                    "device_name=\"CPU\"","device_description=","device_id=","phase=prepare-before-read","preparation_entry=1",
+                    "layer=0","expert=3","prepared_entries=1","assigned_entries=2",
+                    "free_before="+std::to_string(baseline),"free_now="+std::to_string(baseline-charged-a.workspace_cap-1),
+                    "charged_tensor_bytes=1234","workspace_cap="+std::to_string(a.workspace_cap),
+                    "growth="+std::to_string(charged+a.workspace_cap+1),"excess=1","reserve_shortfall=0"});
+                check(state.prepares==prepares_before+1,"growth refusal stops before helper preparation");
+            } else check(refusal.empty(),"exact workspace growth boundary remains admitted");
+        }
+        {
+            auto helper=opts;auto option=b;option.plan_path=plan("helper-diagnostic",{{0,5},{0,6}});helper.expert_devices={option};
+            const size_t baseline=free,charged=4321;
+            state.prepared_entry=[&](size_t entry,strata::worker::GpuCounters& c){
+                if(entry==0){c.gpu_allocated_bytes=charged;free=baseline-charged-option.workspace_cap-1;}
+            };
+            std::string refusal;
+            try{portable_detail::LocalExperts local(model,cpu,helper,factory,memory);}catch(const std::exception& e){refusal=e.what();}
+            state.prepared_entry={};free=7ull<<30;
+            fields(refusal,{"slot=1","phase=prepare-before-read","preparation_entry=1","expert=6","charged_tensor_bytes=4321","excess=1"});
+        }
+        {
+            portable_detail::LocalExperts local(model,cpu,opts,factory,memory);
+            free=1;check(!local.run(0,route,rows,error) && rows.empty(),"reserve predicate remains enforced");
+            fields(error,{"resident expert free reserve breached","slot=0","phase=infer-before","preparation_entry=none",
+                          "layer=none","expert=none","free_now=1","free_reserve="+std::to_string(a.free_reserve),
+                          "reserve_shortfall="+std::to_string(a.free_reserve-1)});
+            free=8ull<<30;check(local.run(0,route,rows,error),error);
+            check(local.report()[0].peak_growth==0 && local.report()[1].peak_growth==0,
+                  "free memory above baseline retains zero-clamped growth");
+            free=7ull<<30;
+        }
         // Real existing executor, CPU graph substitution: direct loader, no disk GpuCache.
         strata::worker::GpuPlan p;check(strata::worker::make_gpu_plan(cpu.identity(),{{0,0},{0,1},{0,3}},p,error),error);
         auto executor=strata::worker::create_vulkan_executor_cpu_test(32u<<20);
