@@ -210,14 +210,21 @@ int main() {
                     session->report().mapped_bytes, session->report().host_weights, session->report().expert_staging);
         session.reset(); // bound peak fixture memory before resident-ownership run
         std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> selected(ggml_backend_cpu_init(), ggml_backend_free);
-        opts.gdn_production = true;
+        size_t gdn_state_only=0;
+        for (bool qsa_only : {false, true}) {
+        opts.qsa_production = qsa_only;
+        opts.gdn_production = !qsa_only;
         opts.accelerators = {selected.get()};
         opts.device_caps = {64ull << 30}; // synthetic CPU backend; no hardware initialized
         session = PortableModelSession::open(fixture.paths, (fixture.root / "manifest").string(), opts, error);
         check(bool(session), error);
+        if (!qsa_only) gdn_state_only=session->report().device_state[0];
+        else check(session->report().device_state[0]==gdn_state_only+
+                   12*PortableQsaLayer::device_state_allocation_size(selected.get(),opts.context),
+                   "model actual QSA state ledger charged once after preflight");
         check(session->step(5, logits, error) && logits == reference[0], "production full model same-backend bytes");
         const auto work = session->model_work().gdn_phases;
-        check(work.candidate_readback_calls == 36 && work.candidate_finite_calls == 36 &&
+        check(work.candidate_readback_calls == (qsa_only ? 109 : 36) && work.candidate_finite_calls == (qsa_only ? 109 : 36) &&
               work.state_commit_calls == 36, "production model residual-only reads");
         check(session->reset(error) && session->step(5, logits, error) && logits == reference[0],
               "production model reset/replay");
@@ -236,6 +243,8 @@ int main() {
             check(!session->step(5, logits, error) && error.find("poisoned") != std::string::npos,
                   "production head failure cannot retry");
             check(session->reset(error) && !session->poisoned(), error);
+        }
+        session.reset();
         }
         return 0;
     } catch (const std::exception &e) {

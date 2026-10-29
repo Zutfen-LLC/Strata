@@ -3,6 +3,20 @@
 #include <algorithm>
 #include <stdexcept>
 namespace strata::core::portable_detail {
+// State can be allocated inside a layer constructor before its actual ledger
+// is available. This estimate is a preflight requirement only, never a charge.
+inline size_t layer_state_preflight_bytes(const PortableModelOptions &options, size_t layer,
+                                         ggml_backend *backend) {
+    if (!backend)
+        return 0;
+    if (layer % 4 == 3)
+        return options.qsa_production ? PortableQsaLayer::device_state_allocation_size(backend, options.context) : 0;
+    return options.gdn_resident_state ? PortableGdnOptions{}.resident_state_budget : 0;
+}
+inline void preflight_device_memory(size_t used, size_t cap, size_t next) {
+    if (used > cap || next > cap - used)
+        throw std::runtime_error("portable model: next module exceeds separate die admission cap");
+}
 // Serial model-layer ledger, one slot per unique physical backend. Retained
 // buffers/private allowances add; token-local schedulers use one peak. The
 // temporary peak remains additive with resident expert tensor/runtime budgets.

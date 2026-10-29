@@ -1,5 +1,7 @@
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 #include "portable_qsa_bf16_fixture.hpp"
+#include "portable_qsa_production_fixture.hpp"
 #ifdef STRATA_PORTABLE_QSA_BF16_VULKAN
 #include "ggml-vulkan.h"
 #endif
@@ -125,6 +127,17 @@ int main(int argc, char **argv) {
                         "bit-exact F32 parity, >FP16-range weights, role/range/budget/reset/rollback passed; backend=%s "
                         "host_weights=%zu device_scheduler=%zu conversion_scratch=10240\n",
                         backend ? ggml_backend_name(backend.get()) : "CPU", memory.host_weights, memory.device_graph);
+            if (reuse) {
+                std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> cpu(nullptr, ggml_backend_free);
+                auto production = options;
+                if (!backend) {
+                    cpu.reset(ggml_backend_cpu_init());
+                    production.execution.accelerator = cpu.get();
+                    production.execution.request_accelerator = true;
+                }
+                Bf16Fixture production_fixture;
+                production_tests(production, production_fixture.views, [&](int t){return production_fixture.base.input(t);});
+            }
         } // validate streamed and resident dense weights
         return 0;
     } catch (const std::exception &e) {
