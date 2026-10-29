@@ -11,7 +11,7 @@ struct PortableHeadGeometry {
 // scheduler allocations. No NativeHead/NativeEmbed or CUDA allocation dependency.
 class PortableHead {
   public:
-    // guard_logits adds a bounded status reduction before publishing logits;
+    // guard_logits adds bounded exponent-bit status checks before publishing logits;
     // the model enables it for opt-in GDN production. Host output checks remain.
     static std::unique_ptr<PortableHead> create(PortableHeadGeometry geometry,
                                                 const std::vector<PortableTensorView> &weights,

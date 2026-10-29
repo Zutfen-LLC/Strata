@@ -46,31 +46,51 @@ poison only after all clearing succeeds; a recoverable reset failure stays
 poisoned. Reset does not repair invalid weights or a failed device. Backend
 process aborts cannot be recovered by this API.
 
-Production adds a head graph status reduction before logits download and token
-selection. The pinned public backend API has no external device-kernel hook,
-so this uses separate F32 `SUB(logits, logits)` and `SUM` operations: finite
-values give zero without overflow, while either infinity or NaN gives a
-nonfinite status. Only one status float is downloaded. The original logits
-are unchanged and retain the final host finite check. This differs from native
-Verifier's exponent-bit kernel and requires IEEE nonfinite propagation, with
-no fast-math rewrite. The head fixture tests finite extrema, signed zero,
-subnormals, both infinities and signed quiet/signaling NaNs at multiple lengths
-and positions. Run that fixture on each admitted Vulkan backend/driver before
-model qualification. `portable_head_test --vulkan INDEX` also injects nonfinite
-F32 output weights and Q8 output scales into the actual scheduled head and requires the distinct
-`nonfinite logits (device status guard)` error before logits download.
-A failed status clears logits and the session requires reset/replay. This guard does not provide exhaustive intermediate validation.
+Production adds an integer logits guard after scheduled head completion and before
+logits download or token selection. It follows native Verifier's exponent-bit
+classification: 16 blocks inspect the raw F32 words with
+`(bits & 0x7f800000u) == 0x7f800000u` and reduce with integer OR. There are no
+floating operations in the guard, including when reading signaling NaNs.
+All 16 status words are overwritten each invocation. The bridge first uploads
+a non-success sentinel to every word, then dispatches on the existing Vulkan
+backend queue, waits for completion and reads 64 status bytes. Only all-zero
+status succeeds. Original logits and final host finite checks remain unchanged.
+The CPU reference uses the same raw exponent-bit classification.
 
-Admission keeps actual device state, candidate graph buffers, weight placement,
-metadata and conservative backend-copy staging allowances. It subtracts only
-removed host mirror banks. The head guard's scratch is included in scheduler
-reservation and graph bounds. With timing capture enabled, each successful
-production GDN step records one explicit candidate read/finite check (residual),
-versus three in diagnostics or four with PLE. Across 36 GDN layers these are
-36 production versus 109 diagnostic reads/scans per consumed model token; the
-resident harness validates the exact counts using its recorded policy.
+The narrow Vulkan bridge is compiled into a build-tree copy of the exact
+pinned backend translation unit. The external checkout is not edited. Private
+source hashes are checked at configure time; incompatible sources fail clearly.
+It reuses backend synchronization, descriptor and buffer utilities, owns its
+pipeline and aligned status allocation, and requires the borrowed serial backend
+to outlive it. It adds no generic custom-op API or global compiler changes.
+The former SUB/SUM guard and its vocabulary-sized subtraction scratch are removed.
+
+`portable_head_test --vulkan INDEX` tests raw finite extrema, signed zero,
+subnormals, both infinities and signed quiet/signaling NaNs at multiple lengths,
+tails and view offsets. It also injects F32 output weights and Q8 output scales
+into the actual scheduled head. Guarded failures must return the distinct
+`nonfinite logits (integer status guard)` error before logits download. Repeated
+bad/finite cases exercise the same guard with both head encodings. No-argument
+head tests use CPU and cannot qualify Vulkan. Hardware qualification remains
+pending independent source review and parent dispatch.
+
+Admission retains actual device GDN state, candidate graph buffers, weight
+placement, metadata and conservative backend-copy staging allowances. It
+subtracts only removed host mirror banks. The head reports the guard's actual
+aligned status buffer as device state, host metadata/status scratch separately,
+and an additional 1 MiB each of host/device allowance for pipeline, descriptor
+and driver resources whose exact allocation size is not exposed by Vulkan.
+These are conservative admission allowances, not measured driver consumption.
+The guard is reused across tokens and destroyed before its borrowed backend.
+
+With timing capture, each production GDN step records one explicit candidate
+read/finite check (residual), versus three in diagnostics or four with PLE.
+Across 36 GDN layers these are 36 production versus 109 diagnostic reads/scans
+per consumed token. The resident harness validates exact policy-bound counts.
 Production requires all counters and exactly 36 commits per consumed token.
-Commit counts remain one per successful layer. These are explicit API scopes, not driver traffic measurements.
+Commit counts remain one per successful layer. These scopes are explicit API
+calls rather than driver traffic measurements. Guard work remains inside head
+timing, and is not included in the GDN candidate counters.
 
 The quality and resident harnesses forward `--gdn-production`, record the policy
 and bind it in each reference command. Suite references must be generated fresh

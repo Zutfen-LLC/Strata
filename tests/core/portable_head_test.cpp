@@ -161,20 +161,46 @@ int main(int argc, char **argv) {
                         for (const auto &p : bad->placements()) {
                             check(p.metadata_only || (p.backend == ggml_backend_name(backend.get()) &&
                                   p.fallback_reason.empty()), "injected head must stay on requested Vulkan backend");
-                            status_on_device |= p.operation == "SUM" && p.tensor == "portable_logits_status" &&
+                            status_on_device |= p.operation == "BIT_NONFINITE" && p.tensor == "portable_logits_status" &&
                                                 p.backend == ggml_backend_name(backend.get());
                         }
                         check(status_on_device, "scheduled injected head must include device status guard");
                     }
                     out = {1};
                     check(!bad->run(finite_edges, out, error) && out.empty() &&
-                          error == (guarded ? "portable head: nonfinite logits (device status guard)" :
+                          error == (guarded ? "portable head: nonfinite logits (integer status guard)" :
                                              "portable head: nonfinite logits"),
                           "scheduled head must reject at requested guard before logits download");
                     check(head->run(finite_edges, out, error) && out.size() == first_edges.size() &&
                           std::memcmp(out.data(), first_edges.data(), out.size() * sizeof(float)) == 0,
                           "head recovery after invalid calls");
                 }
+            }
+            // Same scheduled head/guard must recover from a bad status without
+            // retaining stale flags. Finite HC norm weights deliberately overflow
+            // on nonzero input; zero input remains finite for either head encoding.
+            for (bool quantized : {false, true}) {
+                auto overflow_weights = weights;
+                std::vector<float> huge_norm(H * HC, std::numeric_limits<float>::max());
+                std::vector<float> output_f32(H * V, 0.01f);
+                overflow_weights[0].data = huge_norm.data();
+                if (!quantized) {
+                    overflow_weights.back().type = 0;
+                    overflow_weights.back().data = output_f32.data();
+                    overflow_weights.back().bytes = output_f32.size() * sizeof(float);
+                }
+                auto repeat = PortableHead::create({H, HC, R, V, 1e-6f}, overflow_weights, options, error, true);
+                check(bool(repeat), error);
+                for (int trial = 0; trial < 2; ++trial) {
+                    check(!repeat->run(finite_edges, out, error) && out.empty() &&
+                          error == "portable head: nonfinite logits (integer status guard)", "scheduled bad status");
+                    check(repeat->run(std::vector<float>(H * HC, 0), out, error) && out.size() == V,
+                          "scheduled guard finite after failure");
+                }
+                const auto guarded_memory = repeat->memory_usage();
+                check(backend ? guarded_memory.device_state >= 16 * sizeof(uint32_t) &&
+                                guarded_memory.device_extra_bound >= (1u << 20) : guarded_memory.device_state == 0,
+                      "aligned status and driver resource allowance ledger");
             }
             auto small = PortableFfnOptions{};
             small.weight_budget = 1;

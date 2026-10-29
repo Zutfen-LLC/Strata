@@ -1,48 +1,54 @@
 #pragma once
 #include "../../src/core/portable_logits_guard.hpp"
-#include "../../src/core/portable_gdn_finite.hpp"
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
-#include <bit>
 #include <memory>
 #include <stdexcept>
 #include <vector>
+#include <cstdint>
+#include <bit>
 
 inline void logits_guard_test(ggml_backend_t backend) {
     using namespace strata::core;
     auto check = [](bool ok, const char *message) { if (!ok) throw std::runtime_error(message); };
-    for (int64_t n : {1, 17, 257, 4097, 248320}) {
-        std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init({2u << 20, nullptr, true}), ggml_free);
+    portable_detail::PortableLogitsGuard guard(backend, 2u << 20);
+    check(guard.host_bound() > 0, "guard host resource accounting");
+    if (guard.device_bytes()) {
+        check(guard.device_bytes() >= 64 && guard.device_resource_bound() == (1u << 20), "guard aligned device ledger");
+        bool refused = false;
+        try { portable_detail::PortableLogitsGuard too_small(backend, 0); }
+        catch (const std::runtime_error &) { refused = true; }
+        check(refused, "guard device admission must precede allocation");
+    }
+    for (int64_t n : {1, 15, 16, 17, 255, 256, 257, 4097, 248320})
+    for (int offset : {0, 1}) {
+        std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init({4096, nullptr, true}), ggml_free);
         check(bool(ctx), "guard context");
-        auto *input = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n);
-        ggml_set_input(input);
-        auto *status = portable_detail::logits_status(ctx.get(), input);
-        auto *graph = ggml_new_graph(ctx.get());
-        ggml_build_forward_expand(graph, status);
-        for (int i = 0; i < ggml_graph_n_nodes(graph); ++i)
-            check(ggml_backend_supports_op(backend, ggml_graph_node(graph, i)), "guard backend support required");
-        std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)> alloc(
-            ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free);
-        check(ggml_gallocr_alloc_graph(alloc.get(), graph), "guard allocation");
-        const uint32_t valid[] = {0, 0x80000000u, 1, 0x80000001u, 0x00800000u, 0x7f7fffffu, 0xff7fffffu};
-        std::vector<float> values(size_t(n), 0);
-        for (size_t i = 0; i < values.size(); ++i) values[i] = std::bit_cast<float>(valid[i % std::size(valid)]);
+        auto *storage = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n + offset);
+        auto *input = offset ? ggml_view_1d(ctx.get(), storage, n, sizeof(float)) : storage;
+        std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)> buffer(
+            ggml_backend_alloc_ctx_tensors(ctx.get(), backend), ggml_backend_buffer_free);
+        check(bool(buffer), "guard input allocation");
+        const uint32_t valid[] = {0, 0x80000000u, 1, 0x80000001u, 0x00800000u, 0x80800000u, 0x7f7fffffu, 0xff7fffffu};
+        std::vector<uint32_t> values(size_t(n), 0x7f800001u);
         auto run = [&] {
-            ggml_backend_tensor_set(input, values.data(), 0, values.size() * sizeof(float));
-            check(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS, "guard compute");
-            std::vector<float> result(1);
-            ggml_backend_tensor_get(status, result.data(), 0, sizeof(float));
-            return portable_detail::gdn_all_finite(result) && result[0] == 0;
+            // Upload raw words: no host floating arithmetic or classification of
+            // the input. Vulkan check executes the same bridge as PortableHead.
+            ggml_backend_tensor_set(input, values.data(), 0, values.size() * sizeof(uint32_t));
+            return guard.check(input);
         };
-        check(run(), "guard rejects finite edges or overflows");
+        check(!run(), "first guard invocation must reject signaling NaNs");
+        for (size_t i = 0; i < values.size(); ++i) values[i] = valid[i % std::size(valid)];
+        check(run(), "guard rejects finite edges");
         for (size_t at : {size_t(0), size_t(n / 2), size_t(n - 1)}) {
-            const float saved = values[at];
+            const uint32_t saved = values[at];
             for (uint32_t bad : {0x7f800000u, 0xff800000u, 0x7fc00001u, 0xffc00001u, 0x7f800001u, 0xff800001u}) {
-                values[at] = std::bit_cast<float>(bad);
+                values[at] = bad;
                 check(!run(), "guard missed infinity/quiet/signaling NaN");
+                values[at] = saved;
+                check(run(), "all status words must refresh after failure");
             }
-            values[at] = saved;
         }
-        check(run(), "guard status must refresh after failure");
+        check(run(), "guard repeated finite result");
     }
 }

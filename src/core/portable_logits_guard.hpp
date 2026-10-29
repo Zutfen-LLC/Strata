@@ -1,17 +1,23 @@
 #pragma once
-#include "ggml.h"
+#include "ggml-backend.h"
+#include <cstddef>
+#include <memory>
 
 namespace strata::core::portable_detail {
-// T=1 IEEE F32 status reduction for the pinned CPU/Vulkan graph backend.
-// Each finite x gives x-x == 0 (including FLT_MAX); Inf/NaN gives NaN.
-// Separate SUB and SUM kernels must preserve nonfinite values: no fast-math
-// rewrite to zero is allowed. Qualify this graph on each backend/driver before
-// admitting production. Unlike native's exponent-bit kernel, this uses floating
-// arithmetic; it never feeds back into or changes the logits tensor.
-inline ggml_tensor *logits_status(ggml_context *ctx, ggml_tensor *logits) {
-    auto *status = ggml_sum(ctx, ggml_sub(ctx, logits, logits));
-    ggml_set_name(status, "portable_logits_status");
-    ggml_set_output(status);
-    return status;
-}
+// Owns a bounded integer status guard; borrows one serial backend. CPU is the
+// exact-bit reference. Vulkan uses only the pin-checked local backend bridge.
+class PortableLogitsGuard {
+  public:
+    explicit PortableLogitsGuard(ggml_backend_t backend, size_t device_budget);
+    ~PortableLogitsGuard();
+    PortableLogitsGuard(const PortableLogitsGuard &) = delete;
+    PortableLogitsGuard &operator=(const PortableLogitsGuard &) = delete;
+    bool check(const ggml_tensor *logits);
+    size_t device_bytes() const; // actual aligned status allocation
+    size_t host_bound() const;
+    size_t device_resource_bound() const; // conservative driver/pipeline allowance
+  private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 } // namespace strata::core::portable_detail
