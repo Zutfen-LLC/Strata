@@ -15,7 +15,8 @@ struct ObservedBackend {
     decltype(backend->iface.graph_compute) compute = backend->iface.graph_compute;
     decltype(backend->iface.synchronize) synchronize = backend->iface.synchronize;
     bool pending = false;
-    int joins = 0, matrices = 0;
+    int joins = 0, matrices = 0, sync_failures = 0;
+    bool unknown_sync_failure = false;
     std::string fail;
     ObservedBackend() {
         active = this;
@@ -37,11 +38,20 @@ struct ObservedBackend {
                 check(products == 4, "shared graph must not repeat routing/HC producers");
                 s.pending = true;
             }
+            if (shared && s.fail == "shared-throw") throw std::runtime_error("shared submission exception");
             if ((shared && s.fail == "shared") || (route && s.fail == "route")) return GGML_STATUS_FAILED;
+            if (s.fail == "post-sync")
+                for(int i=0;i<ggml_graph_n_nodes(graph);++i)
+                    if(std::string(ggml_get_name(ggml_graph_node(graph,i)))=="residual_out") s.sync_failures=1;
             return s.compute(b, graph);
         };
         backend->iface.synchronize = [](ggml_backend_t b) {
             auto& s = *active;
+            if (s.sync_failures > 0) {
+                --s.sync_failures;
+                if(s.unknown_sync_failure) throw 17;
+                throw std::runtime_error("injected synchronization failure");
+            }
             if (s.pending) { s.pending = false; ++s.joins; }
             if (s.synchronize) s.synchronize(b);
         };
@@ -70,7 +80,7 @@ void scheduling_test() {
             rows[k*32+h] = float(r.ids[k]+1) * (.03f + float(h)*.001f);
         return true;
     };
-    for (const std::string stage : {"", "route", "shared", "cpu", "gpu", "throw"}) {
+    for (const std::string stage : {"", "route", "shared", "shared-throw", "cpu", "gpu", "throw"}) {
         backend.fail = stage; backend.matrices = 0;
         check(runner->reset(initial,error),error);
         bool dispatched = false;
@@ -82,7 +92,8 @@ void scheduling_test() {
         if (!ok) {
             close(runner->residual(),initial,0);
             check(route.ids.empty(), "no partial route publication");
-            if(stage == "route" || stage == "shared") check(!dispatched,"failed graph blocks dispatch");
+            if(stage == "shared-throw") check(runner->poisoned(),"submission exception preserves poison");
+            if(stage == "route" || stage == "shared" || stage == "shared-throw") check(!dispatched,"failed graph blocks dispatch");
         } else {
             check(backend.matrices == 8,"eight executed matmuls without duplicate producer work");
             PortableRoute ref; close(runner->residual(),f.oracle(initial,ref));
@@ -109,7 +120,57 @@ void scheduling_test() {
         check(route.ids==serial_route.ids,"serial/split exact routes");
     }
     check(runner->reset(initial,error) && runner->step(callback,route,error),error);
+    // Failed joins preserve the primary error, poison execution even after a
+    // later successful drain, and never publish a candidate residual/route.
+    for (bool unknown : {false,true}) {
+        check(runner->reset(initial,error),error);
+        backend.unknown_sync_failure=unknown;
+        check(!runner->step([&](int64_t,const PortableRoute&,std::vector<float>&,std::string& e) {
+            backend.sync_failures=3; e="primary provider rejection"; return false;
+        },route,error),"provider plus cleanup failure");
+        check(error==std::string("primary provider rejection; cleanup synchronization failed: ")+
+                     (unknown?"unknown backend exception":"injected synchronization failure"),
+              "cleanup preserves original provider failure and reports unconfirmed drain");
+        check(runner->poisoned() && backend.pending && route.ids.empty(),"pending work remains poisoned");
+        close(runner->residual(),initial,0);
+        check(!runner->step(callback,route,error) && error.find("poisoned")!=std::string::npos,
+              "poison blocks execution even if cleanup subsequently drains");
+        check(!backend.pending && runner->poisoned(),"successful cleanup does not erase failed-work status");
+        backend.sync_failures=1;
+        check(!runner->reset(initial,error) && runner->poisoned() &&
+              error.find("reset could not drain")!=std::string::npos,"failed reset cannot clear poison");
+        check(runner->reset(initial,error) && !runner->poisoned(),"confirmed reset recovers poisoned execution");
+        backend.unknown_sync_failure=false;
+    }
+    for(const std::string point : {"route-sync","shared-sync","post-sync"}) {
+        check(runner->reset(initial,error),error);
+        backend.fail = point;
+        if(point=="route-sync") backend.sync_failures=1;
+        check(!runner->step([&](int64_t l,const PortableRoute& r,std::vector<float>& rows,std::string& e) {
+            if(point=="shared-sync") backend.sync_failures=1;
+            return callback(l,r,rows,e);
+        },route,error),"graph synchronization failure");
+        check(error=="injected synchronization failure" && runner->poisoned() && route.ids.empty(),
+              "route/shared/post sync failures stay failed after cleanup recovery");
+        close(runner->residual(),initial,0);
+        check(!backend.pending,"transient graph sync failure drained before return");
+        backend.fail.clear();
+    }
+    check(runner->reset(initial,error) && runner->step(callback,route,error),error);
+    backend.sync_failures=1; // destructor retries a transient wait failure without throwing
     runner.reset(); check(!backend.pending,"cleanup after recovery");
+    // Persistent destructor failure must neither throw nor claim completion.
+    // This exceptional path deliberately retains one fixture's resources until
+    // process exit; the mocked CPU backend has no asynchronous hardware work.
+    auto terminal = PortableFfn::create(f.g,0,f.views,o,error);
+    check(bool(terminal) && terminal->reset(initial,error),error);
+    check(!terminal->step([&](int64_t,const PortableRoute&,std::vector<float>&,std::string& e) {
+        backend.sync_failures=9; e="terminal provider failure"; return false;
+    },route,error) && terminal->poisoned() && backend.pending,"terminal failed-work state");
+    terminal.reset();
+    check(backend.sync_failures==0 && backend.pending,"failed destructor waits cannot claim a drain");
+    ggml_backend_synchronize(backend.backend); // explicit owner wait after injected failures expire
+    check(!backend.pending,"mock owner confirms completion before backend teardown");
 }
 }
 int main() {

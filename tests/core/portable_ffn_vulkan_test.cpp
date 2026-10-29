@@ -3,6 +3,31 @@
 #include "ggml-cpu.h"
 #include <cstdlib>
 
+namespace {
+void placement_contract(const PortableFfn& runner, const std::string& backend, bool overlap, const char* label) {
+    size_t route = 0, shared = 0, metadata = 0;
+    for (const auto& p : runner.placements()) {
+        std::printf("FFN placement: encoding=%s phase=%s op=%s tensor=%s backend=%s metadata=%d fallback=%s\n",
+                    label, p.phase.c_str(), p.operation.c_str(), p.tensor.c_str(), p.backend.c_str(),
+                    int(p.metadata_only), p.fallback_reason.empty() ? "none" : p.fallback_reason.c_str());
+        // Routing/top-k and indexed-row merge are explicitly host-owned. Views,
+        // reshapes and other metadata follow storage and are not GPU kernels.
+        if (p.phase == "host") {
+            check(p.operation == "ROUTE_AND_MERGE" && p.backend == "CPU", "unexpected host operation");
+            continue;
+        }
+        if (p.metadata_only) { ++metadata; continue; }
+        check(p.fallback_reason.empty() && p.backend == backend,
+              "FFN compute must execute on selected device: " + p.phase + "/" + p.operation + "/" + p.tensor);
+        if (p.phase == "route-ready") ++route;
+        if (p.phase == "shared-expert") ++shared;
+    }
+    check(!overlap || (route > 0 && shared > 0), "missing actual device route/shared computations");
+    std::printf("FFN placement contract: encoding=%s route_device_nodes=%zu shared_device_nodes=%zu "
+                "metadata_nodes=%zu compute_fallback=0 overlap_proof=not_measured\n", label, route, shared, metadata);
+}
+}
+
 int main(int argc, char** argv) {
     try {
         int index = 0;
@@ -17,6 +42,9 @@ int main(int argc, char** argv) {
             } else if (std::string(argv[i]) == "--expect-device") expected_device = argv[i+1];
             else check(false, "unknown argument");
         }
+        for (const char* key : {"GGML_VK_DISABLE_ASYNC", "GGML_VK_SERIALIZE_SUBMISSIONS",
+                                "GGML_VK_PERF_LOGGER", "GGML_VK_PERF_LOGGER_CONCURRENT"})
+            std::printf("FFN runtime setting: %s present=%d\n", key, int(std::getenv(key) != nullptr));
         check(ggml_backend_vk_get_device_count() > index, "Vulkan device required; not a skipped pass");
         char description[256] = {};
         ggml_backend_vk_get_device_description(index, description, sizeof(description));
@@ -33,7 +61,7 @@ int main(int argc, char** argv) {
             options.resident_dense_weights = resident;
             options.overlap_shared_cpu = overlap;
             options.request_accelerator = true;
-            options.allow_cpu_fallback = true;
+            options.allow_cpu_fallback = false; // all compute, including route/shared, must use selected device
             options.accelerator = device.get();
             std::string error;
             auto runner = PortableFfn::create(f.g, 0, f.views, options, error);
@@ -43,6 +71,7 @@ int main(int argc, char** argv) {
                   "FFN actual weight reconciliation");
             size_t matmuls = 0, post = 0, fallback = 0;
             const std::string backend = ggml_backend_name(device.get());
+            placement_contract(*runner, backend, overlap, "F32");
             for (const auto& p : runner->placements()) {
                 if (!p.fallback_reason.empty()) ++fallback;
                 if (p.operation == "MUL_MAT") {
@@ -97,6 +126,7 @@ int main(int argc, char** argv) {
             check(bool(qcpu), error);
             auto qdevice = PortableFfn::create(f.g, 0, quantized, options, error);
             check(bool(qdevice), error);
+            placement_contract(*qdevice, backend, overlap, "Q8_mix");
             size_t q8_matmuls = 0;
             for (const auto& p : qdevice->placements()) if (p.operation == "MUL_MAT") {
                 check(p.backend == backend, "Q8_0 projection stayed on CPU");

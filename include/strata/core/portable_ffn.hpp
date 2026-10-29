@@ -91,6 +91,8 @@ public:
     bool reset(const std::vector<float>& residual, std::string& error);
     // Transactional residual: dispatch/validation failure leaves it unchanged.
     bool step(const PortableExpertRows& dispatch, PortableRoute& route, std::string& error);
+    // A failed synchronization blocks execution until reset confirms drainage.
+    bool poisoned() const;
     const std::vector<float>& residual() const;
     const std::vector<PortablePlacement>& placements() const;
     size_t weight_bytes() const;

@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <exception>
 #include <map>
 #include <numeric>
 #include <stdexcept>
@@ -80,25 +82,64 @@ struct PortableFfn::Impl {
     std::vector<float> state;
     std::vector<PortablePlacement> placement;
     size_t weights_size = 0, graphs_size = 0, device_weights = 0;
-    bool initialized = false, pending_shared = false;
+    bool initialized = false, pending_shared = false, poisoned = false;
+    std::exception_ptr drain_failure;
 
     void drain_shared() {
         if (pending_shared) {
-            ggml_backend_sched_synchronize(shared_sched.get());
+            try { ggml_backend_sched_synchronize(shared_sched.get()); }
+            catch (...) { poisoned = true; throw; }
             pending_shared = false;
         }
     }
-    void drain_all() {
-        if (!options.overlap_shared_cpu) return;
-        // Also cover exceptions thrown during route or post submission before
-        // the synchronous scheduler wrapper reaches its own wait.
-        for (auto* sched : {pre_sched.get(), shared_sched.get(), post_sched.get()})
-            if (sched) ggml_backend_sched_synchronize(sched);
+    bool drain_all() noexcept {
+        drain_failure = nullptr;
+        if (!options.overlap_shared_cpu) return true;
+        // Keep trying the other schedulers after a failed wait. Never report a
+        // successful drain or clear pending/poison after an unconfirmed wait.
+        for (auto* sched : {pre_sched.get(), shared_sched.get(), post_sched.get()}) {
+            if (!sched) continue;
+            try { ggml_backend_sched_synchronize(sched); }
+            catch (...) {
+                if (!drain_failure) drain_failure = std::current_exception();
+                poisoned = true;
+            }
+        }
+        if (drain_failure) return false;
         pending_shared = false;
+        return true;
     }
-    ~Impl() { drain_all(); } // before scheduler, graph, weights or producer storage is freed
-
-
+    ggml_status compute(ggml_backend_sched_t sched, ggml_cgraph* graph) {
+        try { return ggml_backend_sched_graph_compute(sched, graph); }
+        catch (...) { if (options.overlap_shared_cpu) poisoned = true; throw; }
+    }
+    ggml_status submit_shared() {
+        try { return ggml_backend_sched_graph_compute_async(shared_sched.get(), shared_graph); }
+        catch (...) { poisoned = true; throw; }
+    }
+    void append_drain_error(std::string& error) const {
+        if (!drain_failure) return;
+        error += "; cleanup synchronization failed: ";
+        try { std::rethrow_exception(drain_failure); }
+        catch (const std::exception& e) { error += e.what(); }
+        catch (...) { error += "unknown backend exception"; }
+    }
+    ~Impl() noexcept {
+        if (drain_all()) return;
+        // A transient backend exception must not escape this destructor. Retry
+        // all waits once. Persistent failure cannot justify freeing storage
+        // potentially still in use: retain the owned resources and report it.
+        if (drain_all()) {
+            std::fputs("portable FFN: destruction recovered after failed synchronization\n", stderr);
+            return;
+        }
+        std::fputs("portable FFN: destruction synchronization failed; completion unconfirmed; "
+                   "owned execution resources retained, backend owner must stop reuse\n", stderr);
+        (void)pre_sched.release(); (void)shared_sched.release(); (void)post_sched.release();
+        (void)weights_buffer.release();
+        (void)weights_ctx.release(); (void)pre_ctx.release();
+        (void)shared_ctx.release(); (void)post_ctx.release(); (void)cpu.release();
+    }
 
     Impl(PortableFfnGeometry geometry, int64_t index, const std::vector<PortableTensorView>& weights,
          PortableFfnOptions opts) : g(geometry), layer(index), options(opts) {
@@ -254,25 +295,30 @@ std::unique_ptr<PortableFfn> PortableFfn::from_gguf(const GgufModel& model, int6
 bool PortableFfn::reset(const std::vector<float>& residual, std::string& error) {
     error.clear();
     try {
-        impl_->drain_all();
+        if (!impl_->drain_all()) {
+            error = "portable FFN: reset could not drain outstanding work";
+            impl_->append_drain_error(error);
+            return false;
+        }
         require(residual.size() == size_t(impl_->g.hidden * impl_->g.streams), "portable FFN: residual size mismatch");
-        finite(residual); impl_->state = residual; impl_->initialized = true; return true;
+        finite(residual); impl_->state = residual; impl_->initialized = true; impl_->poisoned = false; return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route, std::string& error) {
     error.clear(); route = {};
     try {
         auto& s = *impl_;
+        require(!s.poisoned, "portable FFN: synchronization failure poisoned execution; reset required");
         require(s.initialized && bool(dispatch), "portable FFN: reset and expert callback required");
         write(s.input, s.state);
-        require(ggml_backend_sched_graph_compute(s.pre_sched.get(), s.pre) == GGML_STATUS_SUCCESS, "portable FFN: pre graph failed");
+        require(s.compute(s.pre_sched.get(), s.pre) == GGML_STATUS_SUCCESS, "portable FFN: pre graph failed");
         PortableRoute candidate;
         candidate.activation = read(s.mixed);
         route_logits(read(s.logits), s.g.selected, candidate);
         if (s.shared_sched) {
             // Mark pending before submit: even a failed submission may have queued work.
             s.pending_shared = true;
-            require(ggml_backend_sched_graph_compute_async(s.shared_sched.get(), s.shared_graph) == GGML_STATUS_SUCCESS,
+            require(s.submit_shared() == GGML_STATUS_SUCCESS,
                     "portable FFN: shared graph failed");
         }
         std::vector<float> rows;
@@ -289,12 +335,18 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         }
         finite(block);
         write(s.post_input, s.state); write(s.post_inject, read(s.inject)); write(s.post_block, block);
-        require(ggml_backend_sched_graph_compute(s.post_sched.get(), s.post) == GGML_STATUS_SUCCESS, "portable FFN: post graph failed");
+        require(s.compute(s.post_sched.get(), s.post) == GGML_STATUS_SUCCESS, "portable FFN: post graph failed");
         auto next = read(s.output);
         s.state = std::move(next); route = std::move(candidate); error.clear(); return true;
-    } catch (const std::exception& e) { impl_->drain_all(); error = e.what(); return false; }
-    catch (...) { impl_->drain_all(); error = "portable FFN: unknown expert/graph exception"; return false; }
+    } catch (const std::exception& e) {
+        error = e.what(); // preserve the primary failure before cleanup can fail
+        impl_->drain_all(); impl_->append_drain_error(error); return false;
+    } catch (...) {
+        error = "portable FFN: unknown expert/graph exception";
+        impl_->drain_all(); impl_->append_drain_error(error); return false;
+    }
 }
+bool PortableFfn::poisoned() const { return impl_->poisoned; }
 const std::vector<float>& PortableFfn::residual() const { return impl_->state; }
 const std::vector<PortablePlacement>& PortableFfn::placements() const { return impl_->placement; }
 size_t PortableFfn::weight_bytes() const { return impl_->weights_size; }
