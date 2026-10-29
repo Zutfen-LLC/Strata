@@ -25,7 +25,7 @@ struct PortableQsaTrace {
     std::vector<float> query, key, value, gate, index_query, index_raw_key;
     std::vector<float> pooled_key, cell_scores, selected, attention, gated_attention, attention_residual;
 };
-// Opt-in complete qwen4exp QSA layers 3/7/.../47, one text sequence, one token per call.
+// Opt-in complete qwen4exp QSA layers 3/7/.../47, one text sequence, T1 or causal T1..8 chunks.
 // Positions must be contiguous starting at zero. K/V retain the CUDA FP16
 // storage policy; raw indexer tail and normalized/rotated pooled keys are F32.
 class PortableQsaLayer {
@@ -42,6 +42,13 @@ class PortableQsaLayer {
     PortableQsaLayer &operator=(const PortableQsaLayer &) = delete;
     bool step(uint64_t position, const std::vector<float> &residual, const PortableExpertRows &dispatch,
               PortableRoute &route, std::string &error, PortableQsaTrace *trace = nullptr);
+    // Opt-in T1..8 causal layer chunk. Token IDs bind the single-sequence
+    // interface (QSA uses contiguous positions); rows are [H,HC,T]. Failure
+    // preserves public receipts and poisons either policy until reset/replay.
+    bool run_chunk(const std::vector<int32_t>& tokens, uint64_t position0,
+                   std::vector<float>& residual_rows, const PortableExpertRowsBatch& dispatch,
+                   std::vector<PortableRoute>& routes, std::string& error);
+    PortableLayerChunkWork chunk_work() const;
     bool reset(std::string &error);
     uint64_t tokens() const;
     bool poisoned() const;

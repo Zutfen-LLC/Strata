@@ -1,9 +1,25 @@
+#include "portable_layer_chunk_fixture.hpp"
 #include "portable_qsa_fixture.hpp"
 #include "portable_qsa_selection.hpp"
 #include <limits>
 using namespace qsa_fixture;
 int main() {
     try {
+        {
+            Fixture fixture;
+            std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> selected(ggml_backend_cpu_init(),ggml_backend_free);
+            std::string error;
+            for(int mode=0;mode<3;++mode) {
+                PortableQsaOptions options;options.capacity=10;
+                options.execution.accelerator=selected.get();options.execution.request_accelerator=true;
+                options.reuse_attention=mode>0;options.production=mode==2;
+                auto chunk=PortableQsaLayer::create(3,fixture.views,options,error);
+                auto serial=PortableQsaLayer::create(3,fixture.views,options,error);
+                check(bool(chunk)&&bool(serial),error);
+                layer_chunk_fixture::exercise(*chunk,*serial,fixture,experts(),selected.get(),
+                    options.execution.graph_budget,options.state_budget,mode==2?"QSA production CPU-selected":mode==1?"QSA diagnostic reuse CPU-selected":"QSA diagnostic legacy CPU-selected");
+            }
+        }
         spare_high_score_test({});
         selection_tests({});
         selection_tests({}, true);

@@ -166,16 +166,62 @@ CPU-cold masks, source invalidation and the bounded staging waves. The local
 adapter tests include fake two-die placement and the real executor with CPU
 graph substitution; neither is evidence of GPU execution.
 
-This checkpoint is not wired into `PortableModelSession`, the CLI or harness.
-There is no new prefill flag, changed default, whole-model chunk receipt or
-performance claim. Prompt head elision remains the separate serial option.
-Before layer-major model integration, split the GDN/QSA attention transaction
-into private ordered working cursors and completed-chunk publication. GDN must
-advance recurrence, convolution and PLE predecessors in order; QSA must advance
-KV, pool, spare and tail without exposing future cells. Preserve T1 rollback;
-failed chunks poison until reset/replay. The shared FFN owner now supplies
-one T1 execution plus one active chunk shape. Integrate that pair with the layer
-cursor and preflight its combined ledger plus attention working state under
-unchanged model caps before enabling the chunk option or binding it in the harness.
-Mixed segmentation, attention-history/EOS boundaries, model poisoning and
-requested-logit/continuation checks belong to that next integration checkpoint.
+## Layer chunk source checkpoint
+
+`PortableGdnLayer::run_chunk` and `PortableQsaLayer::run_chunk` accept T=1–8
+token IDs, the contiguous starting position, in/out residual rows `[H,HC,T]`,
+one batch provider and a route vector. QSA uses positions rather than token IDs;
+GDN uses IDs for configured PLE predecessors. These additive APIs are not called
+by the model or CLI. Existing T1 `step` entry points and their diagnostic versus
+production failure policies remain available.
+
+Each layer advances the original T1 attention arithmetic in token order through
+a private working cursor. GDN advances recurrence/convolution and PLE history;
+QSA appends only the current KV cell and updates pool/spare/tail before that
+position's attention. Future cells are never bulk-appended. The resulting rows
+feed one actual T-column FFN pre/post graph pair; T1 tails retain the scalar FFN
+path. The final row becomes `last_residual`. No attention fusion, precision
+conversion or alternative softmax is introduced.
+
+Diagnostic working cursors are bounded copies, and public histories remain at
+the last completed call during the provider callback. Production state advances
+in place, so any chunk error, including malformed input or budget refusal,
+poisons either policy until reset/replay. A failure leaves input/output rows,
+committed token count, last residual, diagnostic histories and completed chunk
+receipts unchanged; routes are cleared. Production device inspection may show
+uncommitted state. There is no device rollback promise. Reset releases the active
+chunk FFN and working-state allowance while preserving cumulative chunk totals.
+
+`chunk_work()` records only completed chunks: logical tokens and ordered attention
+calls are separate from actual FFN pre/provider/post calls. A T-token completed
+chunk has T attention calls and one FFN pre, provider and post call. Failed work
+is excluded from these completion receipts; they are not failure-attempt timers.
+
+One shared FFN chunk execution is retained per layer. A different T releases the
+previous shape. The FFN's original two-argument factory remains; a new overload
+accepts a smaller chunk-only graph ceiling so attention storage/workspace is
+reserved before planning the chunk. QSA attention replans include retained chunk
+buffers in the aggregate cap. Layer memory reports deduplicate weights, retain
+both FFN scheduler pairs and include bounded working history/row staging under
+the existing state limits. Failed plans may change the scratch high water, which
+remains accounted while poisoned. No cap is raised.
+
+The layer fixtures exercise all T1–8 sizes and tails across nine input positions,
+QSA pooling endpoints 0/3/4/7/8, input EOS/image PLE predecessors, exact diagnostic
+history, QSA production device inspection through a CPU-selected backend, routes,
+serial continuation and A/B/A reset. They check eight actual T-column FFN matrix
+nodes and one provider call per chunk. Middle-attention nonfinite input,
+provider rejection/throw and an injected FFN post-graph failure must poison with
+no completed publication. GDN production's private recurrence is checked through
+continuation behavior rather than exposed as a new diagnostic mirror. Numerical
+comparisons retain the existing Q8 gate; synthetic CPU observations do not
+qualify real-model or Vulkan execution.
+
+The next checkpoint is model and harness integration, following independent
+layer review and required compilation/qualification. There is no model prefill
+flag, policy binding, whole-model chunk receipt or performance claim here.
+Prompt head elision remains the separate serial option. Full-model layer-major
+chunking must preflight the combined layer ledgers under unchanged host/per-device
+caps, leave the final prompt token/decode/terminal feed on T1, preserve unavailable
+logit receipts and add model-level poison/reset, segmentation, requested-logit
+and continuation gates. No hardware dispatch follows from this source checkpoint.

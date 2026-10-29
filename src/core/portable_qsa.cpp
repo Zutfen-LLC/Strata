@@ -157,7 +157,165 @@ struct PortableQsaLayer::Impl {
     Context state_ctx{nullptr, ggml_free};
     Context copy_ctx{nullptr, ggml_free};
     Buffer state_buffer{nullptr, ggml_backend_buffer_free};
-    std::unique_ptr<PortableFfn> ffn;
+    std::unique_ptr<PortableFfn> ffn, chunk_ffn;
+    bool chunk_active = false;
+    size_t chunk_host_bound = 0;
+    PortableLayerChunkWork chunk_work;
+    size_t chunk_graphs() const { return chunk_ffn ? chunk_ffn->graph_bytes() : 0; }
+    struct CursorView {
+        const std::vector<uint16_t>& keys;
+        const std::vector<uint16_t>& values;
+        const std::vector<float>& pooled;
+        const std::vector<float>& tail;
+    };
+    struct AttentionResult {
+        std::vector<float> residual;
+        std::vector<uint16_t> key,value;
+        std::vector<float> pooled,tail;
+        std::vector<PortablePlacement> placement;
+        size_t graphs;
+        PortableQsaTrace trace;
+        std::unique_ptr<Phase> temporary; // legacy T1 scratch stays live through FFN
+    };
+    AttentionResult attend(uint64_t position,const std::vector<float>& residual,CursorView cursor,bool trace) {
+        auto& s = *this;
+        finite(residual);
+        const int32_t p = int32_t(position);
+        std::array<int32_t, 4> positions{{p, p, p, p}};
+        ggml_backend_tensor_set(s.pos, positions.data(), 0, sizeof(positions));
+        write(s.input, residual);
+        s.project->run();
+        auto q = read(s.q), k = read(s.k), v = read(s.v), gate = read(s.gate), iq = read(s.iq), ik = read(s.ik),
+             inject = read(s.inject);
+        auto hk = half(k), hv = half(v);
+        const size_t n = size_t(position) + 1, complete = n / 4;
+        std::vector<float> next_tail, new_pool, next_pool;
+        std::vector<uint16_t> next_keys, next_values;
+        if (s.options.production) {
+            // Preserve the first-token four-add/scale pool calculation exactly.
+            if (position == 0) {
+                std::vector<float> first(4 * ID);
+                for (size_t row = 0; row < 4; ++row)
+                    std::copy(ik.begin(), ik.end(), first.begin() + row * ID);
+                write(s.device_tail, first);
+                ggml_backend_tensor_set(s.pool_pos, positions.data(), 0, sizeof(positions));
+                s.pool->run();
+                ggml_backend_tensor_copy(s.pool_output, s.device_spare);
+                ggml_backend_tensor_memset(s.device_tail, 0, 0, ggml_nbytes(s.device_tail));
+            }
+            ggml_backend_tensor_set(s.device_k, hk.data(), size_t(position) * KV * sizeof(uint16_t), KV * sizeof(uint16_t));
+            ggml_backend_tensor_set(s.device_v, hv.data(), size_t(position) * KV * sizeof(uint16_t), KV * sizeof(uint16_t));
+            ggml_backend_tensor_set(s.device_tail, ik.data(), size_t(position % 4) * ID * sizeof(float), ID * sizeof(float));
+            // Completion overwrites the old spare; the immutable spare is copied
+            // into its new slot. Only this block's bias changes.
+            ggml_reset(s.copy_ctx.get());
+            if (n % 4 == 0) {
+                const int32_t start = int32_t(n - 4);
+                positions = {{start, start, start, start}};
+                ggml_backend_tensor_set(s.pool_pos, positions.data(), 0, sizeof(positions));
+                s.pool->run();
+                auto *row = Impl::view(s.copy_ctx.get(), s.device_pool, 1, (complete - 1) * ID * sizeof(float));
+                ggml_backend_tensor_copy(s.pool_output, row);
+                ggml_backend_tensor_memset(s.device_tail, 0, 0, ggml_nbytes(s.device_tail));
+            }
+            if (position == 0 || n % 4 == 0) {
+                auto *row = Impl::view(s.copy_ctx.get(), s.device_pool, 1, complete * ID * sizeof(float));
+                ggml_backend_tensor_copy(s.device_spare, row);
+            }
+            const std::array<float, 4> biases = n % 4 == 0 ? std::array<float, 4>{{0, 0, 0, 0}}
+                                                          : std::array<float, 4>{{1e9f, 1e9f, 1e9f, 1e9f}};
+            const size_t start = size_t(position / 4) * 4, active = n - start;
+            ggml_backend_tensor_set(s.device_bias, biases.data(), start * sizeof(float), active * sizeof(float));
+        } else {
+            next_tail = cursor.tail;
+            std::copy(ik.begin(), ik.end(), next_tail.begin() + size_t(position % 4) * ID);
+            // The spare is normalized raw cell0 at RoPE position0, not a zero
+            // vector. Keep it in the final pooled row and move it on completion.
+            // Everything here is candidate-only until the existing FFN commit.
+            std::vector<float> spare(cursor.pooled.end() - ID, cursor.pooled.end());
+            if (position == 0) {
+                std::vector<float> first_block(4 * ID);
+                for (size_t member = 0; member < 4; ++member)
+                    std::copy(ik.begin(), ik.end(), first_block.begin() + member * ID);
+                write(s.pool_input, first_block);
+                ggml_backend_tensor_set(s.pool_pos, positions.data(), 0, sizeof(positions));
+                s.pool->run();
+                spare = read(s.pool_output);
+            }
+            if (n % 4 == 0) {
+                write(s.pool_input, next_tail);
+                const int32_t start = int32_t(n - 4);
+                positions = {{start, start, start, start}};
+                ggml_backend_tensor_set(s.pool_pos, positions.data(), 0, sizeof(positions));
+                s.pool->run();
+                new_pool = read(s.pool_output);
+                std::fill(next_tail.begin(), next_tail.end(), 0);
+            }
+            // Only active history is staged; no maximum-capacity copy per token.
+            next_pool.assign((complete + 1) * ID, 0);
+            std::copy(cursor.pooled.begin(), cursor.pooled.end(), next_pool.begin());
+            if (!new_pool.empty()) {
+                next_pool.resize((complete + 1) * ID, 0);
+                std::copy(new_pool.begin(), new_pool.end(), next_pool.begin() + (complete - 1) * ID);
+            }
+            std::copy(spare.begin(), spare.end(), next_pool.begin() + complete * ID);
+            next_keys.resize(n * KV);
+            next_values.resize(n * KV);
+            std::copy(cursor.keys.begin(), cursor.keys.end(), next_keys.begin());
+            std::copy(cursor.values.begin(), cursor.values.end(), next_values.begin());
+            std::copy(hk.begin(), hk.end(), next_keys.begin() + (n - 1) * KV);
+            std::copy(hv.begin(), hv.end(), next_values.begin() + (n - 1) * KV);
+        }
+        std::unique_ptr<Phase> temporary;
+        if (!s.attention)
+            temporary = std::make_unique<Phase>();
+        auto &attention = s.attention ? *s.attention : *temporary;
+        if (s.attention)
+            attention.rebuild();
+        auto [ki, vi, qi, idxq, pk, mapping, bias, scores, selected, out] = s.build_attention(attention, n);
+        auto next_placement = s.fixed_placement;
+        size_t next_graphs = s.fixed_graphs+s.chunk_graphs();
+        attention.schedule("qsa-attend", s.options.execution, s.cpu, next_placement, next_graphs, bool(s.attention));
+        if (s.attention) {
+            // Replanning may change offsets/topology (notably at 2051 cells).
+            // Account the retained high water even after a rejected candidate.
+            s.retained_attention_bytes = std::max(s.retained_attention_bytes, next_graphs - s.fixed_graphs-s.chunk_graphs());
+            next_graphs = s.fixed_graphs+s.retained_attention_bytes+s.chunk_graphs();
+        }
+        if (!s.options.production) {
+            ggml_backend_tensor_set(ki, next_keys.data(), 0, next_keys.size() * sizeof(uint16_t));
+            ggml_backend_tensor_set(vi, next_values.data(), 0, next_values.size() * sizeof(uint16_t));
+            write(pk, next_pool);
+            std::vector<int32_t> map(n);
+            std::vector<float> biases(n, 0);
+            for (size_t i = 0; i < n; ++i) {
+                map[i] = int32_t(i / 4);
+                if (i >= complete * 4)
+                    biases[i] = 1e9f;
+            }
+            ggml_backend_tensor_set(mapping, map.data(), 0, n * sizeof(int32_t));
+            write(bias, biases);
+        }
+        write(qi, q);
+        write(idxq, iq);
+        attention.run();
+        auto attn = read(out);
+        auto cell_scores = s.options.production ? std::vector<float>{} : read(scores);
+        auto selection = s.options.production ? std::vector<float>{} : read(selected);
+        write(s.out_input, attn);
+        write(s.out_gate, gate);
+        write(s.out_residual, residual);
+        write(s.out_inject, inject);
+        s.combine->run();
+        auto next_residual = read(s.attn_residual);
+        auto gated = read(s.gated);
+        PortableQsaTrace next_trace;
+        if (trace)
+            next_trace = {q, k, v, gate, iq, ik, new_pool, cell_scores, selection, attn, gated, next_residual};
+        return {std::move(next_residual),std::move(hk),std::move(hv),std::move(next_pool),
+                std::move(next_tail),std::move(next_placement),next_graphs-s.chunk_graphs(),std::move(next_trace),std::move(temporary)};
+    }
+
     std::unique_ptr<Phase> project, pool, combine, attention;
     size_t retained_attention_bytes = 0;
     ggml_tensor *input, *pos, *q, *k, *v, *gate, *iq, *ik, *inject;
@@ -550,145 +708,21 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
         *trace = {};
     try {
         auto &s = *impl_;
+        require(!s.chunk_active,"portable QSA: chunk execution active");
         require(s.healthy, "portable QSA: device state poisoned; reset required");
         require(!s.options.production || !trace, "portable QSA: trace requires eager diagnostic policy");
         require(position == s.count, "portable QSA: positions must be contiguous "
                                      "text positions starting zero");
         require(s.count < s.options.capacity, "portable QSA: cache capacity exhausted");
         require(residual.size() == RES && bool(dispatch), "portable QSA: residual/callback required");
-        finite(residual);
-        const int32_t p = int32_t(position);
-        std::array<int32_t, 4> positions{{p, p, p, p}};
-        ggml_backend_tensor_set(s.pos, positions.data(), 0, sizeof(positions));
-        write(s.input, residual);
-        s.project->run();
-        auto q = read(s.q), k = read(s.k), v = read(s.v), gate = read(s.gate), iq = read(s.iq), ik = read(s.ik),
-             inject = read(s.inject);
-        auto hk = half(k), hv = half(v);
-        const size_t n = size_t(position) + 1, complete = n / 4;
-        std::vector<float> next_tail, new_pool, next_pool;
-        std::vector<uint16_t> next_keys, next_values;
-        if (s.options.production) {
-            // Preserve the first-token four-add/scale pool calculation exactly.
-            if (position == 0) {
-                std::vector<float> first(4 * ID);
-                for (size_t row = 0; row < 4; ++row)
-                    std::copy(ik.begin(), ik.end(), first.begin() + row * ID);
-                write(s.device_tail, first);
-                ggml_backend_tensor_set(s.pool_pos, positions.data(), 0, sizeof(positions));
-                s.pool->run();
-                ggml_backend_tensor_copy(s.pool_output, s.device_spare);
-                ggml_backend_tensor_memset(s.device_tail, 0, 0, ggml_nbytes(s.device_tail));
-            }
-            ggml_backend_tensor_set(s.device_k, hk.data(), size_t(position) * KV * sizeof(uint16_t), KV * sizeof(uint16_t));
-            ggml_backend_tensor_set(s.device_v, hv.data(), size_t(position) * KV * sizeof(uint16_t), KV * sizeof(uint16_t));
-            ggml_backend_tensor_set(s.device_tail, ik.data(), size_t(position % 4) * ID * sizeof(float), ID * sizeof(float));
-            // Completion overwrites the old spare; the immutable spare is copied
-            // into its new slot. Only this block's bias changes.
-            ggml_reset(s.copy_ctx.get());
-            if (n % 4 == 0) {
-                const int32_t start = int32_t(n - 4);
-                positions = {{start, start, start, start}};
-                ggml_backend_tensor_set(s.pool_pos, positions.data(), 0, sizeof(positions));
-                s.pool->run();
-                auto *row = Impl::view(s.copy_ctx.get(), s.device_pool, 1, (complete - 1) * ID * sizeof(float));
-                ggml_backend_tensor_copy(s.pool_output, row);
-                ggml_backend_tensor_memset(s.device_tail, 0, 0, ggml_nbytes(s.device_tail));
-            }
-            if (position == 0 || n % 4 == 0) {
-                auto *row = Impl::view(s.copy_ctx.get(), s.device_pool, 1, complete * ID * sizeof(float));
-                ggml_backend_tensor_copy(s.device_spare, row);
-            }
-            const std::array<float, 4> biases = n % 4 == 0 ? std::array<float, 4>{{0, 0, 0, 0}}
-                                                          : std::array<float, 4>{{1e9f, 1e9f, 1e9f, 1e9f}};
-            const size_t start = size_t(position / 4) * 4, active = n - start;
-            ggml_backend_tensor_set(s.device_bias, biases.data(), start * sizeof(float), active * sizeof(float));
-        } else {
-            next_tail = s.tail;
-            std::copy(ik.begin(), ik.end(), next_tail.begin() + size_t(position % 4) * ID);
-            // The spare is normalized raw cell0 at RoPE position0, not a zero
-            // vector. Keep it in the final pooled row and move it on completion.
-            // Everything here is candidate-only until the existing FFN commit.
-            std::vector<float> spare(s.pooled.end() - ID, s.pooled.end());
-            if (position == 0) {
-                std::vector<float> first_block(4 * ID);
-                for (size_t member = 0; member < 4; ++member)
-                    std::copy(ik.begin(), ik.end(), first_block.begin() + member * ID);
-                write(s.pool_input, first_block);
-                ggml_backend_tensor_set(s.pool_pos, positions.data(), 0, sizeof(positions));
-                s.pool->run();
-                spare = read(s.pool_output);
-            }
-            if (n % 4 == 0) {
-                write(s.pool_input, next_tail);
-                const int32_t start = int32_t(n - 4);
-                positions = {{start, start, start, start}};
-                ggml_backend_tensor_set(s.pool_pos, positions.data(), 0, sizeof(positions));
-                s.pool->run();
-                new_pool = read(s.pool_output);
-                std::fill(next_tail.begin(), next_tail.end(), 0);
-            }
-            // Only active history is staged; no maximum-capacity copy per token.
-            next_pool.assign((complete + 1) * ID, 0);
-            std::copy(s.pooled.begin(), s.pooled.end(), next_pool.begin());
-            if (!new_pool.empty()) {
-                next_pool.resize((complete + 1) * ID, 0);
-                std::copy(new_pool.begin(), new_pool.end(), next_pool.begin() + (complete - 1) * ID);
-            }
-            std::copy(spare.begin(), spare.end(), next_pool.begin() + complete * ID);
-            next_keys.resize(n * KV);
-            next_values.resize(n * KV);
-            std::copy(s.keys.begin(), s.keys.end(), next_keys.begin());
-            std::copy(s.values.begin(), s.values.end(), next_values.begin());
-            std::copy(hk.begin(), hk.end(), next_keys.begin() + (n - 1) * KV);
-            std::copy(hv.begin(), hv.end(), next_values.begin() + (n - 1) * KV);
-        }
-        std::unique_ptr<Phase> temporary;
-        if (!s.attention)
-            temporary = std::make_unique<Phase>();
-        auto &attention = s.attention ? *s.attention : *temporary;
-        if (s.attention)
-            attention.rebuild();
-        auto [ki, vi, qi, idxq, pk, mapping, bias, scores, selected, out] = s.build_attention(attention, n);
-        auto next_placement = s.fixed_placement;
-        size_t next_graphs = s.fixed_graphs;
-        attention.schedule("qsa-attend", s.options.execution, s.cpu, next_placement, next_graphs, bool(s.attention));
-        if (s.attention) {
-            // Replanning may change offsets/topology (notably at 2051 cells).
-            // Account the retained high water even after a rejected candidate.
-            s.retained_attention_bytes = std::max(s.retained_attention_bytes, next_graphs - s.fixed_graphs);
-            next_graphs = s.fixed_graphs + s.retained_attention_bytes;
-        }
-        if (!s.options.production) {
-            ggml_backend_tensor_set(ki, next_keys.data(), 0, next_keys.size() * sizeof(uint16_t));
-            ggml_backend_tensor_set(vi, next_values.data(), 0, next_values.size() * sizeof(uint16_t));
-            write(pk, next_pool);
-            std::vector<int32_t> map(n);
-            std::vector<float> biases(n, 0);
-            for (size_t i = 0; i < n; ++i) {
-                map[i] = int32_t(i / 4);
-                if (i >= complete * 4)
-                    biases[i] = 1e9f;
-            }
-            ggml_backend_tensor_set(mapping, map.data(), 0, n * sizeof(int32_t));
-            write(bias, biases);
-        }
-        write(qi, q);
-        write(idxq, iq);
-        attention.run();
-        auto attn = read(out);
-        auto cell_scores = s.options.production ? std::vector<float>{} : read(scores);
-        auto selection = s.options.production ? std::vector<float>{} : read(selected);
-        write(s.out_input, attn);
-        write(s.out_gate, gate);
-        write(s.out_residual, residual);
-        write(s.out_inject, inject);
-        s.combine->run();
-        auto next_residual = read(s.attn_residual);
-        auto gated = read(s.gated);
-        PortableQsaTrace next_trace;
-        if (trace)
-            next_trace = {q, k, v, gate, iq, ik, new_pool, cell_scores, selection, attn, gated, next_residual};
+        auto attended = s.attend(position,residual,{s.keys,s.values,s.pooled,s.tail},trace != nullptr);
+        auto next_residual = std::move(attended.residual);
+        auto& hk = attended.key; auto& hv = attended.value;
+        auto& next_pool = attended.pooled; auto& next_tail = attended.tail;
+        auto next_placement = std::move(attended.placement);
+        const size_t next_graphs = attended.graphs;
+        const size_t n = size_t(position)+1;
+        auto next_trace = std::move(attended.trace);
         require(s.ffn->reset(next_residual, error), error);
         PortableRoute candidate;
         require(s.ffn->step(dispatch, candidate, error), error);
@@ -726,12 +760,88 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
         return false;
     }
 }
+bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t position0,
+    std::vector<float>& residual_rows,const PortableExpertRowsBatch& dispatch,
+    std::vector<PortableRoute>& routes,std::string& error) {
+    error.clear(); routes.clear(); auto& s = *impl_;
+    try {
+        require(s.healthy && !s.chunk_active,"portable QSA: poisoned or active chunk; reset required");
+        const size_t T=tokens.size();
+        require(T>=1 && T<=8 && residual_rows.size()==T*RES && bool(dispatch),"portable QSA: invalid chunk shape/callback");
+        require(position0==s.count && T<=s.options.capacity-s.count && T<=UINT64_MAX-s.chunk_work.tokens,
+                "portable QSA: noncontiguous/exhausted chunk");
+        struct Active { bool& flag; explicit Active(bool& f):flag(f){flag=true;} ~Active(){flag=false;} } active(s.chunk_active);
+        const size_t extra=(s.options.production?0:s.options.capacity*2*KV*sizeof(uint16_t)+
+                            (s.options.capacity/4+6)*ID*sizeof(float))+(3*T*RES+RES)*sizeof(float);
+        const size_t device_state=s.state_buffer?ggml_backend_buffer_get_size(s.state_buffer.get()):0;
+        require(s.states_size+device_state<=s.options.state_budget &&
+                extra<=s.options.state_budget-s.states_size-device_state,"portable QSA: chunk working state budget exceeded");
+        s.chunk_host_bound=extra;
+        if(T==1 || (s.chunk_ffn && s.chunk_ffn->tokens()!=int64_t(T))) s.chunk_ffn.reset();
+        if(T>1 && !s.chunk_ffn) {
+            const size_t used=s.fixed_graphs+s.retained_attention_bytes;
+            require(used<s.options.execution.graph_budget,"portable QSA: no chunk graph budget");
+            s.chunk_ffn=s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-used);
+            require(bool(s.chunk_ffn),error);
+        }
+        auto keys=s.keys, values=s.values; auto pooled=s.pooled, tail=s.tail;
+        if(!s.options.production) {
+            keys.reserve(s.options.capacity*KV); values.reserve(s.options.capacity*KV);
+            pooled.reserve((s.options.capacity/4+2)*ID);
+        }
+        std::vector<float> attended_rows; attended_rows.reserve(T*RES);
+        std::vector<PortablePlacement> placement;
+        size_t graphs=s.graphs_size;
+        for(size_t t=0;t<T;++t) {
+            const size_t n=size_t(position0)+t+1;
+            std::vector<float> input(residual_rows.begin()+t*RES,residual_rows.begin()+(t+1)*RES);
+            auto next=s.attend(position0+t,input,{keys,values,pooled,tail},false);
+            if(!s.options.production) {
+                keys.resize(n*KV); values.resize(n*KV);
+                std::copy(next.key.begin(),next.key.end(),keys.begin()+(n-1)*KV);
+                std::copy(next.value.begin(),next.value.end(),values.begin()+(n-1)*KV);
+                pooled.resize(next.pooled.size()); std::copy(next.pooled.begin(),next.pooled.end(),pooled.begin());
+                tail.swap(next.tail);
+            }
+            attended_rows.insert(attended_rows.end(),next.residual.begin(),next.residual.end());
+            placement.swap(next.placement); graphs=next.graphs;
+        }
+        auto& ffn=T==1?*s.ffn:*s.chunk_ffn;
+        const auto before=ffn.work(); require(ffn.reset(attended_rows,error),error);
+        std::vector<PortableRoute> candidate;
+        if(T==1) {
+            PortableRoute route;
+            require(ffn.step([&](int64_t l,const PortableRoute& r,std::vector<float>& rows,std::string& e){
+                return dispatch(l,{r},rows,e);
+            },route,error),error);
+            candidate.push_back(std::move(route));
+        } else require(ffn.step_batch(dispatch,candidate,error),error);
+        auto completed=ffn.residual();
+        std::vector<float> last(completed.end()-RES,completed.end());
+        placement.erase(placement.begin(),placement.begin()+s.ffn->placements().size());
+        placement.insert(placement.begin(),ffn.placements().begin(),ffn.placements().end());
+        const auto after=ffn.work(); auto work=s.chunk_work;
+        ++work.chunks; work.tokens+=T; work.attention_calls+=T;
+        work.ffn_pre_calls+=after.pre_graph_calls-before.pre_graph_calls;
+        work.provider_calls+=after.provider_calls-before.provider_calls;
+        work.ffn_post_calls+=after.post_graph_calls-before.post_graph_calls;
+        require(s.healthy,"portable QSA: chunk invalidated; reset required");
+        if(!s.options.production) { s.keys.swap(keys); s.values.swap(values); s.pooled.swap(pooled); s.tail.swap(tail); }
+        s.last.swap(last); s.placement.swap(placement); s.graphs_size=graphs; s.count+=T; s.chunk_work=work;
+        residual_rows.swap(completed); routes.swap(candidate);
+        return true;
+    } catch(const std::exception& e) { s.healthy=false; error=e.what(); return false; }
+      catch(...) { s.healthy=false; error="portable QSA: unknown chunk failure; reset required"; return false; }
+}
+PortableLayerChunkWork PortableQsaLayer::chunk_work() const { return impl_->chunk_work; }
 bool PortableQsaLayer::reset(std::string &error) {
     error.clear();
     try {
         auto &s = *impl_;
+        require(!s.chunk_active,"portable QSA: chunk execution active");
         if (s.options.production)
             s.healthy = false;
+        s.chunk_ffn.reset(); s.chunk_host_bound = 0;
         std::vector<float> zero(RES, 0);
         require(s.ffn->reset(zero, error), error);
         auto placement = s.fixed_placement;
@@ -779,10 +889,10 @@ const std::vector<float> &PortableQsaLayer::last_residual() const { return impl_
 const std::vector<PortablePlacement> &PortableQsaLayer::placements() const { return impl_->placement; }
 size_t PortableQsaLayer::weight_bytes() const { return impl_->weights_size; }
 size_t PortableQsaLayer::graph_bytes() const {
-    return impl_->attention ? impl_->fixed_graphs + impl_->retained_attention_bytes : impl_->graphs_size;
+    return (impl_->attention ? impl_->fixed_graphs+impl_->retained_attention_bytes : impl_->graphs_size)+impl_->chunk_graphs();
 }
 size_t PortableQsaLayer::state_bytes() const {
-    return impl_->states_size + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
+    return impl_->states_size+impl_->chunk_host_bound + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
 }
 bool PortableQsaLayer::poisoned() const { return !impl_->healthy; }
 bool PortableQsaLayer::inspect_state(PortableQsaState &state, std::string &error) const {
@@ -813,6 +923,7 @@ bool PortableQsaLayer::inspect_state(PortableQsaState &state, std::string &error
 PortableMemoryUsage PortableQsaLayer::memory_usage() const {
     const auto &s = *impl_;
     auto m = s.ffn->memory_usage();
+    if(s.chunk_ffn) { std::string error; require(s.ffn->combined_memory_usage(*s.chunk_ffn,m,error),error); }
     m.device_weights += s.attention_device_weights;
     m.host_weights = s.weights_size - m.device_weights;
     for (auto *phase : {s.project.get(), s.pool.get(), s.combine.get(), s.attention.get()}) {
@@ -830,7 +941,7 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
     const size_t allowance =
         s.options.execution.graph_budget > buffers ? s.options.execution.graph_budget - buffers : 0;
     m.device_state += s.state_buffer ? ggml_backend_buffer_get_size(s.state_buffer.get()) : 0;
-    m.host_extra_bound += s.states_size + (16u << 20) + allowance + s.conversion_scratch;
+    m.host_extra_bound += s.states_size+s.chunk_host_bound + (16u << 20) + allowance + s.conversion_scratch;
     if (s.options.execution.request_accelerator && s.options.execution.accelerator) {
         // fixed_graphs includes fixed scheduler buffers AND private workspace.
         // Legacy attention is token-local through expert dispatch; reuse owns
@@ -840,6 +951,10 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
             fixed_buffers -= ggml_backend_sched_get_buffer_size(s.attention->scheduler.get(), s.cpu.get());
             fixed_buffers -= ggml_backend_sched_get_buffer_size(s.attention->scheduler.get(), s.options.execution.accelerator);
         }
+        if(s.chunk_ffn) {
+            const auto chunk=s.chunk_ffn->memory_usage();
+            fixed_buffers-=chunk.host_graph+chunk.device_graph;
+        }
         const size_t fixed_private = s.fixed_graphs > fixed_buffers ? s.fixed_graphs - fixed_buffers : 0;
         const size_t matrix_conversion=size_t(H*2*D*QH)*sizeof(float);
         require(fixed_private>=matrix_conversion,"portable QSA: fixed workspace accounting mismatch");
@@ -847,10 +962,10 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
         portable_detail::account_matrix_conversion(m,s.options.execution.accelerator,matrix_conversion);
         if (s.attention) {
             // Future exact-shape replans may use the rest of this retained cap.
-            m.device_extra_bound += s.options.execution.graph_budget - s.fixed_graphs - (buffers - fixed_buffers);
+            m.device_extra_bound += s.options.execution.graph_budget - s.fixed_graphs-s.chunk_graphs() - (buffers-fixed_buffers-s.chunk_graphs());
         } else
-            m.device_token_temporary_bound = s.options.execution.graph_budget > s.fixed_graphs
-                                            ? s.options.execution.graph_budget - s.fixed_graphs : 0;
+            m.device_token_temporary_bound = s.options.execution.graph_budget > s.fixed_graphs+s.chunk_graphs()
+                                            ? s.options.execution.graph_budget-s.fixed_graphs-s.chunk_graphs() : 0;
     } else if(s.options.execution.request_accelerator) {
         m.device_extra_bound += allowance; // preserve missing-backend fallback accounting
     }

@@ -255,6 +255,10 @@ std::unique_ptr<PortableFfn> PortableFfn::from_gguf(const GgufModel& model, int6
 }
 
 std::unique_ptr<PortableFfn> PortableFfn::create_chunk_execution(int64_t tokens, std::string& error) const {
+    return create_chunk_execution(tokens,error,SIZE_MAX);
+}
+
+std::unique_ptr<PortableFfn> PortableFfn::create_chunk_execution(int64_t tokens, std::string& error, size_t graph_budget) const {
     error.clear();
     try {
         auto& s = *impl_;
@@ -265,7 +269,7 @@ std::unique_ptr<PortableFfn> PortableFfn::create_chunk_execution(int64_t tokens,
         require(s.graphs_size < s.options.graph_budget,
                 "portable FFN: no remaining shared graph budget");
         auto options = s.options;
-        options.graph_budget -= s.graphs_size;
+        options.graph_budget = std::min(graph_budget, options.graph_budget-s.graphs_size);
         auto lease = std::make_shared<Impl::ChunkLease>();
         auto candidate = std::make_unique<Impl>(s.owned_weights, options, tokens, lease);
         auto result = std::unique_ptr<PortableFfn>(new PortableFfn(std::move(candidate)));

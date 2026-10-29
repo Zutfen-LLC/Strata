@@ -84,6 +84,13 @@ struct PortableFfnWork {
     uint64_t pre_graph_calls = 0, provider_calls = 0, post_graph_calls = 0;
 };
 
+// Receipts for completed layer chunks only. Reset preserves these totals;
+// failed chunks publish no counts, residuals or routes.
+struct PortableLayerChunkWork {
+    uint64_t chunks = 0, tokens = 0, attention_calls = 0;
+    uint64_t ffn_pre_calls = 0, provider_calls = 0, ffn_post_calls = 0;
+};
+
 class PortableFfn {
 public:
     static std::unique_ptr<PortableFfn> create(PortableFfnGeometry geometry, int64_t layer,
@@ -98,6 +105,9 @@ public:
     // Destroy the chunk before planning another tail shape. Calls on this pair
     // must be serialized; the borrowed accelerator must outlive both runners.
     std::unique_ptr<PortableFfn> create_chunk_execution(int64_t tokens, std::string& error) const;
+    // A layer can reserve its attention budget first and pass the remaining
+    // chunk-only ceiling. This never relaxes the original aggregate FFN cap.
+    std::unique_ptr<PortableFfn> create_chunk_execution(int64_t tokens, std::string& error, size_t graph_budget) const;
     // Standalone reports remain inclusive. Use this ledger to count a pair's
     // shared weights/owner arena once and all retained graph buffers together.
     bool combined_memory_usage(const PortableFfn& chunk, PortableMemoryUsage& memory, std::string& error) const;

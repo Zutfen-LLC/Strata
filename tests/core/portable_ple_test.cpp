@@ -1,3 +1,4 @@
+#include "portable_layer_chunk_fixture.hpp"
 #include "gguf_fixture.hpp"
 #include "ggml-cpu.h"
 #include "portable_ple_fixture.hpp"
@@ -208,6 +209,15 @@ int main() {
         resident_options.resident_state = true;
         resident_options.execution.request_accelerator = true;
         resident_options.execution.accelerator = selected.get();
+        for(bool production:{false,true}) {
+            auto chunk_opts=resident_options;
+            chunk_opts.policy=production?PortableGdnPolicy::device_production:PortableGdnPolicy::eager_diagnostic;
+            auto chunk=PortableGdnLayer::create(1,f.views,chunk_opts,error);
+            auto serial=PortableGdnLayer::create(1,f.views,chunk_opts,error);
+            check(bool(chunk)&&bool(serial),error);
+            layer_chunk_fixture::exercise(*chunk,*serial,f,experts(),selected.get(),
+                chunk_opts.execution.graph_budget,chunk_opts.state_budget,production?"PLE production CPU-selected":"PLE diagnostic resident CPU-selected");
+        }
         production_policy(f, resident_options, 1);
         auto resident_layer = PortableGdnLayer::create(1, f.views, resident_options, error);
         check(bool(resident_layer) && resident_layer->memory_usage().device_state > 0, "PLE resident state admission");
