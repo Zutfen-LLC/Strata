@@ -9,6 +9,105 @@ The initial implementation supports one serial text sequence, all 48 layers,
 and context limits from 1 to 256 tokens. Defaults remain off. The existing
 CUDA production executable and allocations are separate.
 
+## GDN execution policy
+
+The default is `PortableGdnPolicy::eager_diagnostic`. It keeps the existing
+committed/candidate host state mirrors, intermediate finite checks, trace
+values and rejected-candidate rollback. `--gdn-resident-state` alone retains
+this policy. Native CUDA/HIP/SYCL defaults are unchanged.
+
+For qualification, add `--gdn-production --gdn-resident-state` to strict Vulkan
+execution. The API equivalent is `PortableModelOptions::gdn_production = true`;
+standalone layers select `PortableGdnPolicy::device_production` in their options.
+Production requires a selected backend, resident state and CPU fallback off.
+The first slice of [issue #66](https://github.com/Zutfen-LLC/Strata/issues/66)
+is implemented in [PR #72](https://github.com/Zutfen-LLC/Strata/pull/72).
+Parent-dispatched qualification at `66fbe1727b45115d3e4e9a6c03b9f156c823435d`
+passed focused Vulkan fixtures and bounded same-backend request comparisons.
+Operator evidence and environment details are retained privately. This qualifies
+the exercised opt-in path, not a default change, all devices/configurations or
+full CUDA/Vulkan product parity. PR #72 remains subject to final review and merge.
+The [roadmap in PR #71](https://github.com/Zutfen-LLC/Strata/pull/71) records the
+historical baseline; QSA ownership and the other parity slices remain separate.
+
+Production reuses the resident allocation and cached GDN graph. It removes the
+recurrent, convolution and PLE-history host banks and their per-token downloads.
+It retains separate device commit copies after FFN, rather than adopting native
+CUDA's in-place commit. The pinned Vulkan copy API implements these as device
+buffer copies. The small attention residual and existing FFN host seam still
+transfer and validate results. PLE table gathers and token predecessor tracking
+stay on the host; PLE convolution history stays on the selected backend.
+
+`recurrent_state()`, `convolution_history()` and `ple_convolution_history()`
+throw in production, even before the first token. Traces require diagnostics;
+a production step requesting one fails and poisons the layer. No getter does
+hidden I/O. `token_history()`, `tokens()` and `last_residual()` describe the last
+successful layer step in both policies, including while poisoned. No snapshot
+API is provided in this slice.
+
+Any failed production step poisons the layer; a model step failure poisons the
+session, including when earlier layers already committed. No public position,
+route or logits are published for a failed model step. A caller must explicitly
+reset and replay token IDs. Reset marks state poisoned before work and clears
+poison only after all clearing succeeds; a recoverable reset failure stays
+poisoned. Reset does not repair invalid weights or a failed device. Backend
+process aborts cannot be recovered by this API.
+
+Production adds an integer logits guard after scheduled head completion and before
+logits download or token selection. It follows native Verifier's exponent-bit
+classification: 16 blocks inspect the raw F32 words with
+`(bits & 0x7f800000u) == 0x7f800000u` and reduce with integer OR. There are no
+floating operations in the guard, including when reading signaling NaNs.
+All 16 status words are overwritten each invocation. The bridge first uploads
+a non-success sentinel to every word, then dispatches on the existing Vulkan
+backend queue, waits for completion and reads 64 status bytes. Only all-zero
+status succeeds. Original logits and final host finite checks remain unchanged.
+The CPU reference uses the same raw exponent-bit classification.
+
+The narrow Vulkan bridge is compiled into a build-tree copy of the exact
+pinned backend translation unit. The external checkout is not edited. Private
+source hashes are checked at configure time; incompatible sources fail clearly.
+It reuses backend synchronization, descriptor and buffer utilities, owns its
+pipeline and aligned status allocation, and requires the borrowed serial backend
+to outlive it. It adds no generic custom-op API or global compiler changes.
+The former SUB/SUM guard and its vocabulary-sized subtraction scratch are removed.
+
+`portable_head_test --vulkan INDEX` tests raw finite extrema, signed zero,
+subnormals, both infinities and signed quiet/signaling NaNs at multiple lengths,
+tails and view offsets. It also injects F32 output weights and Q8 output scales
+into the actual scheduled head. Guarded failures must return the distinct
+`nonfinite logits (integer status guard)` error before logits download. Repeated
+bad/finite cases exercise the same guard with both head encodings. No-argument
+head tests use CPU and cannot qualify Vulkan. Parent-dispatched Vulkan
+qualification covered these fixtures and the exercised production request path.
+Same-backend emitted rows and stops matched their references; resident counters
+and lifecycle checks passed. This does not establish cross-backend tensor parity,
+broader device admission or completion of the remaining product features.
+
+Admission retains actual device GDN state, candidate graph buffers, weight
+placement, metadata and conservative backend-copy staging allowances. It
+subtracts only removed host mirror banks. The head reports the guard's actual
+aligned status buffer as device state, host metadata/status scratch separately,
+and an additional 1 MiB each of host/device allowance for pipeline, descriptor
+and driver resources whose exact allocation size is not exposed by Vulkan.
+These are conservative admission allowances, not measured driver consumption.
+The guard is reused across tokens and destroyed before its borrowed backend.
+
+With timing capture, each production GDN step records one explicit candidate
+read/finite check (residual), versus three in diagnostics or four with PLE.
+Across 36 GDN layers these are 36 production versus 109 diagnostic reads/scans
+per consumed token. The resident harness validates exact policy-bound counts.
+Production requires all counters and exactly 36 commits per consumed token.
+Commit counts remain one per successful layer. These scopes are explicit API
+calls rather than driver traffic measurements. Guard work remains inside head
+timing, and is not included in the GDN candidate counters.
+
+The quality and resident harnesses forward `--gdn-production`, record the policy
+and bind it in each reference command. Suite references must be generated fresh
+with the same binary, placement and policy; diagnostic references are rejected
+for production resident timing. Keep same-backend output comparisons, cross-
+backend numerical screens and task accuracy separate.
+
 ## Build and run
 
 Use the pinned llama.cpp dependency
@@ -84,10 +183,15 @@ Numerical parity remains failed. See the [completed screen receipt and limits](.
 `PortableModelSession` owns the six-shard `GgufModel` for the session's lifetime.
 It validates split headers, tensor inventory, payload extents/non-overlap,
 active-layer shapes/types and metadata. Embedding, huge PLE tables and routed
-expert weights remain read-only mapped. Layer and head weights have owned
-host copies and scheduler backend copies. The actual QSA indexer Q/K matrices
-are BF16 and are widened exactly into F32 storage with one 10 KiB row buffer;
-those projection nodes request F32 accumulation. No re-quantization or native
+expert weights remain read-only mapped. By default, layer/head dense weights
+have owned host storage and scheduler backend copies. `--gdn-resident-weights`
+retains GDN attention/PLE weights on the requested backend;
+`--dense-resident-weights` extends backend ownership to QSA, FFN and head weights.
+CPU execution retains CPU storage. The ledger separates persistent host/device
+weight allocations from scheduler copies; the flags do not relocate mapped CPU
+experts or PLE tables. The actual QSA indexer Q/K matrices are BF16 and are
+widened exactly before loading the selected weight backend, using one 10 KiB
+row buffer; those projection nodes request F32 accumulation. No re-quantization or native
 BF16 shader support is required. Startup conversions are reported separately
 as `load / BF16_TO_F32_EXACT / CPU`; scheduled projection work remains strict
 Vulkan when requested.
@@ -176,16 +280,16 @@ receipt. The failed CUDA parity screen remains failed.
 
 ## Memory and current limits
 
-The report distinguishes unique mapped shard file bytes, anonymous host
-weight copies, scheduler buffers and conservative state/workspace bounds.
+The report distinguishes unique mapped shard file bytes, persistent host/device
+weight allocations, scheduler buffers and policy-specific state/workspace bounds.
 The PLE factory may retain another read-only mapping of the same backing
 file; that is an address-space alias, not an anonymous 54 GB table copy.
 Selected expert staging is 52,224,000 bytes at H2560/FF640/top10.
 
 Actual scheduler reservations are queried per backend, including scheduler
-weight copies. Admission also includes CPU plans, metadata, committed and
-candidate histories, pool scratch/stacks, output buffers and conservative
-pinned-Vulkan private workspace allowances. QSA's temporary attention
+weight copies where required by placement. Admission also includes CPU plans,
+metadata, policy-specific histories, pool scratch/stacks, output buffers and
+conservative pinned-Vulkan private workspace allowances. QSA's temporary attention
 scheduler uses the remaining per-layer graph allowance on each backend.
 The global head includes a full F32 matrix workspace allowance derived from
 its actual vocabulary size. Each new module is checked against remaining
@@ -205,10 +309,14 @@ logical address space; actual residency changes as pages are touched. Sampled
 guards and initial headroom do not guarantee that no transient OOM can occur
 between observations. The supervisor never changes a cgroup or retries.
 
-Driver pipelines/command pools and unrelated backend users are outside this
-owned-allocation ledger; operator-selected caps need actual headroom. No claim
-of total measured VRAM peak or optimized performance is made. GDN/QSA
-recurrent state and layer residuals still move through host memory each token.
+The ledger includes the stated guard resource allowances, not a complete query
+of driver pipeline/command-pool allocations. Unrelated backend users remain
+outside it; operator-selected caps need actual headroom. The ledger alone does
+not establish measured VRAM peaks or performance. Eager diagnostic GDN downloads
+full candidate recurrence/history mirrors, including with resident state enabled.
+Production GDN retains those tensors on device and transfers the residual needed
+by the current FFN seam. QSA still stages active host KV/pool histories pending
+its separate ownership work; layer residual exchange and final logits readout remain.
 
 The full-model synthetic test uses sparse files with the actual layer and
 vocabulary dimensions. It executes all 48 layers, configured layer-1 PLE,
@@ -449,9 +557,9 @@ and the normal fail-closed/poison contract is unchanged.
 
 GDN refinement under the same opt-in adds three host-wall scopes:
 
-- `gdn_attention_exchange_ms_delta`: optional PLE gather, input/state/history
-  writes, attention scheduler call, candidate reads and finite checks. Explicit
-  trace reads, when a direct API caller requests them, are included too.
+- `gdn_attention_exchange_ms_delta`: optional PLE gather, input writes and
+  policy-required state/history transfers, attention scheduler call, candidate
+  reads and finite checks. Explicit trace reads, when a direct API caller requests them, are included too.
 - `gdn_attention_compute_ms_delta`: only the existing attention scheduler
   graph-compute call, nested inside attention/exchange. It includes existing
   backend waits and is not GPU kernel time or a measurement of PCIe traffic.
@@ -471,9 +579,11 @@ null reads no clock. Failed calls can leave partial attempted-call counters.
 
 Static source inspection identifies candidates to measure, not demonstrated costs:
 QSA constructs/schedules a token-specific attention Phase and stages active
-histories; GDN/head retain their main graphs but transfer/read state and logits;
-the model rebuilds a placement vector after each successful token; and the CLI
-queries device memory and writes per-token diagnostics. Memory-admission account()
+histories; eager diagnostic GDN reads full candidate state/history, while
+production GDN retains those tensors on device and exchanges the FFN residual.
+The head retains its main graph, checks integer status in production, then reads
+logits. The model rebuilds a placement vector after each successful token; the
+CLI queries device memory and writes per-token diagnostics. Memory-admission account()
 and module memory_usage() calls are in construction, not the main token loop.
 No existing coarse counters covered these model totals. This patch neither
 removes nor attributes those candidate costs. Non-provider time can include other

@@ -137,7 +137,10 @@ class Resident:
         self.selector.close(); self.log.close(); self.transcript.close()
 
 
-def model_phase_fields(metrics, consumed):
+def model_phase_fields(metrics, consumed, gdn_policy='eager_diagnostic'):
+    if gdn_policy not in ('eager_diagnostic', 'device_production'):
+        raise ValueError('unknown GDN execution policy')
+    production = gdn_policy == 'device_production'
     for key, multiplier in (('model_step_calls_delta',1),('gdn_layer_calls_delta',36),
                             ('qsa_layer_calls_delta',12),('output_head_calls_delta',1),
                             ('gdn_attention_exchange_calls_delta',36),('gdn_attention_compute_calls_delta',36),
@@ -164,7 +167,7 @@ def model_phase_fields(metrics, consumed):
     # Additive diagnostics: old qualified binaries may omit the whole group.
     keys = ['gdn_'+scope+'_'+unit+'_delta' for scope in ('candidate_readback','candidate_finite','state_commit')
             for unit in ('ms','calls')]
-    if any(key in metrics for key in keys):
+    if production or any(key in metrics for key in keys):
         if not all(key in metrics for key in keys): raise ValueError('incomplete GDN candidate diagnostics')
         for key in keys:
             value = metrics[key]
@@ -173,8 +176,10 @@ def model_phase_fields(metrics, consumed):
         readback, scan, commit = [metrics['gdn_'+scope+'_ms_delta']
                                   for scope in ('candidate_readback','candidate_finite','state_commit')]
         commits = metrics['gdn_state_commit_calls_delta']
-        if metrics['gdn_candidate_readback_calls_delta'] != 109*consumed or \
-           metrics['gdn_candidate_finite_calls_delta'] != 109*consumed or commits not in (0,36*consumed) or \
+        reads = (36 if production else 109)*consumed
+        allowed_commits = (36*consumed,) if production else (0,36*consumed)
+        if metrics['gdn_candidate_readback_calls_delta'] != reads or \
+           metrics['gdn_candidate_finite_calls_delta'] != reads or commits not in allowed_commits or \
            readback+scan > surrounding+epsilon or commit > outer+epsilon or (commits == 0 and commit != 0):
             raise ValueError('GDN candidate diagnostic containment/counts failed')
 
@@ -231,7 +236,7 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
     return rows
 
 
-def suite_metrics(m, prompt, ids, consumed, warm):
+def suite_metrics(m, prompt, ids, consumed, warm, gdn_policy='eager_diagnostic'):
     # Validate every nested counter even if a mock/alternate caller bypasses
     # Resident.request. Timer scopes are retained separately, never added.
     for key,value in m.items():
@@ -250,7 +255,7 @@ def suite_metrics(m, prompt, ids, consumed, warm):
     if m['prompt_count'] != len(prompt) or m['output_count'] != len(ids) or \
        m['selection_prompt_steps'] != len(prompt)-1 or m['selection_decode_steps'] != len(ids):
         raise ValueError('suite counts mismatch')
-    model_phase_fields(m,consumed)
+    model_phase_fields(m,consumed,gdn_policy)
     if m['expert_provider_calls_delta'] != 48*consumed or m['expert_provider_ms_delta'] <= 0:
         raise ValueError('provider timing/call capture incomplete')
     for key in ('gpu_entries_per_device_delta','gpu_infer_rows_calls_delta','gpu_infer_rows_ms_delta'):
@@ -267,7 +272,7 @@ def run_suite(runner, out, prompts, references, binding, vocabulary, binary_sha,
     for pass_id in (1,2):
         pass_out = out/f'pass-{pass_id}'; pass_out.mkdir()
         summary = dict(status='STOP',suite=binding,binary_sha256=binary_sha,requests=[],
-                       pass_id=pass_id,cache_populating=pass_id==1)
+                       pass_id=pass_id,cache_populating=pass_id==1,gdn_policy=receipt['gdn_policy'])
         receipt['passes'].append(summary)
         began=time.monotonic()
         try:
@@ -282,7 +287,7 @@ def run_suite(runner, out, prompts, references, binding, vocabulary, binary_sha,
                 expected=references[case_id-1]
                 if result['rows'] != expected['rows'] or result['stop'] != expected['stop']:
                     raise ValueError(f'fresh reference mismatch: pass {pass_id} case {case_id}')
-                suite_metrics(result['metrics'],prompt,ids,len(result['rows']),pass_id==2)
+                suite_metrics(result['metrics'],prompt,ids,len(result['rows']),pass_id==2,receipt['gdn_policy'])
                 summary['requests'].append(dict(index=case_id,request_id=request_id,tokens=ids,finish=stop,
                     consumed_rows=len(result['rows']),timing=result['metrics']))
             summary['status']='complete'
@@ -307,6 +312,7 @@ def main():
     p.add_argument('--expert-tensor-mib', default='2404,2404')
     p.add_argument('--expert-timings', action='store_true', help='coarse provider and per-device executor call timing')
     p.add_argument('--gdn-resident-weights', action='store_true', help='forward the opt-in GDN attention weight placement trial')
+    p.add_argument('--gdn-production', action='store_true', help='forward opt-in GDN production policy; requires fresh production references')
     p.add_argument('--gdn-resident-state', action='store_true', help='forward session-lifetime GDN state residency')
     p.add_argument('--dense-resident-weights', action='store_true', help='forward model-lifetime dense weight placement')
     p.add_argument('--plan', type=Path, action='append', required=True)
@@ -344,7 +350,7 @@ def main():
     binary=args.binary.resolve(strict=True)
     if Q.bundle.sha(binary)!=args.binary_sha256: raise ValueError('binary hash mismatch')
     args.out.mkdir(mode=0o700,exist_ok=False)
-    receipt=dict(status='STOP',binary_sha256=args.binary_sha256,prompt=tokens,max_new=args.max_new,
+    receipt=dict(gdn_policy='device_production' if args.gdn_production else 'eager_diagnostic', status='STOP',binary_sha256=args.binary_sha256,prompt=tokens,max_new=args.max_new,
                  excluded_warmups=1,measured_requests=3)
     if args.suite:
         receipt.update(mode='suite',suite=binding,reference_root=str(args.reference_root),
@@ -398,6 +404,7 @@ def main():
         if args.expert_timings: command += ['--expert-timings']
         if args.gdn_resident_weights: command += ['--gdn-resident-weights']
         if args.gdn_resident_state: command += ['--gdn-resident-state']
+        if args.gdn_production: command += ['--gdn-production']
         if args.dense_resident_weights: command += ['--dense-resident-weights']
         receipt['plan_sha256']=[Q.bundle.sha(plan) for plan in args.plan]
         Q.write(args.out/'argv.json',command)
@@ -413,7 +420,7 @@ def main():
                 result=runner.request(tokens,args.max_new,index)
                 if args.expert_timings:
                     m=result['metrics']
-                    model_phase_fields(m,len(result['rows']))
+                    model_phase_fields(m,len(result['rows']),receipt['gdn_policy'])
                     if m['expert_provider_calls_delta']!=len(result['rows'])*48 or m['expert_provider_ms_delta']<=0:
                         raise ValueError('provider timing/call capture incomplete')
                     if len(m['gpu_infer_rows_ms_delta'])!=2 or len(m['gpu_infer_rows_calls_delta'])!=2 or \

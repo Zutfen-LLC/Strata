@@ -110,10 +110,19 @@ python -B tools/validation-harness/portable_resident_v1.py \
 The first command sends twelve GENs in twelve fresh processes. The second sends
 cases 1–12 twice in one child: 36 GENs in all. Do not pass `--benchmark` or
 `--single-case`, add warmups, reuse references from another binary/policy, or
-retry a failed case. Both adapters forward the three opt-in residency flags;
+retry a failed case. Both adapters forward opt-in residency and GDN policy flags;
 unspecified flags remain off. Every reference case must contain each enabled
 flag exactly once and each disabled flag zero times, including the older
 `--gdn-resident-weights` option. A policy mismatch stops before child launch.
+
+Ordinary fresh-suite mode retains emitted rows/stops, command and binary/policy
+bindings, placements and resource receipts. It does not request `--timings`, so
+it does not retain model/GDN phase counters. Missing fresh counters mean
+unavailable telemetry, not zero work or a validated readback count. The resident
+suite separately validates its complete policy-dependent phase counters; do not
+infer fresh counts from resident receipts. Benchmark/single-case modes request
+timing files separately. This distinction does not authorize another run or
+change the frozen suite protocol.
 
 The commands retain context 256, threads 4, CPU workers 12, host cap 32768 MiB,
 device cap 7680 MiB per die, workspace 128 MiB and reserve 512 MiB per die.

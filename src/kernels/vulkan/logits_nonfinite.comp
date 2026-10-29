@@ -1,0 +1,25 @@
+#version 450
+// Native T=1 guard: inspect IEEE exponent bits without any floating operation.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Logits { uint bits[]; };
+layout(std430, binding = 1) writeonly buffer Status { uint flags[]; };
+layout(push_constant) uniform Params { uint n; uint input_offset; uint status_offset; } p;
+shared uint bad[256];
+void main() {
+    uint block = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+    uint per_block = (p.n + 15u) / 16u;
+    uint lo = block * per_block;
+    uint hi = min(p.n, lo + per_block);
+    uint found = 0u;
+    for (uint i = lo + lane; i < hi; i += 256u)
+        found |= uint((bits[p.input_offset + i] & 0x7f800000u) == 0x7f800000u);
+    bad[lane] = found;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) bad[lane] |= bad[lane + stride];
+        barrier();
+    }
+    // All 16 words are overwritten, including blocks with an empty input slice.
+    if (lane == 0u) flags[p.status_offset + block] = bad[0];
+}

@@ -90,7 +90,7 @@ class QualityAdapter(unittest.TestCase):
             root=Path(d); suite=root/'suite'; P.Q.prepare(Tokenizer(),suite)
             binary=root/'binary';binary.write_bytes(b'not an executable: mock launch only')
             args=SimpleNamespace(suite=suite,binary=binary,binary_sha256=P.Q.bundle.sha(binary),out=root/'run',
-                                 dense_resident_weights=True,gdn_resident_state=True)
+                                 dense_resident_weights=True,gdn_resident_state=True,gdn_production=True)
             child=SimpleNamespace(pid=123456789,poll=lambda:None,wait=lambda timeout:0)
             with patch.object(P.S,'host_memory',return_value={'effective_available':1<<40}), \
                  patch.object(P.S,'model_working_set',return_value={'working_set_bound_bytes':0}), \
@@ -104,6 +104,7 @@ class QualityAdapter(unittest.TestCase):
                 argv=launch.call_args.args[0]
                 self.assertEqual(argv.count('--dense-resident-weights'),1)
                 self.assertEqual(argv.count('--gdn-resident-state'),1)
+                self.assertEqual(argv.count('--gdn-production'),1)
                 self.assertNotIn('--gdn-resident-weights',argv)
                 kill.assert_called_once_with(child.pid,P.signal.SIGTERM)
             receipt=json.loads((args.out/'summary.json').read_text())

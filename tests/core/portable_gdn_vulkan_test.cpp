@@ -1,6 +1,7 @@
 #include "ggml-cpu.h"
 #include "ggml-vulkan.h"
 #include "portable_gdn_fixture.hpp"
+#include "portable_gdn_production.hpp"
 #include <cstdlib>
 #include <limits>
 using namespace strata::core;
@@ -43,6 +44,7 @@ int main(int argc, char **argv) {
             options.execution.accelerator = device.get();
             options.execution.request_accelerator = true;
             std::string error;
+            if (state_resident) production_policy(f, options);
             auto layer = PortableGdnLayer::create(0, f.views, options, error);
             check(bool(layer), error);
             check((layer->memory_usage().device_state > 0) == state_resident, "resident state ledger");

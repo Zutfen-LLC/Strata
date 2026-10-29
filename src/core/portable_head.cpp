@@ -2,6 +2,7 @@
 #include "ggml-cpu.h"
 #include "portable_graph.hpp"
 #include "portable_head_admission.hpp"
+#include "portable_logits_guard.hpp"
 #include "strata/core/portable_model.hpp"
 #include <algorithm>
 #include <cmath>
@@ -27,11 +28,12 @@ struct PortableHead::Impl {
     portable_detail::Scheduler scheduler{nullptr, ggml_backend_sched_free};
     ggml_cgraph *graph = nullptr;
     ggml_tensor *input = nullptr, *output = nullptr;
+    std::unique_ptr<portable_detail::PortableLogitsGuard> logits_guard;
     std::vector<PortablePlacement> placement;
     size_t device_weights = 0;
     size_t weight_size = 0, graph_size = 0, device_bytes = 0, device_workspace = 0, device_conversion = 0;
     ggml_backend_t accelerator = nullptr;
-    Impl(PortableHeadGeometry geometry, const std::vector<PortableTensorView> &views, PortableFfnOptions opts)
+    Impl(PortableHeadGeometry geometry, const std::vector<PortableTensorView> &views, PortableFfnOptions opts, bool guard_logits)
         : g(geometry) {
         require(g.hidden > 0 && g.hidden <= 16384 && g.streams == 4 && g.rank > 0 && g.rank <= 4096 &&
                     g.vocabulary > 0 && g.vocabulary <= 1048576 && opts.threads > 0 && std::isfinite(g.epsilon) &&
@@ -119,15 +121,25 @@ struct PortableHead::Impl {
         scheduler = portable_detail::schedule(graph, "global-head", opts, cpu, placement, graph_size);
         if (opts.request_accelerator && opts.accelerator)
             device_bytes = ggml_backend_sched_get_buffer_size(scheduler.get(), opts.accelerator);
+        if (guard_logits) {
+            auto *backend = opts.request_accelerator && opts.accelerator ? opts.accelerator : cpu.get();
+            require(graph_size <= opts.graph_budget, "portable head: guard graph budget");
+            logits_guard = std::make_unique<portable_detail::PortableLogitsGuard>(backend, opts.graph_budget - graph_size);
+            const size_t guard_bytes = logits_guard->device_bytes() + logits_guard->device_resource_bound();
+            require(guard_bytes <= opts.graph_budget - graph_size, "portable head: integer guard budget");
+            graph_size += guard_bytes;
+            placement.push_back({"global-head-guard", "BIT_NONFINITE", "portable_logits_status", "I32",
+                                 ggml_backend_name(backend), "", {16, 1, 1, 1}, false});
+        }
     }
 };
 PortableHead::PortableHead(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 PortableHead::~PortableHead() = default;
 std::unique_ptr<PortableHead> PortableHead::create(PortableHeadGeometry g, const std::vector<PortableTensorView> &v,
-                                                   PortableFfnOptions o, std::string &error) {
+                                                   PortableFfnOptions o, std::string &error, bool guard_logits) {
     error.clear();
     try {
-        return std::unique_ptr<PortableHead>(new PortableHead(std::make_unique<Impl>(g, v, o)));
+        return std::unique_ptr<PortableHead>(new PortableHead(std::make_unique<Impl>(g, v, o, guard_logits)));
     } catch (const std::exception &e) {
         error = e.what();
         return nullptr;
@@ -145,6 +157,8 @@ bool PortableHead::run(const std::vector<float> &streams, std::vector<float> &lo
         ggml_backend_tensor_set(s.input, streams.data(), 0, streams.size() * sizeof(float));
         require(ggml_backend_sched_graph_compute(s.scheduler.get(), s.graph) == GGML_STATUS_SUCCESS,
                 "portable head: compute failed");
+        if (s.logits_guard)
+            require(s.logits_guard->check(s.output), "portable head: nonfinite logits (integer status guard)");
         std::vector<float> next(size_t(s.g.vocabulary));
         ggml_backend_tensor_get(s.output, next.data(), 0, next.size() * sizeof(float));
         for (float v : next)
@@ -168,13 +182,18 @@ PortableMemoryUsage PortableHead::memory_usage() const {
     m.host_graph = ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
     // A head borrows at most one accelerator; its actual reservation is retained.
     m.device_graph = s.device_bytes;
-    const size_t buffers = m.host_graph + m.device_graph;
+    const size_t guard_device = s.logits_guard ? s.logits_guard->device_bytes() +
+                                               s.logits_guard->device_resource_bound() : 0;
+    const size_t buffers = m.host_graph + m.device_graph + guard_device;
+    m.device_state += s.logits_guard ? s.logits_guard->device_bytes() : 0;
+    m.device_extra_bound += s.logits_guard ? s.logits_guard->device_resource_bound() : 0;
     m.host_extra_bound = (4u << 20) + size_t(s.g.vocabulary * 2 + s.g.hidden * 16) * sizeof(float);
     if (s.graph_size > buffers)
         m.host_extra_bound += s.graph_size - buffers;
+    if (s.logits_guard) m.host_extra_bound += s.logits_guard->host_bound();
     if(s.device_workspace) {
         const size_t conversion=s.device_conversion;
-        m.device_extra_bound=s.device_workspace-conversion;
+        m.device_extra_bound+=s.device_workspace-conversion;
         portable_detail::account_matrix_conversion(m,s.accelerator,conversion);
     }
     return m;

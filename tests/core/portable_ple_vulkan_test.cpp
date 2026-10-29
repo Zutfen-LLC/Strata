@@ -1,5 +1,6 @@
 #include "ggml-vulkan.h"
 #include "portable_ple_fixture.hpp"
+#include "portable_gdn_production.hpp"
 #include <cstdlib>
 using namespace ple_fixture;
 int main(int argc, char **argv) {
@@ -44,6 +45,7 @@ int main(int argc, char **argv) {
             check(bool(cpu), error);
             options.execution.accelerator = device.get();
             options.execution.request_accelerator = true;
+            if (state_resident) gdn_fixture::production_policy(f, options, 1);
             auto layer = PortableGdnLayer::create(1, f.views, options, error);
             check(bool(layer), error);
             check((layer->memory_usage().device_state > 0) == state_resident, "resident state ledger");

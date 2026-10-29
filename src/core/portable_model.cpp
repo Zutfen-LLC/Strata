@@ -125,6 +125,9 @@ struct PortableModelSession::Impl {
                 "portable model: context [1,256]/thread limits");
         require(opts.accelerators.size() <= 2 && opts.device_caps.size() == opts.accelerators.size(),
                 "portable model: supply a separate cap for each of at most two accelerators");
+        require(!opts.gdn_production || (opts.gdn_resident_state && !opts.accelerators.empty() &&
+                    !opts.allow_cpu_fallback),
+                "portable model: GDN production requires resident state and strict accelerators");
         require(opts.accelerators.size() < 2 || (opts.split >= 1 && opts.split < L),
                 "portable model: invalid contiguous split");
         std::set<ggml_backend_dev_t> devices;
@@ -223,6 +226,7 @@ struct PortableModelSession::Impl {
             } else {
                 PortableGdnOptions o;
                 o.resident_state = opts.gdn_resident_state;
+                o.policy = opts.gdn_production ? PortableGdnPolicy::device_production : PortableGdnPolicy::eager_diagnostic;
                 o.resident_attention_weights = opts.gdn_resident_weights;
                 o.execution = execution(l, false);
                 layer.gdn = PortableGdnLayer::from_gguf(model, int64_t(l), o, error);
@@ -243,7 +247,7 @@ struct PortableModelSession::Impl {
         require(head_resident_bound <= SIZE_MAX - opts.head_graph_cap,
                 "portable model: resident head preflight overflow");
         preflight(device(L - 1), opts.head_weight_cap, opts.head_graph_cap + head_resident_bound, 64u << 20);
-        head = PortableHead::create({H, HC, 320, int64_t(vocabulary), 1e-6f}, hw, execution(L - 1, true), error);
+        head = PortableHead::create({H, HC, 320, int64_t(vocabulary), 1e-6f}, hw, execution(L - 1, true), error, opts.gdn_production);
         require(bool(head), error);
         account(head->memory_usage(), device(L - 1));
         append_placements(head->placements(), int64_t(L));
