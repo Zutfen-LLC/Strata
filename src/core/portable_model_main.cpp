@@ -118,7 +118,7 @@ int main(int argc, char **argv) {
                              " [--prompt-chunk-size 2..8 (implies head elision; default off)]\n"
                              " [--dump-logits DIRECTORY] [--placements FILE] [--timings FILE]\n"
                              " Or --stdio [--max-requests 4]: GEN <max_new> <id,id,...> / QUIT; JSONL replies.\n"
-                             "T=1 serial text; all 48 layers; fresh embedding per token; CPU experts/host PLE.\n"
+                             "Default T=1 serial text; optional bounded prompt chunks; all 48 layers; CPU experts/host PLE.\n"
                              "Every consumed prompt/generated token can dump its full vocabulary as pos-N.f32.\n";
                 return 0;
             }
@@ -316,6 +316,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error(error);
         device_memory("model-loaded", 0);
         const auto &report = session->report();
+        if(report.chunk_memory_is_shape_envelope)
+            std::cerr << "prompt_chunk_admission shape_envelope=1 prompt_chunk_size=" << opts.prompt_chunk_size << '\n';
         std::cerr << "mapped_bytes=" << report.mapped_bytes << " host_weight_bytes=" << report.host_weights
                   << " host_scheduler=" << report.host_scheduler << " host_state_bound=" << report.host_state_bound
                   << " expert_staging=" << report.expert_staging << " graph_admission=" << report.graph_admission_bound
@@ -323,7 +325,7 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < report.device_admission.size(); ++i)
             std::cerr << "die=" << i << " actual_weight_bytes=" << report.device_weights[i]
                       << " actual_state_bytes=" << report.device_state[i]
-                      << " actual_scheduler_bytes=" << report.device_scheduler[i]
+                      << (report.chunk_memory_is_shape_envelope?" scheduler_shape_envelope_bytes=":" actual_scheduler_bytes=") << report.device_scheduler[i]
                       << " workspace_and_transient_bound=" << report.device_workspace_bound[i]+report.device_token_temporary_bound[i]+report.device_shared_conversion_bound[i]
                       << " backend_private_bound=" << report.device_workspace_bound[i]
                       << " token_temporary_bound=" << report.device_token_temporary_bound[i]
@@ -331,10 +333,11 @@ int main(int argc, char **argv) {
                       << " admitted_bytes=" << report.device_admission[i] << " cap_bytes=" << opts.device_caps[i]
                       << " headroom_bytes=" << opts.device_caps[i] - report.device_admission[i] << '\n';
         std::cerr << report.identity_evidence << '\n';
+        std::cerr << (opts.prompt_chunk_size ? "Bounded prompt chunks; T=1 final prompt/decode; " : "T=1; ");
         if(opts.expert_devices.empty())
-            std::cerr << "T=1; CPU experts; host PLE; recurrent state and inter-layer residuals use host/device transfers. No performance claim.\n";
+            std::cerr << "CPU experts; host PLE; recurrent state and inter-layer residuals use host/device transfers. No performance claim.\n";
         else
-            std::cerr << "T=1; resident Vulkan/CPU expert rows; host PLE; original-order host merge. Vulkan hybrid Q8 is not CPU bit parity.\n";
+            std::cerr << "resident Vulkan/CPU expert rows; host PLE; original-order host merge. Vulkan hybrid Q8 is not CPU bit parity.\n";
         const auto expert_report=[&](const char* stage,uint64_t position) {
             if(opts.expert_devices.empty()) return;
             std::cerr << std::setprecision(17);

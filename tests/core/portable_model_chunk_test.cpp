@@ -101,7 +101,7 @@ int main() {
                 fixture.patch(3,"blk.10.ffn_gate_exps.weight",0,&corrupt,1);
                 std::filesystem::last_write_time(path,time+std::chrono::seconds(2));
                 check(!session->advance_chunk({5,6},error)&&session->poisoned()&&session->position()==0&&
-                      error.find("layer 10")!=std::string::npos,"late chunk failure poisons without position commit");
+                      error.find("layer 10")!=std::string::npos&&error.find("digest mismatch")!=std::string::npos,"late chunk failure poisons without position commit");
                 const auto failed=session->model_work();
                 check(failed.prompt_chunks==before.prompt_chunks&&failed.prompt_chunk_tokens==before.prompt_chunk_tokens&&
                       failed.completed_forward_calls==before.completed_forward_calls&&failed.heads_skipped==before.heads_skipped,

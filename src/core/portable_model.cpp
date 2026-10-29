@@ -269,7 +269,8 @@ struct PortableModelSession::Impl {
                     // allocation; no account-after-allocation admission gate.
                     preflight(device(l),opts.layer_weight_cap,
                               graph_preflight+private_workspace+resident_bound+state_bound,128u<<20);
-                    require(layer.prepare(T,error),"portable model: chunk preflight layer "+std::to_string(l)+": "+error);
+                    const bool prepared=layer.prepare(T,error);
+                    require(prepared,"portable model: chunk preflight layer "+std::to_string(l)+": "+error);
                     include(layer.memory());
                 }
                 const size_t device_total=memory.device_graph+memory.device_extra_bound+
@@ -426,8 +427,8 @@ struct PortableModelSession::Impl {
                 {
                     portable_detail::ScopedExpertTimer<> timer(opts.expert_timings,gdn?model_work.gdn_ms:model_work.qsa_ms,
                                                                gdn?model_work.gdn_calls:model_work.qsa_calls);
-                    require(layers[l].chunk(tokens,pos,residual,dispatch,error),
-                            "portable model: chunk position "+std::to_string(pos)+" layer "+std::to_string(l)+": "+error);
+                    const bool completed=layers[l].chunk(tokens,pos,residual,dispatch,error);
+                    require(completed,"portable model: chunk position "+std::to_string(pos)+" layer "+std::to_string(l)+": "+error);
                 }
                 if(opts.expert_timings)(gdn?model_work.gdn_provider_ms:model_work.qsa_provider_ms)+=provider_ms-before;
             }

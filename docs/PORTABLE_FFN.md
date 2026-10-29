@@ -217,11 +217,8 @@ continuation behavior rather than exposed as a new diagnostic mirror. Numerical
 comparisons retain the existing Q8 gate; synthetic CPU observations do not
 qualify real-model or Vulkan execution.
 
-The next checkpoint is model and harness integration, following independent
-layer review and required compilation/qualification. There is no model prefill
-flag, policy binding, whole-model chunk receipt or performance claim here.
-Prompt head elision remains the separate serial option. Full-model layer-major
-chunking must preflight the combined layer ledgers under unchanged host/per-device
-caps, leave the final prompt token/decode/terminal feed on T1, preserve unavailable
-logit receipts and add model-level poison/reset, segmentation, requested-logit
-and continuation gates. No hardware dispatch follows from this source checkpoint.
+The model now exposes a default-off bounded chunk policy using this layer seam;
+see [the model admission and receipt contract](PORTABLE_MODEL.md#bounded-prompt-chunks).
+Its synthetic assembled-model and harness tests are separate from these layer
+gates. This source integration does not authorize a hardware dispatch or establish
+real-model numerical, quality or performance parity.

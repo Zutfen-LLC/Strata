@@ -47,6 +47,7 @@ def chunk_argv(command):
     return int(value)
 
 def chunk_binding(record,size):
+    if type(size) is not int or size not in (0,2,3,4,5,6,7,8):raise ValueError('invalid expected chunk size')
     if size:
         if type(record.get('prompt_chunk_size')) is not int or record['prompt_chunk_size']!=size or record.get('chunk_policy')!='layer_major_v1':
             raise ValueError('prompt chunk policy mismatch')
@@ -194,6 +195,7 @@ def run_portable(args, tok):
         summary['source']='local resident expert candidate; see exact source export/binary SHA'
     elif benchmark:
         summary['source'] = 'PR43 c76d03c7 plus opt-in CLI phase timers; see source export SHA'
+    if size: summary['source']='bounded layer-major prompt chunks; see exact source export/binary SHA'
     baseline = S.host_memory()
     work = S.model_working_set() if not getattr(args, 'model_root', None) else S.model_working_set(args.model_root)
     summary.update(baseline_host=baseline, host_admission=S.host_admission_terms(work['working_set_bound_bytes']))

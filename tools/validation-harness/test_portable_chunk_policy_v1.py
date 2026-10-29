@@ -1,0 +1,116 @@
+import copy
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from types import SimpleNamespace
+from unittest import mock
+import portable_quality_v1 as P
+import portable_resident_v1 as R
+import test_portable_resident_v1 as ResidentTests
+
+
+def metrics(size=4,prompt=10,consumed=12):
+    c=(prompt-1+size-1)//size; f=c+consumed-prompt+1
+    return dict(chunk_policy='layer_major_v1',prompt_chunk_size=size,gdn_subphases_available=False,
+        logical_tokens_delta=consumed,prompt_chunks_delta=c,prompt_chunk_tokens_delta=prompt-1,
+        chunk_layer_calls_delta=48*c,chunk_ffn_pre_calls_delta=48*c,chunk_provider_calls_delta=48*c,chunk_ffn_post_calls_delta=48*c,
+        model_forward_calls_delta=f,model_layer_calls_delta=48*f,ffn_pre_calls_delta=48*f,provider_calls_delta=48*f,ffn_post_calls_delta=48*f)
+
+
+class ChunkPolicy(unittest.TestCase):
+    def test_flags_and_canonical_argv(self):
+        for size in range(2,9):
+            flags=P.residency_flags(SimpleNamespace(prompt_chunk_size=size))
+            self.assertEqual(flags,['--prompt-head-elision','--prompt-chunk-size',str(size)])
+            self.assertEqual(P.chunk_argv(flags),size)
+        for value in (True,False,1,9,'4',None):
+            with self.assertRaises(ValueError):P.chunk_size(SimpleNamespace(prompt_chunk_size=value))
+        for argv in (['--prompt-chunk-size'],['--prompt-chunk-size','0'],['--prompt-chunk-size','04'],
+                     ['--prompt-chunk-size','4','--prompt-chunk-size','4']):
+            with self.assertRaises(ValueError):P.chunk_argv(argv)
+
+    def test_token_binding_and_unavailable_logits(self):
+        row=dict(position=0,token=5,generated=False,greedy_next=None,schema=2,head_policy='prompt_head_elision',
+                 logits_available=False,chunk_policy='layer_major_v1',prompt_chunk_size=4)
+        P.token_receipt(row,0,3,248320,'prompt_head_elision',4)
+        for key,value in (('prompt_chunk_size',True),('prompt_chunk_size',3),('chunk_policy','foreign'),
+                          ('greedy_next',7),('logits_available',True),('schema',3)):
+            with self.subTest(key=key),self.assertRaises(ValueError):P.token_receipt(dict(row,**{key:value}),0,3,248320,'prompt_head_elision',4)
+        with self.assertRaises(ValueError):P.token_receipt(row,0,3,248320,'prompt_head_elision')
+        with self.assertRaises(ValueError):P.token_receipt(row,0,3,248320,'eager_diagnostic',4)
+        for size in (1,9,True,'4'):
+            with self.assertRaises(ValueError):P.chunk_binding(row,size)
+        last=dict(row,position=2,logits_available=True,greedy_next=7)
+        P.token_receipt(last,2,3,248320,'prompt_head_elision',4)
+        with self.assertRaises(ValueError):P.token_receipt(dict(last,greedy_next=None),2,3,248320,'prompt_head_elision',4)
+
+    def test_actual_execution_counter_mutations(self):
+        sample=metrics()
+        self.assertEqual(P.chunk_fields(sample,10,12,4),6)
+        for key in P.CHUNK_COUNTERS:
+            for value in (sample[key]+1,True,None):
+                with self.subTest(key=key,value=value),self.assertRaises(ValueError):P.chunk_fields(dict(sample,**{key:value}),10,12,4)
+            missing=dict(sample);del missing[key]
+            with self.assertRaises(ValueError):P.chunk_fields(missing,10,12,4)
+        for bad in (dict(sample,gdn_subphases_available=True),dict(sample,prompt_chunk_size=3),dict(sample,chunk_policy='foreign')):
+            with self.assertRaises(ValueError):P.chunk_fields(bad,10,12,4)
+        with self.assertRaises(ValueError):P.chunk_fields(sample,10,12,0)
+
+    def test_coarse_timing_and_no_fake_t1_subphases(self):
+        sample=metrics()
+        sample.update(prompt_count=10,heads_skipped_delta=9,heads_executed_delta=3,model_step_calls_delta=6,
+            gdn_layer_calls_delta=216,qsa_layer_calls_delta=72,output_head_calls_delta=3,
+            model_step_ms_delta=18.,gdn_layer_ms_delta=10.,qsa_layer_ms_delta=5.,output_head_ms_delta=2.,
+            model_residual_ms_delta=1.,gdn_provider_ms_delta=5.,qsa_provider_ms_delta=2.5,expert_provider_ms_delta=7.5)
+        R.model_phase_fields(sample,12,'device_production','prompt_head_elision',4)
+        for key,value in (('model_step_calls_delta',12),('gdn_layer_calls_delta',432),('output_head_calls_delta',12),
+                          ('gdn_attention_compute_calls_delta',0),('gdn_candidate_readback_calls_delta',0),
+                          ('gdn_provider_ms_delta',11.),('model_residual_ms_delta',2.)):
+            with self.subTest(key=key),self.assertRaises(ValueError):R.model_phase_fields(dict(sample,**{key:value}),12,'device_production','prompt_head_elision',4)
+
+    def test_resident_done_and_row_mutations(self):
+        rows=[dict(position=i,token=t,generated=False,greedy_next=7 if i==2 else None,schema=2,
+                   head_policy='prompt_head_elision',logits_available=i==2,chunk_policy='layer_major_v1',prompt_chunk_size=2)
+              for i,t in enumerate([5,6,7])]
+        done=dict(metrics(2,3,3),done=1,prompt_count=3,output_count=0,receipt_schema=2,
+                  head_policy='prompt_head_elision',heads_skipped_delta=2,heads_executed_delta=1)
+        samples=rows+[dict(stop='max_new',position=3),done]
+        def request(records):
+            runner=object.__new__(R.Resident);runner.child=mock.Mock();runner.request_seconds=1
+            runner.head_policy='prompt_head_elision';runner.prompt_chunk_size=2;runner.row=mock.Mock(side_effect=records)
+            return runner.request([5,6,7],0,1)
+        self.assertEqual(request(samples)['rows'],rows)
+        for key,value in (('prompt_chunk_size',3),('chunk_policy','foreign'),('prompt_chunks_delta',2),('provider_calls_delta',144)):
+            bad=copy.deepcopy(samples);bad[-1][key]=value
+            with self.subTest(key=key),self.assertRaises(ValueError):request(bad)
+        bad=copy.deepcopy(samples);bad[0]['prompt_chunk_size']=3
+        with self.assertRaises(ValueError):request(bad)
+
+    def test_fresh_reference_summary_argv_and_rows(self):
+        for mutation in ('none','missing_summary','wrong_summary','bool_summary','argv_size','argv_duplicate','row_size','off'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                tok,suite,prompts,binding,ref,binary,plans,records=ResidentTests.SuiteControls().fixtures(root)
+                summary=json.loads((ref/'summary.json').read_text())
+                summary.update(head_policy='prompt_head_elision',prompt_chunk_size=4,chunk_policy='layer_major_v1')
+                for index,(record,prompt) in enumerate(zip(records,prompts),1):
+                    case=ref/f'case-{index:02d}'
+                    argv=json.loads((case/'argv.json').read_text())+['--prompt-head-elision','--prompt-chunk-size','4']
+                    if index==1 and mutation=='argv_size':argv[-1]='3'
+                    if index==1 and mutation=='argv_duplicate':argv+=['--prompt-chunk-size','4']
+                    (case/'argv.json').write_text(json.dumps(argv))
+                    for i,row in enumerate(record['rows']):
+                        row.update(schema=2,head_policy='prompt_head_elision',logits_available=i+1>=len(prompt),
+                                   prompt_chunk_size=4,chunk_policy='layer_major_v1')
+                        if i+1<len(prompt):row['greedy_next']=None
+                    if index==1 and mutation=='row_size':record['rows'][0]['prompt_chunk_size']=3
+                    (case/'stdout.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in record['rows']+[record['stop']]))
+                if mutation=='missing_summary':del summary['prompt_chunk_size']
+                if mutation=='wrong_summary':summary['prompt_chunk_size']=3
+                if mutation=='bool_summary':summary['prompt_chunk_size']=True
+                (ref/'summary.json').write_text(json.dumps(summary))
+                args=(ref,binding,prompts,len(tok.tokens),R.Q.bundle.sha(binary),plans,'5529,5529')
+                if mutation=='none':self.assertEqual(R.reference_rows(*args,residency={'--prompt-head-elision':True},prompt_chunk_size=4),records)
+                else:
+                    with self.assertRaises(ValueError):R.reference_rows(*args,residency={'--prompt-head-elision':True},prompt_chunk_size=0 if mutation=='off' else 4)
