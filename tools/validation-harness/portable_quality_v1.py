@@ -220,7 +220,7 @@ def benchmark_receipt(args, summary):
 
 def run_portable(args, tok):
     selected, physical = S.device_selection(argparse.ArgumentParser(), args)
-    cap = args.device_cap_mib << 20
+    caps = S.device_caps(args)
     prompts, binding = frozen(tok, args.suite)
     single = getattr(args, 'single_case', False)
     benchmark = getattr(args, 'benchmark', False) or single
@@ -263,12 +263,14 @@ def run_portable(args, tok):
             case = args.out / f'case-{index:02d}'
             case.mkdir()
             initial = S.sample_vram(physical)
-            S.admit_vram(initial, mapping, cap)
+            budgets = S.admit_vram(initial, mapping, caps, S.device_reserves(args))
+            summary['last_baseline_vram'] = initial
+            summary['last_device_budgets'] = budgets
             command = [str(binary), '--model', str((getattr(args, 'model_root', None) or S.MODEL_ROOT) / 'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
                        '--manifest', getattr(args, 'manifest', S.MANIFEST), '--tokens', ','.join(map(str, prompt)),
                        '--context', '256', '--max-new', '32', '--threads', '4', '--expert-workers', '12',
                        '--host-cap-mib', '32768', '--vulkan', args.devices,
-                       '--device-cap-mib', ','.join([str(args.device_cap_mib)] * 2),
+                       '--device-cap-mib', S.cap_argv(args),
                        '--split', str(args.split), '--placements', str(case / 'placements.tsv')]
             for plan in getattr(args, 'expert_plan', []):
                 command += ['--expert-plan', plan]
@@ -282,6 +284,8 @@ def run_portable(args, tok):
             if capture:
                 requested=case/'executed-logits';requested.mkdir()
                 command += ['--dump-executed-logits',str(requested)]
+            Q.write(case / 'device-budgets.json', budgets)
+            command += S.budget_argv(budgets)
             Q.write(case / 'argv.json', command)
             process = None
             peak = [v['used'] for v in initial]
@@ -294,11 +298,12 @@ def run_portable(args, tok):
                         host, child = S.host_memory(), S.rss(process.pid)
                         S.guard_host(host, baseline, child)
                         minimum = min(minimum, host['effective_available'])
-                        for die, sample in enumerate(S.sample_vram(physical, initial)):
+                        samples = S.sample_vram(physical, initial)
+                        summary['last_vram'] = samples
+                        S.guard_vram(samples, initial, budgets)
+                        for die, sample in enumerate(samples):
                             used = sample['used']
                             peak[die] = max(peak[die], used)
-                            if used - initial[die]['used'] > cap:
-                                raise ValueError('aggregate per-die VRAM growth cap')
                         if any((case / name).stat().st_size > 8 << 20 for name in ('stdout.jsonl', 'stderr.log')):
                             raise ValueError('bounded output log exceeded8MiB')
                         if time.monotonic() - began > (300 if benchmark else 600) or time.monotonic() - start > (1200 if benchmark else 3600):
@@ -313,7 +318,7 @@ def run_portable(args, tok):
                 records = [json.loads(line) for line in (case / 'stdout.jsonl').read_text().splitlines()]
                 ids, stop = completion(records,prompt,len(tok.tokens),summary['head_policy'],size)
                 summary['requests'].append(dict(index=index, tokens=ids, finish=stop, seconds=time.monotonic()-began,
-                    tensor_operations_by_device=participation, baseline_vram=initial, sampled_peak_vram=peak,
+                    tensor_operations_by_device=participation, baseline_vram=initial, device_budgets=budgets, sampled_peak_vram=peak,
                     minimum_effective_available=minimum))
                 if capture:
                     diagnostic,_=E.load(requested,size)

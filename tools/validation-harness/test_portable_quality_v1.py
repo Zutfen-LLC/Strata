@@ -1,4 +1,6 @@
 """Host-only controls; no model, network, GPU or child process launch."""
+import portable_model_smoke_v1 as B
+
 import copy
 import json
 from pathlib import Path
@@ -118,8 +120,8 @@ class QualityAdapter(unittest.TestCase):
             child=SimpleNamespace(pid=123456789,poll=lambda:None,wait=lambda timeout:0)
             with patch.object(P.S,'host_memory',return_value={'effective_available':1<<40}), \
                  patch.object(P.S,'model_working_set',return_value={'working_set_bound_bytes':0}), \
-                 patch.object(P.S,'verified_devices',return_value=[{'total':9<<30}]*2), \
-                 patch.object(P.S,'vram',return_value={'used':0,'total':9<<30}), \
+                 patch.object(P.S,'verified_devices',return_value=[dict(pci=p,free=9<<30,total=9<<30) for p in B.PCI]), \
+                 patch.object(P.S,'vram',side_effect=lambda pci:dict(pci=pci,used=0,total=9<<30)), \
                  patch.object(P.S,'rss',return_value={}), \
                  patch.object(P.S,'guard_host',side_effect=ValueError('pressure')), \
                  patch.object(P.subprocess,'Popen',return_value=child) as launch, \
@@ -167,12 +169,12 @@ class QualityAdapter(unittest.TestCase):
                     parser = argparse.ArgumentParser()
                     P.S.device_arguments(parser)
                     options = (['--devices','3,2','--pci','0000:21:00.0,0000:41:00.0',
-                                '--split','24','--device-cap-mib','4096'] if custom else [])
+                                '--split','24','--device-cap-mib','8192,4096'] if custom else [])
                     args = parser.parse_args(options)
                     args.__dict__.update(suite=root/'suite', binary=binary,
                         binary_sha256=P.Q.bundle.sha(binary), out=root/'out', benchmark=benchmark)
                     selected, physical = P.S.device_selection(parser, args)
-                    mapping = [dict(index=i,pci=p,total=9<<30) for i,p in zip(selected,physical)]
+                    mapping = [dict(index=i,pci=p,free=9<<30,total=9<<30) for i,p in zip(selected,physical)]
                     child = SimpleNamespace(pid=123456789,poll=lambda:0)
                     def launch(argv, stdout, stderr, **kwargs):
                         stdout.write('{}\n'); stdout.flush()
@@ -198,7 +200,7 @@ class QualityAdapter(unittest.TestCase):
                     for call in popen.call_args_list:
                         argv = call.args[0]
                         for flag,value in (('--vulkan',args.devices),('--split',str(args.split)),
-                                           ('--device-cap-mib',','.join([str(args.device_cap_mib)]*2))):
+                                           ('--device-cap-mib',P.S.cap_argv(args))):
                             self.assertEqual(argv[argv.index(flag)+1],value)
                     for call in placement.call_args_list:
                         self.assertEqual(call.args[1:],(selected,args.split))

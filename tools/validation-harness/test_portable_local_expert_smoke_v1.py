@@ -1,3 +1,4 @@
+import portable_model_smoke_v1 as B
 import json
 from pathlib import Path
 import tempfile
@@ -32,7 +33,7 @@ class LocalSmoke(unittest.TestCase):
                  patch.object(M.subprocess,'Popen') as launch:
                 with self.assertRaisesRegex(ValueError,'prelaunch stop'):M.main()
                 launch.assert_not_called()
-            command=json.loads((root/'out/argv.json').read_text())
+            command=json.loads((root/'out/planned-argv.json').read_text())
             self.assertEqual(command[command.index('--expert-tensor-mib')+1],'5800,5810')
             self.assertEqual(command[command.index('--expert-workspace-mib')+1],'128,128')
             self.assertEqual(command[command.index('--expert-free-reserve-mib')+1],'512,512')
@@ -48,9 +49,8 @@ class LocalSmoke(unittest.TestCase):
                      {'effective_available':1<<40,'SwapUsed':10,'pswpout':2},
                      {'effective_available':1<<39,'SwapUsed':20,'pswpout':3}]), \
                  patch.object(M.S,'model_working_set',return_value={'working_set_bound_bytes':0}), \
-                 patch.object(M.S,'vram',side_effect=[{'used':0,'total':8<<30}, {'used':0,'total':8<<30},
-                     {'used':100,'total':8<<30}, {'used':200,'total':8<<30}]), \
-                 patch.object(M.S,'verified_devices',return_value=[{'total':8<<30}]*2), \
+                 patch.object(M.S,'vram',side_effect=[dict(pci=p,used=u,total=8<<30) for p,u in zip(B.PCI*2,[0,0,100,200])]), \
+                 patch.object(M.S,'verified_devices',return_value=[dict(pci=p,free=8<<30,total=8<<30) for p in B.PCI]), \
                  patch.object(M.S,'rss',return_value=dict(VmRSS=1000,VmHWM=2000,VmSwap=30)), \
                  patch.object(M.S,'guard_host',side_effect=ValueError('pressure')), \
                  patch.object(M.subprocess,'Popen',return_value=child),patch.object(M.os,'killpg') as kill:

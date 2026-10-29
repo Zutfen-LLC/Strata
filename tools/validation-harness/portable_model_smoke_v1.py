@@ -158,7 +158,8 @@ def device_arguments(parser):
     parser.add_argument("--devices", default="0,1")
     parser.add_argument("--pci", default=",".join(PCI), help="ordered physical PCI IDs for selected logical Vulkan indices")
     parser.add_argument("--split", type=int, default=32)
-    parser.add_argument("--device-cap-mib", type=int, default=7680)
+    parser.add_argument("--device-cap-mib", type=cap_value, default=7680,
+                        help="policy ceiling in MiB: scalar or two caps in selected device order")
     parser.add_argument("--model-root", type=pathlib.Path, default=None)
     parser.add_argument("--manifest", default=MANIFEST)
 
@@ -172,8 +173,12 @@ def device_selection(parser, args):
     if (len(indices) != 2 or len(set(indices)) != 2 or min(indices) < 0 or
             len(physical) != 2 or len(set(physical)) != 2):
         parser.error("two distinct Vulkan indices and two distinct ordered PCI identities required")
-    if not 0 < args.split < 48 or not 0 < args.device_cap_mib <= 8192:
-        parser.error("invalid split/cap; cap must be in [1,8192] MiB")
+    try:
+        device_caps(args)
+    except ValueError as error:
+        parser.error(str(error))
+    if not 0 < args.split < 48:
+        parser.error("invalid split")
     return indices, physical
 
 
@@ -202,10 +207,75 @@ def verified_devices(binary, indices, physical):
     return selected
 
 
-def admit_vram(initial, mapping, cap):
-    for item, device in zip(initial, mapping):
-        if cap > device['total'] or cap > item['total'] or item['total'] - item['used'] < cap:
-            raise ValueError(f"selected physical capacity/free memory cannot admit cap: {item}")
+# Keep the scalar spelling/default compatible; normalize only at the boundary.
+MAX_MIB = ((1 << 63) - 1) >> 20
+VRAM_RESERVE = 512 << 20
+
+
+def cap_value(text):
+    values = str(text).split(',')
+    if len(values) not in (1, 2) or any(not v.isdecimal() or not 0 < int(v) <= MAX_MIB for v in values):
+        raise ValueError('expected positive scalar or two overflow-safe MiB caps')
+    return int(values[0]) if len(values) == 1 else ','.join(str(int(v)) for v in values)
+
+
+def device_caps(args):
+    value = cap_value(args.device_cap_mib)
+    return [value << 20] * 2 if isinstance(value, int) else [int(v) << 20 for v in value.split(',')]
+
+
+def cap_argv(args):
+    return ','.join(str(v >> 20) for v in device_caps(args))
+
+
+def device_reserves(args):
+    value = getattr(args, 'expert_free_reserve_mib', getattr(args, 'free_reserve_mib', '512,512'))
+    values = str(value).split(',')
+    if len(values) != 2 or any(not v.isdecimal() or not 0 < int(v) <= MAX_MIB for v in values):
+        raise ValueError('two positive overflow-safe reserve values required')
+    return [max(VRAM_RESERVE, int(v) << 20) for v in values]
+
+
+def admit_vram(initial, mapping, caps, reserves=None):
+    caps = [caps] * 2 if type(caps) is int else caps
+    reserves = [VRAM_RESERVE] * 2 if reserves is None else reserves
+    if not len(initial) == len(mapping) == len(caps) == len(reserves) == 2:
+        raise ValueError('two complete ordered memory observations required')
+    budgets = []
+    for item, device, cap, reserve in zip(initial, mapping, caps, reserves):
+        # Backend effective budgets and physical telemetry can have different totals.
+        # Both must admit the policy ceiling; use the smaller free observation.
+        if item.get('pci') != device.get('pci') or not item.get('pci'):
+            raise ValueError('memory observation PCI identity mismatch')
+        observation(item['pci'], item['used'], item['total'])
+        free = device['free']
+        if (type(free) is not int or not 0 <= free <= device['total'] or
+                cap <= 0 or cap > device['total'] or cap > item['total']):
+            raise ValueError('selected physical capacity/free memory cannot admit cap')
+        available = min(free, item['total'] - item['used'])
+        if reserve <= 0 or available <= reserve:
+            raise ValueError('selected physical free memory cannot preserve reserve')
+        budgets.append(dict(policy_cap_bytes=cap, effective_limit_bytes=min(cap, available-reserve),
+                            available_bytes=available, reserve_bytes=reserve,
+                            baseline_used_bytes=item['used'], physical_total_bytes=item['total'],
+                            backend_total_bytes=device['total'], pci=item['pci']))
+    return budgets
+
+
+def budget_argv(budgets):
+    # This observation can only tighten the engine's own live backend admission.
+    return ['--device-free-bytes', ','.join(str(b['available_bytes']) for b in budgets)]
+
+
+def guard_vram(sample, initial, budgets):
+    if not len(sample) == len(initial) == len(budgets) == 2:
+        raise ValueError('incomplete runtime memory evidence')
+    for value, baseline, budget in zip(sample, initial, budgets):
+        observation(value['pci'], value['used'], value['total'])
+        if (value['pci'] != budget['pci'] or value['total'] != budget['physical_total_bytes'] or
+                value['used'] - baseline['used'] > budget['effective_limit_bytes'] or
+                value['total'] - value['used'] < budget['reserve_bytes']):
+            raise ValueError('per-device growth cap/free reserve or identity drift')
 
 
 def sample_vram(physical, initial=None):
@@ -294,13 +364,13 @@ def main():
                "--manifest", args.manifest, "--tokens", ",".join(map(str, PROMPT)),
                "--context", "64", "--max-new", "3", "--threads", "4", "--expert-workers", "12",
                "--host-cap-mib", str(HOST_ANONYMOUS_CAP >> 20),
-               "--vulkan", args.devices, "--device-cap-mib", ",".join([str(args.device_cap_mib)] * 2),
+               "--vulkan", args.devices, "--device-cap-mib", cap_argv(args),
                "--split", str(args.split), "--dump-logits", str(evidence / "logits"),
                "--placements", str(evidence / "placements.tsv")]
     if args.expert_dispatch_oracle:
         command.append("--expert-dispatch-oracle")
     (evidence / "argv.json").write_text(json.dumps(command, indent=2) + "\n")
-    cap = args.device_cap_mib << 20
+    caps = device_caps(args)
     summary = {"launched": False, "status": "STOP", "prompt_tokens": len(PROMPT),
                "first_generation_logits": f"logits/pos-{len(PROMPT)-1}.f32",
                "numeric_reference_comparison": "pending; host-local retained02 row required",
@@ -318,7 +388,10 @@ def main():
         summary["selected_devices"] = mapping
         initial = sample_vram(physical)
         summary["baseline_vram"] = initial
-        admit_vram(initial, mapping, cap)
+        budgets = admit_vram(initial, mapping, caps, device_reserves(args))
+        summary["device_budgets"] = budgets
+        command += budget_argv(budgets)
+        (evidence / "argv.json").write_text(json.dumps(command, indent=2) + "\n")
         peak = [item["used"] for item in initial]
         start = time.monotonic()
         with (evidence / "stdout.jsonl").open("w") as stdout, (evidence / "stderr.log").open("w") as stderr, \
@@ -338,10 +411,9 @@ def main():
                 summary["last_process"] = child
                 summary["minimum_effective_available"] = min(summary["minimum_effective_available"], host["effective_available"])
                 guard_host(host, baseline_host, child)
+                guard_vram(sample, initial, budgets)
                 for index, item in enumerate(sample):
                     peak[index] = max(peak[index], item["used"])
-                    if item["used"] - initial[index]["used"] > cap:
-                        raise ValueError(f"aggregate observed VRAM growth exceeds die cap: {item}")
                 summary["sampled_peak_vram"] = peak[:]
                 summary["sampled_peak_growth"] = [peak[i]-initial[i]["used"] for i in range(2)]
                 status = process.poll()

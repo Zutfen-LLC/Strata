@@ -1,3 +1,4 @@
+import portable_model_smoke_v1 as B
 import copy
 import json
 from pathlib import Path
@@ -122,7 +123,7 @@ class ChunkPolicy(unittest.TestCase):
                 with ExitStack() as stack:
                     for name,value in [('frozen',([[5,6,7]],{}))]:stack.enter_context(mock.patch.object(P,name,return_value=value))
                     for name,value in [('host_memory',{'effective_available':1<<40}),('model_working_set',{'working_set_bound_bytes':0}),
-                        ('verified_devices',[{'total':9<<30}]*2),('vram',{'used':0,'total':9<<30}),('rss',{}),('placements',{'fixture':1})]:
+                        ('verified_devices',[dict(pci=p,free=9<<30,total=9<<30) for p in B.PCI]),('sample_vram',[dict(pci=p,used=0,total=9<<30) for p in B.PCI]),('rss',{}),('placements',{'fixture':1})]:
                         stack.enter_context(mock.patch.object(P.S,name,return_value=value))
                     stack.enter_context(mock.patch.object(P.S,'guard_host'))
                     stack.enter_context(mock.patch.object(P.S,'admit_host'))
@@ -313,8 +314,8 @@ class ChunkPolicy(unittest.TestCase):
                 stack.enter_context(mock.patch.object(sys,'argv',argv))
                 stack.enter_context(mock.patch.object(R,'Resident',side_effect=launch))
                 for module,name,value in ((R.S,'host_memory',dict(effective_available=1<<40,pswpout=0)),
-                    (R.S,'model_working_set',dict(working_set_bound_bytes=0)),(R.S,'verified_devices',[dict(total=8<<30)]*2),
-                    (R.S,'sample_vram',[dict(used=0,total=8<<30)]*2),(R.S,'placements',{}),
+                    (R.S,'model_working_set',dict(working_set_bound_bytes=0)),(R.S,'verified_devices',[dict(pci=p,free=8<<30,total=8<<30) for p in B.PCI]),
+                    (R.S,'sample_vram',[dict(pci=p,used=0,total=8<<30) for p in B.PCI]),(R.S,'placements',{}),
                     (R.L,'devices',{0:dict(entries=4),1:dict(entries=4)})):
                     stack.enter_context(mock.patch.object(module,name,return_value=value))
                 R.main()

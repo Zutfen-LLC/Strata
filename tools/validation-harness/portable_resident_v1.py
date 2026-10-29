@@ -214,7 +214,7 @@ def model_phase_fields(metrics, consumed, gdn_policy='eager_diagnostic', head_po
             raise ValueError('GDN candidate diagnostic containment/counts failed')
 
 
-def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor_mib, expected_argv=None,residency=None,prompt_chunk_size=0):
+def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor_mib, expected_argv=None,residency=None,prompt_chunk_size=0,device_policy=None):
     """Read completed same-backend evidence; never launch or reconstruct a case."""
     root = Path(root)
     summary = json.loads((root/'summary.json').read_text())
@@ -249,6 +249,13 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
     expected_qsa = bool(expected_residency.get('--qsa-reuse-attention', False))
     if summary.get('qsa_reuse_attention', False) is not expected_qsa:
         raise ValueError('reference residency policy mismatch: QSA summary')
+    if device_policy is not None:
+        recorded_policy = summary.get('device_policy', {})
+        for key in ('devices', 'pci', 'split'):
+            if recorded_policy.get(key) != device_policy[key]:
+                raise ValueError('reference device policy mismatch: '+key)
+        if S.cap_argv(argparse.Namespace(device_cap_mib=recorded_policy.get('device_cap_mib', ''))) != S.cap_argv(argparse.Namespace(device_cap_mib=device_policy['device_cap_mib'])):
+            raise ValueError('reference device policy mismatch: caps')
     rows = []
     for index, prompt in enumerate(prompts,1):
         case = root/f'case-{index:02d}'
@@ -396,7 +403,7 @@ def main():
     selected,physical=S.device_selection(p,args)
     if len(args.plan)!=2: p.error('two plans required')
     caps=args.expert_tensor_mib.split(',')
-    if len(caps)!=2 or any(not c.isdecimal() or not 0<int(c)<=8192 for c in caps):
+    if len(caps)!=2 or any(not c.isdecimal() or not 0<int(c)<=S.MAX_MIB for c in caps):
         p.error('two positive bounded expert tensor caps required')
     tokens=None
     if args.suite:
@@ -411,9 +418,10 @@ def main():
         references=reference_rows(args.reference_root,binding,prompts,len(tok.tokens),
                                   args.binary_sha256,args.plan,args.expert_tensor_mib,
                                   {'--model':str(args.gguf),'--manifest':args.manifest,'--vulkan':args.devices,
-                                   '--split':str(args.split),'--device-cap-mib':','.join([str(args.device_cap_mib)]*2),
+                                   '--split':str(args.split),'--device-cap-mib':S.cap_argv(args),
                                    '--threads':'4','--expert-workers':'12','--host-cap-mib':'32768'},
-                                  {flag:flag in P.residency_flags(args) for flag in (*P.RESIDENCY_FLAGS,P.GDN_PROJECTION_FLAG,P.GDN_CAUSAL_FLAG)},P.chunk_size(args))
+                                  {flag:flag in P.residency_flags(args) for flag in (*P.RESIDENCY_FLAGS,P.GDN_PROJECTION_FLAG,P.GDN_CAUSAL_FLAG)},P.chunk_size(args),
+                                  device_policy=dict(devices=args.devices,pci=physical,split=args.split,device_cap_mib=args.device_cap_mib))
         args.max_new=Q.MAX_NEW
         args.expert_timings=True
     else:
@@ -446,8 +454,10 @@ def main():
         receipt['selected_devices']=mapping
         initial=S.sample_vram(physical)
         receipt['baseline_vram']=initial
-        cap=args.device_cap_mib<<20
-        S.admit_vram(initial,mapping,cap)
+        caps=S.device_caps(args)
+        budgets=S.admit_vram(initial,mapping,caps,S.device_reserves(args))
+        receipt['device_budgets']=budgets
+        receipt['device_policy']=dict(devices=args.devices,pci=physical,split=args.split,device_cap_mib=args.device_cap_mib)
         receipt.update(sample_count=0,minimum_effective_available=baseline['effective_available'],
                        peak_process=dict(VmRSS=0,VmHWM=0,VmSwap=0),peak_swap_used=baseline.get('SwapUsed',0),
                        maximum_swap_out_pages_delta=0,sampled_peak_vram=[v['used'] for v in initial],
@@ -470,14 +480,14 @@ def main():
                 receipt['sampled_peak_vram'][i]=max(receipt['sampled_peak_vram'][i],v['used'])
                 receipt['minimum_vram_free'][i]=min(receipt['minimum_vram_free'][i],v['total']-v['used'])
             S.guard_host(host,baseline,process)
-            if any(v['used']-initial[i]['used']>cap or v['total']-v['used']<512<<20 for i,v in enumerate(sample)):
-                raise ValueError('per-die cap/free reserve')
+            S.guard_vram(sample,initial,budgets)
         command=[str(binary),'--model',str(args.gguf if args.suite else (args.model_root or S.MODEL_ROOT)/'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
                  '--manifest',args.manifest,'--stdio','--max-requests','25' if args.suite else '5','--context','256','--threads','4',
                  '--expert-workers','12','--host-cap-mib','32768','--vulkan',args.devices,
-                 '--device-cap-mib',','.join([str(args.device_cap_mib)]*2),'--split',str(args.split),
+                 '--device-cap-mib',S.cap_argv(args),'--split',str(args.split),
                  '--expert-tensor-mib',args.expert_tensor_mib,'--expert-workspace-mib','128,128',
                  '--expert-free-reserve-mib','512,512','--placements',str(args.out/'placements.tsv')]
+        command+=S.budget_argv(budgets)
         for i,plan in enumerate(args.plan): command+=['--expert-plan',f'{i}:{plan.resolve(strict=True)}']
         if args.expert_timings: command += ['--expert-timings']
         if args.gdn_batch_input_projections:command+=['--gdn-batch-input-projections']
