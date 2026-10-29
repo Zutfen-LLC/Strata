@@ -7,6 +7,8 @@ namespace strata::core::portable_detail {
 // Not connected to model execution. No CPU fallback.
 struct StrataVkNativeStages;
 StrataVkNativeStages* strata_vk_native_stages_create(ggml_backend_t);
+// Explicit observation only; never called as a fallback. Writes final module receipt.
+StrataVkNativeStages* strata_vk_native_stages_create_observation(ggml_backend_t,const char* effective_spv_path);
 void strata_vk_native_stages_destroy(StrataVkNativeStages*) noexcept;
 // mode 0: quantize all input; 1: separate SwiGLU all capacity; 2: fused
 // SwiGLU + quantize [starts[0],starts[count]). Shape is bounded, rows % 32 == 0.

@@ -70,6 +70,14 @@ inline void write_result(const std::string& path,const Result& r){
         word(o,uint32_t(b->size()));o.write(reinterpret_cast<const char*>(b->data()),b->size());}
     need(bool(o),"result write failed");
 }
+// Distinct magic prevents an observation capture from being read as legacy strict.
+inline void write_observation_result(const std::string& path,const Result& r,bool sentinels_ok){
+    std::ofstream o(path,std::ios::binary);need(bool(o),"cannot create observation result");
+    word(o,0x3252384e);word(o,sentinels_ok?1:0);
+    for(const auto* b:{&r.input,&r.hidden,&r.separate,&r.fused,&r.empty}){
+        word(o,uint32_t(b->size()));o.write(reinterpret_cast<const char*>(b->data()),b->size());}
+    need(bool(o),"observation result write failed");
+}
 // Host arithmetic specification only. CUDA oracle, not this model, decides GPU parity.
 inline uint16_t half_rne(float x){
     uint32_t b=bits(x),s=(b>>16)&0x8000,e=(b>>23)&255,m=b&0x7fffff;

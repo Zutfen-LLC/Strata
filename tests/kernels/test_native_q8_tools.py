@@ -1,5 +1,6 @@
 """Interchange/comparison and verbatim-oracle tooling tests; no GPU claims."""
 import importlib.util
+import hashlib
 from pathlib import Path
 import struct
 import tempfile
@@ -25,6 +26,49 @@ class Tools(unittest.TestCase):
             self.assertIn(name, definition)
         self.assertIn('__fmul_rn', oracle.definition(text, 'swiglu_q8_1_entries_kernel'))
         self.assertIn('for (int o = 16;', oracle.definition(text, 'q8_1_store'))
+
+    def test_strict_shader_creator_and_gate_remain_unchanged(self):
+        source = (ROOT / 'src/core/strata_vk_native_stages.inc').read_text()
+        begin = source.index('StrataVkNativeStages* strata_vk_native_stages_create(')
+        end = source.index('StrataVkNativeStages* strata_vk_native_stages_create_observation(', begin)
+        self.assertEqual(hashlib.sha256(source[begin:end].encode()).hexdigest(),
+            '0f3b4c73985d46e52994ef5a84551e504f52bc983ded53228a15d6f1b65bd923')
+        for path, expected in {
+            'src/core/native_q8_float_controls.hpp': '2633f8441b8ddf65e0ca90b54e6fc4bff297d3a98ebdc9a9d0c7918a7b3307ae',
+            'src/kernels/vulkan/native_q8_stages.comp': 'c23db4f75b3b09a5bf5675f5a91753578255ecc0614f0822de46d72052044256',
+        }.items():
+            self.assertEqual(hashlib.sha256((ROOT / path).read_bytes()).hexdigest(), expected)
+
+    def test_observation_cannot_be_promoted_to_strict_pass(self):
+        compare = module('compare_native_q8_stages')
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory);f = d / 'fixture';native = d / 'native';obs = d / 'obs'
+            f.write_bytes(struct.pack('<6I', 0x3151384e, 32, 32, 2, 0, 0) + bytes(32 * 4 * 3))
+            parts = [bytes(36), bytes(128), bytes(36), bytes([0xa5] * 36), bytes([0xa5] * 36)]
+            payload = b''.join(struct.pack('<I', len(x)) + x for x in parts)
+            native.write_bytes(struct.pack('<I', 0x3152384e) + payload)
+            legacy = compare.compare(f, native, native)
+            self.assertEqual(compare.comparison_exit(legacy), 0)
+            self.assertNotIn('observation_only', legacy)
+            self.assertNotIn('fp32_denorm_mode', legacy)
+            obs.write_bytes(struct.pack('<II', 0x3252384e, 1) + payload)
+            report = compare.compare(f, native, obs)
+            self.assertTrue(report['exact'])
+            self.assertTrue(report['observation_only'])
+            self.assertFalse(report['qualified'])
+            self.assertEqual(report['fp32_denorm_mode'], 'unspecified')
+            self.assertEqual(compare.comparison_exit(report), 2)
+            # Outer-view sentinel failure must survive even if all stage bytes match.
+            obs.write_bytes(struct.pack('<II', 0x3252384e, 0) + payload)
+            report = compare.compare(f, native, obs)
+            self.assertTrue(report['observation_view_sentinel_failure'])
+            self.assertEqual(compare.comparison_exit(report), 1)
+            changed = bytearray(payload);changed[4] ^= 1
+            obs.write_bytes(struct.pack('<II', 0x3252384e, 1) + changed)
+            report = compare.compare(f, native, obs)
+            self.assertEqual(report['sections']['input_q8']['different_bytes'], 1)
+            self.assertEqual(compare.comparison_exit(report), 1)
+            with self.assertRaises(ValueError):compare.compare(f, obs, native)
 
     def test_native_conversion_holes_are_not_qualified(self):
         compare = module('compare_native_q8_stages')

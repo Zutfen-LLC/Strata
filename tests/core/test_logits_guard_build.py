@@ -62,6 +62,25 @@ class GuardBuild(unittest.TestCase):
             suffix += b'#include "strata_vk_native_stages.inc"\n'
         self.assertEqual(copy, original + suffix)
 
+    def test_observation_helper_is_exact_pinned_copy_with_one_final_hook(self):
+        if not NATIVE_STAGES:
+            self.skipTest('standalone native stages disabled')
+        original = (GGML / FILES[0]).read_text()
+        begin = original.index('static void ggml_vk_create_pipeline_func(')
+        end = original.index('\nvoid ggml_vk_destroy_pipeline(', begin)
+        expected = original[begin:end].replace('static void ggml_vk_create_pipeline_func(',
+            'static void strata_vk_observation_create_pipeline_func(', 1)
+        expected = expected.replace('uint32_t required_subgroup_size) {',
+            'uint32_t required_subgroup_size, const char* diagnostic_spv_path) {', 1)
+        anchor = '    pipeline->shader_module = device->device.createShaderModule(shader_module_create_info);'
+        self.assertEqual(expected.count(anchor), 1)
+        expected = expected.replace(anchor,
+            '    native_q8_validate_observation_effective(static_cast<const uint32_t*>(spv_data), spv_size/4, '
+            'shader_module_create_info.pCode, shader_module_create_info.codeSize/4, device->float_controls_rte_fp16, '
+            'device->float_controls_denorm_preserve_fp16, diagnostic_spv_path);\n' + anchor)
+        self.assertEqual((BUILD / 'strata_native_observe_pipeline.inc').read_text(),
+            '// Generated from the exact pinned MIT-licensed GGML helper.\n' + expected)
+
     def test_shader_has_integer_classification_and_no_float_type(self):
         data = (BUILD / 'logits_nonfinite.spv').read_bytes()
         words = struct.unpack('<' + 'I' * (len(data) // 4), data)

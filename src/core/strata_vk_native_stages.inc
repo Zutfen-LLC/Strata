@@ -3,7 +3,9 @@
 #include "strata_native_stages_spv.hpp"
 #include "native_q8_spirv.hpp"
 #include "native_q8_float_controls.hpp"
+#include "native_q8_observation.hpp"
 namespace strata::core::portable_detail {
+#include "strata_native_observe_pipeline.inc"
 struct StrataVkNativeStages {
     // Reuse the existing pipeline/owned metadata cleanup. Its status buffer
     // holds bounded group metadata; no extra allocator or device is introduced.
@@ -33,6 +35,36 @@ StrataVkNativeStages* strata_vk_native_stages_create(ggml_backend_t backend) {
     const auto code=native_stage_float_controls(strata_native_stages_spv,sizeof(strata_native_stages_spv)/4);
     ggml_vk_create_pipeline_func(ctx->device,p,code.size()*sizeof(uint32_t),code.data(),
                                 "main",6,{1,1,1},{},false,false,0);
+    return result.release();
+}
+StrataVkNativeStages* strata_vk_native_stages_create_observation(ggml_backend_t backend,const char* effective_spv_path) {
+    logits_guard_need(backend && ggml_backend_is_vk(backend),"native stages: Vulkan required");
+    auto result=std::make_unique<StrataVkNativeStages>();
+    result->owner=std::make_unique<StrataVkLogitsGuard>(backend);
+    auto& g=*result->owner;
+    auto* ctx=static_cast<ggml_backend_vk_context*>(backend->context);
+    const auto& limits=ctx->device->properties.limits;
+    logits_guard_need(limits.maxComputeWorkGroupInvocations>=32 && limits.maxComputeWorkGroupSize[0]>=32 &&
+                      limits.maxComputeSharedMemorySize>=3*32*4,"native stages: device geometry unsupported");
+    const auto properties=ctx->device->physical_device.getProperties2<vk::PhysicalDeviceProperties2,vk::PhysicalDeviceVulkan12Properties>();
+    const auto& fp=properties.get<vk::PhysicalDeviceVulkan12Properties>();
+    native_q8_require_observation_controls(fp);
+    logits_guard_need(effective_spv_path && *effective_spv_path,"observation: final shader receipt path required");
+    logits_guard_need(bool(fp.shaderDenormPreserveFloat16)==ctx->device->float_controls_denorm_preserve_fp16 &&
+        bool(fp.shaderRoundingModeRTEFloat16)==ctx->device->float_controls_rte_fp16,"observation: helper cached controls disagree with query");
+    g.metadata.reset(ggml_init({4096,nullptr,true}));
+    logits_guard_need(bool(g.metadata),"native stages: metadata allocation failed");
+    g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,16);
+    g.buffer.reset(ggml_backend_alloc_ctx_tensors(g.metadata.get(),backend));
+    logits_guard_need(bool(g.buffer),"native stages: metadata buffer failed");
+    g.bytes=ggml_backend_buffer_get_size(g.buffer.get());
+    auto& p=g.pipeline;
+    p->name="strata_native_q8_observation_unspecified_fp32_denorm";p->parameter_count=6;p->push_constant_size=9*4;
+    p->wg_denoms={1,1,1};p->align=1;p->initialized=true;
+    const auto strict=native_stage_float_controls(strata_native_stages_spv,sizeof(strata_native_stages_spv)/4);
+    const auto code=native_q8_observation_code(strict);
+    strata_vk_observation_create_pipeline_func(ctx->device,p,code.size()*sizeof(uint32_t),code.data(),
+                                "main",6,{1,1,1},{},false,false,0,effective_spv_path);
     return result.release();
 }
 void strata_vk_native_stages_destroy(StrataVkNativeStages* s) noexcept {delete s;}

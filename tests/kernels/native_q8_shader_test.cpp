@@ -1,8 +1,10 @@
 #include "native_q8_spirv.hpp"
 #include "native_q8_float_controls.hpp"
+#include "native_q8_observation.hpp"
 #include <vulkan/vulkan.hpp>
 #include "strata_native_stages_spv.hpp"
 #include "native_q8_fixture.hpp"
+#include "strata_native_observe_test_helper.hpp"
 using namespace native_q8_fixture;
 using namespace strata::core::portable_detail;
 namespace {
@@ -60,6 +62,38 @@ void property_diagnostics() {
     }
 }
 }
+namespace {
+template<class F> void reject_observation(F f){bool failed=false;try{f();}catch(const std::runtime_error&){failed=true;}need(failed,"observation accepted invalid module/controls");}
+void observation_tests(const std::vector<uint32_t>& strict,const char* prefix) {
+    const auto observed=native_q8_observation_code(strict);
+    need(observed.size()+4==strict.size(),"observation delta must be one four-word mode");
+    reject_observation([&]{native_q8_observation_code(observed);});
+    const char* tokens[]={"program","--observe-unspecified-fp32-denorm","--device","1","--expect-device","mock","--fixture","f","--output","o"};
+    auto argv=const_cast<char**>(tokens);
+    need(native_q8_observation_requested(10,argv) && !native_q8_observation_requested(9,argv),"observation must be explicit and complete");
+    need(!native_q8_observation_requested(9,argv+1),"strict argv must not opt in");
+    vk::PhysicalDeviceVulkan12Properties fp;
+    fp.shaderSignedZeroInfNanPreserveFloat32=fp.shaderRoundingModeRTEFloat32=VK_TRUE;
+    fp.shaderDenormPreserveFloat16=VK_TRUE;fp.denormBehaviorIndependence=vk::ShaderFloatControlsIndependence::eAll;
+    native_q8_require_observation_controls(fp);
+    auto invalid=fp;invalid.shaderSignedZeroInfNanPreserveFloat32=VK_FALSE;reject_observation([&]{native_q8_require_observation_controls(invalid);});
+    invalid=fp;invalid.shaderRoundingModeRTEFloat32=VK_FALSE;reject_observation([&]{native_q8_require_observation_controls(invalid);});
+    invalid=fp;invalid.shaderDenormPreserveFloat16=VK_FALSE;reject_observation([&]{native_q8_require_observation_controls(invalid);});
+    invalid=fp;invalid.denormBehaviorIndependence=vk::ShaderFloatControlsIndependence::eNone;
+    reject_observation([&]{native_q8_require_observation_controls(invalid);});
+    for(int bits=0;bits<4;++bits){const bool rte=bits&1,preserve=bits&2;
+        const auto effective=native_q8_test_helper_effective(observed,rte,preserve);
+        const auto strict_effective=native_q8_test_helper_effective(strict,rte,preserve);
+        need(native_q8_observation_code(strict_effective)==effective,"effective strict/observation delta changed instructions");
+        std::string path=prefix?std::string(prefix)+".effective-"+std::to_string(bits)+".spv":"";
+        native_q8_validate_observation_effective(observed.data(),observed.size(),effective.data(),effective.size(),rte,preserve,prefix?path.c_str():nullptr);
+        auto altered=effective;
+        for(size_t pos=5;pos<altered.size();pos+=altered[pos]>>16)if((altered[pos]&65535)==spv::OpFDiv){altered[pos+3]^=1;break;}
+        reject_observation([&]{native_q8_validate_observation_effective(observed.data(),observed.size(),altered.data(),altered.size(),rte,preserve,nullptr);});
+        reject_observation([&]{native_q8_validate_observation_effective(observed.data(),observed.size(),strict_effective.data(),strict_effective.size(),rte,preserve,nullptr);});
+    }
+}
+}
 int main(int argc,char** argv){try {
     property_diagnostics();
     auto words=native_stage_float_controls(strata_native_stages_spv,sizeof(strata_native_stages_spv)/4);
@@ -76,7 +110,10 @@ int main(int argc,char** argv){try {
         need(!(op>=spv::OpGroupNonUniformElect && op<=spv::OpGroupNonUniformQuadSwap),"physical subgroup instruction");
         pos+=len;}
     need(divides==3 && contractions>=7 && controls==3 && barriers>=3,"native shader arithmetic/controls missing");
-    if(argc==2){std::ofstream o(argv[1],std::ios::binary);for(uint32_t w:words)word(o,w);need(bool(o),"SPIRV write failed");}
+    const bool dump_observation=argc==3 && std::string(argv[1])=="--observation-modules";
+    observation_tests(words,dump_observation?argv[2]:nullptr);
+    if(dump_observation){} // effective module receipts were written by validation
+    else if(argc==2){std::ofstream o(argv[1],std::ios::binary);for(uint32_t w:words)word(o,w);need(bool(o),"SPIRV write failed");}
     else need(argc==1,"optional argument: controlled SPIRV output path");
     std::puts("native shader: division, NoContraction, FP32 controls and logical-warp barriers checked; not GPU proof");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

@@ -39,9 +39,16 @@ def fixture(path):
 def capture(path, n):
     data = path.read_bytes()
     (magic,), off = read_words(data, 0, 1)
-    if magic != 0x3152384e:
+    if magic not in (0x3152384e, 0x3252384e):
         raise ValueError('invalid result')
-    result = {}
+    observation = magic == 0x3252384e
+    sentinel_ok = True
+    if observation:
+        (flag,), off = read_words(data, off, 1)
+        if flag not in (0, 1):
+            raise ValueError('invalid observation sentinel status')
+        sentinel_ok = bool(flag)
+    result = {'observation_only': observation, 'sentinels_ok': sentinel_ok}
     for name in NAMES:
         (size,), off = read_words(data, off, 1)
         expected = n * 4 if name == 'separate_hidden' else n // 32 * 36
@@ -80,6 +87,8 @@ def contract_exceptions(raw, packed):
 def compare(fixture_path, native_path, vulkan_path):
     ff, n, starts, arrays = fixture(fixture_path)
     native, vulkan = capture(native_path, n), capture(vulkan_path, n)
+    if native['observation_only']:
+        raise ValueError('native oracle must not be an observation capture')
     report = {'exact': True, 'elements': n, 'n_ff': ff, 'starts': starts, 'sections': {}, 'internal_paths': {}}
     for name in NAMES:
         a, b = native[name], vulkan[name]
@@ -120,12 +129,24 @@ def compare(fixture_path, native_path, vulkan_path):
     report['native_contract_exceptions'] = {
         'input_q8': contract_exceptions(arrays[0], native['input_q8']),
         'separate_q8': contract_exceptions(hidden_words, native['separate_q8'])}
+    if not vulkan['sentinels_ok']:
+        report['exact'] = False
+        report['observation_view_sentinel_failure'] = True
+    if vulkan['observation_only']:
+        report['observation_only'] = True
+        report['fp32_denorm_mode'] = 'unspecified'
     report['qualified'] = False  # a synthetic fixture never qualifies product integration
     report['fixture_contract_defined'] = not any(report['native_contract_exceptions'].values())
     report['limits'] = ('Exact bytes are required, including NaNs. Native NaN-to-int8 conversion and NaN payloads '
                         'are not a cross-backend contract. See raw differences; no mismatch is waived. '
                         'One fixture does not qualify every exp/division input or hardware.')
     return report
+
+
+def comparison_exit(report):
+    if not report['exact']:
+        return 1
+    return 2 if report.get('observation_only', False) or not report['fixture_contract_defined'] else 0
 
 
 if __name__ == '__main__':
@@ -137,7 +158,10 @@ if __name__ == '__main__':
     a = p.parse_args()
     report = compare(a.fixture, a.native, a.vulkan)
     a.report.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
-    print(json.dumps({'exact': report['exact'], 'different_bytes': {
-        k: v['different_bytes'] for k, v in report['sections'].items()}}))
+    summary = {'exact': report['exact'], 'different_bytes': {
+        k: v['different_bytes'] for k, v in report['sections'].items()}}
+    if report.get('observation_only', False):
+        summary.update(qualified=False, fp32_denorm_mode='unspecified')
+    print(json.dumps(summary))
     # Even exact bytes in a native conversion hole must not resemble qualification.
-    raise SystemExit(1 if not report['exact'] else 0 if report['fixture_contract_defined'] else 2)
+    raise SystemExit(comparison_exit(report))

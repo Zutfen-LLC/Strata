@@ -185,3 +185,71 @@ module cannot legally be dispatched. A narrower diagnostic domain would need
 operation-by-operation justification, including intermediates; finite input
 values alone do not suffice. No gate relaxation, shader change or fleet retry
 is authorized by this diagnosis.
+
+## Explicit observation of unspecified FP32 denormals
+
+`--observe-unspecified-fp32-denorm` is a separate diagnostic identity. It never
+runs automatically after strict refusal. The strict shader, creation function,
+property predicate and default capture encoding remain unchanged. There is no
+model integration, arithmetic emulation, domain filtering or policy selection.
+
+Observation derives from the same compiled shader by removing exactly one
+four-word instruction: `OpExecutionMode ... DenormPreserve 32`. All arithmetic,
+other controls, reductions, packing, intervals and barriers are retained. It
+still requires supported FP32 RTE and signed-zero/Inf/NaN modes, support for
+the retained capabilities, and independence for the helper's FP16 controls.
+It requests neither FP32 preservation nor flushing. Missing preservation is
+not reinterpreted as permission to force FTZ.
+
+The exact pin-checked pipeline helper is copied into the build tree for this
+entry point only. Its sole added hook validates and writes the final SPIR-V
+immediately before shader-module creation, after all helper modifications.
+The original helper remains untouched. Validation requires the input
+instruction stream to survive byte-for-byte, allowing only the known helper
+FP16 metadata insertions with exact counts. Any arithmetic/decoration change
+is rejected before creating the shader module.
+
+Host tests run the actual pinned FP16 transformation block with all four
+helper-control combinations. For each, effective strict and observation
+modules differ by exactly the omitted FP32 mode. They also reject changed
+instructions and unsupported remaining controls. To emit and independently
+validate those host-generated effective modules:
+
+```sh
+build-stages/native_q8_shader_test --observation-modules observation-host
+spirv-val --target-env vulkan1.2 observation-host.effective-0.spv
+spirv-val --target-env vulkan1.2 observation-host.effective-1.spv
+spirv-val --target-env vulkan1.2 observation-host.effective-2.spv
+spirv-val --target-env vulkan1.2 observation-host.effective-3.spv
+```
+
+For a separately reviewed GPU observation, reuse the retained original fixture
+and native CUDA capture. Replace paths and device placeholders from verified
+identity; choose fresh output paths. No new CUDA run is needed.
+
+```sh
+timeout 30s build-stages/native_q8_vulkan_component \
+  --observe-unspecified-fp32-denorm \
+  --device VK_INDEX --expect-device DEVICE_SUBSTRING \
+  --fixture RETAINED_SYNTHETIC_BIN --output FRESH_OBSERVATION_BIN
+spirv-val --target-env vulkan1.2 FRESH_OBSERVATION_BIN.effective.spv
+python tools/compare_native_q8_stages.py --fixture RETAINED_SYNTHETIC_BIN \
+  --native RETAINED_NATIVE_BIN --vulkan FRESH_OBSERVATION_BIN \
+  --report FRESH_COMPARISON_JSON
+```
+
+The capture has a distinct binary magic and carries its sentinel status, so
+an old comparator rejects it and the updated comparator detects observation
+automatically. Its reports always say `qualified=false` and
+`fp32_denorm_mode=unspecified`. Raw bytes and native conversion holes remain
+visible. Comparator exit **1** means a mismatch or sentinel failure; **2**
+means exact observed bytes that remain unqualified. Observation never returns
+a comparator strict-pass status. Capture process exit zero only means the
+capture completed.
+
+The effective module is saved as `OUTPUT.effective.spv`. `OUTPUT.views.bin`
+contains final raw base-buffer receipts, including prefix/suffix canaries:
+magic `0x3156384e`, then five little-endian length-prefixed byte arrays in
+input/gate/up/hidden/packed order. Observation retains stage and final view
+receipts even when its sentinel checks fail, then returns a failure. Full
+original fixture cases and inactive-output sentinels are preserved.
