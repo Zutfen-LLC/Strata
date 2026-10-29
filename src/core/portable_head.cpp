@@ -19,6 +19,57 @@ Context context() {
     require(bool(c), "portable head: metadata allocation failed");
     return c;
 }
+void validate_geometry(const PortableHeadGeometry& g) {
+    require(g.hidden > 0 && g.hidden <= 16384 && g.streams == 4 && g.rank > 0 && g.rank <= 4096 &&
+                g.vocabulary > 0 && g.vocabulary <= 1048576 && std::isfinite(g.epsilon) && g.epsilon > 0,
+            "portable head: invalid geometry");
+}
+std::map<std::string, ggml_tensor*> weight_metadata(ggml_context* c, const PortableHeadGeometry& g,
+                                                 const std::vector<PortableTensorView>& views, size_t budget) {
+    validate_geometry(g);
+    const int64_t width = g.hidden * g.streams;
+    size_t payload_bytes = 0;
+    const std::map<std::string, std::vector<int64_t>> shapes{{"output_hc_norm.weight", {width}},
+                                                             {"output_hc_down.weight", {width, g.rank}},
+                                                             {"output_hc_up.weight", {g.rank, width}},
+                                                             {"output.weight", {g.hidden, g.vocabulary}}};
+    require(views.size() == shapes.size(), "portable head: expected four weights");
+    std::map<std::string, ggml_tensor *> w;
+    for (const auto &v : views) {
+        const auto expected = shapes.find(v.name);
+        require(expected != shapes.end() && v.shape == expected->second && !w.count(v.name) && v.data &&
+                    (v.type == 0 || v.type == 8) && (v.type != 8 || v.shape[0] % 32 == 0),
+                "portable head: unexpected tensor/type/shape: " + v.name);
+        require(v.name != "output_hc_norm.weight" || v.type == 0, "portable head: norm requires F32");
+        auto *t = ggml_new_tensor(c, ggml_type(v.type), int(v.shape.size()), v.shape.data());
+        ggml_set_name(t, v.name.c_str());
+        require(ggml_nbytes(t) == v.bytes && payload_bytes <= budget &&
+                    v.bytes <= budget - payload_bytes,
+                "portable head: weight budget/size");
+        payload_bytes += v.bytes;
+        w[v.name] = t;
+    }
+    return w;
+}
+size_t aligned_weight_size(ggml_context* c, ggml_backend_t backend) {
+    require(backend != nullptr, "portable head: weight estimate requires selected backend");
+    auto* buft = ggml_backend_get_default_buffer_type(backend);
+    const size_t alignment = ggml_backend_buft_get_alignment(buft);
+    require(alignment > 0 && (alignment & (alignment-1)) == 0, "portable head: invalid weight alignment");
+    size_t total = 0;
+    for (auto* t=ggml_get_first_tensor(c); t; t=ggml_get_next_tensor(c,t)) {
+        const size_t bytes = ggml_backend_buft_get_alloc_size(buft,t);
+        require(bytes <= SIZE_MAX-(alignment-1), "portable head: weight alignment overflow");
+        const size_t padded = (bytes+alignment-1) & ~(alignment-1);
+        require(padded <= SIZE_MAX-total, "portable head: weight allocation overflow");
+        total += padded;
+    }
+    // Same checked padding/sum method as QSA state admission. GGML can split
+    // this weight context across buffers; the sum prices every chunk. No backend allocation.
+    require(total == ggml_backend_alloc_ctx_tensors_from_buft_size(c,buft),
+            "portable head: weight estimator mismatch");
+    return total;
+}
 } // namespace
 struct PortableHead::Impl {
     PortableHeadGeometry g;
@@ -35,45 +86,24 @@ struct PortableHead::Impl {
     ggml_backend_t accelerator = nullptr;
     Impl(PortableHeadGeometry geometry, const std::vector<PortableTensorView> &views, PortableFfnOptions opts, bool guard_logits)
         : g(geometry) {
-        require(g.hidden > 0 && g.hidden <= 16384 && g.streams == 4 && g.rank > 0 && g.rank <= 4096 &&
-                    g.vocabulary > 0 && g.vocabulary <= 1048576 && opts.threads > 0 && std::isfinite(g.epsilon) &&
-                    g.epsilon > 0,
-                "portable head: invalid geometry/options");
+        validate_geometry(g);
+        require(opts.threads > 0, "portable head: invalid thread count");
         cpu.reset(ggml_backend_cpu_init());
         require(bool(cpu), "portable head: CPU unavailable");
         ggml_backend_cpu_set_n_threads(cpu.get(), opts.threads);
         const int64_t width = g.hidden * g.streams;
-        const std::map<std::string, std::vector<int64_t>> shapes{{"output_hc_norm.weight", {width}},
-                                                                 {"output_hc_down.weight", {width, g.rank}},
-                                                                 {"output_hc_up.weight", {g.rank, width}},
-                                                                 {"output.weight", {g.hidden, g.vocabulary}}};
-        require(views.size() == shapes.size(), "portable head: expected four weights");
-        std::map<std::string, ggml_tensor *> w;
-        for (const auto &v : views) {
-            const auto expected = shapes.find(v.name);
-            require(expected != shapes.end() && v.shape == expected->second && !w.count(v.name) && v.data &&
-                        (v.type == 0 || v.type == 8) && (v.type != 8 || v.shape[0] % 32 == 0),
-                    "portable head: unexpected tensor/type/shape: " + v.name);
-            require(v.name != "output_hc_norm.weight" || v.type == 0, "portable head: norm requires F32");
-            auto *t = ggml_new_tensor(weights.get(), ggml_type(v.type), int(v.shape.size()), v.shape.data());
-            ggml_set_name(t, v.name.c_str());
-            require(ggml_nbytes(t) == v.bytes && weight_size <= opts.weight_budget &&
-                        v.bytes <= opts.weight_budget - weight_size,
-                    "portable head: weight budget/size");
-            weight_size += v.bytes;
-            w[v.name] = t;
-        }
+        auto w = weight_metadata(weights.get(), g, views, opts.weight_budget);
         auto *weight_backend = portable_detail::weight_backend(opts, cpu.get());
-        require(ggml_backend_alloc_ctx_tensors_from_buft_size(
-                    weights.get(), ggml_backend_get_default_buffer_type(weight_backend)) <= opts.weight_budget,
-                "portable head: aligned weight budget");
+        const size_t weight_bound = aligned_weight_size(weights.get(),weight_backend);
+        require(weight_bound <= opts.weight_budget, "portable head: aligned weight budget");
         buffer.reset(ggml_backend_alloc_ctx_tensors(weights.get(), weight_backend));
         require(bool(buffer), "portable head: weight allocation failed");
         ggml_backend_buffer_set_usage(buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
         for (const auto &v : views)
             ggml_backend_tensor_set(w.at(v.name), v.data, 0, v.bytes);
         weight_size = ggml_backend_buffer_get_size(buffer.get());
-        require(weight_size <= opts.weight_budget, "portable head: actual aligned weight budget exceeded");
+        require(weight_size <= weight_bound && weight_size <= opts.weight_budget,
+                "portable head: actual aligned weight budget/estimate exceeded");
         device_weights = weight_backend != cpu.get() ? weight_size : 0;
         auto *c = ctx.get();
         input = ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, 1);
@@ -133,6 +163,12 @@ struct PortableHead::Impl {
         }
     }
 };
+size_t PortableHead::weight_allocation_size(ggml_backend* backend, PortableHeadGeometry geometry,
+                                          const std::vector<PortableTensorView>& views) {
+    auto metadata = context();
+    weight_metadata(metadata.get(),geometry,views,SIZE_MAX);
+    return aligned_weight_size(metadata.get(),backend);
+}
 PortableHead::PortableHead(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 PortableHead::~PortableHead() = default;
 std::unique_ptr<PortableHead> PortableHead::create(PortableHeadGeometry g, const std::vector<PortableTensorView> &v,

@@ -92,11 +92,13 @@ charged later, after all dense layers and the head. Shrinking only the expert
 assignment therefore cannot fix that earlier gate.
 
 Preflight reserves a conservative constructor envelope, not the eventual ledger
-increment. In particular, a resident output head currently reserves the configured
-head graph cap plus the configured resident head weight cap before constructing
-its scheduler. The later head ledger can be smaller, including when physical
-storage evidence proves a direct Q8 matvec path. That later discount does not
-retroactively prove a smaller constructor envelope safe. Shared FFN weights are
+increment. The resident output head keeps the full configured graph/workspace
+cap, but now adds the selected backend's aligned allocation size for its four
+actual weight tensors, rather than the configured weight ceiling. The weight
+ceiling still rejects oversized weights. The previous host envelope stays intact.
+The later graph ledger can be smaller, including when physical storage evidence
+proves a direct Q8 matvec path. No additional graph or conversion discount is
+taken by this preflight correction. Shared FFN weights are
 already counted once across T1/chunk graphs, while proven shared conversion and
 serial temporary storage use per-device high-water accounting.
 
@@ -113,3 +115,16 @@ lacks those operands, first inspect retained metadata; any separately authorized
 next check should be one identical bounded load with these diagnostics, stopping
 before generation or further attempts on failure. Do not infer fit from sampled
 peaks, reduce expert counts blindly, or change caps to suppress the error.
+
+Head weight sizing uses metadata only and shares the constructor's tensor schema.
+It checks backend allocation sizes, padding and sum overflow before comparing
+with GGML's no-allocation context estimator, including split buffer contexts.
+It uploads no weights and runs no graph. The `head_weight_preflight` receipt
+records the selected backend, weight ceiling, aligned weight bytes, retained
+graph cap and next estimate, even if later admission refuses. Construction repeats the same sizing
+and rejects any actual weight buffer larger than the estimate or configured cap.
+For the canonical Q8 head the raw four-tensor payload is 682,434,560 bytes;
+that number is not an operating bound by itself. Selected-backend padding must
+be included. Scheduler, conversion/workspace, guard, live reserve and final
+model/expert ledger checks continue to apply. Passing head preflight does not
+establish that a later expert placement fits.

@@ -304,8 +304,21 @@ struct PortableModelSession::Impl {
                                                ? opts.head_weight_cap : 0;
         require(head_resident_bound <= SIZE_MAX - opts.head_graph_cap,
                 "portable model: resident head preflight overflow");
-        preflight(device(L - 1), L, "output-head", opts.head_weight_cap, opts.head_graph_cap + head_resident_bound, 64u << 20);
-        head = PortableHead::create({H, HC, 320, int64_t(vocabulary), 1e-6f}, hw, execution(L - 1, true), error, opts.gdn_production || opts.qsa_production || opts.prompt_head_elision);
+        const PortableHeadGeometry head_geometry{H, HC, 320, int64_t(vocabulary), 1e-6f};
+        const size_t aligned_head_weights = head_resident_bound ? PortableHead::weight_allocation_size(
+            opts.accelerators[device(L-1)], head_geometry, hw) : 0;
+        require(aligned_head_weights <= head_resident_bound, "portable model: aligned head weights exceed configured cap");
+        if (head_resident_bound)
+            std::clog << "head_weight_preflight slot=" << device(L-1)
+                      << " backend=" << ggml_backend_name(opts.accelerators[device(L-1)])
+                      << " weight_cap_bytes=" << head_resident_bound << " aligned_weight_bytes=" << aligned_head_weights
+                      << " graph_cap_bytes=" << opts.head_graph_cap
+                      << " next_estimated_bytes=" << opts.head_graph_cap + aligned_head_weights << '\n';
+        // Keep the full graph/workspace cap and the previous host envelope.
+        // Only replace the device's policy weight ceiling with allocator sizing.
+        preflight(device(L - 1), L, "output-head", opts.head_weight_cap,
+                  opts.head_graph_cap + head_resident_bound, 64u << 20, opts.head_graph_cap + aligned_head_weights);
+        head = PortableHead::create(head_geometry, hw, execution(L - 1, true), error, opts.gdn_production || opts.qsa_production || opts.prompt_head_elision);
         require(bool(head), error);
         account(head->memory_usage(), device(L - 1));
         append_placements(head->placements(), int64_t(L));
@@ -359,9 +372,11 @@ struct PortableModelSession::Impl {
         }
     }
     size_t device(size_t layer) const { return opts.accelerators.size() == 2 && layer >= opts.split ? 1 : 0; }
-    void preflight(size_t die, size_t layer, const char* module, size_t weight, size_t graph, size_t state) const {
+    void preflight(size_t die, size_t layer, const char* module, size_t weight, size_t graph, size_t state,
+                   size_t device_next = 0) const {
         // Bound one new module before creating its scheduler/device copies.
         // Reconcile to actual per-backend buffers plus allowances afterwards.
+        // A nonzero device_next replaces only the device estimate, never the host envelope.
         size_t used = report.host_weights + report.host_state_bound + host_graph + report.expert_staging;
         for (size_t bytes : {weight, graph, state}) {
             require(used <= opts.host_cap && bytes <= opts.host_cap - used,
@@ -373,7 +388,8 @@ struct PortableModelSession::Impl {
                 die, layer, module,
                 opts.device_policy_caps.empty() ? 0 : opts.device_policy_caps[die],
                 opts.device_free_reserves.empty() ? 0 : opts.device_free_reserves[die]};
-            portable_detail::preflight_device_memory(report.device_admission[die], opts.device_caps[die], graph, &context);
+            portable_detail::preflight_device_memory(report.device_admission[die], opts.device_caps[die],
+                                                     device_next ? device_next : graph, &context);
         }
     }
     void account(const PortableMemoryUsage &m, size_t die) {

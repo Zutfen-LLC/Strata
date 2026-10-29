@@ -16,6 +16,10 @@ class PortableHead {
     static std::unique_ptr<PortableHead> create(PortableHeadGeometry geometry,
                                                 const std::vector<PortableTensorView> &weights,
                                                 PortableFfnOptions options, std::string &error, bool guard_logits = false);
+    // Metadata-only selected-backend estimate, including padding/alignment.
+    // Uses the same four tensors and allocator sizing as create; no weight upload.
+    static size_t weight_allocation_size(ggml_backend* backend, PortableHeadGeometry geometry,
+                                        const std::vector<PortableTensorView>& weights);
     ~PortableHead();
     bool run(const std::vector<float> &streams, std::vector<float> &logits, std::string &error);
     size_t weight_bytes() const;

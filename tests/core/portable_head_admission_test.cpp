@@ -56,6 +56,45 @@ int main() {
         check(D::head_storage_limit(nullptr).max_storage_buffer_range==0,"missing backend has no proof");
 
         constexpr size_t M=1u<<20;
+        // Full vocabulary metadata only: no tensor payloads or head graph allocated.
+        // Match the loader's Q8 schema, with one dummy byte that sizing must not read.
+        const uint8_t dummy=0;
+        std::vector<PortableTensorView> weights{
+            {"output_hc_norm.weight",{10240},0,&dummy,40960},
+            {"output_hc_down.weight",{10240,320},8,&dummy,3481600},
+            {"output_hc_up.weight",{320,10240},8,&dummy,3481600},
+            {"output.weight",{2560,248320},8,&dummy,675430400}};
+        const PortableHeadGeometry geometry{2560,4,320,248320,1e-6f};
+        const size_t aligned=PortableHead::weight_allocation_size(cpu.get(),geometry,weights);
+        check(aligned>=682434560 && aligned<1024*M,"complete aligned head weights below policy ceiling");
+        bool legacy_refused=false;
+        try { D::preflight_device_memory(2500*M,7500*M,4096*M+1024*M); }
+        catch(const std::exception&) { legacy_refused=true; }
+        check(legacy_refused,"reproduce fixed head ceiling refusal before construction");
+        // Only weight sizing changes; retain the entire graph/workspace ceiling.
+        D::preflight_device_memory(2500*M,7500*M,4096*M+aligned);
+        D::preflight_device_memory(2500*M,2500*M+4096*M+aligned,4096*M+aligned);
+        bool underestimated=false;
+        try { D::preflight_device_memory(2500*M,2500*M+4096*M+aligned-1,4096*M+aligned); }
+        catch(const std::exception&) { underestimated=true; }
+        check(underestimated,"one byte below complete aligned head bound still refuses");
+        auto invalid_weights=weights;invalid_weights[3].bytes--;
+        bool invalid=false;
+        try { PortableHead::weight_allocation_size(cpu.get(),geometry,invalid_weights); }
+        catch(const std::exception&) { invalid=true; }
+        check(invalid,"head estimate validates payload metadata");
+        invalid=false;
+        try { PortableHead::weight_allocation_size(nullptr,geometry,weights); }
+        catch(const std::exception&) { invalid=true; }
+        check(invalid,"head estimate requires selected backend");
+        // Small F32 tensors expose padding: a payload sum is not a backend bound.
+        std::vector<PortableTensorView> small{
+            {"output_hc_norm.weight",{4},0,&dummy,16},
+            {"output_hc_down.weight",{4,1},0,&dummy,16},
+            {"output_hc_up.weight",{1,4},0,&dummy,16},
+            {"output.weight",{1,3},0,&dummy,12}};
+        check(PortableHead::weight_allocation_size(cpu.get(),{1,4,1,3,1e-6f},small)>60,
+              "head estimate includes backend tensor padding");
         const size_t full=2560ull*248320*4, hc=2560ull*4*320*4;
         const size_t other=(248320ull*16+2560*4*4)*4;
         check(full==2542796800ull && hc==13107200 && other==16056320,"head component arithmetic");
