@@ -314,6 +314,8 @@ int main(int argc, char **argv) {
             }
             opts.device_caps.push_back(strata::core::portable_detail::device_admission_limit(
                 policy_cap, available, total, reserve));
+            opts.device_policy_caps.push_back(policy_cap);
+            opts.device_free_reserves.push_back(reserve);
             device_totals.push_back(total);
             device_reserves.push_back(reserve);
             std::cerr << "device=" << devices[i] << " backend=" << ggml_backend_name(backend)

@@ -140,6 +140,9 @@ struct PortableModelSession::Impl {
                 "portable model: context [1,256]/thread limits");
         require(opts.accelerators.size() <= 2 && opts.device_caps.size() == opts.accelerators.size(),
                 "portable model: supply a separate cap for each of at most two accelerators");
+        require((opts.device_policy_caps.empty() || opts.device_policy_caps.size()==opts.accelerators.size()) &&
+                (opts.device_free_reserves.empty() || opts.device_free_reserves.size()==opts.accelerators.size()),
+                "portable model: diagnostic budget evidence must follow accelerator slots");
         require(!opts.qsa_production || (opts.qsa_reuse_attention && !opts.accelerators.empty() && !opts.allow_cpu_fallback),
                 "portable model: QSA production requires reuse and strict accelerators");
         require(!opts.gdn_production || (opts.gdn_resident_state && !opts.accelerators.empty() &&
@@ -239,7 +242,7 @@ struct PortableModelSession::Impl {
             // allocation. A shape keeps one active chunk pair. Fieldwise
             // maxima may combine graph and unused-workspace high waters, so
             // reserve two graph caps plus the explicit FFN private allowance.
-            preflight(device(l),opts.layer_weight_cap,
+            preflight(device(l),l,l%4==3?"qsa":"gdn",opts.layer_weight_cap,
                       graph_preflight+private_workspace+resident_bound+state_bound,128u<<20);
             Layer layer;
             if (l % 4 == 3) {
@@ -273,7 +276,7 @@ struct PortableModelSession::Impl {
                 for(size_t T=1;T<=opts.prompt_chunk_size;++T) {
                     // Recheck the reserved module envelope before every shape
                     // allocation; no account-after-allocation admission gate.
-                    preflight(device(l),opts.layer_weight_cap,
+                    preflight(device(l),l,l%4==3?"qsa-chunk-shape":"gdn-chunk-shape",opts.layer_weight_cap,
                               graph_preflight+private_workspace+resident_bound+state_bound,128u<<20);
                     const bool prepared=layer.prepare(T,error);
                     require(prepared,"portable model: chunk preflight layer "+std::to_string(l)+": "+error);
@@ -301,7 +304,7 @@ struct PortableModelSession::Impl {
                                                ? opts.head_weight_cap : 0;
         require(head_resident_bound <= SIZE_MAX - opts.head_graph_cap,
                 "portable model: resident head preflight overflow");
-        preflight(device(L - 1), opts.head_weight_cap, opts.head_graph_cap + head_resident_bound, 64u << 20);
+        preflight(device(L - 1), L, "output-head", opts.head_weight_cap, opts.head_graph_cap + head_resident_bound, 64u << 20);
         head = PortableHead::create({H, HC, 320, int64_t(vocabulary), 1e-6f}, hw, execution(L - 1, true), error, opts.gdn_production || opts.qsa_production || opts.prompt_head_elision);
         require(bool(head), error);
         account(head->memory_usage(), device(L - 1));
@@ -356,7 +359,7 @@ struct PortableModelSession::Impl {
         }
     }
     size_t device(size_t layer) const { return opts.accelerators.size() == 2 && layer >= opts.split ? 1 : 0; }
-    void preflight(size_t die, size_t weight, size_t graph, size_t state) const {
+    void preflight(size_t die, size_t layer, const char* module, size_t weight, size_t graph, size_t state) const {
         // Bound one new module before creating its scheduler/device copies.
         // Reconcile to actual per-backend buffers plus allowances afterwards.
         size_t used = report.host_weights + report.host_state_bound + host_graph + report.expert_staging;
@@ -365,8 +368,13 @@ struct PortableModelSession::Impl {
                     "portable model: next module exceeds host admission cap");
             used += bytes;
         }
-        if (!opts.accelerators.empty())
-            portable_detail::preflight_device_memory(report.device_admission[die], opts.device_caps[die], graph);
+        if (!opts.accelerators.empty()) {
+            const portable_detail::DeviceAdmissionContext context{
+                die, layer, module,
+                opts.device_policy_caps.empty() ? 0 : opts.device_policy_caps[die],
+                opts.device_free_reserves.empty() ? 0 : opts.device_free_reserves[die]};
+            portable_detail::preflight_device_memory(report.device_admission[die], opts.device_caps[die], graph, &context);
+        }
     }
     void account(const PortableMemoryUsage &m, size_t die) {
         report.host_weights += m.host_weights;

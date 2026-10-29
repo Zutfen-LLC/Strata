@@ -54,6 +54,8 @@ struct PortableModelOptions {
     bool allow_cpu_fallback = false;
     // Separate caps per die; explicit caller limits, never pooled VRAM.
     std::vector<size_t> device_caps;
+    // Optional CLI evidence for refusal diagnostics; never used as admission credit.
+    std::vector<size_t> device_policy_caps, device_free_reserves;
     size_t host_cap = 32ull << 30;
     size_t layer_weight_cap = 256ull << 20, layer_graph_cap = 256ull << 20;
     size_t head_weight_cap = 1ull << 30, head_graph_cap = 4ull << 30;

@@ -83,3 +83,33 @@ new fleet placements as part of this change.
    bounded request with retained placement/memory receipts, followed by matching
    fresh/reference checks before performance comparison. A failure stops the
    attempt. Do not silently change caps, expert IDs, CPU settings or numerics.
+
+## Refusals before expert loading
+
+`next module exceeds separate die admission cap` comes from a dense-layer,
+chunk-shape or output-head constructor preflight. Resident expert plans are
+charged later, after all dense layers and the head. Shrinking only the expert
+assignment therefore cannot fix that earlier gate.
+
+Preflight reserves a conservative constructor envelope, not the eventual ledger
+increment. In particular, a resident output head currently reserves the configured
+head graph cap plus the configured resident head weight cap before constructing
+its scheduler. The later head ledger can be smaller, including when physical
+storage evidence proves a direct Q8 matvec path. That later discount does not
+retroactively prove a smaller constructor envelope safe. Shared FFN weights are
+already counted once across T1/chunk graphs, while proven shared conversion and
+serial temporary storage use per-device high-water accounting.
+
+A refusal now reports `slot`, `layer`, `module`, `admitted_bytes`,
+`next_estimated_bytes`, `policy_cap_bytes`, `effective_limit_bytes` and
+`reserve_bytes`. The output head uses layer 48; chunk-shape attempts identify the
+layer being prepared. API callers without CLI policy/reserve evidence report
+those fields as unknown. These fields add no admission credit and do not change
+caps, bounds or the overflow-safe subtraction test.
+
+Use the refusing module and operands to distinguish a constructor-envelope gate
+from a completed ledger shortage. Retain existing failures. If the original log
+lacks those operands, first inspect retained metadata; any separately authorized
+next check should be one identical bounded load with these diagnostics, stopping
+before generation or further attempts on failure. Do not infer fit from sampled
+peaks, reduce expert counts blindly, or change caps to suppress the error.
