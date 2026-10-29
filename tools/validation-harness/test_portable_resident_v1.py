@@ -12,7 +12,7 @@ FAKE=r'''
 import json,sys,time
 print(json.dumps(dict(ready=True,schema=1)),flush=True)
 for i,line in enumerate(sys.stdin,1):
-    if line=='QUIT\n': break
+    if line=='QUIT\n': sys.exit(70 if sys.argv[1]=='fatal_shutdown' else 0)
     if sys.argv[1]=='hang': time.sleep(20)
     if sys.argv[1]=='fail': sys.exit(2)
     n,t=line.split()[1:]
@@ -102,6 +102,12 @@ class HarnessTest(unittest.TestCase):
         def action(r):
             with self.assertRaises(TimeoutError): r.request([5],0,1)
         self.run_fake('hang',action)
+    def test_unconfirmed_drain_exit_cannot_finish_cleanly(self):
+        def action(r):
+            r.request([5],0,1) # valid output does not establish safe shutdown
+            with self.assertRaisesRegex(RuntimeError,'resident failed on exit'): r.finish()
+            self.assertEqual(r.child.returncode,70)
+        self.run_fake('fatal_shutdown',action)
     def test_failure_reaps(self):
         def action(r):
             with self.assertRaises(RuntimeError): r.request([5],0,1)

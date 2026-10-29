@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <map>
 #include <numeric>
@@ -127,18 +128,18 @@ struct PortableFfn::Impl {
     ~Impl() noexcept {
         if (drain_all()) return;
         // A transient backend exception must not escape this destructor. Retry
-        // all waits once. Persistent failure cannot justify freeing storage
-        // potentially still in use: retain the owned resources and report it.
+        // all waits once. If completion remains unconfirmed, returning would
+        // let the caller free our borrowed backend while graphs may still use it.
         if (drain_all()) {
             std::fputs("portable FFN: destruction recovered after failed synchronization\n", stderr);
             return;
         }
-        std::fputs("portable FFN: destruction synchronization failed; completion unconfirmed; "
-                   "owned execution resources retained, backend owner must stop reuse\n", stderr);
-        (void)pre_sched.release(); (void)shared_sched.release(); (void)post_sched.release();
-        (void)weights_buffer.release();
-        (void)weights_ctx.release(); (void)pre_ctx.release();
-        (void)shared_ctx.release(); (void)post_ctx.release(); (void)cpu.release();
+        std::fputs("portable FFN: fatal destruction synchronization failure; completion unconfirmed; "
+                   "refusing borrowed backend teardown/reuse; process fail-stop exit=70\n", stderr);
+        std::fflush(stderr);
+        // No stack unwinding or atexit handlers: neither the alias chain nor its
+        // borrowed backend owner may be destroyed before process termination.
+        std::_Exit(PortableFfn::fatal_drain_exit_code);
     }
 
     Impl(PortableFfnGeometry geometry, int64_t index, const std::vector<PortableTensorView>& weights,

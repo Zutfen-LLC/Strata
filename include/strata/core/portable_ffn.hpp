@@ -84,6 +84,10 @@ public:
     // Does not touch routed expert payloads, the PLE table, or attention weights.
     static std::unique_ptr<PortableFfn> from_gguf(const GgufModel& model, int64_t layer,
         PortableFfnOptions options, std::string& error);
+    // Optional overlap belongs in an owned process. If destructor waits and
+    // their bounded retry cannot confirm completion, exit without unwinding:
+    // a borrowed accelerator must never be freed/reused behind live graphs.
+    static constexpr int fatal_drain_exit_code = 70;
     ~PortableFfn();
     PortableFfn(const PortableFfn&) = delete;
     PortableFfn& operator=(const PortableFfn&) = delete;

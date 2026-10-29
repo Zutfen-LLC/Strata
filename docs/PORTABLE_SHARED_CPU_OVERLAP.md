@@ -15,8 +15,8 @@ after route readback. The caller runs the existing synchronous CPU expert pool,
 then the existing resident GPU requests serially. Ownership masks are determined
 before any dispatch. Empty ownership sets are skipped. Rows keep their original
 slots, remain unweighted and are accumulated in ascending slot order as before.
-The coordinator explicitly joins shared work before readback and merge. Errors
-join outstanding graphs before returning; reset and destruction also drain work.
+The coordinator explicitly joins shared work before readback and merge. Errors,
+reset and destruction attempt all waits and report unconfirmed completion.
 The residual and route are published only after the complete merge succeeds.
 
 A synchronization exception poisons the FFN even if later cleanup completes.
@@ -25,12 +25,18 @@ clearing it. A failed step preserves its primary error and appends a separate
 cleanup error when completion is unconfirmed. Cleanup attempts all schedulers
 rather than stopping at the first exception. Destruction cannot return an error:
 it retries waits once and reports recovery on stderr. If waits still fail, it
-reports unconfirmed completion and retains owned schedulers, buffers, metadata
-and CPU backend until process exit rather than releasing potentially live
-storage. This terminal failure does not establish a successful drain; the owner
-must stop reusing the borrowed accelerator and end the process. Normal cleanup
-releases everything. This is an exceptional retention policy, not extra normal
-admission or automatic backend recovery.
+reports unconfirmed completion and exits the owned process with status 70 using
+`std::_Exit`, without stack unwinding or atexit handlers. Returning from the FFN
+destructor could otherwise let the caller free its borrowed accelerator while
+graphs still reference it. Retaining only FFN buffers cannot retain that backend.
+The fail-stop prevents backend-owner teardown/reuse and any clean-exit claim;
+it is not a successful drain or automatic device recovery. Run overlap in an
+owned process. Normal cleanup and a successful bounded retry release resources.
+The CLI owns accelerator backends outside the model session; model/layer
+objects own their FFNs and borrow those backends. Their ordinary destruction
+order keeps the backend alive through FFN destruction, but cannot safely outlive
+an unconfirmed drain. The terminal fail-stop closes that gap without a global
+resource quarantine.
 
 The extra scheduler is included in the same aggregate graph cap. Its actual
 backend allocations are included in memory admission, along with an extra 2 MiB

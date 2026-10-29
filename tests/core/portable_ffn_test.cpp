@@ -5,6 +5,12 @@
 #include <chrono>
 #include <limits>
 #include <cstring>
+#include <cstdlib>
+#ifndef _WIN32
+#include <cerrno>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 // CPU execution with observed submit/join boundaries. This proves coordinator
@@ -16,7 +22,7 @@ struct ObservedBackend {
     decltype(backend->iface.synchronize) synchronize = backend->iface.synchronize;
     bool pending = false;
     int joins = 0, matrices = 0, sync_failures = 0;
-    bool unknown_sync_failure = false;
+    bool unknown_sync_failure = false, record_owner_destruction = false;
     std::string fail;
     ObservedBackend() {
         active = this;
@@ -60,9 +66,55 @@ struct ObservedBackend {
         check(!pending, "destruction must drain shared submission");
         backend->iface.graph_compute = compute;
         backend->iface.synchronize = synchronize;
+        if(record_owner_destruction) std::fputs("UNSAFE_BACKEND_OWNER_DESTRUCTION\n",stderr);
         ggml_backend_free(backend); active = nullptr;
     }
 };
+// Run before any CPU workers are created. The child owns the backend just as
+// the CLI owns it outside the model. Unconfirmed FFN destruction must fail-stop
+// before that owner's destructor, return-to-caller or atexit cleanup can run.
+void fatal_ownership_test() {
+#ifndef _WIN32
+    int channel[2]; check(pipe(channel)==0,"fatal owner pipe");
+    const pid_t child=fork(); check(child>=0,"fatal owner child");
+    if(child==0) {
+        ::close(channel[0]);
+        if(dup2(channel[1],STDERR_FILENO)<0) std::_Exit(98);
+        ::close(channel[1]);
+        std::atexit([] { std::fputs("UNSAFE_ATEXIT\n",stderr); });
+        try {
+            Fixture f; ObservedBackend backend; std::string error;
+            backend.record_owner_destruction=true;
+            PortableFfnOptions o; o.accelerator=backend.backend; o.request_accelerator=true;
+            o.overlap_shared_cpu=true; o.resident_dense_weights=true;
+            auto terminal=PortableFfn::create(f.g,0,f.views,o,error);
+            check(bool(terminal) && terminal->reset(std::vector<float>(128,.2f),error),error);
+            PortableRoute route;
+            check(!terminal->step([&](int64_t,const PortableRoute&,std::vector<float>&,std::string& e) {
+                backend.sync_failures=9; e="terminal provider failure"; return false;
+            },route,error) && terminal->poisoned() && backend.pending,"terminal failed-work state");
+            terminal.reset(); // must exit before borrowed backend owner's scope ends
+            std::fputs("UNSAFE_RETURN_FROM_FFN_DESTRUCTION\n",stderr);
+            backend.pending=false; // only let the old unsafe path unwind in this regression
+        } catch (...) { std::_Exit(98); }
+        std::exit(99); // exercises atexit and owner teardown if fail-stop was omitted
+    }
+    ::close(channel[1]);
+    int status=0; pid_t waited;
+    do { waited=waitpid(child,&status,0); } while(waited<0 && errno==EINTR);
+    std::string diagnostic; char bytes[512]; ssize_t count;
+    while((count=::read(channel[0],bytes,sizeof(bytes)))>0) diagnostic.append(bytes,size_t(count));
+    ::close(channel[0]);
+    check(waited==child && WIFEXITED(status) && WEXITSTATUS(status)==PortableFfn::fatal_drain_exit_code,
+          "unconfirmed drain must fail-stop owned process with explicit nonzero status");
+    check(diagnostic.find("completion unconfirmed")!=std::string::npos &&
+          diagnostic.find("refusing borrowed backend teardown/reuse")!=std::string::npos &&
+          diagnostic.find("UNSAFE_")==std::string::npos,
+          "fatal outcome reports incomplete cleanup and prevents backend-owner/atexit teardown");
+#else
+    std::puts("fatal borrowed-backend process regression not run: POSIX child test");
+#endif
+}
 void scheduling_test() {
     Fixture f; ObservedBackend backend; std::string error;
     PortableFfnOptions o; o.accelerator = backend.backend; o.request_accelerator = true;
@@ -159,22 +211,12 @@ void scheduling_test() {
     check(runner->reset(initial,error) && runner->step(callback,route,error),error);
     backend.sync_failures=1; // destructor retries a transient wait failure without throwing
     runner.reset(); check(!backend.pending,"cleanup after recovery");
-    // Persistent destructor failure must neither throw nor claim completion.
-    // This exceptional path deliberately retains one fixture's resources until
-    // process exit; the mocked CPU backend has no asynchronous hardware work.
-    auto terminal = PortableFfn::create(f.g,0,f.views,o,error);
-    check(bool(terminal) && terminal->reset(initial,error),error);
-    check(!terminal->step([&](int64_t,const PortableRoute&,std::vector<float>&,std::string& e) {
-        backend.sync_failures=9; e="terminal provider failure"; return false;
-    },route,error) && terminal->poisoned() && backend.pending,"terminal failed-work state");
-    terminal.reset();
-    check(backend.sync_failures==0 && backend.pending,"failed destructor waits cannot claim a drain");
-    ggml_backend_synchronize(backend.backend); // explicit owner wait after injected failures expire
-    check(!backend.pending,"mock owner confirms completion before backend teardown");
+
 }
 }
 int main() {
     try {
+        fatal_ownership_test();
         scheduling_test();
         for (bool overlap : {false, true}) {
         Fixture f;
