@@ -2814,3 +2814,8 @@ if(STRATA_BUILD_TESTS)
   add_executable(native_q8_gu_input_test tests/kernels/native_q8_gu_input_test.cpp)
   add_test(NAME native_q8_gu_input_test COMMAND native_q8_gu_input_test)
 endif()
+
+if(STRATA_BUILD_TESTS)
+  add_executable(native_q8_down_input_test tests/kernels/native_q8_down_input_test.cpp)
+  add_test(NAME native_q8_down_input_test COMMAND native_q8_down_input_test)
+endif()

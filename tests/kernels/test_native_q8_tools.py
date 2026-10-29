@@ -198,6 +198,63 @@ class Tools(unittest.TestCase):
         receipt['source_head'] = 'malformed'
         with self.assertRaises(ValueError):gu.validate_receipt(receipt, hashes, identity)
 
+    def test_down_receipt_requires_actual_verified_hq_with_archive_identity(self):
+        down = module('native_q8_down')
+        hashes = {name: str(i) * 64 for i, name in enumerate(('fixture', 'native', 'observation', 'oracle', 'weights', 'native-receipt', 'hq'))}
+        receipt = {'source_head': None, 'consumer_sha256': 'b' * 64, 'actual_child_exit': 0,
+                   'native_consumer_only': True, 'finite_synthetic_weights': True, 'qualified': False,
+                   'original_comparator_exit': 1, 'native_environment': {'STRATA_KQ_SPLIT': None},
+                   'sha256': {'fixture': hashes['fixture'], 'native': hashes['native'], 'observation': hashes['observation'],
+                              'native-consumer.raw': hashes['oracle'], 'native-consumer.raw.weights.bin': hashes['weights'],
+                              'native-consumer.raw.hq.bin': hashes['hq']}, 'hq_reuse_verified': True,
+                   'retained_oracle_sha256': hashes['oracle'], 'retained_weights_sha256': hashes['weights']}
+        identity = {'source_head': 'a' * 40, 'source_archive_sha256': 'c' * 64,
+                    'consumer_sha256': 'b' * 64, 'native_receipt_sha256': hashes['native-receipt']}
+        down.validate_receipt(receipt, hashes, identity)
+        for key in ('hq_reuse_verified', 'retained_oracle_sha256', 'retained_weights_sha256'):
+            bad = dict(receipt);bad[key] = False
+            with self.assertRaises(ValueError):down.validate_receipt(bad, hashes, identity)
+        receipt['sha256']['native-consumer.raw.hq.bin'] = 'f' * 64
+        with self.assertRaises(ValueError):down.validate_receipt(receipt, hashes, identity)
+        down.validate_hq(bytes(72))
+        for n in (0, 71, 73):
+            with self.assertRaises(ValueError):down.validate_hq(bytes(n))
+        bad_hq = bytearray(72);bad_hq[37] = 0x7c
+        with self.assertRaises(ValueError):down.validate_hq(bad_hq)
+
+    def test_down_scatter_raw_bits_and_untouched_destinations(self):
+        down = module('native_q8_down')
+        # Deliberately distinct synthetic entries make a wrong entry lookup or
+        # destination reorder observable in this parser/comparator test.
+        output = [0x3f800000, 0, 0x80000000, 0xbf800000] * 64 + [0x40000000, 0x80000000, 0, 0xc0000000] * 64
+        expected = [output + [0xa5a5a5a5] * 512,
+                    [0xa5a5a5a5] * 512 + output[256:] + [0xa5a5a5a5] * 256,
+                    [0xa5a5a5a5] * 1024]
+        def packed(sections, status=1):
+            return struct.pack('<II', 0x3144384e, status) + b''.join(
+                struct.pack('<I', len(v)) + struct.pack('<' + 'I' * len(v), *v) for v in sections)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'down.raw';path.write_bytes(packed(expected))
+            oracle = [[], [], output];report = down.compare(oracle, path)
+            self.assertTrue(report['exact']);self.assertFalse(report['qualified']);self.assertFalse(report['quantizer_qualified'])
+            expected[1][512] = output[0]  # Wrong hidden entry for destination 2.
+            path.write_bytes(packed(expected));report = down.compare(oracle, path)
+            self.assertFalse(report['exact']);self.assertEqual(report['stages']['sparse_scatter']['different_bits'], 1)
+            expected[1][512] = output[256];expected[2][0] = 0
+            path.write_bytes(packed(expected));report = down.compare(oracle, path)
+            self.assertFalse(report['exact']);self.assertFalse(report['sentinels_ok']);self.assertTrue(report['view_sentinels_ok'])
+            expected[2][0] = 0xa5a5a5a5;expected[0][1] = 0x80000000
+            path.write_bytes(packed(expected));self.assertFalse(down.compare(oracle, path)['exact'])
+            path.write_bytes(packed(expected, 0));self.assertFalse(down.compare(oracle, path)['sentinels_ok'])
+            path.write_bytes(packed(expected)[:-1])
+            with self.assertRaises(ValueError):down.compare(oracle, path)
+        shader = (ROOT / 'src/kernels/vulkan/native_q8_down.comp').read_text()
+        self.assertIn('q8_row_dot(base,uint(e),nb,tid)', shader)
+        self.assertIn('uint(m[p.mb+33+e])*p.h+row', shader)
+        self.assertNotIn('atomic', shader)
+        self.assertIn('#include "native_q8_dot.glsl"', shader)
+        self.assertIn('#include "native_q8_dot.glsl"', (ROOT / 'src/kernels/vulkan/native_q8_gu.comp').read_text())
+
     def test_native_conversion_holes_are_not_qualified(self):
         compare = module('compare_native_q8_stages')
         self.assertEqual(compare.contract_exceptions([0] * 32, bytes(36)), [])

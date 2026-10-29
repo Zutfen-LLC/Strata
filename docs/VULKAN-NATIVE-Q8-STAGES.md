@@ -68,7 +68,7 @@ opposite infinities producing a NaN raw sum. The comparator reports **all**
 byte differences, including these cases, and marks these contract holes explicitly. It does not waive
 NaN payloads, code differences or activation error with a tolerance.
 
-The component is not ready for product integration. Additional grouped gate/up branches, down,
+The component is not ready for product integration. Additional grouped gate/up and down branches,
 `native_moe_combine`, device/CPU overlap and native execution policy remain
 separate parity gaps. The earlier native `--native --spec2` control does not
 establish which optional fused kernels ran.
@@ -462,6 +462,92 @@ the retained artifacts exactly, and the sidecar to contain exactly 72 bytes.
 Failure returns exit 1, keeps actual child exit and artifacts, and leaves
 `hq_reuse_verified=false`. Only a completed guarded capture sets that flag true;
 without retained artifacts the sidecar is still saved but is not verified for
-reuse. A future down-only runner must require that verification and its hashes
-before consuming the sidecar. No hidden values are reconstructed or quantized
+reuse. The standalone down-only runner below requires that verification and its
+hashes before consuming the sidecar. No hidden values are reconstructed or quantized
 by Vulkan. The original packed-byte failure and unqualified status persist.
+
+## Standalone Q8_0 down consumer
+
+`native_q8_down_component` ports `native_down_kernel<8>` at
+`src/kernels/cuda/iq_kernels.cu:1933–1955`. It consumes the verified **actual
+native packed hidden sidecar**, not the earlier input Q8_1 blocks or a
+reconstruction from gate/up/output. The complete finite synthetic expert blob
+is reused; its down matrix starts at byte 17408, with 256 rows of 34 bytes.
+
+The native source uses `hq + e*(n_ff/32)` for the hidden input and directly
+stores to `out[ent_dst[e]*n_embd + row]`. Group starts, group-strided traversal,
+entry order and this destination scatter are preserved. There is no atomic
+accumulation, sorting or combine stage. Destinations shared across parallel
+groups have the native store race; this component introduces no resolution
+policy and the bounded fixture uses distinct destinations. Empty/inactive
+intervals do not write output.
+
+Gate/up and down include the same `native_q8_dot.glsl` machinery: two signed
+packed integer dots, separately rounded scale product, explicit Fma into a
+positive-zero lane accumulator, then separate additions at XOR offsets
+16/8/4/2/1. Inspection of the complete CUDA 13.1 sm_86 down symbol confirms
+that arithmetic and the final scale multiply/direct store. The branch selected
+through `launch_down<8>` (around line 3880) is source-derived, not dynamically
+traced. Q8_0 does not satisfy the alternative `expdec_down_ok` format condition.
+`STRATA_KQ_SPLIT` must retain the per-entry full-warp branch recorded by the
+native receipt. Split-K, subwarp, tails and other formats remain outside this
+component. The existing finite-scale argument and FP32 controls apply; neither
+this arithmetic mapping nor compilation establishes Vulkan GPU parity.
+
+The standalone owner reuses the gate/up component's pipeline setup and the
+pinned final-module validation helper. Product paths and the strict quantizer
+remain unchanged. The original full 832-element failure remains in the report.
+All down results retain `qualified=false` and `quantizer_qualified=false`.
+
+Build and host checks:
+
+```sh
+cmake --build BUILD --target native_q8_down_component native_q8_down_shader_test native_q8_down_input_test native_q8_consumer_input_test native_q8_gu_component native_q8_gu_shader_test -j4
+ctest --test-dir BUILD -R '^(native_q8_.*|portable_logits_guard_build_test)$' --output-on-failure
+BUILD/native_q8_down_shader_test /tmp/native-down-effective
+for mode in 0 1 2 3; do spirv-val --target-env vulkan1.2 /tmp/native-down-effective.$mode.spv; done
+```
+
+The down shader checks the shared arithmetic, logical warps, absence of atomics,
+required controls and the actual pinned helper's four FP16 transformations.
+CPU tests cover metadata bounds, entry/destination distinction, empty/inactive
+intervals, sidecar size/finite scales, verified receipt bindings, signed-zero
+mismatches and untouched destination sentinels. These are not GPU execution.
+
+One bounded Vulkan-only capture against the retained native hq capture follows.
+`EVIDENCE` identifies that new native capture directory; verify all hashes and
+use a fresh `OUTPUT`. The existing receipt must bind `hq`, original fixture and
+captures, raw oracle and weights, with `hq_reuse_verified=true`. Its retained
+oracle/weight identities must also agree. Archive identity flags use the same
+explicit later-inspection support as gate/up; omit those three flags for an
+ordinary Git-backed producer receipt.
+
+```sh
+python3 tools/native_q8_down.py \
+  --component BUILD/native_q8_down_component \
+  --device "$DEVICE" --expect-device "$DEVICE_NAME" --output "$OUTPUT" \
+  --fixture "$EVIDENCE/fixture.bin" --fixture-sha256 "$FIXTURE_SHA256" \
+  --native "$EVIDENCE/native.bin" --native-sha256 "$NATIVE_SHA256" \
+  --observation "$EVIDENCE/observation.bin" --observation-sha256 "$OBSERVATION_SHA256" \
+  --oracle "$EVIDENCE/native-consumer.raw" --oracle-sha256 "$ORACLE_SHA256" \
+  --weights "$EVIDENCE/native-consumer.raw.weights.bin" --weights-sha256 "$WEIGHTS_SHA256" \
+  --hq "$EVIDENCE/native-consumer.raw.hq.bin" --hq-sha256 "$HQ_SHA256" \
+  --native-receipt "$EVIDENCE/receipt.json" --native-receipt-sha256 "$RECEIPT_SHA256" \
+  --native-source-head "$VERIFIED_NATIVE_COMMIT" \
+  --native-source-archive-sha256 "$VERIFIED_NATIVE_ARCHIVE_SHA256" \
+  --native-consumer-sha256 "$VERIFIED_NATIVE_BINARY_SHA256"
+```
+
+The wrapper launches one process with a 30-second deadline and three fixed
+component dispatches: both entries to destinations 0/1, only entry 1 to
+destination 2, then no groups. Four destination slots preserve unused rows.
+The first case compares all 512 native output words; the latter cases compare
+entry 1's retained output and untouched sentinels. All comparisons use raw bits,
+including zero signs. New binary marker `0x3144384e` contains sentinel status
+and three count-prefixed 1024-word arrays; `.views.bin` retains complete input
+and output base buffers for each case, and `.effective.spv` records the final
+module. Source/binary/input/output identities, actual PID/exit, all differences
+and original failure are retained. Exit 0 means this bounded comparison matched;
+exit 1 means invalid input, execution failure, sentinel failure or mismatch.
+It does not qualify quantization or integrate the pipeline into the product.
+No new native execution or model work occurs in this command.

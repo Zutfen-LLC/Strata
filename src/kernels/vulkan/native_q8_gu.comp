@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_integer_dot_product : require
+#extension GL_GOOGLE_include_directive : require
 // native_gu_kernel<8>, Fmt<8>/row_dot: eight logical 32-lane rows.
 // Shared memory makes the XOR tree independent of physical subgroup width.
 layout(local_size_x=256) in;
@@ -9,15 +10,7 @@ layout(binding=2,std430) readonly buffer M {int m[];};
 layout(binding=3,std430) writeonly buffer G {float gate[];};
 layout(binding=4,std430) writeonly buffer U {float up[];};
 layout(push_constant) uniform P {uint h,f,wb,xb,mb,gb,ub,scale_bits;} p;
-shared float partial[256];
-uint weight_word(uint byte_offset) {
-    uint at=p.wb+byte_offset/4,shift=(byte_offset%4)*8;
-    if(shift==0)return w[at];
-    return (w[at]>>shift)|(w[at+1]<<(32-shift));
-}
-float weight_scale(uint byte_offset) {
-    return unpackHalf2x16(w[p.wb+byte_offset/4]>>((byte_offset%4)*8)).x;
-}
+#include "native_q8_dot.glsl"
 void main() {
     uint tid=gl_LocalInvocationID.x,lane=tid%32,warp=tid/32;
     uint row=gl_WorkGroupID.x*8+warp,nb=p.h/32;
@@ -26,25 +19,9 @@ void main() {
         uint base=uint(m[p.mb+1+group])+row*nb*34;
         for(int e=m[p.mb+17+group];e<m[p.mb+18+group];++e) {
             uint token=uint(m[p.mb+33+e]);
-            float sum=0.0;
-            for(uint k=lane;k<nb*4;k+=32) {
-                uint block=k/4,iqs=2*(k%4),wx=base+block*34+2+4*iqs;
-                uint xx=p.xb+(token*nb+block)*9;
-                int dot=dotPacked4x8EXT(int(weight_word(wx)),int(x[xx+1+iqs]));
-                dot+=dotPacked4x8EXT(int(weight_word(wx+4)),int(x[xx+2+iqs]));
-                // sm_86: FMUL(d0,d1), I2FP(sumi), FFMA(scale,sumi,sum).
-                precise float scale=weight_scale(base+block*34)*unpackHalf2x16(x[xx]).x;
-                sum=fma(scale,float(dot),sum);
-            }
-            partial[tid]=sum;barrier();
-            for(uint offset=16;offset>0;offset>>=1) {
-                // The first native FADD lists the shuffled operand first.
-                precise float next=offset==16 ? partial[(tid^offset)]+partial[tid]
-                                              : partial[tid]+partial[(tid^offset)];
-                barrier();partial[tid]=next;barrier();
-            }
+            float dot=q8_row_dot(base,token,nb,tid);
             if(lane==0) {
-                precise float value=partial[tid]*uintBitsToFloat(p.scale_bits); // native pure-Q8 scale
+                precise float value=dot*uintBitsToFloat(p.scale_bits); // native pure-Q8 scale
                 if(row<p.f)gate[p.gb+uint(e)*p.f+row]=value;
                 else up[p.ub+uint(e)*p.f+row-p.f]=value;
             }

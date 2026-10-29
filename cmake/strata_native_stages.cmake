@@ -56,18 +56,34 @@ function(strata_enable_native_stages)
       "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_q8_gu.comp" -o "${out}/native_q8_gu.spv"
     COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_q8_gu.spv" "-DOUTPUT=${out}/strata_q8_gu_spv.hpp"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_q8_gu_embed.cmake"
-    DEPENDS src/kernels/vulkan/native_q8_gu.comp cmake/strata_q8_gu_embed.cmake VERBATIM)
+    DEPENDS src/kernels/vulkan/native_q8_gu.comp src/kernels/vulkan/native_q8_dot.glsl cmake/strata_q8_gu_embed.cmake VERBATIM)
   add_custom_target(strata_q8_gu_shader DEPENDS "${out}/strata_q8_gu_spv.hpp")
   add_dependencies(ggml-vulkan strata_q8_gu_shader)
   add_executable(native_q8_gu_component tests/kernels/native_q8_gu_component.cpp)
   target_include_directories(native_q8_gu_component PRIVATE src/core)
   target_link_libraries(native_q8_gu_component PRIVATE ggml-vulkan ggml-base)
+  add_custom_command(OUTPUT "${out}/strata_q8_down_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_q8_down.comp" -o "${out}/native_q8_down.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_q8_down.spv" "-DOUTPUT=${out}/strata_q8_down_spv.hpp"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_q8_down_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_q8_down.comp src/kernels/vulkan/native_q8_dot.glsl cmake/strata_q8_down_embed.cmake VERBATIM)
+  add_custom_target(strata_q8_down_shader DEPENDS "${out}/strata_q8_down_spv.hpp")
+  add_dependencies(ggml-vulkan strata_q8_down_shader)
+  add_executable(native_q8_down_component tests/kernels/native_q8_down_component.cpp)
+  target_include_directories(native_q8_down_component PRIVATE src/core)
+  target_link_libraries(native_q8_down_component PRIVATE ggml-vulkan ggml-base)
   if(STRATA_BUILD_TESTS)
     add_executable(native_q8_gu_shader_test tests/kernels/native_q8_gu_shader_test.cpp)
     target_include_directories(native_q8_gu_shader_test PRIVATE src/core "${out}")
     target_link_libraries(native_q8_gu_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan)
     add_dependencies(native_q8_gu_shader_test strata_q8_gu_shader)
     add_test(NAME native_q8_gu_shader_test COMMAND native_q8_gu_shader_test)
+    add_executable(native_q8_down_shader_test tests/kernels/native_q8_down_shader_test.cpp)
+    target_include_directories(native_q8_down_shader_test PRIVATE src/core "${out}")
+    target_link_libraries(native_q8_down_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan)
+    add_dependencies(native_q8_down_shader_test strata_q8_down_shader)
+    add_test(NAME native_q8_down_shader_test COMMAND native_q8_down_shader_test)
     add_executable(native_q8_spec_test tests/kernels/native_q8_spec_test.cpp)
     if(MSVC)
       target_compile_options(native_q8_spec_test PRIVATE /fp:strict)

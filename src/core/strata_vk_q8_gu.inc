@@ -4,26 +4,33 @@
 #include "native_q8_gu_spirv.hpp"
 namespace strata::core::portable_detail {
 struct StrataVkQ8Gu {std::unique_ptr<StrataVkLogitsGuard> owner;};
-StrataVkQ8Gu* strata_vk_q8_gu_create(ggml_backend_t backend,const char* effective_spv_path) {
-    logits_guard_need(backend && ggml_backend_is_vk(backend),"Q8 GU: Vulkan required");
-    auto result=std::make_unique<StrataVkQ8Gu>();result->owner=std::make_unique<StrataVkLogitsGuard>(backend);
-    auto& g=*result->owner;auto* ctx=static_cast<ggml_backend_vk_context*>(backend->context);
+static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_backend_t backend,
+    const uint32_t* shader,size_t shader_words,const char* name,uint32_t parameters,uint32_t push_words,const char* effective_spv_path) {
+    logits_guard_need(backend && ggml_backend_is_vk(backend),"Q8 component: Vulkan required");
+    auto owner=std::make_unique<StrataVkLogitsGuard>(backend);
+    auto& g=*owner;auto* ctx=static_cast<ggml_backend_vk_context*>(backend->context);
     const auto& limits=ctx->device->properties.limits;
     logits_guard_need(limits.maxComputeWorkGroupInvocations>=256 && limits.maxComputeWorkGroupSize[0]>=256 &&
-        limits.maxComputeSharedMemorySize>=256*4 && ctx->device->integer_dot_product,"Q8 GU: geometry/integer dot unsupported");
+        limits.maxComputeSharedMemorySize>=256*4 && ctx->device->integer_dot_product,"Q8 component: geometry/integer dot unsupported");
     const auto properties=ctx->device->physical_device.getProperties2<vk::PhysicalDeviceProperties2,vk::PhysicalDeviceVulkan12Properties>();
     const auto& fp=properties.get<vk::PhysicalDeviceVulkan12Properties>();q8_gu_require_controls(fp);
-    logits_guard_need(effective_spv_path && *effective_spv_path,"Q8 GU: effective shader receipt required");
+    logits_guard_need(effective_spv_path && *effective_spv_path,"Q8 component: effective shader receipt required");
     logits_guard_need(bool(fp.shaderDenormPreserveFloat16)==ctx->device->float_controls_denorm_preserve_fp16 &&
-        bool(fp.shaderRoundingModeRTEFloat16)==ctx->device->float_controls_rte_fp16,"Q8 GU: cached controls differ from query");
-    g.metadata.reset(ggml_init({4096,nullptr,true}));logits_guard_need(bool(g.metadata),"Q8 GU: metadata allocation failed");
+        bool(fp.shaderRoundingModeRTEFloat16)==ctx->device->float_controls_rte_fp16,"Q8 component: cached controls differ from query");
+    g.metadata.reset(ggml_init({4096,nullptr,true}));logits_guard_need(bool(g.metadata),"Q8 component: metadata allocation failed");
     g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,128);
-    g.buffer.reset(ggml_backend_alloc_ctx_tensors(g.metadata.get(),backend));logits_guard_need(bool(g.buffer),"Q8 GU: buffer allocation failed");
+    g.buffer.reset(ggml_backend_alloc_ctx_tensors(g.metadata.get(),backend));logits_guard_need(bool(g.buffer),"Q8 component: buffer allocation failed");
     g.bytes=ggml_backend_buffer_get_size(g.buffer.get());auto& pipe=g.pipeline;
-    pipe->name="strata_native_gu_q8_0_fullwarp_component";pipe->parameter_count=5;pipe->push_constant_size=8*4;
+    pipe->name=name;pipe->parameter_count=parameters;pipe->push_constant_size=push_words*4;
     pipe->wg_denoms={1,1,1};pipe->align=1;pipe->initialized=true;
-    const auto code=q8_gu_float_controls(strata_q8_gu_spv,sizeof(strata_q8_gu_spv)/4);
-    strata_vk_observation_create_pipeline_func(ctx->device,pipe,code.size()*4,code.data(),"main",5,{1,1,1},{},false,false,0,effective_spv_path);
+    const auto code=q8_gu_float_controls(shader,shader_words);
+    strata_vk_observation_create_pipeline_func(ctx->device,pipe,code.size()*4,code.data(),"main",parameters,{1,1,1},{},false,false,0,effective_spv_path);
+    return owner;
+}
+StrataVkQ8Gu* strata_vk_q8_gu_create(ggml_backend_t backend,const char* effective_spv_path) {
+    auto result=std::make_unique<StrataVkQ8Gu>();
+    result->owner=strata_vk_q8_component_owner(backend,strata_q8_gu_spv,sizeof(strata_q8_gu_spv)/4,
+        "strata_native_gu_q8_0_fullwarp_component",5,8,effective_spv_path);
     return result.release();
 }
 void strata_vk_q8_gu_destroy(StrataVkQ8Gu* p) noexcept {delete p;}

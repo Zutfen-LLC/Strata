@@ -119,3 +119,5 @@ void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggm
 }
 
 #include "strata_vk_q8_gu.inc"
+
+#include "strata_vk_q8_down.inc"

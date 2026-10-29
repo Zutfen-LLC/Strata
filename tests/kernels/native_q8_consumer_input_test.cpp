@@ -1,5 +1,6 @@
 #include "native_q8_consumer_fixture.hpp"
 #include "native_q8_gu_fixture.hpp"
+#include "native_q8_down_fixture.hpp"
 #include <chrono>
 #include <filesystem>
 using namespace native_q8_fixture;
@@ -52,6 +53,11 @@ int main(){try {
     c::write_hq(hq_path,hq);need(std::filesystem::file_size(hq_path)==72,"hq padding/header leaked");
     {std::ifstream in(hq_path,std::ios::binary);Bytes got(72);in.read(reinterpret_cast<char*>(got.data()),got.size());
      need(got==hq && in.peek()==EOF,"hq raw bytes changed");}
+    need(down::read_hq(hq_path)==hq,"down native hq parser changed bytes");
+    {std::ofstream out(hq_path,std::ios::binary|std::ios::app);out.put('x');}
+    rejects([&]{down::read_hq(hq_path);});
+    auto nonfinite=hq;nonfinite[37]=0x7c;c::write_hq(hq_path,nonfinite);
+    rejects([&]{down::read_hq(hq_path);});
     hq.pop_back();rejects([&]{c::write_hq(hq_path,hq);});
     const auto oracle=(tmp.path/"oracle").string(),weight_path=(tmp.path/"weights").string();
     {std::ofstream file(oracle,std::ios::binary);word(file,0x3143384e);
