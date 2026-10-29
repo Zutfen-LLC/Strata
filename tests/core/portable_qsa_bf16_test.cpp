@@ -49,6 +49,53 @@ int main(int argc, char **argv) {
             std::string error;
             auto layer = PortableQsaLayer::create(3, fixture.views, options, error);
             check(bool(layer), error);
+            if (!reuse && !resident) {
+                // Test the assertion against the real loader's receipts. The
+                // selected-backend label below simulates a non-CPU contract;
+                // it does not claim device execution in the CPU fixture.
+                std::vector<PortablePlacement> records;
+                for(const auto& p:layer->placements()) if(p.phase=="load") records.push_back(p);
+                check(records.size()==2,"two actual BF16 load conversion receipts");
+                auto computation=std::find_if(layer->placements().begin(),layer->placements().end(),[](const auto& p) {
+                    return p.phase=="qsa-project" && p.operation=="MUL_MAT" && !p.metadata_only;
+                });
+                check(computation!=layer->placements().end(),"actual project computation receipt");
+                auto device_op=*computation; device_op.backend="TEST_SELECTED_DEVICE";
+                records.push_back(device_op);
+                for(bool combine:{false,true})
+                    check(strict_production_placement(records,"TEST_SELECTED_DEVICE",combine,fixture.views)==2,
+                          "exact CPU loads accepted alongside selected-backend computation");
+                for(int mutation=0;mutation<12;++mutation) {
+                    auto bad=records;
+                    if(mutation==0) bad.back().backend="CPU";
+                    if(mutation==1) bad.back().fallback_reason="controlled fallback";
+                    if(mutation==2) bad[0].operation="MUL_MAT";
+                    if(mutation==3) bad[0].tensor="blk.3.attn_q.weight";
+                    if(mutation==4) bad[0].shape[0]+=1;
+                    if(mutation==5) bad[0].type="F32";
+                    if(mutation==6) bad[0].metadata_only=true;
+                    if(mutation==7) bad[0].backend="TEST_SELECTED_DEVICE";
+                    if(mutation==8) bad[0].fallback_reason="unexpected load fallback";
+                    if(mutation==9) bad.push_back(bad[0]);
+                    if(mutation==10) bad.erase(bad.begin());
+                    if(mutation==11) bad.back().phase="qsa-combine";
+                    std::string caught;
+                    try { strict_production_placement(bad,"TEST_SELECTED_DEVICE",true,fixture.views); }
+                    catch(const std::exception& e) { caught=e.what(); }
+                    check(caught.find("strict production placement:")!=std::string::npos &&
+                          caught.find("tensor=")!=std::string::npos && caught.find("actual_backend=")!=std::string::npos &&
+                          caught.find("expected_backend=")!=std::string::npos,
+                          "malformed load or compute placement must fail with node/backend diagnostics, mutation="+std::to_string(mutation));
+                    if(mutation==0)
+                        check(caught.find("phase=qsa-project operation=MUL_MAT")!=std::string::npos &&
+                              caught.find("actual_backend=CPU expected_backend=TEST_SELECTED_DEVICE")!=std::string::npos,
+                              "CPU graph rejection identifies the actual node and expected device");
+                    if(mutation==10)
+                        check(caught.find("actual_backend=missing expected_backend=CPU")!=std::string::npos,
+                              "missing load diagnostic identifies its expected host owner");
+                }
+                std::puts("PASS BF16 exact host-load versus strict graph placement contract; 12 malformed records rejected");
+            }
             auto reference = PortableQsaLayer::create(3, fixture.f32_views, options, error);
             check(bool(reference), error);
             const auto memory = layer->memory_usage(), expected_memory = reference->memory_usage();
@@ -113,16 +160,9 @@ int main(int argc, char **argv) {
             check(layer->step(0, fixture.base.input(0), experts(), route, error), error);
             check(reference->step(0, fixture.base.input(0), experts(), reference_route, error), error);
             close(layer->last_residual(), reference->last_residual(), 0, "reset exact parity");
-            size_t conversions = 0;
-            for (const auto &p : layer->placements()) {
-                if (p.phase == "load") {
-                    check(p.operation == "BF16_TO_F32_EXACT" && p.backend == "CPU", "explicit host load conversion");
-                    ++conversions;
-                } else if (backend && p.phase != "host")
-                    check(p.metadata_only || (p.backend == ggml_backend_name(backend.get()) && p.fallback_reason.empty()),
-                          "strict Vulkan tensor execution");
-            }
-            check(conversions == 2, "only indexer Q/K widened");
+            const auto conversions=strict_production_placement(layer->placements(),
+                backend?ggml_backend_name(backend.get()):"CPU",false,fixture.views);
+            check(conversions==2,"only indexer Q/K widened");
             std::printf("portable_qsa_bf16_test: 65536 exact decoder patterns; mixed BF16/Q8/F32 H2560, source lifetime, "
                         "bit-exact F32 parity, >FP16-range weights, role/range/budget/reset/rollback passed; backend=%s "
                         "host_weights=%zu device_scheduler=%zu conversion_scratch=10240\n",

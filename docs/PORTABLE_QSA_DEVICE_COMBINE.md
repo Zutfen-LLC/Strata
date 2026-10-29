@@ -59,6 +59,14 @@ by the layer fixture.
 CPU and Vulkan chunk fixtures share construction checks that stop immediately
 on a failed candidate, preserving its error before constructing the control.
 A regression rejects an invalid candidate and checks its original diagnostic.
+Placement checks distinguish the two explicit CPU `BF16_TO_F32_EXACT` loader
+receipts from graph execution. Each load receipt must match one BF16 indexer
+Q/K source role and its shape/encoding, appear exactly once, and have no
+fallback. Missing, duplicate or unexpected loads fail. This does not exempt
+CPU graph computations: every non-metadata graph operation still requires
+the selected backend and no fallback. Failures identify phase, operation,
+tensor, shape and actual/expected backend. The BF16 fixture tests this contract
+with real loader records and malformed load/compute records on CPU.
 
 Run the portable Python tests, `portable_stdio_cli_test`,
 `portable_timing_cli_test` and `portable_logits_guard_build_test`. Build the
