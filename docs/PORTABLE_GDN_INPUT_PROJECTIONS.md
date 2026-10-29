@@ -10,7 +10,8 @@ portable slice follows that boundary using the existing Q8 weights and GGML
 scheduler. Independent HC preparation and injection also use T columns. HC stream
 addition order, F32 projection outputs, alpha/beta nonlinear operations, and the
 existing convolution, recurrence and output projection expressions are retained.
-Convolution and recurrence still execute and commit one token at a time.
+Without the separate [causal chunk option](PORTABLE_GDN_CAUSAL_CHUNKS.md),
+convolution and recurrence still execute and commit one token at a time.
 
 T1 chunks, final prompt/decode steps, and the configured PLE layer use the existing
 serial graph. PLE's causal convolution changes the residual before HC mixing, so
