@@ -39,12 +39,12 @@ workspace can still grow on first execution of a newly required shape and is
 covered by the existing conservative allowance. This is scheduler/scratch reuse,
 not a claim of persistent compiled Vulkan commands or zero host allocation.
 
-Active FP16 KV and F32 pooled keys still come from host candidate vectors and
-upload their full active prefix each step. Device KV, pooled/spare/tail ownership
-and append-only uploads are the next slice of #67. The per-head F32 attention
+With QSA production off, active FP16 KV and F32 pooled keys come from host
+candidate vectors and upload their full active prefix each step. The optional
+QSA production policy below replaces those inputs with device state views. The per-head F32 attention
 workaround, exact BF16 indexer widening, RoPE positions, moving spare, finite
 checks, stable selection ties and cutoff at 2051 cells are unchanged. No padding
-or masked maximum-length softmax is introduced. Layer failures keep committed
+or masked maximum-length softmax is introduced. In eager diagnostic mode, layer failures keep committed
 state unchanged; scratch may be overwritten and is rebuilt on retry. A partial
 model failure retains the existing session poison/reset policy.
 
@@ -66,6 +66,61 @@ both policies. Independent selection fixtures cross 2050/2051/2052 and pooled
 2055/2056 boundaries, ties and all 24 heads, with a second scheduler/arena sweep
 checking stable backing buffers. These synthetic gates do not establish model
 quality, device admission on other cards or a speed improvement.
+
+## QSA device state policy
+
+`--qsa-production` is default off and requires `--qsa-reuse-attention`, a selected
+accelerator and CPU fallback off. It is independent of GDN production. Either
+production flag enables the existing integer logits guard before head output is
+published. Standalone QSA layers use `PortableQsaOptions::production = true`.
+
+This follows native per-layer `QsaState` ownership and the active Verifier's
+KV/indexer appends. Each portable layer retains capacity-sized FP16 K/V, F32
+pooled keys, an immutable spare, a four-row raw indexer tail, cell mapping and
+tail bias on the selected backend. Exact active views feed the existing score,
+selection and 24 separate per-head F32 attention products. It preserves the
+pinned Vulkan head workaround, BF16 widening, RoPE, selection ties and cutoff.
+No padding or attention arithmetic change is introduced.
+
+Current-token projections still download for finite checks and CPU FP16
+conversion, preserving rounding. Each step uploads one new K and V cell and one
+raw indexer key. Pool completion uses the existing pool graph directly over the
+device tail, copies its output to the completed pooled row, moves a device copy
+of the immutable spare, then clears the tail. Token zero uses the existing
+four-repeated-key add/scale calculation before keeping just raw row zero. Only
+the current incomplete block's bias changes; mapping initializes at reset.
+Normal production does not upload historical KV/pool prefixes or download
+scores, selection masks or state mirrors. Current attention/residual readbacks
+and host experts remain in this bounded slice.
+
+Raw state at capacity C is `2048*C + 512*(floor(C/4)+1) + 512 + 2048 + 8*C`
+bytes: 562176 bytes per layer at C256 before backend alignment. Admission charges
+the actual aligned state buffer in `device_state`, separately from retained
+scheduler buffers and the unchanged workspace allowance. It removes only the
+scheduled inputs replaced by external views. Caps and context limits are
+unchanged. Reset retains these allocations.
+
+Production traces and ordinary host-history getters refuse inspection rather
+than returning stale mirrors. `inspect_state()` explicitly downloads full raw
+capacity for diagnostics; after a failure it can include uncommitted appends.
+It is never called by normal generation. A failed production step poisons the
+layer and model session. Position, route and residual publish only on success;
+retry requires reset. Reset clears state and initializes mapping, and clears
+poison only after successful initialization. Eager diagnostics retain their
+existing observers, full state checks and rollback behavior by default.
+
+Both validation adapters forward the new flag and record `qsa_policy` as
+`device_production` or `eager_diagnostic`. Resident references must match the
+summary policy and contain exactly one production flag when enabled in every
+case argv. Missing, duplicate, malformed or mismatched production references
+are rejected. Older references are accepted only with production off.
+
+Synthetic fixtures compare diagnostic and production state/results on the same
+backend, including positions 0/1/3/4/7/8, pool completion, unused capacity,
+reset A/B/A, append failure and poison/recovery. A local allocation-failure test
+checks failed reset initialization. Separate external-KV selection fixtures
+retain the 2051 cutoff/tie and two-cell head regression checks. Compilation and
+CPU checks do not establish Vulkan hardware correctness or model quality.
 
 ## GDN execution policy
 

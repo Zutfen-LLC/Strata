@@ -1,5 +1,6 @@
 #include "ggml-vulkan.h"
 #include "portable_qsa_selection.hpp"
+#include "portable_qsa_production_fixture.hpp"
 #include <cstdlib>
 using namespace qsa_fixture;
 int main(int argc, char **argv) {
@@ -139,6 +140,11 @@ int main(int argc, char **argv) {
             std::printf("PASS strict Vulkan QSA H2560 layer3 positions0-8 projection_MUL_MAT=%zu ROPE=%zu, scalar "
                         "checks/CPU parity/rollback/reset device=%s weights=%zu graphs_with_workspace=%zu state=%zu reuse=%d\n",
                         mat, rope, description, layer->weight_bytes(), peak_graph_bytes, layer->state_bytes(), int(reuse));
+            if (reuse) {
+                production_tests(options, f.views, [&](int t){return f.input(t);});
+                selection_tests(options.execution, true, true);
+                std::printf("PASS strict Vulkan device-state selection width2051 boundaries/ties device=%s\n", description);
+            }
         } // validate streamed and resident dense weights
     } catch (const std::exception &e) {
         std::fprintf(stderr, "FAIL strict Vulkan QSA: %s\n", e.what());

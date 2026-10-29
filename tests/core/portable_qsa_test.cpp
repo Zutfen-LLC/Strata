@@ -7,6 +7,7 @@ int main() {
         spare_high_score_test({});
         selection_tests({});
         selection_tests({}, true);
+        selection_tests({}, true, true);
         for (bool reuse : {false, true}) {
         Fixture f;
         std::string error;

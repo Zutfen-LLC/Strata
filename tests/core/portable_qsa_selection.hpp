@@ -88,7 +88,7 @@ inline void spare_high_score_test(PortableFfnOptions options) {
                   "strict high-score placement");
     std::printf("PASS high-score spare cached_cells=2055 width=2051 tails2052-2054 complete0-2047\n");
 }
-inline void selection_tests(PortableFfnOptions options, bool reuse = false) {
+inline void selection_tests(PortableFfnOptions options, bool reuse = false, bool external_state = false) {
     // The shared scheduler prices a full backing root per view consumer.
     // Explicitly admit this conservative bound for the 24-head boundary fixture;
     // actual buffers remain small and are checked against this same limit.
@@ -96,6 +96,18 @@ inline void selection_tests(PortableFfnOptions options, bool reuse = false) {
     portable_detail::Backend retained_cpu(ggml_backend_cpu_init(), ggml_backend_free);
     std::unique_ptr<ggml_context, decltype(&ggml_free)> retained_ctx(ggml_init({2u << 20, nullptr, true}), ggml_free);
     portable_detail::Scheduler retained_sched{nullptr, ggml_backend_sched_free};
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> state_ctx(nullptr, ggml_free);
+    std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)> state_buffer(nullptr, ggml_backend_buffer_free);
+    ggml_tensor *state_k = nullptr, *state_v = nullptr, *state_scores = nullptr;
+    if (external_state) {
+        check(reuse, "external state selection requires reuse");
+        state_ctx.reset(ggml_init({4096, nullptr, true}));
+        state_k = ggml_new_tensor_3d(state_ctx.get(), GGML_TYPE_F16, 256, 2, 2056);
+        state_v = ggml_new_tensor_3d(state_ctx.get(), GGML_TYPE_F16, 256, 2, 2056);
+        state_scores = ggml_new_tensor_1d(state_ctx.get(), GGML_TYPE_F32, 2056);
+        state_buffer.reset(ggml_backend_alloc_ctx_tensors(state_ctx.get(), options.request_accelerator ? options.accelerator : retained_cpu.get()));
+        check(bool(state_buffer), "external selection state allocation");
+    }
     size_t retained_buffers = 0;
     ggml_backend_buffer_t key_buffer = nullptr, value_buffer = nullptr;
     for (int sweep = 0; sweep < (reuse ? 2 : 1); ++sweep)
@@ -114,15 +126,21 @@ inline void selection_tests(PortableFfnOptions options, bool reuse = false) {
             if (reuse)
                 ggml_reset(retained_ctx.get());
             auto *c = reuse ? retained_ctx.get() : ctx.get();
-            auto *input = ggml_new_tensor_1d(c, GGML_TYPE_F32, n);
-            ggml_set_input(input);
+            auto *input = external_state ? ggml_view_1d(c, state_scores, n, 0) : ggml_new_tensor_1d(c, GGML_TYPE_F32, n);
+            if (external_state) check(ggml_backend_view_init(input) == GGML_STATUS_SUCCESS,"external score view");
+            else ggml_set_input(input);
             auto *output = portable_detail::qsa_selection(c, input);
             ggml_set_output(output);
-            auto *ki = ggml_new_tensor_3d(c, GGML_TYPE_F16, 256, 2, n);
-            auto *vi = ggml_new_tensor_3d(c, GGML_TYPE_F16, 256, 2, n);
+            auto *ki = external_state ? ggml_view_3d(c, state_k, 256, 2, n, state_k->nb[1], state_k->nb[2], 0)
+                                      : ggml_new_tensor_3d(c, GGML_TYPE_F16, 256, 2, n);
+            auto *vi = external_state ? ggml_view_3d(c, state_v, 256, 2, n, state_v->nb[1], state_v->nb[2], 0)
+                                      : ggml_new_tensor_3d(c, GGML_TYPE_F16, 256, 2, n);
+            if (external_state)
+                for (auto *t : {ki, vi}) check(ggml_backend_view_init(t) == GGML_STATUS_SUCCESS,"external KV active view");
             auto *qi = ggml_new_tensor_3d(c, GGML_TYPE_F32, 256, 12, 2);
-            for (auto *t : {ki, vi, qi})
-                ggml_set_input(t);
+            ggml_set_input(qi);
+            if (!external_state)
+                for (auto *t : {ki, vi}) ggml_set_input(t);
             auto *attention = portable_detail::qsa_dense_attention(c, ki, vi, qi, output);
             ggml_set_output(attention);
             auto *graph = ggml_new_graph(c);

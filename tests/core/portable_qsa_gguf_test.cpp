@@ -1,4 +1,5 @@
 #include "gguf_fixture.hpp"
+#include "ggml-cpu.h"
 #include "portable_qsa_bf16_fixture.hpp"
 #include <chrono>
 using namespace qsa_fixture;
@@ -95,7 +96,9 @@ int main() {
         std::filesystem::temp_directory_path() /
         ("strata-qsa-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
-        for (bool reuse : {false, true}) {
+        for (int mode : {0, 1, 2}) {
+        const bool reuse = mode != 0;
+        std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> selected(ggml_backend_cpu_init(), ggml_backend_free);
         std::filesystem::create_directory(root);
         const auto path = root / "layer.gguf";
         const auto kv = metadata();
@@ -104,6 +107,8 @@ int main() {
         PortableQsaOptions options;
         options.capacity = 2;
         options.reuse_attention = reuse;
+        options.production = mode == 2;
+        if (options.production) { options.execution.accelerator = selected.get(); options.execution.request_accelerator = true; }
         model_file(path, kv, f.views);
         std::unique_ptr<PortableQsaLayer> bound;
         {
@@ -117,7 +122,12 @@ int main() {
         check(bound->step(0, f.input(0), experts(), route, error), error);
         check(control->step(0, f.input(0), experts(), expected, error), error);
         close(bound->last_residual(), control->last_residual(), 0, "GGUF owned binding survives model close");
-        check(bound->keys() == control->keys() && route.ids == expected.ids, "GGUF exact binding");
+        if (options.production) {
+            PortableQsaState actual, reference;
+            check(bound->inspect_state(actual,error) && control->inspect_state(reference,error),error);
+            check(actual.keys==reference.keys && actual.pooled==reference.pooled,"GGUF device state binding");
+        } else check(bound->keys() == control->keys(), "GGUF exact binding");
+        check(route.ids == expected.ids,"GGUF route binding");
         auto late_views = f.views;
         for (auto &v : late_views)
             v.name = "blk.47." + v.name.substr(6);

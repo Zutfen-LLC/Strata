@@ -12,6 +12,14 @@ struct PortableQsaOptions {
     size_t state_budget = 64ull << 20;
     // Opt-in capacity-primed scheduler/scratch reuse; exact active shapes, host KV staging.
     bool reuse_attention = false;
+    // Device-authoritative state; requires reuse and strict selected accelerator.
+    bool production = false;
+};
+// Explicit diagnostic download, including unused capacity, never a host mirror.
+struct PortableQsaState {
+    std::vector<uint16_t> keys, values;
+    std::vector<float> pooled, spare, tail, bias;
+    std::vector<int32_t> mapping;
 };
 struct PortableQsaTrace {
     std::vector<float> query, key, value, gate, index_query, index_raw_key;
@@ -33,6 +41,10 @@ class PortableQsaLayer {
               PortableRoute &route, std::string &error, PortableQsaTrace *trace = nullptr);
     bool reset(std::string &error);
     uint64_t tokens() const;
+    bool poisoned() const;
+    // Explicit full-capacity download; poisoned state may include uncommitted writes.
+    bool inspect_state(PortableQsaState &state, std::string &error) const;
+    // Host history getters below require eager diagnostics; production throws.
     // Token-major [cell,kv_head,256]. Only committed cells are exposed.
     const std::vector<uint16_t> &keys() const;
     const std::vector<uint16_t> &values() const;
@@ -48,6 +60,7 @@ class PortableQsaLayer {
     // Scheduler allocations plus admitted workspace allowances, not total RSS/VRAM.
     size_t graph_bytes() const;
     PortableMemoryUsage memory_usage() const;
+    // Host bound plus actual aligned device state; memory_usage separates them.
     size_t state_bytes() const;
 
   private:

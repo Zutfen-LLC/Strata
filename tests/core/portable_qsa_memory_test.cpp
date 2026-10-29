@@ -1,6 +1,22 @@
-#include "portable_qsa_fixture.hpp"
+#include "portable_qsa_production_fixture.hpp"
 #include "ggml-cpu.h"
 #include <cstdio>
+#include <cstdlib>
+#include <new>
+namespace { bool fail_next_allocation = false; }
+void *operator new(std::size_t n) {
+    if (fail_next_allocation) { fail_next_allocation = false; throw std::bad_alloc(); }
+    if (void *p = std::malloc(n ? n : 1)) return p;
+    throw std::bad_alloc();
+}
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void operator delete(void *p) noexcept { std::free(p); }
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void operator delete(void *p, std::size_t) noexcept { std::free(p); }
 using namespace qsa_fixture;
 int main(){
     try{
@@ -39,6 +55,27 @@ int main(){
         check(after.host_graph==before.host_graph && after.device_graph==before.device_graph &&
               after.device_extra_bound==before.device_extra_bound &&
               after.device_token_temporary_bound==before.device_token_temporary_bound,"reset retained memory ledger");
+        }
+        {
+            std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_cpu_init(),ggml_backend_free);
+            PortableQsaOptions opts; opts.execution.accelerator=backend.get(); opts.execution.request_accelerator=true;
+            production_tests(opts, f.views, [&](int t){return f.input(t);});
+            opts.capacity=256; opts.reuse_attention=true; opts.production=true;
+            std::string error;
+            auto layer=PortableQsaLayer::create(3,f.views,opts,error); check(bool(layer),error);
+            PortableQsaState state; check(layer->inspect_state(state,error),error);
+            const size_t raw=(state.keys.size()+state.values.size())*2+
+                (state.pooled.size()+state.spare.size()+state.tail.size()+state.bias.size()+state.mapping.size())*4;
+            check(raw==562176,"C256 raw persistent payload derived from allocated tensor shapes");
+            check(layer->memory_usage().device_state>=raw,"aligned actual state ledger");
+            auto limited=opts; limited.state_budget=layer->state_bytes()-1;
+            check(!PortableQsaLayer::create(3,f.views,limited,error),"actual aligned device state budget enforced");
+            fail_next_allocation=true;
+            const bool reset_ok=layer->reset(error);
+            check(!reset_ok && layer->poisoned(),"reset initialization failure retains poison");
+            PortableRoute route;
+            check(!layer->step(0,f.input(0),experts(),route,error),"failed reset cannot resume");
+            check(layer->reset(error) && !layer->poisoned(),"successful initialization clears poison");
         }
         std::puts("portable_qsa_memory_test passed: fixed-private versus token-temporary conservation and callback overlap");
         return 0;

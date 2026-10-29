@@ -12,7 +12,7 @@ struct PortableHeadGeometry {
 class PortableHead {
   public:
     // guard_logits adds bounded exponent-bit status checks before publishing logits;
-    // the model enables it for opt-in GDN production. Host output checks remain.
+    // the model enables it for either opt-in production policy. Host output checks remain.
     static std::unique_ptr<PortableHead> create(PortableHeadGeometry geometry,
                                                 const std::vector<PortableTensorView> &weights,
                                                 PortableFfnOptions options, std::string &error, bool guard_logits = false);
@@ -66,7 +66,8 @@ struct PortableModelOptions {
     bool gdn_resident_weights = false; // opt-in GDN attention only
     bool gdn_resident_state = false; // opt-in; independent of weight residency
     bool dense_resident_weights = false; // opt-in attention, FFN and head weights
-    bool qsa_reuse_attention = false; // capacity-primed execution/scratch; host KV staging remains
+    bool qsa_production = false; // device KV/indexer authority; requires strict accelerator and reuse
+    bool qsa_reuse_attention = false; // capacity-primed execution/scratch; default off
     bool gdn_production = false; // opt-in device authority; requires strict resident accelerator execution
 };
 struct PortableExpertWork {
