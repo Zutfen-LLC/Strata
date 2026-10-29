@@ -1,5 +1,5 @@
 #pragma once
-// Fixed one-expert graph shared by the opt-in adapter and offline diagnostic.
+// One execution owner; standalone weight ownership is retained for offline references.
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -21,6 +21,7 @@ inline void finite(const std::vector<float>& v) {
         if (!std::isfinite(x))
             require(false, "nonfinite expert value");
 }
+struct ExpertWeights { ggml_tensor *gate, *up, *down; };
 struct Rows { std::vector<float> gate, up, hidden, out; };
 inline float host_swiglu(float gate, float up) { return (gate/(1.f+std::exp(-gate)))*up; }
 struct Boundaries {
@@ -35,6 +36,7 @@ inline void validate(const Rows& r) {
 class ExpertGraph {
     Context ctx_{nullptr,ggml_free};
     Buffer buf_{nullptr,ggml_backend_buffer_free};
+    ExpertWeights weights_{};
     ggml_cgraph *graph_ = nullptr, *down_graph_ = nullptr;
     ggml_tensor *x_ = nullptr, *g_ = nullptr, *u_ = nullptr, *hidden_ = nullptr, *out_ = nullptr;
     ggml_backend_t backend_;
@@ -47,15 +49,17 @@ class ExpertGraph {
     }
 public:
     ExpertGraph(ggml_backend_t backend, const cpu::NativeFmt& fmt, const std::vector<uint8_t>& blob,
-                bool native_boundaries = false, size_t tensor_budget = 16u<<20):backend_(backend),fmt_(fmt),native_boundaries_(native_boundaries) {
-        require(blob.size() == fmt.bytes && fmt.bytes == 5222400 && fmt.up_off == 1740800 &&
+                bool native_boundaries = false, size_t tensor_budget = 16u<<20, const ExpertWeights* resident = nullptr, bool allocate = true):backend_(backend),fmt_(fmt),native_boundaries_(native_boundaries) {
+        require((resident || blob.size() == fmt.bytes) && fmt.bytes == 5222400 && fmt.up_off == 1740800 &&
                 fmt.down_off == 3481600 && fmt.gu_act == 8 && fmt.d_act == 8,
                 "unsupported fixed Q8 expert layout");
         ggml_init_params p{2u<<20,nullptr,true};
         ctx_.reset(ggml_init(p)); require(bool(ctx_), "ggml metadata allocation failed");
-        auto* gate = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,H,F);
-        auto* up = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,H,F);
-        auto* down = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,F,H);
+        weights_ = resident ? *resident : ExpertWeights{
+            ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,H,F),
+            ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,H,F),
+            ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_Q8_0,F,H)};
+        auto* gate = weights_.gate; auto* up = weights_.up; auto* down = weights_.down;
         x_ = ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_F32,H,1);
         g_ = ggml_mul_mat(ctx_.get(),gate,x_); u_ = ggml_mul_mat(ctx_.get(),up,x_);
         hidden_ = native_boundaries_ ? ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_F32,F,1) :
@@ -74,14 +78,33 @@ public:
         const size_t needed = ggml_backend_alloc_ctx_tensors_from_buft_size(
             ctx_.get(),ggml_backend_get_default_buffer_type(backend_));
         require(needed > 0 && needed < (16u<<20),"unexpected backend tensor size above 16 MiB");
+        require(needed <= ggml_backend_get_max_size(backend_),"expert execution exceeds backend block limit");
         require(needed <= tensor_budget,"Vulkan resident tensor budget exceeded");
+        if (!allocate) return;
+        allocate_buffer(needed);
+        if (resident) return;
+        ggml_backend_tensor_set(gate,blob.data(),0,fmt.up_off);
+        ggml_backend_tensor_set(up,blob.data()+fmt.up_off,0,fmt.up_off);
+        ggml_backend_tensor_set(down,blob.data()+fmt.down_off,0,fmt.bytes-fmt.down_off);
+    }
+    size_t required_bytes() const {
+        return ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),ggml_backend_get_default_buffer_type(backend_));
+    }
+    void allocate_buffer(size_t needed) {
+        require(!buf_,"expert scratch already allocated");
         buf_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),backend_));
         require(bool(buf_), "backend expert allocation failed");
         require(ggml_backend_buffer_get_size(buf_.get()) == needed,
                 "backend allocation differs from budgeted tensor size");
-        ggml_backend_tensor_set(gate,blob.data(),0,fmt.up_off);
-        ggml_backend_tensor_set(up,blob.data()+fmt.up_off,0,fmt.up_off);
-        ggml_backend_tensor_set(down,blob.data()+fmt.down_off,0,fmt.bytes-fmt.down_off);
+    }
+    // All previous work has synchronized before this graph can bind another stable slot.
+    void select(const ExpertWeights& weights) {
+        require(native_boundaries_,"resident graph requires native boundaries");
+        weights_ = weights;
+        g_->src[0]=weights.gate; u_->src[0]=weights.up; out_->src[0]=weights.down;
+        ggml_graph_clear(graph_); ggml_graph_clear(down_graph_);
+        ggml_build_forward_expand(graph_,g_); ggml_build_forward_expand(graph_,u_);
+        ggml_build_forward_expand(down_graph_,out_);
     }
     size_t buffer_bytes() const { return ggml_backend_buffer_get_size(buf_.get()); }
     const Boundaries& boundaries() const { return boundaries_; }

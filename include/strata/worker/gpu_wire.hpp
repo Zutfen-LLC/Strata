@@ -25,6 +25,8 @@ struct GpuCounters {
     uint64_t assigned_bytes = 0, cached_bytes = 0, transferred_bytes = 0;
     uint64_t persisted_bytes = 0, retained_disk_bytes = 0, verified_bytes = 0, reused_bytes = 0;
     uint64_t host_staging_peak = 0, gpu_allocated_bytes = 0, gpu_peak_bytes = 0;
+    // Vulkan: weight bytes are payload; allocated - scratch includes aligned persistent weight storage.
+    // Scratch counts once-owned execution tensors, excluding backend/driver workspace.
     uint64_t gpu_weight_bytes = 0, gpu_scratch_bytes = 0, gpu_allocation_count = 0;
     uint64_t gpu_free_before = 0, gpu_free_after = 0, gpu_runtime_reserve = 0;
     uint64_t requests = 0, entries = 0, failures = 0, service_ns = 0;

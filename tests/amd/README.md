@@ -200,19 +200,21 @@ in this standalone test project; Vulkan errors never select it.
 Pass `create_vulkan_gpu_executor(device, tensor_budget)` to set the aggregate
 resident tensor-buffer budget in bytes (default 16 MiB). Expert count is bounded
 by validated plan geometry and this budget, with no hardcoded two-expert limit.
-The pinned ggml dry-run API calculates each graph's tensor bytes with backend
-padding/alignment before allocation. Each allocation must fit the remaining
-budget and its reported size must equal that calculation. Budget or cache
-failure releases all partially prepared graphs and the backend. The original
-per-graph limit below 16 MiB remains in place.
+The pinned ggml dry-run API calculates aligned persistent weight blocks and the
+single execution buffer before any device tensor allocation. Slots stay in plan
+order; backend block limits bound each weight block. Budget or cache failure
+releases partial preparation. The execution graph retains its limit below 16 MiB.
 
-The executor owns one backend and one tensor-buffer handle per resident expert,
-plus bounded per-expert graph metadata and host activation storage.
+The executor owns packed weight blocks and one reusable execution graph/buffer
+per device. The same host staging vector is reused for uploads. A borrowed
+backend remains owned by its caller. Standalone per-expert graphs remain only
+in diagnostics as a numerical reference.
 `gpu_allocated_bytes` counts all owned tensor buffers; `gpu_weight_bytes` counts
-5,222,400 weight bytes per resident and `gpu_scratch_bytes` is the remaining
-tensor allocation/alignment. `gpu_allocation_count` is the live owned
-tensor-buffer handle count. Release clears these four counters, retaining the
-historical peak. This budget and the counters exclude host storage, ggml internal
+5,222,400 payload bytes per uploaded resident; `gpu_scratch_bytes` counts the
+one execution buffer. The difference `gpu_allocated_bytes - gpu_scratch_bytes`
+is aligned persistent weight storage. `gpu_allocation_count` counts actual
+weight blocks plus the execution buffer. It is not an expert count. Release
+clears these four counters, retaining the historical peak. This budget and the counters exclude host storage, ggml internal
 compute buffers, shader pipelines and driver allocations. They do not bound
 total VRAM or process memory. A nonzero runtime VRAM reserve remains unsupported;
 report external resource measurements separately when available.

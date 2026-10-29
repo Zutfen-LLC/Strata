@@ -147,7 +147,7 @@ int main(){
             state.fail=true;
             check(!local.run_batch(0,std::vector<PortableRoute>(8,route),rows,error)&&rows.empty(),
                   "batch device failure cannot fall back or publish");state.fail=false;
-            std::puts("Local expert T1-8 flattened requests and hot/cold original-slot scatter passed; GPU graphs remain per-entry");
+            std::puts("Local expert T1-8 flattened requests and hot/cold original-slot scatter passed; GPU dispatch remains serial per-entry");
             state.bad=true;check(!local.run(0,route,rows,error)&&rows.empty()&&
                 error=="resident reply duplicate/unowned slot","duplicate reply slot diagnostic");state.bad=false;
             const auto cpu_before=local.cpu_entries();
