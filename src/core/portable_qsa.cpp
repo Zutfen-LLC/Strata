@@ -838,9 +838,11 @@ bool PortableQsaLayer::reset(std::string &error) {
     error.clear();
     try {
         auto &s = *impl_;
-        require(!s.chunk_active,"portable QSA: chunk execution active");
+        // Poison before any allocating precondition/error message, as the
+        // original production reset did before its first allocation.
         if (s.options.production)
             s.healthy = false;
+        require(!s.chunk_active,"portable QSA: chunk execution active");
         s.chunk_ffn.reset(); s.chunk_host_bound = 0;
         std::vector<float> zero(RES, 0);
         require(s.ffn->reset(zero, error), error);

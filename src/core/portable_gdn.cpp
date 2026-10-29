@@ -516,8 +516,8 @@ std::unique_ptr<PortableGdnLayer> PortableGdnLayer::from_gguf(const GgufModel &m
 bool PortableGdnLayer::reset(std::string &error) {
     error.clear();
     try {
-        require(!impl_->chunk_active, "portable GDN: chunk execution active");
         impl_->state_healthy = false;
+        require(!impl_->chunk_active, "portable GDN: chunk execution active");
         std::vector<PortablePlacement> next_placement;
         if(impl_->chunk_host_bound) {
             next_placement=impl_->placement;
