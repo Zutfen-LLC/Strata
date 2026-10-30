@@ -1450,3 +1450,9 @@ Optional provider captures also retain `.gu.metadata.i32` and
 `.down.metadata.i32`, the actual uploaded 322-word address/start/ID arrays.
 They are diagnostics tied to the current buffer lifetime; never replay their
 raw device addresses on another allocation, backend or device.
+
+Offline `gpu_capture_replay_check --stage-record CAPTURE RECORD LOCAL_MANIFEST
+MODEL_ROOT NEW_OUTPUT [FROZEN_PLAN]` can stage all assets of an already bound
+native plan through the same verified source/cache path. It refuses any plan
+omitting an active expert and never remasks or reselects that request. Without
+the final argument it retains the original active-only staging behavior.

@@ -682,6 +682,18 @@ int main(int argc,char** argv) {
             require(cache.prepare(plan,missing,err) && missing==std::vector<uint8_t>({0,0}),"staged blobs failed reuse validation");
             for(const auto& a:plan.assets){require(cache.read(a,blob,err) && blob==fixture.blobs[a.expert],"staged expert bytes differ");}cache.close();
             if(T==8) {
+                // The same staging path can retain a complete native plan,
+                // including inactive assets in other layers, without selecting anew.
+                GpuPlan full;require(make_gpu_plan(fixture.m,{{0,0},{0,1},{1,0},{1,1}},full,err),err);
+                const auto frozen=(fixture.root/"full.plan").string(),full_output=(fixture.root/"full-staged").string();
+                require(write_gpu_plan(frozen,full,err),err);
+                const pid_t child=fork();require(child>=0,"full-plan stage fork");
+                if(!child){execl(argv[0],argv[0],"--stage-record",path.c_str(),"0",(fixture.root/"local.manifest").c_str(),fixture.root.c_str(),full_output.c_str(),frozen.c_str(),static_cast<char*>(nullptr));_exit(127);}
+                int status=0;require(waitpid(child,&status,0)==child && WIFEXITED(status) && WEXITSTATUS(status)==0,"frozen full-plan stage failed");
+                GpuPlan staged;require(read_gpu_plan(full_output+"/one-layer.plan",staged,err),err);
+                require(staged.placement_id==full.placement_id && staged.assets.size()==4,"full-plan stage changed placement");
+                GpuCache all;require(all.open(full_output+"/blobs",full.assigned_bytes(),err) && all.prepare(full,missing,err),err);
+                require(missing==std::vector<uint8_t>(4,0),"inactive-layer assets not staged");all.close();
                 // Optional private export reuses this existing synthetic capture,
                 // verified staged plan and blobs. No model/backend is started.
                 const fs::path retained=argc==3?fs::path(argv[2]):fixture.root/"export-check";
@@ -703,7 +715,7 @@ int main(int argc,char** argv) {
             }
             require(invoke()!=0,"stage overwrote existing output");std::puts("STAGE_CHECK full_record=1 existing_manifest_source_cache=1 exact_blobs=1 no_overwrite=1 GPU=0");return 0;
         }
-        if(argc==7 && std::string(argv[1])=="--stage-record") {
+        if((argc==7 || argc==8) && std::string(argv[1])=="--stage-record") {
             // Offline only: preserve every active entry, reuse verified manifest
             // ranges and the existing one-blob source/cache publication path.
             CpuCaptureFile f;LocalManifest m;std::string err;
@@ -715,14 +727,17 @@ int main(int argc,char** argv) {
             std::set<std::pair<uint16_t,uint16_t>> unique;size_t entries=0;
             for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]){unique.emplace(q.layer,q.ids[i]);++entries;}
             require(native_q8_record_capacity(unique.size(),entries),"full record exceeds provider bounds; not truncated");
-            GpuPlan plan;require(make_gpu_plan(m,{unique.begin(),unique.end()},plan,err),err);
+            GpuPlan plan;
+            if(argc==8)require(read_gpu_plan(argv[7],plan,err),err);
+            else require(make_gpu_plan(m,{unique.begin(),unique.end()},plan,err),err);
+            for(auto [layer,expert]:unique)require(plan.owns(layer,expert),"frozen stage plan omits active expert; refusing to remask");
+            GpuAssetSource source;require(source.open(argv[5],m,plan,err),err);
             const fs::path output=argv[6];require(fs::create_directory(output),"stage output must be a new directory");
             fs::permissions(output,fs::perms::owner_all,fs::perm_options::replace);
             require(write_gpu_plan((output/"one-layer.plan").string(),plan,err),err);
-            std::ofstream assignments(output/"assignments.txt");for(auto [layer,expert]:unique)assignments<<layer<<' '<<expert<<'\n';require(bool(assignments),"assignment write failed");
+            std::ofstream assignments(output/"assignments.txt");for(const auto& a:plan.assets)assignments<<a.layer<<' '<<a.expert<<'\n';require(bool(assignments),"assignment write failed");
             for(size_t i=0;i<q.mask.size();++i)if(q.mask[i])std::printf("FULL_ENTRY record=%zu layer=%u entry=%zu token=%zu expert=%u\n",record,q.layer,i,i/q.K,q.ids[i]);
-            GpuAssetSource source;GpuCache cache;std::vector<uint8_t> missing,blob;
-            require(source.open(argv[5],m,plan,err),err);
+            GpuCache cache;std::vector<uint8_t> missing,blob;
             require(fs::create_directory(output/"blobs"),"stage blob directory create failed");
             require(cache.open((output/"blobs").string(),plan.assigned_bytes(),err) && cache.prepare(plan,missing,err),err);
             for(const auto& asset:plan.assets){require(source.read(asset,blob,err),err);require(cache.publish(asset,blob.data(),blob.size(),err),err);}
@@ -792,7 +807,7 @@ int main(int argc,char** argv) {
         const bool survey_mode=argc>=6 && std::string(argv[1])=="--survey";
         const bool grouped=argc>=6 && std::string(argv[1])=="--grouped";
         const bool cpu_mode=argc>=6 && std::string(argv[1])=="--cpu-control";
-        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --stage-check80 [NEW_PRIVATE_EXPORT] | --stage-record CAPTURE RECORD LOCAL_MANIFEST MODEL_ROOT NEW_OUTPUT | --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check | --boundary CAPTURE PACKET BLOB_DIR NEW_OUTPUT B_PLAN... | --boundary-check");
+        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --stage-check80 [NEW_PRIVATE_EXPORT] | --stage-record CAPTURE RECORD LOCAL_MANIFEST MODEL_ROOT NEW_OUTPUT [FROZEN_PLAN] | --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check | --boundary CAPTURE PACKET BLOB_DIR NEW_OUTPUT B_PLAN... | --boundary-check");
         CpuCaptureFile f;std::string err;require(read_cpu_capture(argv[2],f,err),err);
         std::vector<GpuPlan> plans;const int begin=selecting?3:listing?4:5;
         for(int i=begin;i<argc;++i){GpuPlan p;require(read_gpu_plan(argv[i],p,err),err);plans.push_back(p);}
