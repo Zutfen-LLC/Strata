@@ -158,10 +158,37 @@ def device_arguments(parser):
     parser.add_argument("--devices", default="0,1")
     parser.add_argument("--pci", default=",".join(PCI), help="ordered physical PCI IDs for selected logical Vulkan indices")
     parser.add_argument("--split", type=int, default=32)
+    parser.add_argument("--dense-topology", choices=('split', 'primary'), default='split')
     parser.add_argument("--device-cap-mib", type=cap_value, default=7680,
                         help="policy ceiling in MiB: scalar or two caps in selected device order")
     parser.add_argument("--model-root", type=pathlib.Path, default=None)
     parser.add_argument("--manifest", default=MANIFEST)
+
+
+def dense_topology(args):
+    value = getattr(args, 'dense_topology', 'split')
+    if value not in ('split', 'primary'):
+        raise ValueError('invalid dense topology')
+    return value
+
+
+def topology_argv(args):
+    # Keep historical/default engine argv unchanged.
+    return ['--dense-topology', 'primary'] if dense_topology(args) == 'primary' else []
+
+
+def argv_topology(command):
+    if '--dense-topology' not in command:
+        return 'split'
+    at = command.index('--dense-topology')
+    if command.count('--dense-topology') != 1 or at+1 >= len(command) or command[at+1] not in ('split', 'primary'):
+        raise ValueError('invalid dense topology argv')
+    return command[at+1]
+
+
+def device_policy(args, physical):
+    return dict(devices=args.devices, pci=physical, split=args.split,
+                device_cap_mib=args.device_cap_mib, dense_topology=dense_topology(args))
 
 
 def device_selection(parser, args):
@@ -177,7 +204,7 @@ def device_selection(parser, args):
         device_caps(args)
     except ValueError as error:
         parser.error(str(error))
-    if not 0 < args.split < 48:
+    if dense_topology(args) == 'split' and not 0 < args.split < 48:
         parser.error("invalid split")
     return indices, physical
 
@@ -294,7 +321,9 @@ def rss(pid):
             for line in rows if line.startswith(("VmRSS:", "VmHWM:", "VmSwap:"))}
 
 
-def placements(path, devices, split):
+def placements(path, devices, split, dense_topology='split'):
+    if dense_topology not in ('split', 'primary'):
+        raise ValueError('invalid dense topology')
     with path.open() as file:
         rows = list(csv.DictReader(file, delimiter="\t"))
     seen = set()
@@ -317,7 +346,7 @@ def placements(path, devices, split):
             continue
         if not 0 <= layer <= 48:
             raise ValueError(f"missing/invalid layer attribution: {row}")
-        die = 0 if layer < split else 1
+        die = 0 if dense_topology == 'primary' or layer < split else 1
         expected = f"Vulkan{devices[die]}"
         if row["backend"] != expected or row["fallback"]:
             raise ValueError(f"unexpected tensor backend/fallback: {row}")
@@ -367,6 +396,7 @@ def main():
                "--vulkan", args.devices, "--device-cap-mib", cap_argv(args),
                "--split", str(args.split), "--dump-logits", str(evidence / "logits"),
                "--placements", str(evidence / "placements.tsv")]
+    command += topology_argv(args)
     if args.expert_dispatch_oracle:
         command.append("--expert-dispatch-oracle")
     (evidence / "argv.json").write_text(json.dumps(command, indent=2) + "\n")
@@ -376,6 +406,7 @@ def main():
                "numeric_reference_comparison": "pending; host-local retained02 row required",
                "memory_scope": "sampled aggregate per-PCI VRAM, including other users; not an exact transient peak"}
     process = None
+    summary['device_policy'] = device_policy(args, physical)
     try:
         working_set = model_working_set() if args.model_root is None else model_working_set(args.model_root)
         summary["model_file_working_set"] = working_set
@@ -428,7 +459,7 @@ def main():
         summary["sampled_peak_growth"] = [peak[i]-initial[i]["used"] for i in range(2)]
         if status:
             raise RuntimeError(f"portable_model exited {status}; preserve stderr and do not retry")
-        summary["tensor_operations_by_device"] = placements(evidence / "placements.tsv", devices, args.split)
+        summary["tensor_operations_by_device"] = placements(evidence / "placements.tsv", devices, args.split, dense_topology(args))
         summary["host_bf16_load_conversions"] = 24
         records = [json.loads(line) for line in (evidence / "stdout.jsonl").read_text().splitlines()]
         tokens = [row for row in records if "token" in row]

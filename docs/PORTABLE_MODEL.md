@@ -9,6 +9,79 @@ The initial implementation supports one serial text sequence, all 48 layers,
 and context limits from 1 to 256 tokens. Defaults remain off. The existing
 CUDA production executable and allocations are separate.
 
+## Native primary and expert helper ownership
+
+`--dense-topology primary` expresses native Strata's dense-primary plus one
+expert-helper configuration. It requires two selected accelerators. Slot 0 in
+`--vulkan` owns all 48 dense layers, their state and the output head. Slot 1
+serves its explicit expert plan. `--split` is inactive in this mode. Expert
+plan slots and every cap/reserve continue to follow the selected device order.
+The default `--dense-topology split` retains the existing contiguous split.
+C++ callers use `PortableModelOptions::dense_topology`.
+
+This is ownership plumbing for native behavior, not a new placement algorithm.
+Use the existing residency/state flags to retain weights and state on their
+owner. The topology option does not silently enable those flags or fallback.
+CPU experts still handle misses; expert ownership stays frozen by the plans.
+
+Generate native-style assignments without reading model weights:
+
+```sh
+python tools/export_local_ranked_assignments.py \
+  --profile PROFILE --profile-sha256 SHA256 --out NEW_DIRECTORY \
+  --native-primary-per-layer 20 --native-helper-slots 1378
+strata-gpu-manifest plan LOCAL_MANIFEST NEW_DIRECTORY/assignments-0.txt PRIMARY_PLAN
+strata-gpu-manifest plan LOCAL_MANIFEST NEW_DIRECTORY/assignments-1.txt HELPER_PLAN
+```
+
+The primary takes the first 20 distinct ranked experts of each layer, matching
+`ExpertCache::admit` with 960 slots and per-layer admission. A full layer is
+skipped while other layers continue filling. The helper takes the first 1378
+remaining distinct pairs, matching the fixed-slot, single-helper path in
+`RemoteExperts::open`. It has no per-layer quota. Repeated pairs keep their
+first rank. A short profile leaves slots unused, as native does; an empty
+helper is rejected. This slice covers fixed slots with adaptation off and no
+PCIe miss offload. Automatic cache sizing, multiple helpers and unranked tail
+extension are outside this slice.
+
+`selected-ranks.tsv` preserves exact source ranks, expert IDs and owners;
+`assignments.json` records counts and hashes. Assignment files are sorted only
+after ownership selection to satisfy the existing immutable GPU-plan format.
+The plan command binds them to the trusted local manifest and reports assigned
+weight bytes with no source-weight reads. It does not allocate or prove fit.
+The existing alternating exporter modes remain available for old receipts;
+they do not reproduce native primary/helper selection.
+
+For this Q8 geometry, one expert's raw payload is
+`3 * 2560 * 640 / 32 * 34 = 5,222,400` bytes. Full 960/1378 assignments therefore
+contain 5,013,504,000 and 7,196,467,200 payload bytes. These are lower bounds,
+not tensor budgets or full admission estimates. Primary dense/state/head costs,
+aligned allocations, per-expert scratch, graph/private workspace and host
+metadata remain additional. The current portable implementation allocates a
+graph per expert and executes entries serially; native grouped/overlapped
+expert execution is not implemented by this ownership slice.
+
+No native fit result establishes portable fit. The unchanged per-device
+preflight and ledger charge all dense costs to slot 0 in primary mode, then
+add each slot's expert tensor and workspace caps. The CLI still subtracts the
+free reserve, and the loader still checks live free memory. A refusal stops
+the load; memory on the helper never credits the primary. The conservative
+4 GiB output-head graph allowance remains intact. No hardware fit, numerical
+parity or performance result is claimed here.
+
+The fresh, resident and local expert smoke adapters accept the same
+`--dense-topology primary` option. Their receipts bind it alongside ordered
+device identities and caps. Historical receipts without the field mean
+`split`; a primary reference must also contain the explicit engine argument.
+Primary-mode expert tests require two ordered plans. The existing bounded
+plan decoder verifies their model/layout, disjoint exact assignments and
+placement identities; receipts retain plan hashes and loaded count/weight
+checks. Dense placement checks require every layer and head on slot 0 and
+do not require dense work on the helper. Split-based route discovery rejects
+primary mode: supply native assignments from the metadata exporter instead.
+These execution checks do not turn a load-only `QUIT` into a numerical or
+participation test.
+
 ## Bounded prompt chunks
 
 `--prompt-chunk-size N` opts into layer-major prompt advancement for N=2–8.

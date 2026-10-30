@@ -162,7 +162,7 @@ class QualityAdapter(unittest.TestCase):
         import argparse
         from types import SimpleNamespace
         for benchmark in (False, True):
-            for custom in (False, True):
+            for custom, topology in ((False, 'split'), (True, 'split'), (True, 'primary')):
                 with self.subTest(benchmark=benchmark, custom=custom), tempfile.TemporaryDirectory() as d:
                     root = Path(d)
                     binary = root/'binary'; binary.write_bytes(b'mocked child')
@@ -170,7 +170,12 @@ class QualityAdapter(unittest.TestCase):
                     P.S.device_arguments(parser)
                     options = (['--devices','3,2','--pci','0000:21:00.0,0000:41:00.0',
                                 '--split','24','--device-cap-mib','8192,4096'] if custom else [])
-                    args = parser.parse_args(options)
+                    args = parser.parse_args(options + (['--dense-topology', 'primary'] if topology == 'primary' else []))
+                    if topology == 'primary':
+                        args.expert_plan = ['0:primary.plan', '1:helper.plan']
+                        args.expert_tensor_mib = '4808,6901'
+                        args.expert_workspace_mib = '128,128'
+                        args.expert_free_reserve_mib = '512,512'
                     args.__dict__.update(suite=root/'suite', binary=binary,
                         binary_sha256=P.Q.bundle.sha(binary), out=root/'out', benchmark=benchmark)
                     selected, physical = P.S.device_selection(parser, args)
@@ -192,6 +197,8 @@ class QualityAdapter(unittest.TestCase):
                          patch.object(P.S,'vram',side_effect=lambda pci:dict(pci=pci,used=0,total=9<<30)) as observe, \
                          patch.object(P.S,'rss',return_value={}), patch.object(P.S,'guard_host'), \
                          patch.object(P.S,'placements',return_value={}) as placement, \
+                         patch.object(P.L,'primary_plans',return_value={'plans': []}) as plans, \
+                         patch.object(P.L,'primary_plan_reports') as plan_reports, \
                          patch.object(P.subprocess,'Popen',side_effect=launch) as popen:
                         P.run_portable(args, SimpleNamespace(tokens=range(248320)))
                     verify.assert_called_once_with(binary,selected,physical)
@@ -203,10 +210,13 @@ class QualityAdapter(unittest.TestCase):
                                            ('--device-cap-mib',P.S.cap_argv(args))):
                             self.assertEqual(argv[argv.index(flag)+1],value)
                     for call in placement.call_args_list:
-                        self.assertEqual(call.args[1:],(selected,args.split))
+                        self.assertEqual(call.args[1:],(selected,args.split,topology))
                     summary=json.loads((args.out/'summary.json').read_text())
                     self.assertEqual(summary['selected_devices'],mapping)
                     self.assertEqual(summary['device_policy']['pci'],physical)
+                    self.assertEqual(summary['device_policy']['dense_topology'],topology)
+                    self.assertEqual(P.S.argv_topology(popen.call_args.args[0]),topology)
+                    self.assertEqual(plan_reports.call_count,len(popen.call_args_list) if topology == 'primary' else 0)
                     self.assertEqual(summary['status'],'complete')
 
     def test_selected_identity_failure_stops_before_model_launch(self):

@@ -137,7 +137,7 @@ class HarnessTest(unittest.TestCase):
             r.tick=stop
             with self.assertRaisesRegex(ValueError,'guard STOP'): r.request([5],0,1)
         self.run_fake('ok',action)
-    def main_run(self,pressure,timings=False,resident_weights=False,dense_weights=False,state_resident=False,tensor_caps=None,production=False,device_caps=None):
+    def main_run(self,pressure,timings=False,resident_weights=False,dense_weights=False,state_resident=False,tensor_caps=None,production=False,device_caps=None,topology='split'):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); out=root/'out'; tokens=root/'tokens.json';tokens.write_text('[5,7]')
             plans=[root/'p0',root/'p1']
@@ -151,6 +151,7 @@ class HarnessTest(unittest.TestCase):
             args=['resident','--binary',sys.executable,'--binary-sha256',M.Q.bundle.sha(sys.executable),
                   '--out',str(out),'--tokens-file',str(tokens),'--max-new','0',
                   '--plan',str(plans[0]),'--plan',str(plans[1])]
+            if topology == 'primary': args+=['--dense-topology','primary']
             if device_caps is not None: args+=['--device-cap-mib',device_caps]
             if tensor_caps is not None: args+=['--expert-tensor-mib',tensor_caps]
             if timings: args+=['--expert-timings']
@@ -166,6 +167,8 @@ class HarnessTest(unittest.TestCase):
                  mock.patch.object(M.S,'rss',return_value=dict(VmRSS=1,VmHWM=1,VmSwap=0)), \
                  mock.patch.object(M.S,'guard_host',side_effect=ValueError('pressure') if pressure else None), \
                  mock.patch.object(M.S,'placements'), \
+                 mock.patch.object(M.L,'primary_plans',return_value={'plans': []}), \
+                 mock.patch.object(M.L,'primary_plan_reports',return_value={}), \
                  mock.patch.object(M.L,'devices',return_value={0:dict(entries=4),1:dict(entries=4)}):
                 if pressure:
                     with self.assertRaisesRegex(ValueError,'pressure'): M.main()
@@ -178,6 +181,8 @@ class HarnessTest(unittest.TestCase):
             self.assertEqual(receipt['last_process']['VmRSS'],1)
             self.assertEqual(len(commands),1)
             self.assertIn('--stdio',commands[0])
+            self.assertEqual(M.S.argv_topology(commands[0]),topology)
+            self.assertEqual(receipt['device_policy']['dense_topology'],topology)
             self.assertEqual('--expert-timings' in commands[0],timings)
             self.assertEqual(commands[0].count('--gdn-resident-weights'),int(resident_weights))
             self.assertEqual(commands[0].count('--dense-resident-weights'),int(dense_weights))
@@ -189,6 +194,7 @@ class HarnessTest(unittest.TestCase):
                 self.assertEqual(len(receipt['requests']),4)
                 self.assertEqual(receipt['excluded_warmups'],1)
                 self.assertEqual(receipt['exit_code'],0)
+    def test_main_primary_topology(self): self.main_run(False,topology='primary')
     def test_main_asymmetric_caps(self): self.main_run(False,device_caps='7680,7000')
     def test_main_four_receipts(self): self.main_run(False)
     def test_main_pressure_receipt(self): self.main_run(True)

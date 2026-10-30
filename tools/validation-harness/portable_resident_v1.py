@@ -249,9 +249,16 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
     expected_qsa = bool(expected_residency.get('--qsa-reuse-attention', False))
     if summary.get('qsa_reuse_attention', False) is not expected_qsa:
         raise ValueError('reference residency policy mismatch: QSA summary')
+    expected_topology = (device_policy or {}).get('dense_topology', 'split')
+    if expected_topology not in ('split', 'primary'):
+        raise ValueError('invalid reference dense topology')
+    if summary.get('device_policy', {}).get('dense_topology', 'split') != expected_topology:
+        raise ValueError('reference device policy mismatch: dense topology')
+    if expected_topology == 'primary' and summary.get('primary_expert_plans') != L.primary_plans(plans):
+        raise ValueError('reference primary expert plan ownership mismatch')
     if device_policy is not None:
         recorded_policy = summary.get('device_policy', {})
-        for key in ('devices', 'pci', 'split'):
+        for key in ('devices', 'pci', *(() if expected_topology == 'primary' else ('split',))):
             if recorded_policy.get(key) != device_policy[key]:
                 raise ValueError('reference device policy mismatch: '+key)
         if S.cap_argv(argparse.Namespace(device_cap_mib=recorded_policy.get('device_cap_mib', ''))) != S.cap_argv(argparse.Namespace(device_cap_mib=device_policy['device_cap_mib'])):
@@ -260,6 +267,7 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
     for index, prompt in enumerate(prompts,1):
         case = root/f'case-{index:02d}'
         argv = json.loads((case/'argv.json').read_text())
+        if S.argv_topology(argv) != expected_topology: raise ValueError('reference dense topology argv mismatch')
         if P.chunk_argv(argv)!=prompt_chunk_size:raise ValueError('reference chunk argv mismatch')
         if P.projection_argv(argv) is not projections:raise ValueError('reference GDN projection argv mismatch')
         if P.causal_argv(argv) is not causal:raise ValueError('reference GDN causal argv mismatch')
@@ -274,6 +282,7 @@ def reference_rows(root, binding, prompts, vocabulary, binary_sha, plans, tensor
                             ('--expert-free-reserve-mib','512,512')):
             if one(flag) != value: raise ValueError('reference argv mismatch: '+flag)
         for flag,value in (expected_argv or {}).items():
+            if flag == '--split' and expected_topology == 'primary': continue
             if one(flag) != value: raise ValueError('reference argv mismatch: '+flag)
         if pins.get(argv[0]) != binary_sha or '--stdio' in argv or '--expert-check-rows' in argv:
             raise ValueError('reference binary/policy mismatch')
@@ -421,7 +430,7 @@ def main():
                                    '--split':str(args.split),'--device-cap-mib':S.cap_argv(args),
                                    '--threads':'4','--expert-workers':'12','--host-cap-mib':'32768'},
                                   {flag:flag in P.residency_flags(args) for flag in (*P.RESIDENCY_FLAGS,P.GDN_PROJECTION_FLAG,P.GDN_CAUSAL_FLAG)},P.chunk_size(args),
-                                  device_policy=dict(devices=args.devices,pci=physical,split=args.split,device_cap_mib=args.device_cap_mib))
+                                  device_policy=S.device_policy(args, physical))
         args.max_new=Q.MAX_NEW
         args.expert_timings=True
     else:
@@ -457,7 +466,9 @@ def main():
         caps=S.device_caps(args)
         budgets=S.admit_vram(initial,mapping,caps,S.device_reserves(args))
         receipt['device_budgets']=budgets
-        receipt['device_policy']=dict(devices=args.devices,pci=physical,split=args.split,device_cap_mib=args.device_cap_mib)
+        receipt['device_policy']=S.device_policy(args, physical)
+        if S.dense_topology(args) == 'primary':
+            receipt['primary_expert_plans'] = L.primary_plans(args.plan)
         receipt.update(sample_count=0,minimum_effective_available=baseline['effective_available'],
                        peak_process=dict(VmRSS=0,VmHWM=0,VmSwap=0),peak_swap_used=baseline.get('SwapUsed',0),
                        maximum_swap_out_pages_delta=0,sampled_peak_vram=[v['used'] for v in initial],
@@ -487,6 +498,7 @@ def main():
                  '--device-cap-mib',S.cap_argv(args),'--split',str(args.split),
                  '--expert-tensor-mib',args.expert_tensor_mib,'--expert-workspace-mib','128,128',
                  '--expert-free-reserve-mib','512,512','--placements',str(args.out/'placements.tsv')]
+        command+=S.topology_argv(args)
         command+=S.budget_argv(budgets)
         for i,plan in enumerate(args.plan): command+=['--expert-plan',f'{i}:{plan.resolve(strict=True)}']
         if args.expert_timings: command += ['--expert-timings']
@@ -532,8 +544,10 @@ def main():
         runner.finish()
         if any(len(r['metrics']['gpu_entries_per_device_delta'])!=2 or min(r['metrics']['gpu_entries_per_device_delta'])<=0 for r in results):
             raise ValueError('each request must participate on both dies')
-        S.placements(args.out/'placements.tsv',selected,args.split)
+        S.placements(args.out/'placements.tsv',selected,args.split,S.dense_topology(args))
         log=(args.out/'stderr.log').read_text()
+        if S.dense_topology(args) == 'primary':
+            receipt['expert_devices_loaded'] = L.primary_plan_reports(log, args.plan, receipt['primary_expert_plans'], selected)
         report=L.devices(log,'token-complete',selected)
         if set(report)!={0,1} or any(int(d['entries'])<=0 for d in report.values()): raise ValueError('GPU participation required on both dies')
         receipt['expert_devices_cumulative']=report

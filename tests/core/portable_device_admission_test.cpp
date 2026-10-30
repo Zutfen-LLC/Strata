@@ -76,6 +76,11 @@ int main(int argc, char **argv) {
         check(!PortableModelSession::open(shards, "unused", options, error), "duplicate device accepted");
         check(error.find("duplicate physical accelerator device") != std::string::npos,
               "duplicate must fail before model/manifest/weight admission: " + error);
+        options.dense_topology = PortableDenseTopology::primary;
+        options.split = 0; // inactive split must not interfere with primary ownership
+        check(!PortableModelSession::open(shards, "unused", options, error), "primary accepted duplicate device");
+        check(error.find("duplicate physical accelerator device") != std::string::npos,
+              "primary must retain physical identity guard: " + error);
         // A real two-device host can also exercise distinct physical identities.
         // The deliberately incomplete fixture then reaches the architecture guard.
         if (other) {

@@ -5,6 +5,8 @@ Use strata-gpu-manifest plan to bind these assignments to the local model manife
 Default: first 960 distinct pairs, alternating owners (480 each). Optional:
 --per-layer-per-device N selects the first 2N distinct pairs of each layer,
 alternating owners separately within that layer (48*N per device).
+Native-style selection: --native-primary-per-layer N --native-helper-slots S
+fills slot 0's per-layer quota first, then slot 1 from remaining source ranks.
 """
 import argparse
 import hashlib
@@ -52,7 +54,11 @@ def parse_profile(raw):
     return ranked, slots
 
 
-def partition(ranked, per_layer_per_device=None):
+def partition(ranked, per_layer_per_device=None, native_primary_per_layer=None, native_helper_slots=None):
+    if native_primary_per_layer is not None or native_helper_slots is not None:
+        if per_layer_per_device is not None:
+            raise ValueError('native selection excludes per-layer-per-device')
+        return partition_native(ranked, native_primary_per_layer, native_helper_slots)
     if per_layer_per_device is not None and (type(per_layer_per_device) is not int or
                                             not 1 <= per_layer_per_device <= EXPERTS // 2):
         raise ValueError('per-layer-per-device must be an integer in 1..256')
@@ -80,7 +86,37 @@ def partition(ranked, per_layer_per_device=None):
     return assignments, selected, len(seen)
 
 
-def export(profile, expected_sha, out, per_layer_per_device=None):
+def partition_native(ranked, primary_quota, helper_slots):
+    """Mirror native profile fill + one RemoteExperts helper, with fixed slots.
+
+    ExpertCache::admit skips a full layer and keeps visiting source ranks.
+    RemoteExperts::open takes the first distinct pairs not owned by primary.
+    Like native fixed-slot fill, a short profile can leave slots unused.
+    Like RemoteExperts::open, an empty helper selection is an error.
+    """
+    if type(primary_quota) is not int or not 1 <= primary_quota <= EXPERTS:
+        raise ValueError('native-primary-per-layer must be an integer in 1..512')
+    if type(helper_slots) is not int or not 1 <= helper_slots <= 2147483647:
+        raise ValueError('native-helper-slots must be a positive int32 slot count')
+    unique = {}
+    for rank, pair in enumerate(ranked):
+        unique.setdefault(pair, rank)
+    counts, primary = [0] * LAYERS, set()
+    for layer, expert in unique:
+        if counts[layer] < primary_quota:
+            primary.add((layer, expert))
+            counts[layer] += 1
+    helper = [pair for pair in unique if pair not in primary][:helper_slots]
+    if not helper:
+        raise ValueError('native helper has no unclaimed experts remaining')
+    helper = set(helper)
+    selected = [(rank, 0 if pair in primary else 1, *pair) for pair, rank in unique.items()
+                if pair in primary or pair in helper]
+    return [sorted(primary), sorted(helper)], selected, len(unique)
+
+
+def export(profile, expected_sha, out, per_layer_per_device=None,
+           native_primary_per_layer=None, native_helper_slots=None):
     if not re.fullmatch('[0-9a-f]{64}', expected_sha):
         raise ValueError('profile SHA256 must be 64 lowercase hex characters')
     # Bounded read; parse and validate everything before creating any output.
@@ -89,7 +125,8 @@ def export(profile, expected_sha, out, per_layer_per_device=None):
     if sha(raw) != expected_sha:
         raise ValueError('profile SHA256 mismatch')
     ranked, slots = parse_profile(raw)
-    assignments, selected, distinct = partition(ranked, per_layer_per_device)
+    assignments, selected, distinct = partition(ranked, per_layer_per_device,
+                                               native_primary_per_layer, native_helper_slots)
     files = {f'assignments-{die}.txt': ''.join(f'{l} {e}\n' for l, e in pairs).encode('ascii')
              for die, pairs in enumerate(assignments)}
     files['selected-ranks.tsv'] = ('source_rank\tdie\tlayer\texpert\n' + ''.join(
@@ -108,6 +145,15 @@ def export(profile, expected_sha, out, per_layer_per_device=None):
                       per_device_layer_counts=[
                           [sum(l == layer for l, _ in pairs) for layer in range(LAYERS)]
                           for pairs in assignments])
+    if native_primary_per_layer is not None:
+        report.update(native_primary_per_layer=native_primary_per_layer,
+                      native_primary_slots=LAYERS * native_primary_per_layer,
+                      native_helper_slots=native_helper_slots,
+                      selection='primary per-layer quota in source rank order; helper first remaining distinct ranked pairs',
+                      per_device_layer_counts=[
+                          [sum(l == layer for l, _ in pairs) for layer in range(LAYERS)]
+                          for pairs in assignments],
+                      admission='metadata only; bind plans to model manifest and retain portable per-device admission checks')
     files['assignments.json'] = (json.dumps(report, indent=2, sort_keys=True)+'\n').encode('utf-8')
     root = Path(out)
     root.mkdir(exist_ok=False)
@@ -124,9 +170,14 @@ def main():
     parser.add_argument('--out', required=True, help='new directory; never overwrite an existing placement')
     parser.add_argument('--per-layer-per-device', type=int, metavar='N',
                         help='select N experts per layer on each device (1..256); default is global first960')
+    parser.add_argument('--native-primary-per-layer', type=int, metavar='N',
+                        help='slot 0 quota per layer (1..512); requires --native-helper-slots')
+    parser.add_argument('--native-helper-slots', type=int, metavar='S',
+                        help='slot 1 takes S highest-ranked pairs remaining after primary fill')
     args = parser.parse_args()
     try:
-        print(json.dumps(export(args.profile, args.profile_sha256, args.out, args.per_layer_per_device),
+        print(json.dumps(export(args.profile, args.profile_sha256, args.out, args.per_layer_per_device,
+                                args.native_primary_per_layer, args.native_helper_slots),
                          indent=2, sort_keys=True))
     except (ValueError, OSError) as error:
         parser.exit(1, str(error)+'\n')

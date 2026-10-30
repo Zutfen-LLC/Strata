@@ -107,6 +107,7 @@ int main(int argc, char **argv) {
                              "portable_model --model ANY_SHARD --manifest SWLOCAL1 --tokens ID,ID,...\n"
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 (or scalar) --split 32] [--host-cap-mib 32768]\n"
+                             " [--dense-topology split|primary (default split; primary keeps dense/state/head on slot 0)]\n"
                              " [--device-free-bytes N,N (optional external free evidence; only tightens admission)]\n"
                              " [--gdn-production (requires --gdn-resident-state and strict Vulkan)]\n"
                              " [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
@@ -203,6 +204,11 @@ int main(int argc, char **argv) {
                     opts.expert_workers = int(n);
             } else if (key == "--split")
                 opts.split = integer(value);
+            else if (key == "--dense-topology") {
+                if (value == "split") opts.dense_topology = strata::core::PortableDenseTopology::split;
+                else if (value == "primary") opts.dense_topology = strata::core::PortableDenseTopology::primary;
+                else throw std::runtime_error("dense topology must be split or primary");
+            }
             else if (key == "--host-cap-mib") {
                 const auto n = integer(value);
                 if (n > (SIZE_MAX >> 20))
