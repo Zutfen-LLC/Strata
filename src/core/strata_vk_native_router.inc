@@ -8,7 +8,7 @@ StrataVkNativeRouter* strata_vk_native_router_create(ggml_backend_t backend,cons
     // Reuse Q8 device/feature receipt, controls, final-module validation and
     // pipeline/resource ownership. No FMA is introduced by this router.
     result->owner=strata_vk_q8_component_owner(backend,strata_native_router_spv,sizeof(strata_native_router_spv)/4,
-        "strata_native_router_k10_observation",4,4,path);
+        NativeComponentAddressing::descriptor,"strata_native_router_k10_observation",4,4,path);
     return result.release();
 }
 size_t strata_vk_native_router_bytes(const StrataVkNativeRouter* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}

@@ -409,9 +409,16 @@ struct PortableModelSession::Impl {
                 require(d.tensor_cap>0 && d.workspace_cap>0 && d.tensor_cap<=SIZE_MAX-d.workspace_cap,
                         "invalid resident expert budgets");
                 const size_t budget=d.tensor_cap+d.workspace_cap;
-                require(report.device_admission[d.accelerator]<=opts.device_caps[d.accelerator] &&
-                        budget<=opts.device_caps[d.accelerator]-report.device_admission[d.accelerator],
-                        "dense plus resident expert tensors/runtime exceed per-device cap");
+                // Observe the same post-dense free memory used by native cache
+                // sizing. Diagnostic only: admission still uses the unchanged ledger guard.
+                size_t available_after_dense=0,total_after_dense=0;
+                ggml_backend_dev_memory(ggml_backend_get_device(opts.accelerators[d.accelerator]),
+                                        &available_after_dense,&total_after_dense);
+                const portable_detail::DeviceAdmissionContext context{d.accelerator,L,"resident-experts",
+                    opts.device_policy_caps.empty()?0:opts.device_policy_caps[d.accelerator],
+                    opts.device_free_reserves.empty()?0:opts.device_free_reserves[d.accelerator]};
+                portable_detail::preflight_resident_expert_memory(report,d.accelerator,opts.device_caps[d.accelerator],
+                    d.tensor_cap,d.workspace_cap,available_after_dense,total_after_dense,&context);
                 worker::GpuPlan plan;
                 require(worker::read_gpu_plan(d.plan_path,plan,error),error);
                 const size_t per_expert=(2u<<20)+(32u<<10); // ggml metadata + persistent host boundaries

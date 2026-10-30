@@ -16,7 +16,7 @@ inline ggml_tensor* native_q8_view(ggml_context* context,ggml_tensor* base,size_
     return result;
 }
 inline size_t native_q8_weight_bytes(size_t slots,size_t budget) {
-    require(slots>=1 && slots<=24,"native Q8 requires 1..24 frozen slots");
+    require(slots>=1 && slots<=SIZE_MAX/size_t(5222400),"native Q8 resident weight size overflow");
     const size_t bytes=slots*size_t(5222400);
     require(bytes<=budget,"native Q8 weights exceed tensor budget");return bytes;
 }
@@ -36,7 +36,7 @@ inline GpuExecutionTrace native_q8_groups(const GpuPlan& p,const InferRequest& r
             group[i]=int32_t(t.experts.size()-1);
         } else group[i]=int32_t(it-t.experts.begin());
     }
-    require(!t.experts.empty() && t.experts.size()<=24,"native Q8 supports 1..24 active groups; no call splitting");
+    require(!t.experts.empty() && t.experts.size()<=strata::core::portable_detail::q8_entry_capacity,"native Q8 supports 1..80 active groups; no call splitting");
     for(size_t g=0;g<t.experts.size();++g) {
         t.start.push_back(int32_t(t.dst.size()));
         for(size_t i=0;i<group.size();++i)if(group[i]==int32_t(g)) {

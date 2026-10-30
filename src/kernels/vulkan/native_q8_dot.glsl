@@ -6,20 +6,24 @@
 spirv_instruction(extensions = ["SPV_KHR_fma"], capabilities = [6030], id = 4427)
 float native_q8_strict_fma(float a,float b,float c);
 #endif
+layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer WeightWords {uint w[];};
 shared float partial[256];
-uint weight_word(uint byte_offset) {
-    uint at=p.wb+byte_offset/4,shift=(byte_offset%4)*8;
-    if(shift==0)return w[at];
-    return (w[at]>>shift)|(w[at+1]<<(32-shift));
+uint weight_word(uint64_t byte_offset) {
+    WeightWords words=WeightWords(byte_offset & ~uint64_t(3));
+    uint shift=uint(byte_offset%4)*8;
+    if(shift==0)return words.w[0];
+    return (words.w[0]>>shift)|(words.w[1]<<(32-shift));
 }
-float weight_scale(uint byte_offset) {
-    return unpackHalf2x16(w[p.wb+byte_offset/4]>>((byte_offset%4)*8)).x;
+float weight_scale(uint64_t byte_offset) {
+    WeightWords words=WeightWords(byte_offset & ~uint64_t(3));
+    return unpackHalf2x16(words.w[0]>>(uint(byte_offset%4)*8)).x;
 }
-float q8_row_dot(uint base,uint entry,uint nb,uint tid) {
+float q8_row_dot(uint64_t base,uint entry,uint nb,uint tid) {
     uint lane=tid%32;
     float sum=0.0;
     for(uint k=lane;k<nb*4;k+=32) {
-        uint block=k/4,iqs=2*(k%4),wx=base+block*34+2+4*iqs;
+        uint block=k/4,iqs=2*(k%4);
+        uint64_t wx=base+uint64_t(block)*34+2+4*iqs;
         uint xx=p.xb+(entry*nb+block)*9;
         int dot=dotPacked4x8EXT(int(weight_word(wx)),int(x[xx+1+iqs]));
         dot+=dotPacked4x8EXT(int(weight_word(wx+4)),int(x[xx+2+iqs]));

@@ -4,7 +4,7 @@ namespace strata::core::portable_detail {
 StrataVkNativeRouter* strata_vk_native_router_trace_create(ggml_backend_t backend,const char* path) {
     auto result=std::make_unique<StrataVkNativeRouter>();
     result->owner=strata_vk_q8_component_owner(backend,strata_native_router_trace_spv,sizeof(strata_native_router_trace_spv)/4,
-        "strata_native_router_row2_diagnostic",4,4,path);
+        NativeComponentAddressing::descriptor,"strata_native_router_row2_diagnostic",4,4,path);
     return result.release();
 }
 void strata_vk_native_router_trace_run(StrataVkNativeRouter* s,const ggml_tensor* logits,

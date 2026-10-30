@@ -32,9 +32,9 @@ class Tools(unittest.TestCase):
         begin = source.index('StrataVkNativeStages* strata_vk_native_stages_create(')
         end = source.index('StrataVkNativeStages* strata_vk_native_stages_create_observation(', begin)
         creator = source[begin:end]
-        self.assertIn('GGML_TYPE_I32,32', creator)
+        self.assertIn('GGML_TYPE_I32,STRATA_Q8_STAGE_WORDS', creator)
         # Only bounded starts-buffer capacity changes; strict controls/module remain exact.
-        creator = creator.replace('GGML_TYPE_I32,32', 'GGML_TYPE_I32,16')
+        creator = creator.replace('GGML_TYPE_I32,STRATA_Q8_STAGE_WORDS', 'GGML_TYPE_I32,16')
         self.assertEqual(hashlib.sha256(creator.encode()).hexdigest(),
             '0f3b4c73985d46e52994ef5a84551e504f52bc983ded53228a15d6f1b65bd923')
         for path, expected in {
@@ -254,7 +254,7 @@ class Tools(unittest.TestCase):
             with self.assertRaises(ValueError):down.compare(oracle, path)
         shader = (ROOT / 'src/kernels/vulkan/native_q8_down.comp').read_text()
         self.assertIn('q8_row_dot(base,uint(e),nb,tid)', shader)
-        self.assertIn('uint(m[p.mb+50+e])*p.h+row', shader)
+        self.assertIn('uint(m[p.mb+STRATA_Q8_ID_WORD+e])*p.h+row', shader)
         self.assertNotIn('atomic', shader)
         self.assertIn('#include "native_q8_dot.glsl"', shader)
         self.assertIn('#include "native_q8_dot.glsl"', (ROOT / 'src/kernels/vulkan/native_q8_gu.comp').read_text())
