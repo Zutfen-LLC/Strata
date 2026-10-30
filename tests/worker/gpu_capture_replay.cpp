@@ -648,9 +648,17 @@ void first_boundary_check() {
     std::puts("BOUNDARY_CHECK raw_identity_refusals=6 SRA1_partial_and_row_refusals=1 packet_refusal=1 ordered_reconstruction=1 identical_row_controls=1 actual_CUDA=0");
 }
 }
+// Shared by actual offline staging and its inexpensive capacity admission check.
+static bool native_q8_record_capacity(size_t groups,size_t entries) {
+    const auto capacity=strata::core::portable_detail::q8_entry_capacity;
+    return groups>=1 && groups<=capacity && entries>=1 && entries<=capacity;
+}
 int main(int argc,char** argv) {
     try {
         if((argc==2 && std::string(argv[1])=="--stage-check") || ((argc==2 || argc==3) && std::string(argv[1])=="--stage-check80")) {
+            for(size_t groups:{24,25,64,65,80})require(native_q8_record_capacity(groups,80),"native record group capacity refused");
+            require(!native_q8_record_capacity(0,80) && !native_q8_record_capacity(81,80) &&
+                !native_q8_record_capacity(80,81),"oversized/empty native record admitted");
             const int T=std::string(argv[1])=="--stage-check80"?8:1,K=T==8?10:2;
             Fixture fixture;const auto setup=fixture.setup();const auto path=(fixture.root/"capture.bin").string();std::string err;CpuCapture capture;
             require(capture.prepare(setup,fixture.m.identity,fixture.m.index_digest,path,err,1u<<20),err);
@@ -706,7 +714,7 @@ int main(int argc,char** argv) {
             require(read_local_manifest(argv[4],m,err) && m.matches(f.setup) && m.identity==f.identity && m.index_digest==f.index,err.empty()?"capture/source manifest mismatch":err);
             std::set<std::pair<uint16_t,uint16_t>> unique;size_t entries=0;
             for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]){unique.emplace(q.layer,q.ids[i]);++entries;}
-            require(!unique.empty() && unique.size()<=24 && entries<=strata::core::portable_detail::q8_entry_capacity,"full record exceeds provider bounds; not truncated");
+            require(native_q8_record_capacity(unique.size(),entries),"full record exceeds provider bounds; not truncated");
             GpuPlan plan;require(make_gpu_plan(m,{unique.begin(),unique.end()},plan,err),err);
             const fs::path output=argv[6];require(fs::create_directory(output),"stage output must be a new directory");
             fs::permissions(output,fs::perms::owner_all,fs::perm_options::replace);
