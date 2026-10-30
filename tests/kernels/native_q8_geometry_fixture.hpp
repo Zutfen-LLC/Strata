@@ -1,11 +1,37 @@
 #pragma once
 #include "native_q8_consumer_fixture.hpp"
 namespace native_q8_fixture::geometry {
+#ifdef STRATA_Q8_CAPACITY_FIXTURE
+constexpr size_t H=2560,F=640,ENTRIES=80,TOKENS=8,GROUPS=24,GRID_GROUPS=7;
+inline const std::vector<int32_t> STARTS=[] {
+    std::vector<int32_t> v(GROUPS+1);for(size_t g=0;g<=GROUPS;++g)v[g]=g*ENTRIES/GROUPS;
+    v[12]=v[11]; // empty group, with subsequent groups reached by a strided grid
+#ifdef STRATA_Q8_PADDED_FIXTURE
+    v.front()=1;v.back()=ENTRIES-1;
+#endif
+    return v;
+}();
+inline const std::vector<int32_t> TOKENS_BY_ENTRY=[] {
+    std::vector<int32_t> v(ENTRIES);for(size_t e=0;e<ENTRIES;++e)v[e]=(e*5+3)%TOKENS;
+#ifdef STRATA_Q8_PADDED_FIXTURE
+    v.front()=v.back()=-1;
+#endif
+    return v;
+}();
+inline const std::vector<int32_t> DESTINATIONS=[] {
+    std::vector<int32_t> v(ENTRIES);for(size_t e=0;e<ENTRIES;++e)v[e]=ENTRIES-1-e;
+#ifdef STRATA_Q8_PADDED_FIXTURE
+    v.front()=v.back()=-1;
+#endif
+    return v;
+}();
+#else
 constexpr size_t H=2560,F=640,ENTRIES=3,TOKENS=3,GROUPS=3,GRID_GROUPS=2;
+inline const std::vector<int32_t> STARTS{0,2,2,3},TOKENS_BY_ENTRY{2,0,1},DESTINATIONS{1,2,0};
+#endif
 constexpr size_t WEIGHT_BYTES=5222400,DOWN_OFFSET=3481600;
 constexpr size_t INPUT_FLOATS=TOKENS*H,FLOATS=ENTRIES*F,OUTPUT_FLOATS=ENTRIES*H;
 constexpr size_t INPUT_BYTES=TOKENS*(H/32)*36,HQ_BYTES=ENTRIES*(F/32)*36;
-inline const std::vector<int32_t> STARTS{0,2,2,3},TOKENS_BY_ENTRY{2,0,1},DESTINATIONS{1,2,0};
 inline std::vector<float> input() {
     std::vector<float> x(INPUT_FLOATS);
     for(size_t token=0;token<TOKENS;++token)for(size_t i=0;i<H;++i)

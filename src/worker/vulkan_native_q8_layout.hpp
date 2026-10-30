@@ -1,5 +1,6 @@
 #pragma once
 #include "vulkan_expert_graph.hpp"
+#include "../core/native_q8_gu_layout.hpp"
 #include "strata/worker/gpu_worker.hpp"
 #include <algorithm>
 #include <ostream>
@@ -9,6 +10,7 @@ inline void native_q8_metadata_header(std::ostream& out,size_t record,const GpuP
        <<" layer "<<r.layer<<" T "<<unsigned(r.T)<<" K "<<unsigned(r.K)<<'\n';
 }
 inline ggml_tensor* native_q8_view(ggml_context* context,ggml_tensor* base,size_t count) {
+    require(base && count>0 && count<=size_t(ggml_nelements(base)),"native Q8 view exceeds capacity");
     auto* result=ggml_view_1d(context,base,count,0);
     require(ggml_backend_view_init(result)==GGML_STATUS_SUCCESS,"native Q8 backend view initialization failed");
     return result;
@@ -42,7 +44,7 @@ inline GpuExecutionTrace native_q8_groups(const GpuPlan& p,const InferRequest& r
         }
     }
     t.start.push_back(int32_t(t.dst.size()));
-    require(t.dst.size()<=64,"native Q8 supports at most 64 active entries; no call splitting");
+    require(t.dst.size()<=strata::core::portable_detail::q8_entry_capacity,"native Q8 supports at most 80 active entries; no call splitting");
     return t;
 }
 }

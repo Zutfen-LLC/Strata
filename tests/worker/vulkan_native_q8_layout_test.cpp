@@ -13,6 +13,8 @@ int main(int argc,char** argv){try {
     Buffer buffer(ggml_backend_alloc_ctx_tensors(storage.get(),backend.get()),ggml_backend_buffer_free);
     auto* view=native_q8_view(views.get(),base,4);
     require(view->buffer==base->buffer && view->data==base->data && ggml_nbytes(view)==16,"post-allocation view lost backend binding");
+    bool oversized=false;try{native_q8_view(views.get(),base,17);}catch(const std::exception&){oversized=true;}
+    require(oversized,"oversized workspace view accepted");
     int32_t words[]={1,2,3,4},readback[4]{};ggml_backend_tensor_set(view,words,0,sizeof(words));ggml_backend_tensor_get(base,readback,0,sizeof(readback));
     require(std::equal(std::begin(words),std::end(words),std::begin(readback)),"view/base storage differs");
     GpuPlan p;p.n_layers=1;p.n_expert=32;
@@ -24,14 +26,32 @@ int main(int argc,char** argv){try {
         t.original==std::vector<int32_t>({0,2,5,1,3}) && t.dst==std::vector<int32_t>({0,1,2,3,4}),"native first-occurrence/stable-entry mapping");
     auto refused=[&](const InferRequest& q){try{native_q8_groups(p,q);}catch(const std::exception&){return;}throw std::runtime_error("unsupported call accepted");};
     auto q=r;q.mask[0]=2;refused(q);q=r;q.ids[0]=40;refused(q);q=r;q.mask.assign(6,0);refused(q);
-    q.T=8;q.K=10;q.mask.assign(80,1);q.ids.assign(80,0);refused(q);
+    q.T=9;q.K=10;refused(q);q.T=8;q.K=11;refused(q);q.T=0;q.K=10;refused(q);
     q.T=2;q.K=10;q.mask.assign(20,1);q.ids.resize(20);for(int i=0;i<20;++i)q.ids[i]=i;
     require(native_q8_groups(p,q).experts.size()==20,"full 20-expert request refused");
     q.T=3;q.K=10;q.mask.assign(30,0);q.ids.resize(30);for(int i=0;i<30;++i){q.ids[i]=i;q.mask[i]=i<24;}
     require(native_q8_groups(p,q).experts.size()==24,"24-group boundary refused");
     q.mask[24]=1;refused(q);
-    q.T=7;q.K=10;q.mask.assign(70,0);q.ids.assign(70,0);for(int i=0;i<64;++i)q.mask[i]=1;
-    require(native_q8_groups(p,q).dst.size()==64,"64-entry boundary refused");
+    // Native T8/K10 repeats assigned experts. Assert the complete stable
+    // grouping and inverse reply association for full and interleaved masks.
+    p.assets.resize(24);
+    for(int n:{64,65,79,80})for(bool mixed:{false,true}) {
+        q.T=8;q.K=10;q.mask.assign(80,0);q.ids.resize(80);
+        for(int i=0;i<80;++i){q.ids[i]=(i*7+3)%24;q.mask[mixed?(i*37)%80:i]=i<n;}
+        auto grouped=native_q8_groups(p,q);
+        require(grouped.dst.size()==size_t(n),"entry capacity refused");
+        std::vector<int32_t> expected_experts,expected_entries,expected_tokens,expected_starts;
+        for(int i=0;i<80;++i)if(q.mask[i] && std::find(expected_experts.begin(),expected_experts.end(),q.ids[i])==expected_experts.end())expected_experts.push_back(q.ids[i]);
+        for(auto expert:expected_experts){expected_starts.push_back(expected_entries.size());
+            for(int i=0;i<80;++i)if(q.mask[i] && q.ids[i]==expert){expected_entries.push_back(i);expected_tokens.push_back(i/10);}}
+        expected_starts.push_back(n);
+        require(grouped.experts==expected_experts && grouped.asset_slots==expected_experts && grouped.original==expected_entries &&
+            grouped.tok==expected_tokens && grouped.start==expected_starts,"stable grouped mapping changed");
+        std::vector<int32_t> restored(80,-1);
+        for(int i=0;i<n;++i){require(grouped.dst[i]==i,"packed destination changed");restored[grouped.original[i]]=i;}
+        for(int i=0;i<80;++i)require(q.mask[i]?(restored[i]>=0 && grouped.original[restored[i]]==i):restored[i]==-1,"reply order restoration/padded entry");
+    }
+    q.ids[0]=24;q.mask[0]=1;refused(q); // assigned shape, missing resident asset
     if(argc==3 && std::string(argv[1])=="--metadata-fixture") {
         InferRequest emitted;emitted.T=2;emitted.K=10;emitted.layer=0;
         const std::string prefix=argv[2];

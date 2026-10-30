@@ -37,11 +37,11 @@ public:
         w_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_I32,weights_/4);
         i_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,8*H);
         x_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_I32,8*(H/32)*9);
-        g_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,64*F);
-        u_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,64*F);
-        h_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,64*F);
-        q_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_I32,64*(F/32)*9);
-        o_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,64*H);
+        g_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,q8_entry_capacity*F);
+        u_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,q8_entry_capacity*F);
+        h_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,q8_entry_capacity*F);
+        q_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_I32,q8_entry_capacity*(F/32)*9);
+        o_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,q8_entry_capacity*H);
         auto buft=ggml_backend_get_default_buffer_type(backend);
         bytes_=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),buft);
         require(bytes_>=weights_ && bytes_<=budget && bytes_<=ggml_backend_buft_get_max_size(buft),"native Q8 tensor budget/backend block exceeded");

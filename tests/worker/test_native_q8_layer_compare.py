@@ -79,6 +79,28 @@ class Comparison(unittest.TestCase):
             self.assertEqual(Path(str(a)+'.metadata').read_bytes(),numeric)
             self.assertEqual(Path(str(b)+'.metadata').read_bytes(),legacy)
 
+    def test_80_entry_boundaries(self):
+        with tempfile.TemporaryDirectory() as folder:
+            a,b=Path(folder)/'a',Path(folder)/'b'
+            for count in (64,65,79,80,81):
+                header='record 0 model 1 placement 1 2 layer 0 T 8 K 10\n'+('0'*32+' ')*4+'\n'
+                # Stable grouped order differs from original request order.
+                original=list(range(0,count,2))+list(range(1,count,2))
+                rows=[[1,0],[1,0],[0,(count+1)//2,count],list(range(count)),[i//10 for i in original],original]
+                metadata=(header+''.join(' '.join(map(str,row))+' \n' for row in rows)).encode()
+                for prefix in (a,b):
+                    Path(str(prefix)+'.metadata').write_bytes(metadata)
+                    for suffix,size in zip(m.SUFFIXES,(8*2880,count*2560,count*2560,count*720,count*10240)):
+                        Path(str(prefix)+suffix).write_bytes(bytes(size))
+                if count==81:
+                    with self.assertRaises(ValueError):m.compare(a,b)
+                else:
+                    result=m.compare(a,b)
+                    self.assertTrue(result['exact_consumed_boundaries'])
+                    self.assertEqual(result['stages']['.output.f32']['compared'],count*2560)
+                    Path(str(b)+'.output.f32').write_bytes(bytes(count*10240-4))
+                    with self.assertRaises(ValueError):m.compare(a,b)
+
     def test_exact_failures_and_identity(self):
         with tempfile.TemporaryDirectory() as folder:
             a, b = Path(folder)/'a', Path(folder)/'b'

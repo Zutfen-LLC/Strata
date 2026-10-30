@@ -9,6 +9,20 @@ inline bool native_q8_same_allocations(const GpuCounters& a,const GpuCounters& b
     return a.gpu_allocated_bytes==b.gpu_allocated_bytes && a.gpu_weight_bytes==b.gpu_weight_bytes &&
         a.gpu_scratch_bytes==b.gpu_scratch_bytes && a.gpu_allocation_count==b.gpu_allocation_count;
 }
+// The captured down tensor is in packed group order; the public reply must
+// restore the original request indices AND their complete row contents.
+inline void native_q8_check_restored_rows(const EntryRowsReply& reply,const GpuExecutionTrace& trace,
+    const std::vector<float>& packed) {
+    require(trace.original.size()==reply.indices.size() && packed.size()==reply.rows.size() &&
+        packed.size()==trace.original.size()*H,"native Q8 restored row shape");
+    for(size_t row=0;row<trace.original.size();++row) {
+        const auto it=std::lower_bound(reply.indices.begin(),reply.indices.end(),trace.original[row]);
+        require(it!=reply.indices.end() && *it==trace.original[row],"native Q8 restored row index absent");
+        const size_t restored=it-reply.indices.begin();
+        require(!std::memcmp(packed.data()+row*H,reply.rows.data()+restored*H,H*sizeof(float)),
+            "native Q8 restored row contents differ from captured down output");
+    }
+}
 struct NativeQ8ReplayTiming {
     std::array<double,16> samples_ms{};
     double minimum_ms=0,median_ms=0,maximum_ms=0;

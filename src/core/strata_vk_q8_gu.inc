@@ -8,7 +8,7 @@
 namespace strata::core::portable_detail {
 struct StrataVkQ8Gu {std::unique_ptr<StrataVkLogitsGuard> owner;};
 static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_backend_t backend,
-    const uint32_t* shader,size_t shader_words,const char* name,uint32_t parameters,uint32_t push_words,const char* effective_spv_path,size_t budget=size_t(-1)) {
+    const uint32_t* shader,size_t shader_words,const char* name,uint32_t parameters,uint32_t push_words,const char* effective_spv_path,size_t budget=size_t(-1),size_t metadata_words=128) {
     logits_guard_need(backend && ggml_backend_is_vk(backend),"Q8 component: Vulkan required");
     auto owner=std::make_unique<StrataVkLogitsGuard>(backend);
     auto& g=*owner;auto* ctx=static_cast<ggml_backend_vk_context*>(backend->context);
@@ -32,7 +32,7 @@ static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_ba
     logits_guard_need(bool(fp.shaderDenormPreserveFloat16)==ctx->device->float_controls_denorm_preserve_fp16 &&
         bool(fp.shaderRoundingModeRTEFloat16)==ctx->device->float_controls_rte_fp16,"Q8 component: cached controls differ from query");
     g.metadata.reset(ggml_init({4096,nullptr,true}));logits_guard_need(bool(g.metadata),"Q8 component: metadata allocation failed");
-    g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,128);
+    g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,metadata_words);
     const size_t bound=ggml_backend_alloc_ctx_tensors_from_buft_size(g.metadata.get(),ggml_backend_get_default_buffer_type(backend));
     logits_guard_need(bound<=budget,"Q8 component: aligned metadata budget exceeded");
     g.buffer.reset(ggml_backend_alloc_ctx_tensors(g.metadata.get(),backend));logits_guard_need(bool(g.buffer),"Q8 component: buffer allocation failed");
@@ -48,10 +48,10 @@ StrataVkQ8Gu* strata_vk_q8_gu_create(ggml_backend_t backend,const char* effectiv
     auto result=std::make_unique<StrataVkQ8Gu>();
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_gu_strict_fma_spv,sizeof(strata_q8_gu_strict_fma_spv)/4,
-        "strata_native_gu_q8_0_strict_fma_component",5,8,effective_spv_path);
+        "strata_native_gu_q8_0_strict_fma_component",5,8,effective_spv_path,size_t(-1),q8_metadata_words);
 #else
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_gu_spv,sizeof(strata_q8_gu_spv)/4,
-        "strata_native_gu_q8_0_fullwarp_component",5,8,effective_spv_path);
+        "strata_native_gu_q8_0_fullwarp_component",5,8,effective_spv_path,size_t(-1),q8_metadata_words);
 #endif
     return result.release();
 }
@@ -81,6 +81,7 @@ void strata_vk_q8_gu_run(StrataVkQ8Gu* s,const ggml_tensor* weights,const ggml_t
         return x<=y?y-x<ggml_nbytes(a):x-y<ggml_nbytes(b);};
     logits_guard_need(!overlaps(gate,up) && !overlaps(gate,weights) && !overlaps(gate,packed) &&
         !overlaps(up,weights) && !overlaps(up,packed),"Q8 GU: overlapping output");
+    logits_guard_need(ggml_nbytes(g.status)==sizeof(metadata),"Q8 component: metadata allocation/upload size mismatch");
     ggml_backend_vk_synchronize(g.backend);ggml_backend_tensor_set(g.status,metadata.data(),0,sizeof(metadata));
     ggml_pipeline_request_descriptor_sets(ctx,g.pipeline,1);auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
     ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,weights,true),ggml_vk_tensor_subbuffer(ctx,packed,true),

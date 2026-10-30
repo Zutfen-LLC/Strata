@@ -9,10 +9,10 @@ StrataVkQ8Down* strata_vk_q8_down_create(ggml_backend_t backend,const char* path
     auto result=std::make_unique<StrataVkQ8Down>();
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_down_strict_fma_spv,sizeof(strata_q8_down_strict_fma_spv)/4,
-        "strata_native_down_q8_0_strict_fma_component",4,7,path);
+        "strata_native_down_q8_0_strict_fma_component",4,7,path,size_t(-1),q8_metadata_words);
 #else
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_down_spv,sizeof(strata_q8_down_spv)/4,
-        "strata_native_down_q8_0_fullwarp_component",4,7,path);
+        "strata_native_down_q8_0_fullwarp_component",4,7,path,size_t(-1),q8_metadata_words);
 #endif
     return result.release();
 }
@@ -40,6 +40,7 @@ void strata_vk_q8_down_run(StrataVkQ8Down* s,const ggml_tensor* weights,const gg
         const auto x=reinterpret_cast<uintptr_t>(a->data),y=reinterpret_cast<uintptr_t>(b->data);
         return x<=y?y-x<ggml_nbytes(a):x-y<ggml_nbytes(b);};
     logits_guard_need(!overlaps(output,weights) && !overlaps(output,packed),"Q8 down: overlapping output");
+    logits_guard_need(ggml_nbytes(g.status)==sizeof(metadata),"Q8 component: metadata allocation/upload size mismatch");
     ggml_backend_vk_synchronize(g.backend);ggml_backend_tensor_set(g.status,metadata.data(),0,sizeof(metadata));
     ggml_pipeline_request_descriptor_sets(ctx,g.pipeline,1);auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
     ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,weights,true),ggml_vk_tensor_subbuffer(ctx,packed,true),

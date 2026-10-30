@@ -44,7 +44,7 @@ def parse_metadata(a):
     entries = len(dst)
     if not (1 <= tokens <= 8 and 1 <= len(groups) <= 24 and len(slots) == len(groups)
             and len(starts) == len(groups)+1 and starts[0] == 0 and starts[-1] == entries
-            and starts == sorted(starts) and 1 <= entries <= 64 and dst == list(range(entries))
+            and starts == sorted(starts) and 1 <= entries <= 80 and dst == list(range(entries))
             and len(tok) == len(original) == entries and len(set(original)) == entries
             and all(0 <= v < tokens for v in tok)
             and all(0 <= v < tokens*routes for v in original)

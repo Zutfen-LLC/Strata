@@ -40,7 +40,7 @@ int main(int argc,char** argv){try {
     char pci[32]{};checked(cudaDeviceGetPCIBusId(pci,sizeof(pci),device));
     std::ofstream dispatch(std::string(argv[8])+".dispatch.json");need(bool(dispatch),"geometry: dispatch receipt create failed");
     dispatch << "{\"basis\":\"runtime native selectors in unchanged included production TU, not profiler trace\","
-        "\"h\":2560,\"f\":640,\"entries\":3,\"groups\":3,\"grid_groups\":2,"
+        "\"h\":2560,\"f\":640,\"entries\":" << geo::ENTRIES << ",\"groups\":" << geo::GROUPS << ",\"grid_groups\":" << geo::GRID_GROUPS << ","
         "\"split_off_q8\":true,\"kq_split\":false,\"gu_split_q8\":false,\"grouped_v1\":false,\"old_kernels\":false,\"exp_phase\":0,"
         "\"gu_swiglu_requested\":" << (gu_swiglu_on()?"true":"false") << ","
         "\"gate_up\":\"native_gu_kernel<8>\",\"activation\":\"swiglu_q8_1_entries_kernel\",\"down\":\"native_down_kernel<8>\","
@@ -48,9 +48,9 @@ int main(int argc,char** argv){try {
     need(bool(dispatch),"geometry: dispatch receipt write failed");dispatch.close();
     GeometryDevice w(weights.size()),i(input.size()*4),x(geo::INPUT_BYTES),ptr(geo::GROUPS*8),starts(geo::STARTS.size()*4),
         groups(4),tok(geo::ENTRIES*4),dst(geo::ENTRIES*4),scratch(scratch_bytes),out(geo::OUTPUT_FLOATS*4),hidden(geo::FLOATS*4);
-    const unsigned long long pointers[]={reinterpret_cast<unsigned long long>(w.p),reinterpret_cast<unsigned long long>(w.p),reinterpret_cast<unsigned long long>(w.p)};
+    const std::vector<unsigned long long> pointers(geo::GROUPS,reinterpret_cast<unsigned long long>(w.p));
     const int32_t ng=geo::GROUPS;
-    w.put(weights.data());i.put(input.data());ptr.put(pointers);starts.put(geo::STARTS.data());groups.put(&ng);
+    w.put(weights.data());i.put(input.data());ptr.put(pointers.data());starts.put(geo::STARTS.data());groups.put(&ng);
     tok.put(geo::TOKENS_BY_ENTRY.data());dst.put(geo::DESTINATIONS.data());
     quantize_q8_1_rows((const float*)i.p,geo::TOKENS,geo::H,x.p,nullptr);
     native_expert_grouped(layout,(const unsigned long long*)ptr.p,(const int32_t*)starts.p,(const int32_t*)groups.p,
@@ -69,6 +69,10 @@ int main(int argc,char** argv){try {
     result[3]=hidden.get();result[5]=out.get();
     bool sentinels=true;for(const auto* allocation:{&w,&i,&x,&ptr,&starts,&groups,&tok,&dst,&scratch,&out,&hidden})sentinels&=allocation->canaries();
     sentinels&=w.get()==weights && i.get()==geo::bytes(input) && x.get()==packed;
+    for(size_t e=0;e<geo::ENTRIES;++e)if(e<size_t(geo::STARTS.front()) || e>=size_t(geo::STARTS.back())) {
+        for(auto item:{std::pair<size_t,size_t>{1,geo::F*4},{2,geo::F*4},{4,(geo::F/32)*36},{5,geo::H*4}})
+            for(size_t b=e*item.second;b<(e+1)*item.second;++b)sentinels&=result[item.first][b]==0xa5;
+    }
     geo::write_result(argv[8],false,sentinels,result);
     std::ofstream weights_out(std::string(argv[8])+".weights.bin",std::ios::binary);need(bool(weights_out),"geometry: weights receipt create failed");
     weights_out.write(reinterpret_cast<const char*>(weights.data()),weights.size());need(bool(weights_out),"geometry: weights receipt write failed");
