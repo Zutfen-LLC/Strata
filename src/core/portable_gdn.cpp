@@ -4,6 +4,7 @@
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
 #include "portable_graph.hpp"
+#include "portable_gdn_projection.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include <algorithm>
 #include <cmath>
@@ -168,19 +169,27 @@ struct PortableGdnLayer::Impl {
         projection_ctx=context(); auto* c=projection_ctx.get();
         projection_input=ggml_new_tensor_3d(c,GGML_TYPE_F32,H,HC,T); ggml_set_input(projection_input);
         auto* norm=ggml_mul(c,ggml_reshape_2d(c,ggml_rms_norm(c,projection_input,1e-6f),H*HC,T),weights.at("hc_attn_norm.weight"));
-        auto* low=ggml_silu(c,ggml_scale(c,ggml_mul_mat(c,weights.at("hc_attn_down.weight"),norm),0.25f));
-        auto* gates=ggml_sigmoid(c,ggml_mul_mat(c,weights.at("hc_attn_up.weight"),low));
+        // Share three padded F32 banks across all seven quantized input
+        // projections. Views exclude the pinned backend's MMVQ conversion;
+        // padding and backend packing do not change the input values.
+        auto matrix=[&](const char* name,ggml_tensor* columns){
+            auto* t=ggml_mul_mat(c,weights.at(name),columns);ggml_set_name(t,name);return t;
+        };
+        auto* norm_columns=portable_detail::gdn_f32_projection_columns(c,norm);
+        auto* low=ggml_silu(c,ggml_scale(c,matrix("hc_attn_down.weight",norm_columns),0.25f));
+        auto* low_columns=portable_detail::gdn_f32_projection_columns(c,low);
+        auto* gates=ggml_sigmoid(c,matrix("hc_attn_up.weight",low_columns));
         auto* gated=ggml_reshape_3d(c,ggml_mul(c,norm,gates),H,HC,T);
         auto* mixed=ggml_cont(c,ggml_view_2d(c,gated,H,T,H*HC*sizeof(float),0));
         for(int64_t stream=1;stream<HC;++stream)
             mixed=ggml_add(c,mixed,ggml_view_2d(c,gated,H,T,H*HC*sizeof(float),stream*H*sizeof(float)));
         mixed=ggml_scale(c,mixed,0.25f);
-        projection_outputs[0]=ggml_mul_mat(c,weights.at("hc_attn_inject.weight"),norm);
+        auto* mixed_columns=portable_detail::gdn_f32_projection_columns(c,mixed);
+        projection_outputs[0]=matrix("hc_attn_inject.weight",norm_columns);
         const char* names[]={"attn_qkv.weight","attn_gate.weight","ssm_alpha.weight","ssm_beta.weight"};
         projection_graph=ggml_new_graph(c);
         for(size_t i=0;i<4;++i) {
-            projection_outputs[i+1]=ggml_mul_mat(c,weights.at(names[i]),mixed);
-            ggml_set_name(projection_outputs[i+1],names[i]);
+            projection_outputs[i+1]=matrix(names[i],mixed_columns);
         }
         for(auto* t:projection_outputs) {ggml_set_output(t);ggml_build_forward_expand(projection_graph,t);}
         if(causal()) {
@@ -895,6 +904,11 @@ PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     if (s.options.execution.request_accelerator) {
         m.device_extra_bound += allowance + (8u << 20);
         portable_detail::account_matrix_conversion(m,s.options.execution.accelerator,size_t(H*CHANNELS)*sizeof(float));
+        // Strided F32 inputs use the backend's distinct persistent prealloc_y
+        // packing bank. Price the largest permitted shape even after replacing
+        // it with a smaller graph; backend scratch retains its high-water size.
+        // Padded graph tensors are already included in scheduler graph bytes.
+        if(s.batch_projections()) m.device_extra_bound+=8*RESIDUAL*sizeof(float);
     }
     return m;
 }
