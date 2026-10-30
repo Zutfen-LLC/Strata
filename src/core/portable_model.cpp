@@ -4,6 +4,7 @@
 #include "portable_shared_work.hpp"
 #include "portable_memory.hpp"
 #include "portable_native_capacity.hpp"
+#include "strata/core/layer0_observer.hpp"
 #include "strata/core/expert_profile.hpp"
 #include "portable_topology.hpp"
 #include "portable_cpu_experts.hpp"
@@ -114,6 +115,7 @@ void inventory(const GgufModel &m) {
 
 struct PortableModelSession::Impl {
     PortableModelOptions opts;
+    std::unique_ptr<Layer0Observer> observer;
     GgufModel model; // before all consumers; destroyed last
     std::unique_ptr<portable_detail::CpuExperts> experts;
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
@@ -135,6 +137,11 @@ struct PortableModelSession::Impl {
     size_t vocabulary = 0;
     Impl(const std::vector<std::string> &shards, const std::string &manifest, PortableModelOptions options)
         : opts(std::move(options)), model(shards) {
+        if(Layer0Observer::requested()) {
+            require(!opts.prompt_chunk_size && !opts.gdn_production,"layer0 observer requires existing serial eager diagnostic policy");
+            require(opts.host_cap>=Layer0Observer::host_bound,"layer0 observer host cap exceeded");
+            observer=std::make_unique<Layer0Observer>();
+        }
         require(!opts.expert_native_profile.empty() || (!opts.expert_native_primary_slots && !opts.expert_native_helper_slots &&
             opts.expert_native_plan_prefix.empty()),"native capacity options require a profile");
         require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
@@ -215,6 +222,7 @@ struct PortableModelSession::Impl {
         // Pool-owned split scratch is capped at 96 experts, MAXT=8. Include
         // its allocation, per-worker scratch/stacks and bounded manifest/index.
         report.host_state_bound = (32u << 20) + size_t(opts.expert_workers + 1) * (9u << 20);
+        if(observer)report.host_state_bound+=Layer0Observer::host_bound;
         if(opts.prompt_chunk_size) report.host_state_bound+=(4u<<20)+2*8*H*HC*sizeof(float);
         report.device_admission.assign(opts.accelerators.size(), 0);
         report.device_scheduler.assign(opts.accelerators.size(), 0);
@@ -226,6 +234,7 @@ struct PortableModelSession::Impl {
         auto execution = [&](size_t index, bool output) {
             PortableFfnOptions o;
             o.threads = opts.threads;
+            if(index==0 && !output)o.layer0_observer=observer.get();
             o.native_shared=!output && opts.native_shared;
             if(o.native_shared)o.native_shared_receipt_prefix=opts.native_shared_receipt_prefix;
             o.native_router = !output && opts.native_router;
@@ -483,6 +492,10 @@ struct PortableModelSession::Impl {
                 worker::GpuPlan plan;
                 require(d.native_frozen_plan.empty()?worker::read_gpu_plan(d.plan_path,plan,error):
                     worker::decode_gpu_plan(d.native_frozen_plan.data(),d.native_frozen_plan.size(),plan,error),error);
+                if(observer && d.accelerator<2) {
+                    // Retained until begin; not part of numerical execution.
+                    for(size_t expert=0;expert<NE;++expert)(d.accelerator?observer->helper:observer->primary)[expert]=plan.owns(0,int(expert))?1:0;
+                }
                 const size_t per_expert=(2u<<20)+(32u<<10); // ggml metadata + persistent host boundaries
                 require(plan.assets.size()<=(SIZE_MAX-(16u<<20))/per_expert,"resident host metadata overflow");
                 const size_t h=plan.assets.size()*per_expert+(16u<<20); // load blob, plan/rows/request slack
@@ -654,6 +667,16 @@ struct PortableModelSession::Impl {
             finite(residual, "embedding");
             for (size_t stream = 1; stream < HC; ++stream)
                 std::copy_n(residual.begin(), H, residual.begin() + stream * H);
+            if(observer && pos==0 && !observer->finished()) {
+                observer->begin(token);
+                observer->put(Layer0Observer::primary_ownership,observer->primary.data(),observer->primary.size());
+                observer->put(Layer0Observer::helper_ownership,observer->helper.data(),observer->helper.size());
+                observer->put(Layer0Observer::embedding,residual.data(),residual.size());
+                const auto& state=layers[0].gdn->recurrent_state();
+                const auto& history=layers[0].gdn->convolution_history();
+                observer->put(Layer0Observer::state_before,state.data(),state.size());
+                observer->put(Layer0Observer::history_before,history.data(),history.size());
+            }
             portable_detail::RouterParticipation router_participation(opts.native_router);
             portable_detail::SharedParticipation shared_participation(opts.native_shared);
             const PortableExpertRows dispatch = [&](int64_t l, const PortableRoute &r, std::vector<float> &rows,
@@ -681,6 +704,14 @@ struct PortableModelSession::Impl {
                         opts.expert_timings ? &model_work.gdn_phases : nullptr);
                     require(ok, "portable model: token position " + std::to_string(pos) + " layer " + std::to_string(l) +
                                     ": " + error);
+                }
+                if(l==0 && observer && observer->active()) {
+                    const auto& state=layers[0].gdn->recurrent_state();
+                    const auto& history=layers[0].gdn->convolution_history();
+                    observer->put(Layer0Observer::state_after,state.data(),state.size());
+                    observer->put(Layer0Observer::history_after,history.data(),history.size());
+                    observer->put(Layer0Observer::materialized_post_residual,residual.data(),residual.size());
+                    observer->finish();
                 }
                 if (opts.expert_timings)
                     (gdn ? model_work.gdn_provider_ms : model_work.qsa_provider_ms) += provider_ms-provider_before;
