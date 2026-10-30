@@ -1,0 +1,80 @@
+#version 450
+// Port of native_router.cu route_multi, finite F32, 512 / 10 only.
+// One workgroup explicitly emulates the native 32-lane row, independent of
+// physical subgroup size. Barriers publish each XOR round before the next.
+layout(local_size_x=32) in;
+layout(binding=0,std430) readonly buffer Logits {float logits[];};
+layout(binding=1,std430) writeonly buffer Ids {int ids[];};
+layout(binding=2,std430) writeonly buffer Weights {float weights[];};
+layout(binding=3,std430) buffer Status {uint invalid;};
+layout(push_constant) uniform Params {uint tokens,lb,ib,wb;} p;
+shared float exchange[32];
+shared int expert_exchange[32];
+shared uint bad[32];
+float xor_sum(float x,uint lane) {
+    for(uint mask=16;mask>0;mask>>=1) {
+        exchange[lane]=x;barrier();
+        precise float next=x+exchange[lane^mask];barrier();x=next;
+    }
+    return x;
+}
+float xor_max(float x,uint lane) {
+    for(uint mask=16;mask>0;mask>>=1) {
+        exchange[lane]=x;barrier();
+        float next=max(x,exchange[lane^mask]);barrier();x=next;
+    }
+    return x;
+}
+void main() {
+    uint token=gl_WorkGroupID.x,lane=gl_LocalInvocationID.x;
+    if(token>=p.tokens)return; // uniform workgroup condition
+    float values[16];uint invalid_lane=0;
+    for(uint i=0;i<16;++i) {
+        values[i]=logits[p.lb+token*512+lane+i*32];
+        if(isnan(values[i]) || isinf(values[i]))invalid_lane=1;
+    }
+    bad[lane]=invalid_lane;barrier();
+    uint invalid_row=0;for(uint i=0;i<32;++i)invalid_row|=bad[i];
+    if(invalid_row!=0){if(lane==0)atomicOr(invalid,1);return;}
+    float maximum=uintBitsToFloat(0xff800000u);
+    for(uint i=0;i<16;++i)maximum=max(maximum,values[i]);
+    maximum=xor_max(maximum,lane);
+    precise float sum=0;
+    for(uint i=0;i<16;++i) {
+        precise float shifted=values[i]-maximum;
+        // GLSL Exp has the same mathematical operation as native expf; its
+        // approximation is UNQUALIFIED against CUDA --use_fast_math. Receipts
+        // must compare exact CUDA bits before any product integration.
+        values[i]=exp(shifted);
+        sum=sum+values[i];
+    }
+    precise float reciprocal=1.0/xor_sum(sum,lane);
+    for(uint i=0;i<16;++i) {
+        precise float probability=values[i]*reciprocal;values[i]=probability;
+        if(isnan(values[i]))values[i]=uintBitsToFloat(0xff7fffffu);
+    }
+    float selected=0;precise float selected_sum=0;
+    for(uint rank=0;rank<10;++rank) {
+        float best=values[0];int expert=int(lane);
+        for(uint i=1;i<16;++i)
+            if(values[i]>best){best=values[i];expert=int(lane+i*32);}
+        for(uint mask=16;mask>0;mask>>=1) {
+            exchange[lane]=best;expert_exchange[lane]=expert;barrier();
+            float other=exchange[lane^mask];int other_id=expert_exchange[lane^mask];
+            barrier();
+            if(other>best || (other==best && other_id<expert)){best=other;expert=other_id;}
+        }
+        if((expert&31)==int(lane)) {
+            values[expert/32]=uintBitsToFloat(0xff800000u);
+            ids[p.ib+token*10+rank]=expert;
+            selected_sum=selected_sum+best; // winning EXPERT lane, selection order
+        }
+        if(rank==lane)selected=best;
+    }
+    selected_sum=max(xor_sum(selected_sum,lane),0.00006103515625);
+    precise float inverse_selected_sum=1.0/selected_sum;
+    if(lane<10) {
+        precise float result=selected*inverse_selected_sum;
+        weights[p.wb+token*10+lane]=result;
+    }
+}

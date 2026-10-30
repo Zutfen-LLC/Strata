@@ -71,6 +71,8 @@ struct PortableModelOptions {
     bool expert_dispatch_oracle = false;
     size_t expert_staging_cap = 64ull << 20;
     bool expert_check_rows = false, expert_record_routes = false;
+    bool native_router = false; // opt-in native-method routing; cross-vendor bits can differ
+    std::string native_router_receipt_prefix;
     bool native_moe_combine = false; // opt-in strict K10 combine with native-Q8 observation
     std::string expert_native_q8_observation; // explicit receipt prefix; unqualified, unspecified FP32 denorm
     bool expert_timings = false; // opt-in coarse provider/executor host-call boundaries
@@ -101,6 +103,7 @@ struct PortableExpertWork {
 // Whole-call wall totals are optional; head outcome counters are unconditional.
 // Layer totals include matched provider intervals.
 struct PortableModelWork {
+    uint64_t native_router_calls = 0, native_router_rows = 0; // actual tagged routes, completed forwards only
     uint64_t heads_executed = 0, heads_skipped = 0; // unconditional, cumulative across reset
     uint64_t completed_forward_calls = 0, completed_layer_calls = 0;
     uint64_t completed_ffn_pre_calls = 0, completed_provider_calls = 0, completed_ffn_post_calls = 0;

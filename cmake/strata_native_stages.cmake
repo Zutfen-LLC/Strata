@@ -70,6 +70,8 @@ function(strata_enable_native_stages)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_q8_strict_fma_shader.py" "${out}" "${STRATA_SPIRV_DIS}" "${STRATA_SPIRV_VAL}")
     endif()
   endif()
+  include(cmake/strata_native_router.cmake)
+  strata_native_router_enable("${out}")
   file(WRITE "${out}/ggml-vulkan-guard.cpp" "${dot_patched}\n#include \"strata_vk_logits_guard.inc\"\n#include \"strata_vk_native_stages.inc\"\n")
   # Host test executes the actual patched feature-chain block with a mock
   # feature query and creation success/failure; no device or alternative chain.

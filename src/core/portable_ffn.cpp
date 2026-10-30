@@ -9,6 +9,10 @@
 #include "portable_native_moe_combine.hpp"
 #endif
 
+#ifdef STRATA_PORTABLE_NATIVE_ROUTER
+#include "portable_native_router.hpp"
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -142,6 +146,12 @@ struct PortableFfn::Impl {
                 tokens >= 1 && tokens <= 8 && g.selected > 0 && g.selected <= g.experts && g.selected <= 64 && layer >= 0 &&
                 std::isfinite(g.epsilon) && g.epsilon > 0 && options.threads > 0,
                 "portable FFN: invalid geometry/options");
+        require(!options.native_router || (g.experts==512 && g.selected==10 && options.request_accelerator &&
+                options.accelerator && !options.allow_cpu_fallback && !options.native_router_receipt_prefix.empty()),
+                "portable FFN: native router requires 512/top10, strict accelerator and private receipt prefix");
+#ifndef STRATA_PORTABLE_NATIVE_ROUTER
+        require(!options.native_router,"portable FFN: native router requires Vulkan native-stage build");
+#endif
         require(!options.native_moe_combine || (g.hidden == 2560 && g.selected == 10 &&
                 options.request_accelerator && options.accelerator && !options.allow_cpu_fallback &&
                 !options.native_moe_combine_receipt_prefix.empty()),
@@ -167,6 +177,9 @@ struct PortableFfn::Impl {
     std::vector<PortablePlacement> placement;
     size_t weights_size = 0, graphs_size = 0, device_weights = 0;
     bool initialized = false;
+#ifdef STRATA_PORTABLE_NATIVE_ROUTER
+    std::unique_ptr<portable_detail::PortableNativeRouter> native_router;
+#endif
 #ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
     std::unique_ptr<portable_detail::PortableNativeMoeCombine> native_combine;
 #endif
@@ -187,6 +200,14 @@ struct PortableFfn::Impl {
             native_combine = std::make_unique<portable_detail::PortableNativeMoeCombine>(options.accelerator, tokens, options.graph_budget,
                 options.native_moe_combine_receipt_prefix + ".layer-" + std::to_string(layer));
             graphs_size = native_combine->bytes();
+        }
+#endif
+#ifdef STRATA_PORTABLE_NATIVE_ROUTER
+        if(options.native_router) {
+            require(graphs_size<=options.graph_budget,"portable FFN: component graph budget exceeded");
+            native_router=std::make_unique<portable_detail::PortableNativeRouter>(options.accelerator,tokens,
+                options.graph_budget-graphs_size,options.native_router_receipt_prefix+".layer-"+std::to_string(layer));
+            graphs_size+=native_router->bytes();
         }
 #endif
         const int64_t width = g.hidden*g.streams;
@@ -236,6 +257,10 @@ struct PortableFfn::Impl {
         post = ggml_new_graph(c); ggml_build_forward_expand(post, output);
         post_sched = portable_detail::schedule(post, "post-experts", options, cpu, placement, graphs_size);
         placement.push_back({"host", "ROUTE_AND_MERGE", "indexed expert boundary", "F32", "CPU", "", tokens == 1 ? std::vector<int64_t>{g.hidden, g.selected} : std::vector<int64_t>{g.hidden, g.selected, tokens}});
+#ifdef STRATA_PORTABLE_NATIVE_ROUTER
+        if(native_router) placement.push_back({"router","NATIVE_512_TOP10_METHOD","device logits / original-rank IDs and weights",
+            "F32/I32",ggml_backend_name(options.accelerator),"",{g.experts,g.selected,tokens}});
+#endif
 #ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
         if(native_combine) placement.push_back({"combine", "NATIVE_K10_STRICT_FMA_OBSERVATION", "original-slot rows / already gated shared",
             "F32", ggml_backend_name(options.accelerator), "", {g.hidden,g.selected,tokens}});
@@ -349,6 +374,12 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         require(ggml_backend_sched_graph_compute(s.pre_sched.get(), s.pre) == GGML_STATUS_SUCCESS, "portable FFN: pre graph failed");
         PortableRoute candidate;
         candidate.activation = read(s.mixed);
+#ifdef STRATA_PORTABLE_NATIVE_ROUTER
+        if(s.native_router) {
+            std::vector<PortableRoute> routed(1);s.native_router->run(s.logits,routed);
+            candidate.ids=std::move(routed[0].ids);candidate.weights=std::move(routed[0].weights);candidate.native_router=routed[0].native_router;
+        } else
+#endif
         route_logits(read(s.logits), s.g.selected, candidate);
         std::vector<float> rows;
         ++s.work.provider_calls;
@@ -371,6 +402,7 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         ++s.work.post_graph_calls;
         require(ggml_backend_sched_graph_compute(s.post_sched.get(), s.post) == GGML_STATUS_SUCCESS, "portable FFN: post graph failed");
         auto next = read(s.output);
+        if(candidate.native_router){++s.work.native_router_calls;++s.work.native_router_rows;}
         ++s.work.logical_rows; ++s.work.completed_chunks;
         s.state = std::move(next); route = std::move(candidate); error.clear(); return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
@@ -385,12 +417,19 @@ bool PortableFfn::step_batch(const PortableExpertRowsBatch& dispatch,
         ++s.work.pre_graph_calls;
         require(ggml_backend_sched_graph_compute(s.pre_sched.get(), s.pre) == GGML_STATUS_SUCCESS,
                 "portable FFN: pre graph failed");
-        const auto mixed = read(s.mixed), logits = read(s.logits);
+        const auto mixed = read(s.mixed);
         std::vector<PortableRoute> candidate(size_t(s.tokens));
         for (size_t t = 0; t < size_t(s.tokens); ++t) {
             candidate[t].activation.assign(mixed.begin() + t*s.g.hidden, mixed.begin() + (t+1)*s.g.hidden);
-            route_logits({logits.begin() + t*s.g.experts, logits.begin() + (t+1)*s.g.experts},
-                         s.g.selected, candidate[t]);
+        }
+#ifdef STRATA_PORTABLE_NATIVE_ROUTER
+        if(s.native_router) s.native_router->run(s.logits,candidate);
+        else
+#endif
+        {
+            const auto logits=read(s.logits);
+            for(size_t t=0;t<size_t(s.tokens);++t)
+                route_logits({logits.begin()+t*s.g.experts,logits.begin()+(t+1)*s.g.experts},s.g.selected,candidate[t]);
         }
         std::vector<float> rows;
         ++s.work.provider_calls;
@@ -420,6 +459,7 @@ bool PortableFfn::step_batch(const PortableExpertRowsBatch& dispatch,
         require(ggml_backend_sched_graph_compute(s.post_sched.get(), s.post) == GGML_STATUS_SUCCESS,
                 "portable FFN: post graph failed");
         auto next = read(s.output);
+        if(candidate[0].native_router){++s.work.native_router_calls;s.work.native_router_rows+=uint64_t(s.tokens);}
         s.state.swap(next); routes.swap(candidate);
         s.work.logical_rows += uint64_t(s.tokens); ++s.work.completed_chunks;
         error.clear(); return true;
@@ -447,6 +487,9 @@ PortableMemoryUsage PortableFfn::memory_usage() const {
         m.device_graph += s.native_combine->bytes();
         m.host_extra_bound += portable_detail::PortableNativeMoeCombine::metadata_bytes;
     }
+#endif
+#ifdef STRATA_PORTABLE_NATIVE_ROUTER
+    if(s.native_router) {m.device_graph+=s.native_router->bytes();m.host_extra_bound+=s.native_router->host_bound();}
 #endif
     m.host_extra_bound += 3*metadata_bytes; // three owning metadata contexts, plus token staging below
     m.host_extra_bound += size_t(s.g.hidden*s.g.streams*8 + s.g.selected*s.g.hidden) * sizeof(float);

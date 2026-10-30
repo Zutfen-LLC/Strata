@@ -115,6 +115,7 @@ int main(int argc, char **argv) {
                              " [--gdn-resident-state (trial, default off)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
+                             " [--native-router RECEIPT_PREFIX (native method; not CUDA bit identity)]\n"
                              " [--expert-native-q8-observation RECEIPT_PREFIX (unqualified)] [--native-moe-combine (strict K10 observation)]\n"
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
@@ -182,7 +183,10 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if (key == "--expert-native-q8-observation")
+            if (key == "--native-router") {
+                opts.native_router=true;opts.native_router_receipt_prefix=value;
+            }
+            else if (key == "--expert-native-q8-observation")
                 opts.expert_native_q8_observation = value;
             else if (key == "--model")
                 model = value;
@@ -406,6 +410,7 @@ int main(int argc, char **argv) {
                          "native_moe_combine_observation=true qualified=false quantizer_qualified=false fp32_denorm_mode=unspecified\n";
         else
             std::cerr << "resident Vulkan/CPU expert rows; host PLE; original-order host merge. Vulkan hybrid Q8 is not CPU bit parity.\n";
+        if(opts.native_router)std::cerr<<"native_router_method=true numerical_parity=false qualified=false fp32_denorm_mode=unspecified\n";
         const auto expert_report=[&](const char* stage,uint64_t position) {
             if(opts.expert_devices.empty()) return;
             std::cerr << std::setprecision(17);
@@ -458,6 +463,13 @@ int main(int argc, char **argv) {
         std::vector<float> logits;
         std::vector<int32_t> executed_tokens;
         const auto heads_before = session->model_work();
+        const auto router_fields = [&](std::ostream& out) {
+            if(!opts.native_router)return;
+            const auto after=session->model_work();
+            out<<",\"native_router_method\":true,\"router_numerical_parity\":false"
+               <<",\"native_router_calls_delta\":"<<after.native_router_calls-heads_before.native_router_calls
+               <<",\"native_router_rows_delta\":"<<after.native_router_rows-heads_before.native_router_rows;
+        };
         const auto emit_row = [&](uint64_t pos,int32_t token,bool generated,bool project) {
             std::cout << "{\"position\":" << pos << ",\"token\":" << token
                       << ",\"generated\":" << (generated ? "true" : "false");
@@ -595,7 +607,8 @@ int main(int argc, char **argv) {
             file << "]}\n";
             if(!file)throw std::runtime_error("executed logit manifest write failed");
         }
-        std::cout << "{\"stop\":\"" << stop << "\",\"position\":" << session->position() << "}\n";
+        std::cout << "{\"stop\":\"" << stop << "\",\"position\":" << session->position();
+        router_fields(std::cout);std::cout<<"}\n";
         if(resident) {
             sources->check();
             const auto after=session->expert_work();
@@ -630,7 +643,7 @@ int main(int argc, char **argv) {
                           << ",\"heads_executed_delta\":" << heads.heads_executed-heads_before.heads_executed
                           << ",\"heads_skipped_delta\":" << heads.heads_skipped-heads_before.heads_skipped;
             }
-            chunk_fields(std::cout);
+            chunk_fields(std::cout);router_fields(std::cout);
             if(opts.expert_timings) {
                 std::cout << ",\"expert_provider_ms_delta\":" << after.provider_ms-before.provider_ms
                     << ",\"expert_provider_calls_delta\":" << after.provider_calls-before.provider_calls
@@ -697,7 +710,7 @@ int main(int argc, char **argv) {
                  << ",\"selection_prompt_steps\":" << tokens.size() - 1
                  << ",\"selection_decode_steps\":" << generated
                  << ",\"prompt_steps\":" << tokens.size() << ",\"decode_steps\":" << generated;
-            chunk_fields(file);
+            chunk_fields(file);router_fields(file);
             file << "}\n";
             if (!file)
                 throw std::runtime_error("timing report write failed");
