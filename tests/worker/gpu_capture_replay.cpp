@@ -649,66 +649,83 @@ void first_boundary_check() {
 }
 }
 // Synthetic residency fixture only. Reuse the existing two numerical weight
-// images, token inputs and grouping; relabel expert1 as205 to cross a real block.
+// images, token inputs and grouping; only test labels/owner positions change.
 // This metadata is not a model source manifest or native placement qualification.
-static void export_synthetic_resident206(const Fixture& fixture,const fs::path& control,const fs::path& output) {
+static void export_synthetic_residents(const Fixture& fixture,const fs::path& control,const fs::path& output,size_t residents,bool publish_blobs) {
+    require(residents==206 || residents==824,"bounded synthetic residency fixture");
+    const bool wide=residents==824;
+    const int experts=wide?512:206,active_layer=wide?1:0,active_expert=wide?311:205;
+    const size_t first_slot=wide?512:0,last_slot=residents-1;
+    const auto source_layer=[&](int layer){return wide?1-layer:layer;};
     std::string err;CpuCaptureFile original;
     require(read_cpu_capture((control/"capture.bin").string(),original,err),err);
-    require(fs::create_directory(output),"synthetic206 output must be new");
+    require(fs::create_directory(output),"synthetic resident output must be new");
     fs::permissions(output,fs::perms::owner_all,fs::perm_options::replace);
-    auto metadata=fixture.m;metadata.n_expert=206;
-    const std::string identity="Strata synthetic native Q8 residency206 v1";
+    auto metadata=fixture.m;metadata.n_expert=experts;
+    const std::string identity="Strata synthetic native Q8 residency"+std::to_string(residents)+" v1";
     metadata.identity=blob_digest(identity.data(),identity.size());
     metadata.index_digest=blob_digest(identity.data(),identity.size()-1);
     metadata.digests.clear();
-    for(int layer=0;layer<2;++layer)for(int e=0;e<206;++e)
-        metadata.digests.push_back(fixture.m.digests[2*layer+(e%2)]);
+    for(int layer=0;layer<2;++layer)for(int e=0;e<experts;++e)
+        metadata.digests.push_back(fixture.m.digests[2*source_layer(layer)+(e%2)]);
     std::vector<std::pair<uint16_t,uint16_t>> assigned;
-    for(int e=0;e<206;++e)assigned.emplace_back(0,e);
+    for(size_t slot=0;slot<residents;++slot)assigned.emplace_back(slot/experts,slot%experts);
     GpuPlan plan;require(make_gpu_plan(metadata,assigned,plan,err),err);
-    require(plan.assets.size()==206 && plan.assigned_bytes()==1075814400ULL,"synthetic206 weight accounting");
+    require(plan.assets.size()==residents && plan.assigned_bytes()==residents*5222400ULL,"synthetic resident weight accounting");
+    if(wide)require(first_slot*5222400ULL<(1ULL<<32) && last_slot*5222400ULL>(1ULL<<32) &&
+        last_slot/205==4 && first_slot/205==2,"synthetic824 selected global boundary/blocks");
     require(write_gpu_plan((output/"one-layer.plan").string(),plan,err),err);
     std::ofstream assignments(output/"assignments.txt");for(const auto& a:plan.assets)assignments<<a.layer<<' '<<a.expert<<'\n';
-    require(bool(assignments),"synthetic206 assignment write failed");
-    auto setup=original.setup;setup.model_id=metadata.identity.a;setup.n_expert=206;
-    setup.partition.assign(2*((206+7)/8),0);
-    for(int layer=0;layer<2;++layer)for(int expert:{0,205})
-        setup.partition[layer*((206+7)/8)+expert/8]|=uint8_t(1u<<(expert%8));
+    require(bool(assignments),"synthetic resident assignment write failed");
+    auto setup=original.setup;setup.model_id=metadata.identity.a;setup.n_expert=experts;
+    setup.partition.assign(2*((experts+7)/8),0);
+    for(int layer=0;layer<2;++layer)for(int expert:{0,active_expert})
+        setup.partition[layer*((experts+7)/8)+expert/8]|=uint8_t(1u<<(expert%8));
     setup.partition_id=blob_digest(setup.partition).a;
     CpuCapture capture;require(capture.prepare(setup,metadata.identity,metadata.index_digest,(output/"capture.bin").string(),err,1u<<20),err);
-    require(capture.request("GEN 1 1",std::vector<int64_t>(9,1),1),"synthetic206 capture request");
+    require(capture.request("GEN 1 1",std::vector<int64_t>(9,1),1),"synthetic resident capture request");
     for(const auto& window:original.windows) {
-        require(capture.window(window.pos,window.T,window.phase),"synthetic206 capture window");
+        require(capture.window(window.pos,window.T,window.phase),"synthetic resident capture window");
         for(const auto& record:original.records)if(record.window==window.ordinal) {
-            auto q=record.request;q.model_id=setup.model_id;q.partition_id=setup.partition_id;
-            for(auto& id:q.ids){require(id==0 || id==1,"unexpected control fixture ID");if(id==1)id=205;}
+            auto q=record.request;q.model_id=setup.model_id;q.partition_id=setup.partition_id;q.layer=source_layer(q.layer);
+            for(auto& id:q.ids){require(id==0 || id==1,"unexpected control fixture ID");if(id==1)id=active_expert;}
             capture.slice(record.token_begin);
-            require(capture.begin(q) && capture.finish(record.partials.data()),"synthetic206 capture record");
+            require(capture.begin(q) && capture.finish(record.partials.data()),"synthetic resident capture record");
         }
     }
-    const float logits[]={1.f,2.f};require(capture.seal(logits,2),"synthetic206 capture seal");
-    fs::create_directory(output/"blobs");GpuCache cache;std::vector<uint8_t> missing,readback;
-    require(cache.open((output/"blobs").string(),plan.assigned_bytes(),err) && cache.prepare(plan,missing,err),err);
-    for(const auto& asset:plan.assets) {
-        const auto& bytes=fixture.blobs[asset.expert%2];
-        require(cache.publish(asset,bytes.data(),bytes.size(),err) && cache.read(asset,readback,err),err);
-        require(readback==bytes,"synthetic206 published weight differs from control");
+    const float logits[]={1.f,2.f};require(capture.seal(logits,2),"synthetic resident capture seal");
+    if(publish_blobs) {
+        fs::create_directory(output/"blobs");GpuCache cache;std::vector<uint8_t> missing,readback;
+        require(cache.open((output/"blobs").string(),plan.assigned_bytes(),err) && cache.prepare(plan,missing,err),err);
+        for(const auto& asset:plan.assets) {
+            const auto& bytes=fixture.blobs[2*source_layer(asset.layer)+asset.expert%2];
+            require(cache.publish(asset,bytes.data(),bytes.size(),err) && cache.read(asset,readback,err),err);
+            require(readback==bytes,"synthetic resident published weight differs from control");
+        }
+        cache.close();
     }
-    cache.close();CpuCaptureFile expanded;require(read_cpu_capture((output/"capture.bin").string(),expanded,err),err);
-    require(expanded.records.size()==original.records.size(),"synthetic206 record count changed");
+    CpuCaptureFile expanded;require(read_cpu_capture((output/"capture.bin").string(),expanded,err),err);
+    require(expanded.records.size()==original.records.size(),"synthetic resident record count changed");
     for(size_t i=0;i<original.records.size();++i) {
         const auto& a=original.records[i].request;const auto& b=expanded.records[i].request;
-        require(a.T==b.T && a.K==b.K && a.layer==b.layer && a.mask==b.mask && a.activations==b.activations && a.weights==b.weights,
-            "synthetic206 changed numerical request inputs/order");
-        for(size_t j=0;j<a.ids.size();++j)require(b.ids[j]==(a.ids[j]?205:0),"synthetic206 ID mapping changed");
+        require(a.T==b.T && a.K==b.K && source_layer(a.layer)==b.layer && a.mask==b.mask && a.activations==b.activations && a.weights==b.weights,
+            "synthetic resident changed numerical request inputs/order");
+        for(size_t j=0;j<a.ids.size();++j)require(b.ids[j]==(a.ids[j]?active_expert:0),"synthetic resident ID mapping changed");
     }
+    const auto* low=plan.find(active_layer,0);const auto* high=plan.find(active_layer,active_expert);
+    require(low && high && size_t(low-plan.assets.data())==first_slot && size_t(high-plan.assets.data())==last_slot,
+        "synthetic resident active asset/slot association");
     const auto& q=expanded.records.front().request;
-    require(q.T==8 && q.K==10 && q.ids.front()==205 && q.ids[1]==0 && q.mask==std::vector<uint8_t>(80,1),"synthetic206 active block references");
-    require(plan.assets[0].digest==blob_digest(fixture.blobs[0]) && plan.assets[205].digest==blob_digest(fixture.blobs[1]),"synthetic206 active/control weight association");
-    std::ofstream label(output/"SYNTHETIC.txt");label<<"synthetic=true native_placement_qualified=false record=0 residents=206 active_entries=80 active_groups=2 slots=205,0\n"
-        <<"control expert0 -> resident0; control expert1 -> resident205; all resident images duplicate control[e%2] exactly.\n"
+    require(q.T==8 && q.K==10 && q.layer==active_layer && q.ids.front()==active_expert && q.ids[1]==0 && q.mask==std::vector<uint8_t>(80,1),"synthetic resident active block references");
+    require(plan.assets[first_slot].digest==blob_digest(fixture.blobs[0]) && plan.assets[last_slot].digest==blob_digest(fixture.blobs[1]),"synthetic resident active/control weight association");
+    std::ofstream label(output/"SYNTHETIC.txt");
+    label<<"synthetic=true native_placement_qualified=false record=0 residents="<<residents
+        <<" active_entries=80 active_groups=2 layer="<<active_layer<<" slots="<<last_slot<<','<<first_slot
+        <<" materialized_blobs="<<publish_blobs<<'\n'
+        <<"control expert0 -> resident"<<first_slot<<"; control expert1 -> resident"<<last_slot<<"; numerical images unchanged.\n"
+        <<"selected_logical_offsets="<<last_slot*5222400ULL<<','<<first_slot*5222400ULL<<" weight_bytes="<<plan.assigned_bytes()<<'\n'
         <<"Input/mask/token/entry order unchanged; capture partials are placeholders, not a numerical oracle.\n";
-    require(bool(label),"synthetic206 label write failed");
+    require(bool(label),"synthetic resident label write failed");
 }
 // Shared by actual offline staging and its inexpensive capacity admission check.
 static bool native_q8_record_capacity(size_t groups,size_t entries) {
@@ -717,11 +734,11 @@ static bool native_q8_record_capacity(size_t groups,size_t entries) {
 }
 int main(int argc,char** argv) {
     try {
-        if((argc==2 && std::string(argv[1])=="--stage-check") || ((argc==2 || argc==3) && (std::string(argv[1])=="--stage-check80" || std::string(argv[1])=="--stage-check206"))) {
+        if((argc==2 && std::string(argv[1])=="--stage-check") || ((argc==2 || argc==3) && (std::string(argv[1])=="--stage-check80" || std::string(argv[1])=="--stage-check206" || std::string(argv[1])=="--stage-check824"))) {
             for(size_t groups:{24,25,64,65,80})require(native_q8_record_capacity(groups,80),"native record group capacity refused");
             require(!native_q8_record_capacity(0,80) && !native_q8_record_capacity(81,80) &&
                 !native_q8_record_capacity(80,81),"oversized/empty native record admitted");
-            const bool resident206=std::string(argv[1])=="--stage-check206";
+            const size_t residents=std::string(argv[1])=="--stage-check206"?206:std::string(argv[1])=="--stage-check824"?824:0;
             const int T=std::string(argv[1])=="--stage-check"?1:8,K=T==8?10:2;
             Fixture fixture;const auto setup=fixture.setup();const auto path=(fixture.root/"capture.bin").string();std::string err;CpuCapture capture;
             require(capture.prepare(setup,fixture.m.identity,fixture.m.index_digest,path,err,1u<<20),err);
@@ -774,10 +791,11 @@ int main(int argc,char** argv) {
                 require(exported.records.front().request.T==8 && exported.records.front().request.K==10 &&
                     exported.records.front().request.mask==std::vector<uint8_t>(80,1) && exported_plan.assigned_bytes()==plan.assigned_bytes() && exported_plan.assets.size()==2,
                     "exported 80-entry capture/plan changed");
-                if(resident206)export_synthetic_resident206(fixture,retained,retained/"resident206");
-                if(argc==3)std::printf("STAGE_EXPORT synthetic=true native_placement_qualified=false GPU=0 record=0 entries=80 residents=%d path=%s\n",resident206?206:2,retained.c_str());
+                if(residents)export_synthetic_residents(fixture,retained,retained/("resident"+std::to_string(residents)),residents,argc==3 || residents==206);
+                if(argc==3)std::printf("STAGE_EXPORT synthetic=true native_placement_qualified=false GPU=0 record=0 entries=80 residents=%zu path=%s\n",residents?residents:size_t(2),retained.c_str());
             }
-            require(invoke()!=0,"stage overwrote existing output");std::puts("STAGE_CHECK full_record=1 existing_manifest_source_cache=1 exact_blobs=1 no_overwrite=1 GPU=0");return 0;
+            require(invoke()!=0,"stage overwrote existing output");
+            std::printf("STAGE_CHECK full_record=1 existing_manifest_source_cache=1 exact_control_blobs=1 resident_blobs_materialized=%d no_overwrite=1 GPU=0\n",int(residents && (argc==3 || residents==206)));return 0;
         }
         if((argc==7 || argc==8) && std::string(argv[1])=="--stage-record") {
             // Offline only: preserve every active entry, reuse verified manifest
@@ -871,7 +889,7 @@ int main(int argc,char** argv) {
         const bool survey_mode=argc>=6 && std::string(argv[1])=="--survey";
         const bool grouped=argc>=6 && std::string(argv[1])=="--grouped";
         const bool cpu_mode=argc>=6 && std::string(argv[1])=="--cpu-control";
-        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --stage-check80/--stage-check206 [NEW_PRIVATE_EXPORT] | --stage-record CAPTURE RECORD LOCAL_MANIFEST MODEL_ROOT NEW_OUTPUT [FROZEN_PLAN] | --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check | --boundary CAPTURE PACKET BLOB_DIR NEW_OUTPUT B_PLAN... | --boundary-check");
+        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --stage-check80/--stage-check206/--stage-check824 [NEW_PRIVATE_EXPORT] | --stage-record CAPTURE RECORD LOCAL_MANIFEST MODEL_ROOT NEW_OUTPUT [FROZEN_PLAN] | --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check | --boundary CAPTURE PACKET BLOB_DIR NEW_OUTPUT B_PLAN... | --boundary-check");
         CpuCaptureFile f;std::string err;require(read_cpu_capture(argv[2],f,err),err);
         std::vector<GpuPlan> plans;const int begin=selecting?3:listing?4:5;
         for(int i=begin;i<argc;++i){GpuPlan p;require(read_gpu_plan(argv[i],p,err),err);plans.push_back(p);}

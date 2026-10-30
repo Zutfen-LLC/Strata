@@ -1467,3 +1467,20 @@ weights and order. At the ordinary1GiB block policy, the request references
 both blocks. Only test data changes; this is not native-placement qualification.
 Use1100MiB (`--budget-bytes 1153433600`) for a separately supervised replay,
 retaining actual allocation admission/refusal and original numerical checks.
+
+`--stage-check824 NEW_PRIVATE_EXPORT` parameterizes that same test exporter for
+the first whole-blob start above2^32: zero-based slot823 begins at4,298,035,200
+bytes, so824 residents are required. Slot822 starts below the boundary but
+its matrix range crosses it. To stay within512 experts/layer, the824 synthetic
+plan fills layer0 (512 assets) then layer1 (312). Control expert0/1 map to
+layer1 IDs0/311, resident slots512/823, preserving all numerical operands and
+ordered maps. At205 blobs/block they reference blocks2/4 and both sides of
+2^32. The five weight blocks total4,303,257,600 bytes; every block stays within
+GGML's1GiB policy. Fixed diagnostic budget:4352MiB (`4563402752` bytes).
+
+Without an output argument, the824 CTest validates plan/capture/boundary
+metadata only and creates no multi-GiB blob set. An explicit new output writes
+and verifies all824 blob files sequentially using one-blob readback; use a real
+disk with adequate space. No giant host array or new GPU allocation path is
+introduced. This remains a synthetic addressing check, with no native-placement,
+model, numerical-qualification or performance claim.
