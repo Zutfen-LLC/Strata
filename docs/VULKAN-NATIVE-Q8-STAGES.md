@@ -1041,3 +1041,121 @@ and Vulkan05/V340L identities remain distinct. Stop at any failure without
 retry or tolerance change. `qualified=false` and `quantizer_qualified=false`
 remain in force, and the historical failures remain intact even if a new
 observation matches.
+
+### Opt-in provider connection and one retained layer
+
+The portable resident expert provider has an explicit
+`--expert-native-q8-observation RECEIPT_PREFIX` option. It selects the existing
+native Q8 components instead of the provider's host activation boundaries. The
+ordinary provider factory and CLI default are unchanged. This remains an
+unqualified observation with unspecified FP32 denorm handling, including when
+used through the model provider. It requires `STRATA_VULKAN_NATIVE_STAGES=ON`,
+explicit resident expert plans, strict accelerator execution, and a writable
+shader receipt prefix. There is no automatic fallback.
+
+The source mapping is:
+
+- `src/worker/vulkan_native_q8_layout.hpp` follows `gpu_compute.cu::infer_impl`:
+  first-occurrence expert groups, stable original-entry order inside each group,
+  token indices from original `T*K` slots, and consecutive packed destinations.
+- Input quantization calls native-stage mode 0 with RN quantizer division.
+  `strata_vk_q8_gu_run` implements `native_gu_kernel<8>`.
+- Mode 2 implements `swiglu_q8_1_entries_kernel`, including the rounded product
+  followed by Q8 packing. Its output directly supplies `native_down_kernel<8>`.
+  The native default `split_off<8>()` branch is the reference. Optional native
+  dispatches, Hadamard layouts, and other formats are outside this connection.
+- `NativeQ8Cache::run` leaves gate/up and packed hidden on the same device views.
+  Down writes the packed destinations directly. Reply rows are restored to
+  original request indices as in the CUDA worker. Routing weights are still
+  applied by the existing caller, once, in its existing order.
+
+The frozen packed slot arena supports 1–24 resident experts (5,222,400 bytes
+per expert), at most 14 active groups and 64 active entries per call, T1–8 and
+K1–10. Larger calls are refused; they are not split or reassigned. The existing
+component metadata limits establish these bounds. The provider allocates one
+reusable tensor buffer sized for these capacities plus three existing component
+metadata buffers. It queries backend padding and block limits before tensor
+allocation, reserves 64 KiB for component metadata before creating the owners,
+then charges their actual buffer sizes. Counters include weights, scratch,
+alignment, and component metadata. They exclude pipeline/driver allocations;
+the existing provider workspace-growth and free-reserve checks still apply.
+Host metadata uses a 64 KiB tensor context, 16 KiB call-view context, bounded
+routing vectors and reply storage. Weight upload staging remains one expert.
+No new cache or placement policy is introduced.
+
+For a bounded validation, use `vulkan_native_q8_replay`, which calls this same
+executor factory for exactly one existing captured request. It writes only
+input Q8, gate, up, consumed hidden Q8, and actual down output, plus request and
+group metadata. It never invokes supplementary float mode 1. All files contain
+private model evidence and must remain outside public commits. This comparison
+has its own explicit consumed-boundary result; it does not modify the original
+omnibus comparator or erase its supplementary activation failure.
+
+Build the Vulkan replay and model with the earlier pinned toolchain, GGML and
+SPIR-V header settings, adding:
+
+```sh
+cmake -S . -B build-stages \
+  -DSTRATA_PORTABLE_FFN=ON -DSTRATA_PORTABLE_GDN=ON \
+  -DSTRATA_PORTABLE_QSA=ON -DSTRATA_PORTABLE_MODEL=ON \
+  -DSTRATA_VULKAN_NATIVE_STAGES=ON
+cmake --build build-stages --target vulkan_native_q8_replay portable_model
+```
+
+The paired `native_q8_layer_reference` target uses the unchanged included CUDA
+production translation unit and its existing target flags, like
+`native_q8_geometry_consumer`. It checks the actual native selectors before
+launching; it refuses a different branch. Build it in the established CUDA
+reference build. Its output records the actual device name and native branch;
+the Vulkan replay records its own actual device description and device ID.
+Do not relabel either device as the other.
+
+Use the retained capture and staged expert blobs already held by the reviewer.
+Select one recorded layer and one existing owner's assignment on that layer.
+A layer-restricted plan must preserve exactly those existing ownership pairs;
+`strata-gpu-manifest plan LOCAL_MANIFEST ASSIGNMENTS ONE_LAYER_PLAN` can encode
+that bounded metadata using the unchanged source manifest. No ownership is
+moved between devices. Keep the assignment at or below the stated limits. The
+replay restricts the original captured mask to this plan and preserves the raw
+activation, IDs, weights and request layer. Each blob is rechecked against its
+existing size and digest before upload. Blob filenames use the existing staged
+`sgpu1-...blob` convention and can be reused unchanged.
+
+The following is a proposed recipe, not a completed hardware result. Substitute
+verified local paths and the selected record number; use new private output
+directories. Apply the existing GGML pin and exact source commit to both builds.
+
+```sh
+# On the CUDA reference host, with native dispatch environment left unchanged:
+timeout 60s build-cuda/native_q8_layer_reference \
+  --device 0 --expect-device 'RTX 3060' \
+  "$CAPTURE" "$RECORD" "$ONE_LAYER_PLAN" "$BLOB_DIR" "$NATIVE_NEW_OUTPUT"
+
+# Transfer only the retained inputs/reference needed by this bounded comparison.
+# On the Vulkan host, explicitly select the verified device:
+timeout 60s build-stages/vulkan_native_q8_replay \
+  --device 0 --expect-device 'VEGA10' \
+  "$CAPTURE" "$RECORD" "$ONE_LAYER_PLAN" "$BLOB_DIR" "$VULKAN_NEW_OUTPUT"
+
+python3 tools/compare_native_q8_layer.py \
+  "$NATIVE_NEW_OUTPUT/layer" "$VULKAN_NEW_OUTPUT/layer" "$NEW_REPORT"
+```
+
+The comparison refuses mismatched request/plan/group metadata and lengths,
+checks finite float/half metadata, and compares all five boundaries exactly.
+Its success says only `exact_consumed_boundaries=true` for that one invocation;
+`qualified` and `quantizer_qualified` remain false. Capture source heads, build
+flags, device identities and file SHA256 values alongside the private result.
+The original input-subnormal failure and historical omnibus failure remain.
+
+Local validation for this connection built `portable_model`, the Vulkan replay,
+and both existing provider lifecycle tests. Seventeen focused CTests passed,
+including stable grouping/restoration, capacity and weight-budget refusals,
+exact comparison negative controls, existing default provider byte comparisons,
+and the earlier shader/quantizer checks. A separate compile of the executor
+without the native provider macro passed. CUDA compilation and the real-layer
+GPU comparison were not run here: this environment has no CUDA compiler or
+retained real layer weights. Those are the next bounded validation, not claimed
+results. Timing is deferred: the provider's existing timer measures fenced host
+calls; there is no reusable GPU timestamp utility here. No benchmark framework
+or scheduling change is added.

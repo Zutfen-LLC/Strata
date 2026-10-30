@@ -131,6 +131,8 @@ struct PortableModelSession::Impl {
     size_t vocabulary = 0;
     Impl(const std::vector<std::string> &shards, const std::string &manifest, PortableModelOptions options)
         : opts(std::move(options)), model(shards) {
+        require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
+                "native Q8 observation requires explicit expert plans and strict accelerator execution");
         require(opts.prompt_chunk_size==0 || (opts.prompt_chunk_size>=2&&opts.prompt_chunk_size<=8),
                 "portable model: prompt chunk size must be zero or [2,8]");
         require(!opts.gdn_batch_input_projections || opts.prompt_chunk_size,
@@ -414,8 +416,14 @@ struct PortableModelSession::Impl {
                 ggml_backend_dev_memory(ggml_backend_get_device(backend),&free,&total);
                 return std::make_pair(free,total);
             };
+            size_t native_slot=0;
+            auto factory=[&](ggml_backend_t backend,size_t budget) {
+                if(opts.expert_native_q8_observation.empty())return worker::create_vulkan_executor_on_backend(backend,budget);
+                return worker::create_vulkan_native_q8_observation(backend,budget,
+                    opts.expert_native_q8_observation+".slot-"+std::to_string(native_slot++));
+            };
             local_experts=std::make_unique<portable_detail::LocalExperts>(model,*experts,opts,
-                worker::create_vulkan_executor_on_backend,memory);
+                factory,memory);
             report.expert_devices=local_experts->report();
 #else
             throw std::runtime_error("local resident experts unavailable in this build");

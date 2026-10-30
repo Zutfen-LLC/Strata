@@ -12,6 +12,11 @@ namespace strata::worker {
 std::unique_ptr<GpuExecutor> create_vulkan_gpu_executor(int device, uint64_t tensor_budget = 16ull << 20);
 // Borrowed backend must outlive the executor; serial use only. Strict Vulkan.
 std::unique_ptr<GpuExecutor> create_vulkan_executor_on_backend(ggml_backend_t backend, uint64_t tensor_budget);
+// Explicit unqualified native Q8 branch; never a fallback. Receipt prefix is
+// mandatory. Optional private capture prefix writes only consumed boundaries.
+// Max 24 resident slots, 14 active groups, 64 active entries, T1..8, K1..10.
+std::unique_ptr<GpuExecutor> create_vulkan_native_q8_observation(ggml_backend_t,uint64_t tensor_budget,
+    const std::string& receipt_prefix,const std::string& capture_prefix = {});
 #ifdef STRATA_AMD_EXECUTOR_HOST_TEST
 // CPU graph substitution for host lifecycle tests only; never a Vulkan fallback.
 std::unique_ptr<GpuExecutor> create_vulkan_executor_cpu_test(uint64_t tensor_budget = 16ull << 20);

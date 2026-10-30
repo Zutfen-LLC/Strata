@@ -2791,13 +2791,26 @@ if(STRATA_HIP_GFX906)
   target_link_libraries(gfx906_qsa_query_swizzle_probe PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 endif()
 
-# Standalone native-stage port only; never linked into the model execution path.
+# Native-stage components; provider use requires a separate explicit runtime opt-in.
 if(STRATA_VULKAN_NATIVE_STAGES)
   if(NOT TARGET ggml-vulkan)
     message(FATAL_ERROR "STRATA_VULKAN_NATIVE_STAGES requires STRATA_NATIVE_EXPERTS and GGML_VULKAN")
   endif()
   include(cmake/strata_native_stages.cmake)
   strata_enable_native_stages()
+  if(TARGET strata_local_experts)
+    target_compile_definitions(strata_local_experts PRIVATE STRATA_VULKAN_NATIVE_Q8_PROVIDER=1)
+    add_executable(vulkan_native_q8_replay tests/worker/vulkan_native_q8_replay.cpp)
+    target_include_directories(vulkan_native_q8_replay PRIVATE src/worker)
+    target_link_libraries(vulkan_native_q8_replay PRIVATE strata_local_experts strata_gpu_protocol strata_worker_tier ggml-vulkan)
+  endif()
+  if(STRATA_BUILD_TESTS AND TARGET strata_gpu_assets)
+    add_executable(vulkan_native_q8_layout_test tests/worker/vulkan_native_q8_layout_test.cpp)
+    target_include_directories(vulkan_native_q8_layout_test PRIVATE src/worker)
+    target_link_libraries(vulkan_native_q8_layout_test PRIVATE strata_gpu_assets ggml-base ggml-cpu)
+    add_test(NAME vulkan_native_q8_layout_test COMMAND vulkan_native_q8_layout_test)
+    add_test(NAME native_q8_layer_compare_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/worker/test_native_q8_layer_compare.py")
+  endif()
 endif()
 
 # One paired native consumer probe. No added kernel or product integration.
@@ -2810,6 +2823,15 @@ if(STRATA_BUILD_TESTS)
     target_link_libraries(native_q8_consumer PRIVATE strata_kernels CUDA::cudart)
     # Same production TU and target flags; standalone capture can inspect its
     # actual native selectors without exposing a new product API.
+    if(TARGET strata_gpu_protocol AND TARGET strata_worker_tier)
+      add_executable(native_q8_layer_reference tests/worker/native_q8_layer_reference.cu)
+      target_include_directories(native_q8_layer_reference PRIVATE include src/worker third_party/ggml
+      $<TARGET_PROPERTY:strata_kernels,INCLUDE_DIRECTORIES>)
+      target_compile_options(native_q8_layer_reference PRIVATE $<TARGET_PROPERTY:strata_kernels,COMPILE_OPTIONS>)
+      target_compile_definitions(native_q8_layer_reference PRIVATE $<TARGET_PROPERTY:strata_kernels,COMPILE_DEFINITIONS>)
+      target_link_libraries(native_q8_layer_reference PRIVATE strata_kernels strata_gpu_protocol strata_worker_tier CUDA::cudart ggml-base)
+      set_target_properties(native_q8_layer_reference PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED YES)
+    endif()
     add_executable(native_q8_geometry_consumer tests/kernels/native_q8_geometry_consumer.cu)
     target_include_directories(native_q8_geometry_consumer PRIVATE include third_party/ggml
       $<TARGET_PROPERTY:strata_kernels,INCLUDE_DIRECTORIES>)

@@ -115,6 +115,7 @@ int main(int argc, char **argv) {
                              " [--gdn-resident-state (trial, default off)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
+                             " [--expert-native-q8-observation RECEIPT_PREFIX (unqualified)]\n"
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
                              " [--prompt-head-elision (serial head elision; incompatible with --dump-logits)]\n"
@@ -177,7 +178,9 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if (key == "--model")
+            if (key == "--expert-native-q8-observation")
+                opts.expert_native_q8_observation = value;
+            else if (key == "--model")
                 model = value;
             else if (key == "--manifest")
                 manifest = value;

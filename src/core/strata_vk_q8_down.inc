@@ -8,6 +8,7 @@ StrataVkQ8Down* strata_vk_q8_down_create(ggml_backend_t backend,const char* path
         "strata_native_down_q8_0_fullwarp_component",4,7,path);
     return result.release();
 }
+size_t strata_vk_q8_down_bytes(const StrataVkQ8Down* p) {return p?p->owner->bytes:0;}
 void strata_vk_q8_down_destroy(StrataVkQ8Down* p) noexcept {delete p;}
 void strata_vk_q8_down_run(StrataVkQ8Down* s,const ggml_tensor* weights,const ggml_tensor* packed,
     ggml_tensor* output,const Q8DownLayout& l) {
