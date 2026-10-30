@@ -75,7 +75,7 @@ class GuardBuild(unittest.TestCase):
                 self.assertEqual(original.count(before.encode()), 1)
                 original = original.replace(before.encode(), after.encode())
         if STRICT_FMA:
-            # Only the two strict-build insertion points may change the backend.
+            # Only the strict-build feature and failure-lifecycle hunks may change the backend.
             patch = (ROOT / 'cmake/strata_native_q8_strict_fma.cmake').read_text()
             chain = patch.split('set(fma_chain [=[', 1)[1].split(']=])', 1)[0]
             admit = patch.split('set(fma_admit [=[', 1)[1].split(']=])', 1)[0]
@@ -85,6 +85,14 @@ class GuardBuild(unittest.TestCase):
             self.assertEqual(original.count(create), 1)
             original = original.replace(query, chain.encode() + query + b'\n' + admit.encode())
             original = original.replace(create, create + b'\n        strata_q8_device->strata_q8_fma.logical_device_created();')
+            cache = b'        vk_instance.devices[idx] = device;'
+            tail = b'        return device;\n    }\n\n    return vk_instance.devices[idx];\n}'
+            destructor = b'vk_device_struct::~vk_device_struct() {'
+            for anchor in (cache, tail, destructor):
+                self.assertEqual(original.count(anchor), 1)
+            original = original.replace(cache, cache + b'\n        try {')
+            original = original.replace(tail, b'        } catch (...) {\n            vk_instance.devices[idx].reset();\n            throw;\n        }\n' + tail)
+            original = original.replace(destructor, destructor + b'\n    if (!device) return; // strict diagnostic: no logical device, no Vulkan resources')
         self.assertEqual(copy, original + suffix)
 
     def test_native_dot_patch_rejects_wrong_pin_and_ambiguous_anchors(self):

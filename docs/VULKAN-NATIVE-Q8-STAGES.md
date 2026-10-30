@@ -1302,8 +1302,11 @@ in an ordinary provider build merely to discover device support.
 The pin-checked bridge appends `VkPhysicalDeviceShaderFmaFeaturesKHR` to its
 existing feature query and logical-device creation chain, enables the extension,
 and requests only FP32. Its creation receipt becomes enabled only after
-`vkCreateDevice` succeeds. Strict component creation requires that receipt.
-There is no fallback to ordinary `fma`, software FMA or another device.
+`vkCreateDevice` succeeds. Strict component creation requires that receipt. The strict build also rolls
+back the pinned factory cache on initialization failure. Its destructor skips
+Vulkan cleanup when no logical device was created; automatic host members
+still unwind. A refused lookup can therefore be retried without returning an
+incomplete cached object. There is no fallback to ordinary `fma`, software FMA or another device.
 
 The strict shader uses `GL_EXT_spirv_intrinsics` to emit `OpFmaKHR`, capability
 `FMAKHR` and extension `SPV_KHR_fma`. The separate scale multiply, signed packed
@@ -1334,7 +1337,7 @@ cmake -S . -B BUILD_STRICT [EXISTING_DIAGNOSTIC_OPTIONS] \
 cmake --build BUILD_STRICT --target vulkan_native_q8_replay \
   native_q8_strict_fma_test strata_q8_gu_shader strata_q8_down_shader
 ctest --test-dir BUILD_STRICT --output-on-failure \
-  -R '^(native_q8_strict_fma(_shader)?_test|portable_logits_guard_build_test)$'
+  -R '^(native_q8_.*strict_fma.*_test|portable_logits_guard_build_test)$'
 ```
 
 Configuration checks the Vulkan feature declarations, compiles both actual
@@ -1346,7 +1349,11 @@ Vulkan headers 1.4.363, glslc/shaderc 2026.4, glslang 16.6.0 and SPIRV-Tools
 2026.4; these are observed working versions, not inferred minimum versions.
 
 Host tests exercise the inserted feature-chain blocks across extension,
-support and creation outcomes. Shader tests validate strict and legacy modules,
+support and creation outcomes. A separate cache-lifecycle regression executes
+the actual patched factory allocation/cache/rollback blocks and pinned
+destructor with mocked Vulkan boundaries. It checks repeated refusal, failed
+query/creation, failure after creation, successful retry/reuse and cleanup.
+Shader tests validate strict and legacy modules,
 check strict FMA and the separately rounded scale multiply, compare arithmetic,
 barrier/reduction order and contraction controls, and forbid fast-math modes.
 The unchanged effective-module validator still preserves every shader input

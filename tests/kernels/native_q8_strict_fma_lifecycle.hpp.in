@@ -1,0 +1,17 @@
+// Real pinned allocation/cache/return/destructor blocks, with real strict patch.
+// Only Vulkan calls and the unrelated initialization middle are mocked.
+@STRATA_FMA_FACTORY_PREFIX@
+        const std::vector<Extension> ext_props=extension_available?std::vector<Extension>{{VK_KHR_SHADER_FMA_EXTENSION_NAME}}:std::vector<Extension>{};
+        VkPhysicalDeviceFeatures2 device_features2{};
+        device_features2.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        auto* last_struct=reinterpret_cast<VkBaseOutStructure*>(&device_features2);
+        std::vector<const char*> device_extensions;
+@STRATA_FMA_CHAIN@
+        vkGetPhysicalDeviceFeatures2(device->physical_device, &device_features2);
+@STRATA_FMA_ADMIT@
+        FakeCreateInfo device_create_info{&device_features2,&device_extensions};
+@STRATA_FMA_CREATE@
+        if(fail_after_create)throw std::runtime_error("mock post-create failure");
+@STRATA_FMA_FACTORY_TAIL@
+
+@STRATA_FMA_DESTRUCTOR@
