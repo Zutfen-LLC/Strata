@@ -39,6 +39,8 @@ struct PortableFfnOptions {
     size_t weight_budget = 256ull << 20;
     size_t graph_budget = 256ull << 20; // aggregate scheduler buffers, both phases
     bool resident_dense_weights = false; // model-lifetime weights on requested backend; default off
+    bool native_moe_combine = false; // strict Vulkan K10 observation; shared is already gated
+    std::string native_moe_combine_receipt_prefix; // private path prefix; unique per-owner directories
 };
 
 struct PortablePlacement {

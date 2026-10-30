@@ -71,6 +71,8 @@ struct PortableModelOptions {
     bool expert_dispatch_oracle = false;
     size_t expert_staging_cap = 64ull << 20;
     bool expert_check_rows = false, expert_record_routes = false;
+    bool native_moe_combine = false; // opt-in strict K10 combine with native-Q8 observation
+    std::string expert_native_q8_observation; // explicit receipt prefix; unqualified, unspecified FP32 denorm
     bool expert_timings = false; // opt-in coarse provider/executor host-call boundaries
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
     bool gdn_resident_weights = false; // opt-in GDN attention only

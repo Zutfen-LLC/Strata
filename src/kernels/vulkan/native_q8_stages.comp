@@ -1,0 +1,75 @@
+#version 450
+// Standalone translation of iq_kernels.cu q8_1_store and the two SwiGLU paths.
+// One workgroup IS a logical CUDA warp. No physical subgroup width assumption.
+layout(local_size_x=32) in;
+layout(binding=0) readonly buffer Gate { float gate[]; };
+layout(binding=1) readonly buffer Up { float up[]; };
+layout(binding=2) readonly buffer Starts { int starts[]; };
+layout(binding=3) readonly buffer Count { int count[]; };
+layout(binding=4) buffer Hidden { float hidden[]; };
+layout(binding=5) buffer Packed { uint packed[]; };
+layout(push_constant) uniform Params {
+    uint mode; uint elements; uint n_ff;
+    uint gate_bias; uint up_bias; uint starts_bias; uint count_bias; uint hidden_bias; uint packed_bias;
+} p;
+shared float maxima[32];
+shared float sums[32];
+shared uint codes[32];
+// Explicit IEEE binary16 round-to-nearest-even, including signed zero and
+// subnormals. No packHalf2x16 implementation-dependent denormal treatment.
+uint half_rne(float x) {
+    uint b=floatBitsToUint(x), sign=(b>>16)&0x8000u;
+    uint e=(b>>23)&255u, m=b&0x7fffffu;
+    if(e==255u) return sign|0x7c00u|(m==0u?0u:0x200u|(m>>13));
+    if(e>142u) return sign|0x7c00u;
+    if(e<102u) return sign;
+    uint sig=m|0x800000u;
+    uint shift=e<113u?126u-e:13u;
+    uint q=sig>>shift, rem=sig&((1u<<shift)-1u), halfway=1u<<(shift-1u);
+    q+=uint(rem>halfway || (rem==halfway && (q&1u)!=0u));
+    return sign|(e<113u?q:((e-113u)<<10)+q);
+}
+float finite_half(float x) { return abs(x)>65504.0 ? (x<0.0?-65504.0:65504.0) : x; }
+// CUDA fmaxf returns the numeric argument when exactly one argument is NaN.
+float native_max(float a,float b) { return isnan(a)?b:isnan(b)?a:max(a,b); }
+void main() {
+    uint lane=gl_LocalInvocationID.x, i=gl_WorkGroupID.x*32u+lane;
+    if(i>=p.elements) return; // caller rejects partial blocks (native precondition)
+    if(p.mode==2u) {
+        uint lo=uint(starts[p.starts_bias])*p.n_ff;
+        uint hi=uint(starts[p.starts_bias+uint(count[p.count_bias])])*p.n_ff;
+        if(i<lo || i>=hi) return; // warp-uniform, inactive regions untouched
+    }
+    precise float xi;
+    if(p.mode==1u || p.mode==2u) {
+        precise float neg=-gate[p.gate_bias+i];
+        precise float denominator=1.0+exp(neg);
+        precise float silu=gate[p.gate_bias+i]/denominator;
+        xi=silu*up[p.up_bias+i]; // NoContraction: product rounded before sum
+        if(p.mode==1u) { hidden[p.hidden_bias+i]=xi; return; }
+    } else xi=gate[p.gate_bias+i];
+    maxima[lane]=abs(xi); sums[lane]=xi;
+    barrier();
+    for(uint o=16u;o>0u;o>>=1u) {
+        precise float m=native_max(maxima[lane],maxima[lane^o]);
+        precise float s=sums[lane]+sums[lane^o];
+        barrier(); maxima[lane]=m; sums[lane]=s; barrier();
+    }
+    precise float scale=maxima[lane]/127.0;
+    precise float d=finite_half(scale);
+    precise float ratio=xi/d;
+    // roundf: nearest, halfway away from zero. Avoid GLSL round's undefined ties.
+    float a=abs(ratio), whole=floor(a);
+    float rounded=whole+float(a-whole>=0.5);
+    rounded=ratio<0.0?-rounded:rounded;
+    float clamped=rounded>127.0?127.0:rounded< -127.0?-127.0:rounded;
+    // Native NaN -> int8 conversion is not a portable arithmetic contract. The
+    // fixture reports these lanes separately; zero here is diagnostic only.
+    int q=maxima[lane]==0.0?0:isnan(clamped)?0:int(clamped);
+    codes[lane]=uint(q)&255u;
+    barrier();
+    uint base=p.packed_bias+gl_WorkGroupID.x*9u;
+    if(lane==0u) packed[base]=half_rne(finite_half(d))|(half_rne(finite_half(sums[0]))<<16);
+    if(lane<8u) packed[base+1u+lane]=codes[4u*lane]|(codes[4u*lane+1u]<<8)|
+        (codes[4u*lane+2u]<<16)|(codes[4u*lane+3u]<<24);
+}

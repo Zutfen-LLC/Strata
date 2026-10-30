@@ -115,6 +115,7 @@ int main(int argc, char **argv) {
                              " [--gdn-resident-state (trial, default off)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
+                             " [--expert-native-q8-observation RECEIPT_PREFIX (unqualified)] [--native-moe-combine (strict K10 observation)]\n"
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
                              " [--prompt-head-elision (serial head elision; incompatible with --dump-logits)]\n"
@@ -170,6 +171,10 @@ int main(int argc, char **argv) {
                 opts.gdn_resident_weights = true;
                 continue;
             }
+            if (key == "--native-moe-combine") {
+                opts.native_moe_combine = true;
+                continue;
+            }
             if (key == "--allow-cpu-fallback") {
                 opts.allow_cpu_fallback = true;
                 continue;
@@ -177,7 +182,9 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if (key == "--model")
+            if (key == "--expert-native-q8-observation")
+                opts.expert_native_q8_observation = value;
+            else if (key == "--model")
                 model = value;
             else if (key == "--manifest")
                 manifest = value;
@@ -394,6 +401,9 @@ int main(int argc, char **argv) {
         std::cerr << (opts.prompt_chunk_size ? "Bounded prompt chunks; T=1 final prompt/decode; " : "T=1; ");
         if(opts.expert_devices.empty())
             std::cerr << "CPU experts; host PLE; recurrent state and inter-layer residuals use host/device transfers. No performance claim.\n";
+        else if(opts.native_moe_combine)
+            std::cerr << "resident Vulkan/CPU expert rows; host PLE; original-order strict K10 Vulkan combine; "
+                         "native_moe_combine_observation=true qualified=false quantizer_qualified=false fp32_denorm_mode=unspecified\n";
         else
             std::cerr << "resident Vulkan/CPU expert rows; host PLE; original-order host merge. Vulkan hybrid Q8 is not CPU bit parity.\n";
         const auto expert_report=[&](const char* stage,uint64_t position) {

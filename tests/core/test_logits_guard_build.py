@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 GGML = Path(sys.argv.pop(1)).resolve()
 BUILD = Path(sys.argv.pop(1)).resolve()
 CMAKE = sys.argv.pop(1)
+NATIVE_STAGES = len(sys.argv) > 1 and sys.argv.pop(1).upper() in ("ON", "TRUE", "1")
+STRICT_FMA = len(sys.argv) > 1 and sys.argv.pop(1).upper() in ("ON", "TRUE", "1")
 FILES = ('src/ggml-vulkan/ggml-vulkan.cpp', 'src/ggml-vulkan/ggml-vulkan-common.h',
          'src/ggml-vulkan/ggml-vulkan-types.h', 'src/ggml-vulkan/ggml-vulkan-push-constants.h',
          'src/ggml-backend-impl.h', 'src/ggml-impl.h', 'include/ggml.h',
@@ -53,10 +55,130 @@ class GuardBuild(unittest.TestCase):
             self.assertEqual(self.gate(candidate, directory).returncode, 0)
         self.assertEqual(before, {name: digest(GGML / name) for name in FILES})
 
-    def test_copy_is_exact_original_plus_one_local_include(self):
+    def test_copy_is_exact_original_plus_local_includes(self):
         original = (GGML / FILES[0]).read_bytes()
         copy = (BUILD / 'ggml-vulkan-guard.cpp').read_bytes()
-        self.assertEqual(copy, original + b'\n#include "strata_vk_logits_guard.inc"\n')
+        suffix = b'\n#include "strata_vk_logits_guard.inc"\n'
+        if NATIVE_STAGES:
+            suffix += b'#include "strata_vk_native_stages.inc"\n'
+        if NATIVE_STAGES:
+            # Exactly these five native-only hunks; all remaining backend bytes
+            # and the acceleration assignment/disable controls stay unchanged.
+            replacements = {
+                'vk_device ggml_vk_get_device(size_t idx) {': '#include "native_q8_vk_device.hpp"\nvk_device ggml_vk_get_device(size_t idx) {',
+                '        vk_device device = std::make_shared<vk_device_struct>();': '        auto strata_q8_device = std::make_shared<StrataVkQ8Device>();\n        vk_device device = strata_q8_device;',
+                '        device->integer_dot_product = device->integer_dot_product && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;': '        strata_q8_device->strata_q8_dot.requested = device->integer_dot_product;\n        device->integer_dot_product = device->integer_dot_product && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;',
+                '        if (device->integer_dot_product) {\n            last_struct->pNext = (VkBaseOutStructure *)&shader_integer_dot_product_features;': '        if (strata_q8_device->strata_q8_dot.requested) {\n            last_struct->pNext = (VkBaseOutStructure *)&shader_integer_dot_product_features;',
+                '        device->device = device->physical_device.createDevice(device_create_info);': '        device->device = device->physical_device.createDevice(device_create_info);\n        strata_q8_device->strata_q8_dot.logical_device_created(shader_integer_dot_product_features.shaderIntegerDotProduct != VK_FALSE);',
+            }
+            for before, after in replacements.items():
+                self.assertEqual(original.count(before.encode()), 1)
+                original = original.replace(before.encode(), after.encode())
+        if STRICT_FMA:
+            # Only the strict-build feature and failure-lifecycle hunks may change the backend.
+            patch = (ROOT / 'cmake/strata_native_q8_strict_fma.cmake').read_text()
+            chain = patch.split('set(fma_chain [=[', 1)[1].split(']=])', 1)[0]
+            admit = patch.split('set(fma_admit [=[', 1)[1].split(']=])', 1)[0]
+            query = b'        vkGetPhysicalDeviceFeatures2(device->physical_device, &device_features2);'
+            create = b'        device->device = device->physical_device.createDevice(device_create_info);'
+            self.assertEqual(original.count(query), 1)
+            self.assertEqual(original.count(create), 1)
+            original = original.replace(query, chain.encode() + query + b'\n' + admit.encode())
+            original = original.replace(create, create + b'\n        strata_q8_device->strata_q8_fma.logical_device_created();')
+            cache = b'        vk_instance.devices[idx] = device;'
+            tail = b'        return device;\n    }\n\n    return vk_instance.devices[idx];\n}'
+            destructor = b'vk_device_struct::~vk_device_struct() {'
+            for anchor in (cache, tail, destructor):
+                self.assertEqual(original.count(anchor), 1)
+            original = original.replace(cache, cache + b'\n        try {')
+            original = original.replace(tail, b'        } catch (...) {\n            vk_instance.devices[idx].reset();\n            throw;\n        }\n' + tail)
+            original = original.replace(destructor, destructor + b'\n    if (!device) return; // strict diagnostic: no logical device, no Vulkan resources')
+        self.assertEqual(copy, original + suffix)
+
+    def test_native_dot_patch_rejects_wrong_pin_and_ambiguous_anchors(self):
+        if not NATIVE_STAGES:self.skipTest('native stages disabled')
+        with tempfile.TemporaryDirectory() as temporary:
+            d = Path(temporary)
+            for text in ('nothing', 'anchor anchor'):
+                script = d / 'anchors.cmake'
+                script.write_text(f'include("{ROOT / "cmake/strata_native_q8_integer_dot.cmake"}")\n'
+                                  f'set(candidate "{text}")\nstrata_native_q8_dot_replace(candidate "anchor" "replacement")\n')
+                result = subprocess.run([CMAKE, '-P', str(script)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('exactly one pinned patch anchor', result.stderr)
+            script = d / 'pin.cmake'
+            script.write_text(f'include("{ROOT / "cmake/strata_native_q8_integer_dot.cmake"}")\n'
+                              'strata_native_q8_dot_patch("wrong source" result)\n')
+            result = subprocess.run([CMAKE, '-P', str(script)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('incompatible pinned backend source', result.stderr)
+
+    def test_default_guard_generation_remains_exact_without_native_patch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            d = Path(temporary)
+            candidate = d / 'ggml'
+            for name in FILES:
+                target = candidate / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(GGML / name, target)
+            backend = candidate / 'src/ggml-vulkan'
+            (backend / 'CMakeLists.txt').write_text('add_library(ggml-vulkan STATIC ggml-vulkan.cpp)\n')
+            (d / 'CMakeLists.txt').write_text(
+                'cmake_minimum_required(VERSION 3.20)\nproject(default_guard LANGUAGES CXX)\n'
+                'set(STRATA_BUILD_TESTS OFF)\n'
+                f'add_subdirectory("{backend}" backend)\n'
+                f'include("{ROOT / "cmake/strata_logits_guard.cmake"}")\nstrata_enable_logits_guard()\n')
+            result = subprocess.run([CMAKE, '-S', str(d), '-B', str(d / 'build')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected = (GGML / FILES[0]).read_bytes() + b'\n#include "strata_vk_logits_guard.inc"\n'
+            self.assertEqual((d / 'build/strata-logits-guard/ggml-vulkan-guard.cpp').read_bytes(), expected)
+
+    def test_observation_helper_is_exact_pinned_copy_with_one_final_hook(self):
+        if not NATIVE_STAGES:
+            self.skipTest('standalone native stages disabled')
+        original = (GGML / FILES[0]).read_text()
+        begin = original.index('static void ggml_vk_create_pipeline_func(')
+        end = original.index('\nvoid ggml_vk_destroy_pipeline(', begin)
+        expected = original[begin:end].replace('static void ggml_vk_create_pipeline_func(',
+            'static void strata_vk_observation_create_pipeline_func(', 1)
+        expected = expected.replace('uint32_t required_subgroup_size) {',
+            'uint32_t required_subgroup_size, const char* diagnostic_spv_path) {', 1)
+        anchor = '    pipeline->shader_module = device->device.createShaderModule(shader_module_create_info);'
+        self.assertEqual(expected.count(anchor), 1)
+        expected = expected.replace(anchor,
+            '    native_q8_validate_observation_effective(static_cast<const uint32_t*>(spv_data), spv_size/4, '
+            'shader_module_create_info.pCode, shader_module_create_info.codeSize/4, device->float_controls_rte_fp16, '
+            'device->float_controls_denorm_preserve_fp16, diagnostic_spv_path);\n' + anchor)
+        self.assertEqual((BUILD / 'strata_native_observe_pipeline.inc').read_text(),
+            '// Generated from the exact pinned MIT-licensed GGML helper.\n' + expected)
+
+    def test_quant_trace_is_original_plus_fixed_stores_and_rejects_wrong_base(self):
+        if not NATIVE_STAGES:self.skipTest('native stages disabled')
+        original = (ROOT / 'src/kernels/vulkan/native_q8_stages.comp').read_text()
+        stores = (ROOT / 'src/kernels/vulkan/native_q8_quant_trace.glsl').read_text()
+        anchor = '    float clamped=rounded>127.0?127.0:rounded< -127.0?-127.0:rounded;'
+        self.assertEqual(original.count(anchor), 1)
+        self.assertEqual((BUILD / 'native_q8_quant_trace.comp').read_text(), original.replace(anchor, stores + anchor))
+        self.assertEqual(hashlib.sha256(original.encode()).hexdigest(), 'c23db4f75b3b09a5bf5675f5a91753578255ecc0614f0822de46d72052044256')
+        for field in ('maxima[lane]', 'd', 'ratio', 'rounded'):
+            self.assertIn('=' + field + ';', stores)
+        with tempfile.TemporaryDirectory() as temporary:
+            script = Path(temporary) / 'trace.cmake'
+            script.write_text(f'include("{ROOT / "cmake/strata_native_quant_trace.cmake"}")\n'
+                              'strata_native_quant_trace_source("wrong base" "stores" result)\n')
+            result = subprocess.run([CMAKE, '-P', str(script)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('incompatible original shader', result.stderr)
+
+    def test_rn_variant_changes_only_quantizer_divisions(self):
+        if not NATIVE_STAGES:self.skipTest('native stages disabled')
+        original = (ROOT / 'src/kernels/vulkan/native_q8_stages.comp').read_text()
+        division = (ROOT / 'src/kernels/vulkan/native_f32_div_rn.glsl').read_text()
+        expected = original.replace('#version 450', '#version 450\n' + division + '\nfloat native_quant_div_rn(float a,float b) {return uintBitsToFloat(strata_f32_div_rn_bits(floatBitsToUint(a),floatBitsToUint(b)));}')
+        expected = expected.replace('precise float scale=maxima[lane]/127.0;', 'precise float scale=native_quant_div_rn(maxima[lane],127.0);')
+        expected = expected.replace('precise float ratio=xi/d;', 'precise float ratio=native_quant_div_rn(xi,d);')
+        self.assertEqual((BUILD / 'native_q8_quant_rn.comp').read_text(), expected)
+        self.assertIn('precise float silu=gate[p.gate_bias+i]/denominator;', expected)
 
     def test_shader_has_integer_classification_and_no_float_type(self):
         data = (BUILD / 'logits_nonfinite.spv').read_bytes()

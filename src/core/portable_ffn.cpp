@@ -5,6 +5,9 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
+#ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
+#include "portable_native_moe_combine.hpp"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -139,6 +142,13 @@ struct PortableFfn::Impl {
                 tokens >= 1 && tokens <= 8 && g.selected > 0 && g.selected <= g.experts && g.selected <= 64 && layer >= 0 &&
                 std::isfinite(g.epsilon) && g.epsilon > 0 && options.threads > 0,
                 "portable FFN: invalid geometry/options");
+        require(!options.native_moe_combine || (g.hidden == 2560 && g.selected == 10 &&
+                options.request_accelerator && options.accelerator && !options.allow_cpu_fallback &&
+                !options.native_moe_combine_receipt_prefix.empty()),
+                "portable FFN: native combine requires H2560/K10, strict accelerator execution and private receipt prefix");
+#ifndef STRATA_PORTABLE_NATIVE_MOE_COMBINE
+        require(!options.native_moe_combine, "portable FFN: native combine requires strict-FMA native-stage build");
+#endif
         return std::make_shared<Weights>(g, layer, weights, options);
     }
     PortableFfnGeometry g;
@@ -157,6 +167,9 @@ struct PortableFfn::Impl {
     std::vector<PortablePlacement> placement;
     size_t weights_size = 0, graphs_size = 0, device_weights = 0;
     bool initialized = false;
+#ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
+    std::unique_ptr<portable_detail::PortableNativeMoeCombine> native_combine;
+#endif
 
     Impl(PortableFfnGeometry geometry, int64_t index, const std::vector<PortableTensorView>& weights,
          PortableFfnOptions opts, int64_t count) : Impl(load(geometry,index,weights,opts,count),opts,count) {}
@@ -169,6 +182,13 @@ struct PortableFfn::Impl {
         weights_size = owned_weights->weights_size;
         device_weights = owned_weights->device_weights;
         const auto& w = owned_weights->w;
+#ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
+        if(options.native_moe_combine) {
+            native_combine = std::make_unique<portable_detail::PortableNativeMoeCombine>(options.accelerator, tokens, options.graph_budget,
+                options.native_moe_combine_receipt_prefix + ".layer-" + std::to_string(layer));
+            graphs_size = native_combine->bytes();
+        }
+#endif
         const int64_t width = g.hidden*g.streams;
 
         auto* c = pre_ctx.get();
@@ -216,6 +236,10 @@ struct PortableFfn::Impl {
         post = ggml_new_graph(c); ggml_build_forward_expand(post, output);
         post_sched = portable_detail::schedule(post, "post-experts", options, cpu, placement, graphs_size);
         placement.push_back({"host", "ROUTE_AND_MERGE", "indexed expert boundary", "F32", "CPU", "", tokens == 1 ? std::vector<int64_t>{g.hidden, g.selected} : std::vector<int64_t>{g.hidden, g.selected, tokens}});
+#ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
+        if(native_combine) placement.push_back({"combine", "NATIVE_K10_STRICT_FMA_OBSERVATION", "original-slot rows / already gated shared",
+            "F32", ggml_backend_name(options.accelerator), "", {g.hidden,g.selected,tokens}});
+#endif
     }
 };
 
@@ -333,6 +357,10 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         require(rows.size() == size_t(s.g.hidden * s.g.selected), "portable FFN: indexed expert row count mismatch");
         finite(rows);
         auto block = read(s.shared);
+#ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
+        if(s.native_combine) block = s.native_combine->run(rows, candidate.weights, block);
+        else
+#endif
         for (int64_t h = 0; h < s.g.hidden; ++h) {
             float routed = 0;
             for (int64_t k = 0; k < s.g.selected; ++k) routed += rows[size_t(k * s.g.hidden + h)] * candidate.weights[size_t(k)];
@@ -372,6 +400,13 @@ bool PortableFfn::step_batch(const PortableExpertRowsBatch& dispatch,
                 "portable FFN: indexed expert row count mismatch");
         finite(rows);
         auto block = read(s.shared);
+#ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
+        if(s.native_combine) {
+            std::vector<float> weights;
+            for(const auto& route : candidate) weights.insert(weights.end(),route.weights.begin(),route.weights.end());
+            block = s.native_combine->run(rows,weights,block);
+        } else
+#endif
         for (size_t t = 0; t < size_t(s.tokens); ++t)
             for (int64_t h = 0; h < s.g.hidden; ++h) {
                 float routed = 0;
@@ -407,7 +442,13 @@ PortableMemoryUsage PortableFfn::memory_usage() const {
         if (s.options.accelerator && s.options.request_accelerator)
             m.device_graph += ggml_backend_sched_get_buffer_size(sched, s.options.accelerator);
     }
-    m.host_extra_bound = 3*metadata_bytes; // three owning metadata contexts, plus token staging below
+#ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
+    if(s.native_combine) {
+        m.device_graph += s.native_combine->bytes();
+        m.host_extra_bound += portable_detail::PortableNativeMoeCombine::metadata_bytes;
+    }
+#endif
+    m.host_extra_bound += 3*metadata_bytes; // three owning metadata contexts, plus token staging below
     m.host_extra_bound += size_t(s.g.hidden*s.g.streams*8 + s.g.selected*s.g.hidden) * sizeof(float);
     if (s.tokens > 1) {
         m.host_extra_bound += size_t((s.tokens-1)*(s.g.hidden*s.g.streams*8 + s.g.selected*s.g.hidden) +
