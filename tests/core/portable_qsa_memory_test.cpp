@@ -62,6 +62,7 @@ int main(){
             production_tests(opts, f.views, [&](int t){return f.input(t);});
             opts.capacity=256; opts.reuse_attention=true; opts.production=true;
             std::string error;
+            opts.attention=PortableQsaAttention::create(opts.execution,error); check(bool(opts.attention),error);
             auto layer=PortableQsaLayer::create(3,f.views,opts,error); check(bool(layer),error);
             PortableQsaState state; check(layer->inspect_state(state,error),error);
             const size_t raw=(state.keys.size()+state.values.size())*2+

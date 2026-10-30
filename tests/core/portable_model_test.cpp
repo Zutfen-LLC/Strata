@@ -68,6 +68,8 @@ int main() {
         opts.expert_timings = true;
         auto session = PortableModelSession::open(fixture.paths, (fixture.root / "manifest").string(), opts, error);
         check(bool(session), error);
+        check(session->report().qsa_attention_resources == 1 && session->report().qsa_attention_host_scheduler > 0,
+              "whole-model session owns one actual shared attention scheduler");
         check(session->position() == 0 && !session->poisoned() && !session->ended(), "fresh session");
         check(session->eos() == 248046, "generation EOS comes from tokenizer metadata, not PLE");
         check(session->report().mapped_bytes > (170ull << 30), "huge tables/experts are mapped");

@@ -2,6 +2,21 @@
 #include "strata/core/portable_ffn.hpp"
 
 namespace strata::core {
+// Session-owned attention execution only. Backend handles are borrowed and must
+// outlive this resource. Each operation borrows exclusively through its commit.
+class PortableQsaAttention {
+  public:
+    static std::shared_ptr<PortableQsaAttention> create(PortableFfnOptions options, std::string &error);
+    ~PortableQsaAttention();
+    static size_t host_metadata_bound();
+    PortableMemoryUsage memory_usage() const;
+    size_t graph_bytes() const;
+  private:
+    struct Impl;
+    explicit PortableQsaAttention(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+    friend class PortableQsaLayer;
+};
 struct PortableQsaOptions {
     // graph_budget covers scheduler buffers/copies, CPU plans and a conservative
     // pinned-Vulkan tensor-workspace allowance. Larger active histories may
@@ -14,6 +29,8 @@ struct PortableQsaOptions {
     bool reuse_attention = false;
     // Device-authoritative state; requires reuse and strict selected accelerator.
     bool production = false;
+    // Optional session owner; requires reuse. Omit for private standalone scratch.
+    std::shared_ptr<PortableQsaAttention> attention;
 };
 // Explicit diagnostic download, including unused capacity, never a host mirror.
 struct PortableQsaState {
@@ -69,6 +86,7 @@ class PortableQsaLayer {
     const std::vector<float> &indexer_tail() const;
     const std::vector<float> &last_residual() const;
     const std::vector<PortablePlacement> &placements() const;
+    const PortableQsaAttention *attention_owner() const;
     size_t weight_bytes() const;
     // Scheduler allocations plus admitted workspace allowances, not total RSS/VRAM.
     size_t graph_bytes() const;

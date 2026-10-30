@@ -274,16 +274,32 @@ cross-policy comparisons compare prompt IDs, final requested logits, generated
 rows and stops without inventing intermediate predictions. Numerical and GPU
 performance qualification remain separate from host tests and compilation.
 
-## QSA attention execution reuse trial
+## QSA attention execution ownership
 
-`--qsa-reuse-attention` is default off. It retains one attention Phase per QSA
-layer: a 4 MiB metadata arena, one scheduler and its backend scratch buffers.
-Creation allocates the exact capacity-sized graph once without executing it.
-Each token resets the scheduler identities before rebuilding the exact active
-shape in that arena, reapplies every placement pin, and uses the existing
-allocator's retained buffer high water. There is no per-length graph cache.
-Reset clears sequence state but keeps execution storage. Leave the flag off
-for the legacy token-local attention Phase.
+Whole-model sessions retain one attention execution resource per physical dense
+backend, shared by the QSA layers assigned to it. This follows native
+`SessionState::qsa_bufs` in `include/strata/core/session.hpp` and the single
+`qsa_buffers_init` call in `src/core/session.cpp`. Only the portable attention
+Phase is shared in this slice. Projection, pooling, combine, GDN, FFN and expert
+execution owners remain per layer; those scratch lifetimes still differ from
+native session scratch. All weights and all seven QSA state tensors remain
+persistent and separate. GDN recurrence/convolution and PLE history are unchanged.
+
+The resource owns one 4 MiB metadata arena, scheduler, retained backend scratch
+and a stable CPU companion backend. A layer borrows it exclusively through the
+whole step or chunk, including expert-provider completion and commit. Compute,
+copies and readbacks complete before scheduler reset or state-view rebinding.
+The resource forgets all layer-state views on borrow release, including failure.
+Reset clears sequence state and keeps scratch storage. Exact active shapes are
+rebuilt each time; there is no padded computation or per-length graph cache.
+Capacity priming allocates without executing attention arithmetic.
+
+Standalone layers still support private legacy token-local or retained execution
+with `PortableQsaOptions::reuse_attention`. Supplying `attention` explicitly
+shares an owner and requires reuse. Backend, threads, fallback and graph-cap
+settings must match. The model CLI retains `--qsa-reuse-attention` for command
+and receipt compatibility; session attention ownership is shared in both flag
+states. The production flag's existing explicit prerequisites remain unchanged.
 
 The existing fresh-quality and resident adapters accept this same flag and record
 its Boolean policy. Resident suite references must match that policy in both the
@@ -313,16 +329,35 @@ or masked maximum-length softmax is introduced. In eager diagnostic mode, layer 
 state unchanged; scratch may be overwritten and is rebuilt on retry. A partial
 model failure retains the existing session poison/reset policy.
 
-`graph_bytes()` includes retained attention buffers and the admitted CPU plan
-high water in this trial. `memory_usage()` reports the actual scheduler buffers
-in host/device graph fields, including after a failed candidate and reset.
-The remaining layer graph allowance is retained device extra rather than
-`device_token_temporary_bound`; it is no longer credited as shared token-local
-scratch across QSA layers. Host state/candidate staging and the 4 MiB arena stay
-within the existing state/metadata bounds. Backend-private workspace, shared
-matrix conversion and driver exclusions keep their existing accounting. The
-same caps apply; capacity priming can reject at creation where the legacy path
-would reject only on reaching a larger active shape.
+For a shared layer, `graph_bytes()` is the inclusive module-ceiling check: fixed
+phases plus the shared attention high water and the active chunk FFN. Its
+`memory_usage()` excludes shared scheduler buffers and device attention growth;
+`PortableQsaAttention::memory_usage()` owns those costs once. The layer's previous
+host allowance remains intact for the unchanged fixed schedulers' metadata and
+workspaces outside scheduler-buffer reporting; no host-envelope saving is taken. Actual scheduler
+allocations appear in host/device graph fields. The resource reserves a complete
+layer graph cap on each applicable backend, including CPU workspace and every
+permitted future exact shape. Unspent cap is an allowance, not allocated bytes.
+A separate host metadata bound covers the fixed 4 MiB arena, the pinned
+scheduler's `2048 * 30 * 2 * sizeof(ggml_tensor)` context buffer, and a 16 MiB
+allowance for graph/split/hash/allocator tables and the CPU companion. It is
+reserved before any borrower is created and does not depend on history length.
+Each layer still carries unchanged fixed-phase/private-workspace bounds and its
+state/weight costs. Model construction reserves the shared cap before allocating
+layers and reclassifies primed buffers from allowance to actual storage. Reports
+expose the resource count and its primed host/device scheduler bytes separately.
+No module ceiling, total cap, reserve or overflow check is relaxed. The existing
+host metadata envelope remains conservative. Backend-private workspace, shared
+matrix conversion and driver exclusions keep their existing accounting.
+
+`portable_qsa_shared_test` alternates distinct layer states against private
+owners byte-for-byte through context256, pooled boundaries, history shrinkage,
+reset/replay, chunks1–8 and tails. It checks actual backing-storage reduction,
+borrow exclusion through provider completion, planning/compute/provider/state
+failures, isolated sessions/backend rejection and exact-cap/one-byte-over
+admission. The same fixture is compiled into the Vulkan QSA executable; running
+that executable on a selected GPU remains a separate hardware check. CPU-backed
+allocation evidence does not predict full-model fit or GPU savings.
 
 The QSA CPU/Vulkan fixtures exercise legacy and reuse modes, positions 0–8,
 pool boundaries, callback failures/retries, capacity, reset A/B/A, actual buffer

@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <map>
+#include <atomic>
 
 namespace strata::core {
 namespace {
@@ -148,6 +149,81 @@ struct Phase {
 };
 } // namespace
 
+struct PortableQsaAttention::Impl {
+    // At the pinned scheduler, context_buffer reserves G*30*2 tensor headers
+    // even with parallel=false. Add the 4 MiB Phase arena and 16 MiB for graph,
+    // split/hash/allocator tables and companion metadata (G=2048, <=2 backends,
+    // one copy). These sizes do not depend on active history or borrower count.
+    static constexpr size_t metadata_bound = size_t(GGML_DEFAULT_GRAPH_SIZE) * 30 * 2 * sizeof(ggml_tensor) + (20u << 20);
+    PortableFfnOptions options;
+    portable_detail::Backend cpu{ggml_backend_cpu_init(), ggml_backend_free};
+    Phase phase;
+    size_t highwater = 0;
+    std::atomic_flag borrowed = ATOMIC_FLAG_INIT;
+    explicit Impl(PortableFfnOptions opts) : options(opts) {
+        require(bool(cpu), "portable QSA: shared CPU unavailable");
+        require(opts.graph_budget > 0 && opts.graph_budget <= SIZE_MAX - metadata_bound,
+                "portable QSA: invalid/overflowing shared graph budget");
+        ggml_backend_cpu_set_n_threads(cpu.get(), opts.threads);
+    }
+    void synchronize() {
+        if (phase.scheduler) ggml_backend_sched_synchronize(phase.scheduler.get());
+        if (options.accelerator) ggml_backend_synchronize(options.accelerator);
+        ggml_backend_synchronize(cpu.get());
+    }
+    struct Borrow {
+        Impl *owner;
+        explicit Borrow(Impl *p) : owner(p) {
+            if (owner && owner->borrowed.test_and_set(std::memory_order_acquire))
+                require(false, "portable QSA: shared attention already borrowed");
+        }
+        ~Borrow() {
+            if (owner) {
+                // Includes copies/readbacks, provider completion and commit. No
+                // graph metadata can retain pointers into a former layer's state.
+                owner->synchronize();
+                owner->phase.rebuild();
+                owner->borrowed.clear(std::memory_order_release);
+            }
+        }
+    };
+};
+PortableQsaAttention::PortableQsaAttention(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+PortableQsaAttention::~PortableQsaAttention() = default;
+std::shared_ptr<PortableQsaAttention> PortableQsaAttention::create(PortableFfnOptions options, std::string &error) {
+    error.clear();
+    try { return std::shared_ptr<PortableQsaAttention>(new PortableQsaAttention(std::make_unique<Impl>(options))); }
+    catch (const std::exception &e) { error = e.what(); return nullptr; }
+}
+size_t PortableQsaAttention::host_metadata_bound() { return Impl::metadata_bound; }
+size_t PortableQsaAttention::graph_bytes() const {
+    const auto &s = *impl_;
+    const auto memory = memory_usage();
+    const size_t buffers = memory.host_graph + memory.device_graph;
+    require(s.phase.workspace_highwater <= s.options.graph_budget - buffers,
+            "portable QSA: shared retained workspace exceeds cap");
+    // Include buffers acquired by an allocation that subsequently rejected its
+    // placement/commit, rather than trusting only successful plan receipts.
+    return std::max(s.highwater, buffers + s.phase.workspace_highwater);
+}
+PortableMemoryUsage PortableQsaAttention::memory_usage() const {
+    const auto &s = *impl_;
+    PortableMemoryUsage m;
+    if (s.phase.scheduler) {
+        m.host_graph = ggml_backend_sched_get_buffer_size(s.phase.scheduler.get(), s.cpu.get());
+        if (s.options.request_accelerator && s.options.accelerator)
+            m.device_graph = ggml_backend_sched_get_buffer_size(s.phase.scheduler.get(), s.options.accelerator);
+    }
+    require(m.host_graph <= s.options.graph_budget && m.device_graph <= s.options.graph_budget - m.host_graph,
+            "portable QSA: shared scheduler exceeds cap");
+    // The entire cap remains reserved for all permitted active shapes, CPU
+    // work_data and future scheduler growth. Actual buffers are reported apart
+    // from unspent allowance. Layer-private Vulkan workspaces stay per layer.
+    m.host_extra_bound = s.options.graph_budget - m.host_graph + Impl::metadata_bound;
+    if (s.options.request_accelerator) m.device_extra_bound = s.options.graph_budget - m.device_graph;
+    return m;
+}
+
 struct PortableQsaLayer::Impl {
     PortableQsaOptions options;
     portable_detail::Backend cpu{nullptr, ggml_backend_free};
@@ -174,7 +250,7 @@ struct PortableQsaLayer::Impl {
         s.chunk_host_bound=extra;
         if(T==1 || (s.chunk_ffn && s.chunk_ffn->tokens()!=int64_t(T))) s.chunk_ffn.reset();
         if(T>1 && !s.chunk_ffn) {
-            const size_t used=s.fixed_graphs+s.retained_attention_bytes;
+            const size_t used=s.fixed_graphs+s.retained_attention_bytes();
             require(used<s.options.execution.graph_budget,"portable QSA: no chunk graph budget");
             s.chunk_ffn=s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-used);
             require(bool(s.chunk_ffn),error);
@@ -226,6 +302,7 @@ struct PortableQsaLayer::Impl {
             ggml_backend_tensor_set(s.device_tail, ik.data(), size_t(position % 4) * ID * sizeof(float), ID * sizeof(float));
             // Completion overwrites the old spare; the immutable spare is copied
             // into its new slot. Only this block's bias changes.
+            ggml_backend_synchronize(s.options.execution.accelerator);
             ggml_reset(s.copy_ctx.get());
             if (n % 4 == 0) {
                 const int32_t start = int32_t(n - 4);
@@ -285,20 +362,23 @@ struct PortableQsaLayer::Impl {
             std::copy(hv.begin(), hv.end(), next_values.begin() + (n - 1) * KV);
         }
         std::unique_ptr<Phase> temporary;
-        if (!s.attention)
+        if (!s.attention_phase())
             temporary = std::make_unique<Phase>();
-        auto &attention = s.attention ? *s.attention : *temporary;
-        if (s.attention)
+        auto &attention = s.attention_phase() ? *s.attention_phase() : *temporary;
+        if (s.attention_phase()) {
+            if (s.shared()) s.shared()->synchronize();
             attention.rebuild();
+        }
         auto [ki, vi, qi, idxq, pk, mapping, bias, scores, selected, out] = s.build_attention(attention, n);
         auto next_placement = s.fixed_placement;
         size_t next_graphs = s.fixed_graphs+s.chunk_graphs();
-        attention.schedule("qsa-attend", s.options.execution, s.cpu, next_placement, next_graphs, bool(s.attention));
-        if (s.attention) {
+        attention.schedule("qsa-attend", s.options.execution, s.shared() ? s.shared()->cpu : s.cpu, next_placement, next_graphs, bool(s.attention_phase()));
+        if (s.attention_phase()) {
             // Replanning may change offsets/topology (notably at 2051 cells).
             // Account the retained high water even after a rejected candidate.
-            s.retained_attention_bytes = std::max(s.retained_attention_bytes, next_graphs - s.fixed_graphs-s.chunk_graphs());
-            next_graphs = s.fixed_graphs+s.retained_attention_bytes+s.chunk_graphs();
+            auto &retained = s.shared() ? s.shared()->highwater : s.private_attention_bytes;
+            retained = std::max(retained, next_graphs - s.fixed_graphs-s.chunk_graphs());
+            next_graphs = s.fixed_graphs+s.retained_attention_bytes()+s.chunk_graphs();
         }
         if (!s.options.production) {
             ggml_backend_tensor_set(ki, next_keys.data(), 0, next_keys.size() * sizeof(uint16_t));
@@ -335,7 +415,14 @@ struct PortableQsaLayer::Impl {
     }
 
     std::unique_ptr<Phase> project, pool, combine, attention;
-    size_t retained_attention_bytes = 0;
+    size_t private_attention_bytes = 0;
+    size_t retained_attention_bytes() const {
+        return options.attention ? options.attention->graph_bytes() : private_attention_bytes;
+    }
+    Phase *attention_phase() const {
+        return options.attention ? &options.attention->impl_->phase : attention.get();
+    }
+    PortableQsaAttention::Impl *shared() const { return options.attention ? options.attention->impl_.get() : nullptr; }
     ggml_tensor *input, *pos, *q, *k, *v, *gate, *iq, *ik, *inject;
     ggml_tensor *pool_input, *pool_pos, *pool_output;
     ggml_tensor *out_input, *out_residual, *out_inject, *out_gate, *gated, *attn_residual;
@@ -414,6 +501,15 @@ struct PortableQsaLayer::Impl {
         require(!options.production || (options.reuse_attention && options.execution.request_accelerator &&
                     options.execution.accelerator && !options.execution.allow_cpu_fallback),
                 "portable QSA: production requires reuse and strict selected accelerator");
+        require(!options.attention || options.reuse_attention, "portable QSA: shared attention requires reuse");
+        if (auto *shared_owner = shared()) {
+            const auto &o = shared_owner->options;
+            require(o.accelerator == options.execution.accelerator &&
+                    o.request_accelerator == options.execution.request_accelerator &&
+                    o.allow_cpu_fallback == options.execution.allow_cpu_fallback &&
+                    o.threads == options.execution.threads && o.graph_budget == options.execution.graph_budget,
+                    "portable QSA: incompatible shared attention backend/options");
+        }
         // Capacity bound also keeps float prefix counts exact. Price committed
         // and active candidate FP16 caches, pooled state, F32 traces, readbacks,
         // residual/FFN staging and fixed metadata. Scheduler storage is separate.
@@ -588,11 +684,15 @@ struct PortableQsaLayer::Impl {
         placement = fixed_placement;
         graphs_size = fixed_graphs;
         if (options.reuse_attention) {
-            attention = std::make_unique<Phase>();
-            build_attention(*attention, options.capacity);
+            PortableQsaAttention::Impl::Borrow borrow(shared());
+            if (!shared()) attention = std::make_unique<Phase>();
+            auto *phase = attention_phase();
+            if (shared()) { shared()->synchronize(); phase->rebuild(); }
+            build_attention(*phase, options.capacity);
             auto reserve_placement = fixed_placement;
-            attention->schedule("qsa-attend", options.execution, cpu, reserve_placement, graphs_size, true);
-            retained_attention_bytes = graphs_size - fixed_graphs;
+            phase->schedule("qsa-attend", options.execution, shared() ? shared()->cpu : cpu, reserve_placement, graphs_size, true);
+            auto &retained = shared() ? shared()->highwater : private_attention_bytes;
+            retained = std::max(retained, graphs_size - fixed_graphs);
             // Capacity priming allocates scratch but performs no attention math.
             // Exact active graphs are rebuilt in this same arena, never padded.
         }
@@ -726,6 +826,7 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
         *trace = {};
     try {
         auto &s = *impl_;
+        PortableQsaAttention::Impl::Borrow borrow(s.shared());
         require(!s.chunk_active,"portable QSA: chunk execution active");
         require(s.healthy, "portable QSA: device state poisoned; reset required");
         require(!s.options.production || !trace, "portable QSA: trace requires eager diagnostic policy");
@@ -780,7 +881,12 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
 }
 bool PortableQsaLayer::prepare_chunk(size_t tokens,std::string& error) {
     error.clear();
-    try { require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
+    try {
+        PortableQsaAttention::Impl::Borrow borrow(impl_->shared());
+        require(!impl_->chunk_active,"portable layer: active chunk");
+        impl_->prepare(tokens,error);
+        return true;
+    }
     catch(const std::exception& e) { error=e.what(); return false; }
 }
 bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t position0,
@@ -788,6 +894,7 @@ bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t pos
     std::vector<PortableRoute>& routes,std::string& error) {
     error.clear(); routes.clear(); auto& s = *impl_;
     try {
+        PortableQsaAttention::Impl::Borrow borrow(s.shared());
         require(s.healthy && !s.chunk_active,"portable QSA: poisoned or active chunk; reset required");
         const size_t T=tokens.size();
         require(T>=1 && T<=8 && residual_rows.size()==T*RES && bool(dispatch),"portable QSA: invalid chunk shape/callback");
@@ -853,6 +960,7 @@ bool PortableQsaLayer::reset(std::string &error) {
         // original production reset did before its first allocation.
         if (s.options.production)
             s.healthy = false;
+        PortableQsaAttention::Impl::Borrow borrow(s.shared());
         require(!s.chunk_active,"portable QSA: chunk execution active");
         s.chunk_ffn.reset(); s.chunk_host_bound = 0;
         std::vector<float> zero(RES, 0);
@@ -870,7 +978,7 @@ bool PortableQsaLayer::reset(std::string &error) {
         s.last.clear();
         s.count = 0;
         s.placement.swap(placement);
-        s.graphs_size = s.fixed_graphs + s.retained_attention_bytes;
+        s.graphs_size = s.fixed_graphs + s.retained_attention_bytes();
         s.healthy = true;
         return true;
     } catch (const std::exception &e) {
@@ -900,9 +1008,10 @@ const std::vector<float> &PortableQsaLayer::indexer_tail() const {
 }
 const std::vector<float> &PortableQsaLayer::last_residual() const { return impl_->last; }
 const std::vector<PortablePlacement> &PortableQsaLayer::placements() const { return impl_->placement; }
+const PortableQsaAttention *PortableQsaLayer::attention_owner() const { return impl_->options.attention.get(); }
 size_t PortableQsaLayer::weight_bytes() const { return impl_->weights_size; }
 size_t PortableQsaLayer::graph_bytes() const {
-    return (impl_->attention ? impl_->fixed_graphs+impl_->retained_attention_bytes : impl_->graphs_size)+impl_->chunk_graphs();
+    return (impl_->attention_phase() ? impl_->fixed_graphs+impl_->retained_attention_bytes() : impl_->graphs_size)+impl_->chunk_graphs();
 }
 size_t PortableQsaLayer::state_bytes() const {
     return impl_->states_size+impl_->chunk_host_bound + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
@@ -947,9 +1056,10 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
             m.device_graph +=
                 ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.options.execution.accelerator);
     }
-    // Legacy attention has a temporary scheduler; reuse retains its actual buffers.
-    // Reserve the unspent aggregate layer graph cap on each backend, including workspaces; fixed
-    // scheduler buffers above are actual per-backend allocations.
+    // Keep the existing host envelope: the unchanged fixed schedulers also
+    // retain GGML metadata/context buffers outside get_buffer_size(). Sharing
+    // device attention storage does not justify removing this host allowance.
+    // Scheduler buffer fields above still report only actual owned allocations.
     const size_t buffers = m.host_graph + m.device_graph;
     const size_t allowance =
         s.options.execution.graph_budget > buffers ? s.options.execution.graph_budget - buffers : 0;
@@ -973,7 +1083,9 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
         require(fixed_private>=matrix_conversion,"portable QSA: fixed workspace accounting mismatch");
         m.device_extra_bound += fixed_private-matrix_conversion;
         portable_detail::account_matrix_conversion(m,s.options.execution.accelerator,matrix_conversion);
-        if (s.attention) {
+        if (s.shared()) {
+            // Shared scheduler and its full growth cap belong to the session.
+        } else if (s.attention) {
             // Future exact-shape replans may use the rest of this retained cap.
             m.device_extra_bound += s.options.execution.graph_budget - s.fixed_graphs-s.chunk_graphs() - (buffers-fixed_buffers-s.chunk_graphs());
         } else

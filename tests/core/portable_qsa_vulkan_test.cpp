@@ -2,6 +2,7 @@
 #include "ggml-vulkan.h"
 #include "portable_qsa_selection.hpp"
 #include "portable_qsa_production_fixture.hpp"
+#include "portable_qsa_shared_fixture.hpp"
 #include <cstdlib>
 using namespace qsa_fixture;
 int main(int argc, char **argv) {
@@ -154,6 +155,7 @@ int main(int argc, char **argv) {
                         "checks/CPU parity/rollback/reset device=%s weights=%zu graphs_with_workspace=%zu state=%zu reuse=%d\n",
                         mat, rope, description, layer->weight_bytes(), peak_graph_bytes, layer->state_bytes(), int(reuse));
             if (reuse) {
+                if (resident) shared_attention_tests(options, true);
                 production_tests(options, f.views, [&](int t){return f.input(t);});
                 selection_tests(options.execution, true, true);
                 std::printf("PASS strict Vulkan device-state selection width2051 boundaries/ties device=%s\n", description);
