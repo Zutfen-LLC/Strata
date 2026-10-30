@@ -73,7 +73,7 @@ StrataVkNativeStages* strata_vk_native_stages_create_observation(ggml_backend_t 
     return result.release();
 }
 static StrataVkNativeStages* strata_vk_native_stages_create_variant_observation(ggml_backend_t backend,const char* effective_spv_path,
-    const uint32_t* spv,size_t words,const char* name,bool trace) {
+    const uint32_t* spv,size_t words,const char* name,bool trace,size_t budget=SIZE_MAX) {
     logits_guard_need(backend && ggml_backend_is_vk(backend),"native stages: Vulkan required");
     auto result=std::make_unique<StrataVkNativeStages>();
     result->quant_trace=trace;
@@ -92,9 +92,12 @@ static StrataVkNativeStages* strata_vk_native_stages_create_variant_observation(
     g.metadata.reset(ggml_init({4096,nullptr,true}));
     logits_guard_need(bool(g.metadata),"native stages: metadata allocation failed");
     g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,32);
+    const auto bound=ggml_backend_alloc_ctx_tensors_from_buft_size(g.metadata.get(),ggml_backend_get_default_buffer_type(backend));
+    logits_guard_need(bound<=budget,"native stages: aligned metadata budget exceeded");
     g.buffer.reset(ggml_backend_alloc_ctx_tensors(g.metadata.get(),backend));
     logits_guard_need(bool(g.buffer),"native stages: metadata buffer failed");
     g.bytes=ggml_backend_buffer_get_size(g.buffer.get());
+    logits_guard_need(g.bytes<=budget,"native stages: actual metadata budget exceeded");
     auto& p=g.pipeline;
     p->name=name;p->parameter_count=6;p->push_constant_size=9*4;
     p->wg_denoms={1,1,1};p->align=1;p->initialized=true;
@@ -108,9 +111,9 @@ StrataVkNativeStages* strata_vk_native_stages_create_quant_trace_observation(ggm
     return strata_vk_native_stages_create_variant_observation(backend,path,strata_native_quant_trace_spv,sizeof(strata_native_quant_trace_spv)/4,
         "strata_native_q8_quant_trace_observation",true);
 }
-StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_backend_t backend,const char* path) {
+StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_backend_t backend,const char* path,size_t budget) {
     return strata_vk_native_stages_create_variant_observation(backend,path,strata_native_quant_rn_spv,sizeof(strata_native_quant_rn_spv)/4,
-        "strata_native_q8_quant_rn_observation",false);
+        "strata_native_q8_quant_rn_observation",false,budget);
 }
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}
 void strata_vk_native_stages_destroy(StrataVkNativeStages* s) noexcept {delete s;}
@@ -170,6 +173,7 @@ void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggm
 
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
 #include "strata_vk_native_moe_combine.inc"
+#include "strata_vk_native_shared.inc"
 #endif
 
 #include "strata_vk_native_router.inc"

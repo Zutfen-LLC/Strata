@@ -1,0 +1,78 @@
+#version 450
+#extension GL_EXT_integer_dot_product : require
+#extension GL_EXT_spirv_intrinsics : require
+// Native dense MMVQ and BF16 MMVF, deliberately separate from grouped experts.
+// See docs/native-shared-vulkan.md for the source correspondence.
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427)
+float native_shared_fma(float a,float b,float c);
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer W {uint w[];};
+layout(binding=1,std430) readonly buffer X {uint x[];};
+layout(binding=2,std430) writeonly buffer O {float output_values[];};
+layout(binding=3,std430) writeonly buffer A {float aux[];};
+layout(push_constant) uniform P {uint mode,ni,no,tokens,wb,xb,ob,ab,block_size;} p;
+shared float partial[256];
+shared float warps[32];
+uint weight_word(uint byte_offset) {
+    uint at=p.wb+byte_offset/4,shift=(byte_offset%4)*8;
+    if(shift==0)return w[at];
+    return (w[at]>>shift)|(w[at+1]<<(32-shift));
+}
+float weight_half(uint byte_offset) {
+    return unpackHalf2x16(w[p.wb+byte_offset/4]>>((byte_offset%4)*8)).x;
+}
+void xor_reduce(uint tid) {
+    for(uint offset=16;offset>0;offset>>=1) {
+        precise float next=partial[tid]+partial[tid^offset];
+        barrier();partial[tid]=next;barrier();
+    }
+}
+void main() {
+    uint tid=gl_LocalInvocationID.x,token=gl_WorkGroupID.y,row=gl_WorkGroupID.x;
+    if(p.mode==2) {
+        uint j=row*256+tid;
+        precise float raw=uintBitsToFloat(w[p.wb+token]);
+        precise float denominator=1.0+exp(-raw);
+        precise float sigmoid=1.0/denominator;
+        if(j<p.ni)output_values[p.ob+token*p.ni+j]=uintBitsToFloat(x[p.xb+token*p.ni+j])*sigmoid;
+        if(j==0)aux[p.ab+token]=sigmoid;
+        return;
+    }
+    float acc=0.0;
+    if(p.mode==0) {
+        // native_small_mmvq_kernel<Q80Block,8> / SmallTraits<Q80Block,8>:
+        // 128 threads, kbx=tid/4, iqs=2*(tid%4), block stride 32.
+        if(tid<128)for(uint block=tid/4;block<p.ni/32;block+=32) {
+            uint base=(row*(p.ni/32)+block)*34,iqs=2*(tid%4);
+            uint xx=p.xb+(token*(p.ni/32)+block)*9;
+            int dot=dotPacked4x8EXT(int(weight_word(base+2+4*iqs)),int(x[xx+1+iqs]));
+            dot+=dotPacked4x8EXT(int(weight_word(base+6+4*iqs)),int(x[xx+2+iqs]));
+            precise float scale=weight_half(base)*unpackHalf2x16(x[xx]).x;
+            acc=native_shared_fma(scale,float(dot),acc);
+        }
+        partial[tid]=acc;barrier();
+        // Native sums the other three warps in order BEFORE the XOR tree.
+        if(tid<32) {
+            precise float a=partial[tid]+partial[tid+32];
+            precise float b=a+partial[tid+64];
+            precise float c=b+partial[tid+96];acc=c;
+        }
+        barrier();partial[tid]=acc;barrier();xor_reduce(tid);
+        if(tid==0)output_values[p.ob+token*p.no+row]=partial[0];
+    } else {
+        // native_bf16.cu: two ordered FMAs per float2, original F32 input.
+        if(tid<32)warps[tid]=0.0;
+        if(tid<p.block_size)for(uint pair=tid;pair<p.ni/2;pair+=p.block_size) {
+            uint weight=w[p.wb+pair],xx=p.xb+token*p.ni+2*pair;
+            acc=native_shared_fma(uintBitsToFloat((weight&65535u)<<16),uintBitsToFloat(x[xx]),acc);
+            acc=native_shared_fma(uintBitsToFloat(weight&0xffff0000u),uintBitsToFloat(x[xx+1]),acc);
+        }
+        partial[tid]=acc;barrier();xor_reduce(tid);
+        if(tid<p.block_size && tid%32==0)warps[tid/32]=partial[tid];
+        barrier();
+        if(p.block_size>32) {
+            partial[tid]=tid<32?warps[tid]:0.0;barrier();xor_reduce(tid);
+        }
+        if(tid==0)output_values[p.ob+token]=partial[0];
+    }
+}

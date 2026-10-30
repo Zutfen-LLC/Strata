@@ -115,6 +115,7 @@ int main(int argc, char **argv) {
                              " [--gdn-resident-state (trial, default off)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
+                             " [--native-shared RECEIPT_PREFIX (native shared method; not CUDA bit identity)]\n"
                              " [--native-router RECEIPT_PREFIX (native method; not CUDA bit identity)]\n"
                              " [--expert-native-q8-observation RECEIPT_PREFIX (unqualified)] [--native-moe-combine (strict K10 observation)]\n"
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
@@ -183,7 +184,10 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if (key == "--native-router") {
+            if(key=="--native-shared") {
+                opts.native_shared=true;opts.native_shared_receipt_prefix=value;
+            }
+            else if (key == "--native-router") {
                 opts.native_router=true;opts.native_router_receipt_prefix=value;
             }
             else if (key == "--expert-native-q8-observation")
@@ -410,6 +414,7 @@ int main(int argc, char **argv) {
                          "native_moe_combine_observation=true qualified=false quantizer_qualified=false fp32_denorm_mode=unspecified\n";
         else
             std::cerr << "resident Vulkan/CPU expert rows; host PLE; original-order host merge. Vulkan hybrid Q8 is not CPU bit parity.\n";
+        if(opts.native_shared)std::cerr<<"native_shared_method=true numerical_parity=false qualified=false fp32_denorm_mode=unspecified\n";
         if(opts.native_router)std::cerr<<"native_router_method=true numerical_parity=false qualified=false fp32_denorm_mode=unspecified\n";
         const auto expert_report=[&](const char* stage,uint64_t position) {
             if(opts.expert_devices.empty()) return;
@@ -464,6 +469,12 @@ int main(int argc, char **argv) {
         std::vector<int32_t> executed_tokens;
         const auto heads_before = session->model_work();
         const auto router_fields = [&](std::ostream& out) {
+            if(opts.native_shared) {
+                const auto after=session->model_work();
+                out<<",\"native_shared_method\":true,\"shared_numerical_parity\":false"
+                   <<",\"native_shared_calls_delta\":"<<after.native_shared_calls-heads_before.native_shared_calls
+                   <<",\"native_shared_rows_delta\":"<<after.native_shared_rows-heads_before.native_shared_rows;
+            }
             if(!opts.native_router)return;
             const auto after=session->model_work();
             out<<",\"native_router_method\":true,\"router_numerical_parity\":false"
