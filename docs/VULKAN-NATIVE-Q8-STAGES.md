@@ -1456,3 +1456,14 @@ MODEL_ROOT NEW_OUTPUT [FROZEN_PLAN]` can stage all assets of an already bound
 native plan through the same verified source/cache path. It refuses any plan
 omitting an active expert and never remasks or reselects that request. Without
 the final argument it retains the original active-only staging behavior.
+
+For an explicitly synthetic multi-block cache check, existing
+`gpu_capture_replay_check --stage-check206 NEW_PRIVATE_EXPORT` also writes a
+`resident206/` capture, complete plan and206 verified blobs. The top-level
+export is the original two-expert80-entry control. Resident images repeat the
+same two control blobs by expert parity; the active IDs0/1 map to resident
+slots0/205. The exporter checks every blob and unchanged activations, masks,
+weights and order. At the ordinary1GiB block policy, the request references
+both blocks. Only test data changes; this is not native-placement qualification.
+Use1100MiB (`--budget-bytes 1153433600`) for a separately supervised replay,
+retaining actual allocation admission/refusal and original numerical checks.
