@@ -26,6 +26,10 @@ or a claim of native algorithm parity. Source pins inspected on 2026-10-30:
 - Diagnostic-only follow-up: `97fc53b522683bb8d978ae99782dacb4f5012c1b` adds
   resident-admission operands and a post-dense free-memory observation. It does
   not implement automatic sizing or change the admission predicate.
+- Explicit capacity-planning follow-up: `0216ec9b79f8109e160affa73bb5526b71466874`
+  ([draft PR #95](https://github.com/Zutfen-LLC/Strata/pull/95)), stacked on PR93.
+  Its post-dense sizing, immutable plan binding and aligned estimator are
+  inspected separately below; other rows retain their pinned reference.
 
 Links below pin those versions so that a flag or later refactor cannot silently
 change the reference. The historical `3dc7360` roadmap and first GDN-slice status
@@ -45,7 +49,7 @@ acceptance remain separate.
 | Discovery and capabilities | [`device_count`, `device_summary`, primary selection][n-device] and generation's architecture/runtime checks select an actual backend/device. Backend-specific reserve rules exist; they are not universal hardware constants. | [`portable_model_main`][v-main] selects ordered GGML Vulkan devices and validates totals/free/reserves. Native-stage dot/FMA logical enablement and [BDA/int64 checks][v-address] are additional Vulkan plumbing. Physical support is not proof of logical enablement. Keep explicit unsupported errors; do not bypass checks to make a run start. Product-level discovery/integration remains separate from this opt-in CLI. |
 | Model load and immutable weights | [`WeightTable::load`, `NativeDense` binding in generation][n-load] and native head/embedding paths bind supported model roles once. Native role/format support is broader than this Q8 target. | [`PortableModelSession::Impl`][v-model] reads the six-shard GGUF geometry and trusted expert identity; portable dense/head/FFN owners retain their copies. [`dense_resident_weights`][v-options] is still an explicit trial, not enabled by topology. Preserve dtype/provenance, including BF16 scalar recovery and BF16 indexer widening. Do not call a CPU-resident weight with repeated backend transfers equivalent to native device residency. |
 | State, scratch and schedulers | [`session_bytes`/`session_init`][n-session] carve shared GDN/QSA/MoE/block scratch and per-layer state. [`Verifier::init` and captured windows][n-verify] retain model-specific execution resources. Native packs bypass the older `SessionGraphs` route ([selection][n-window-select]). | The [model][v-model] shares GDN and QSA scratch owners per dense backend. [Device admission][v-memory] distinguishes persistent weights/state, retained schedulers/private workspace and peak temporary/conversion storage. These are GGML/backend costs, not native arena sizes. Resident/production state flags exist, but their presence does not mean a run selected them. Audit ownership and actual high-water requirements before changing a bound; an unspent conservative allowance is not measured VRAM. |
-| Reserves and expert capacity | After weights/session allocations, [generation reads current free memory][n-auto]. Auto mode prices reserve and future prompt resources; its per-layer mode computes `q = floor(min(requested byte ceiling, free room) / sum(layer slot strides))` ([implementation][n-size]). [`RemoteExperts::open`][n-helper] independently accounts for helper weights/free reserve and optionally auto-sizes. | The current [portable budget invariant][v-budget-doc] combines an independent policy ceiling, backend availability, reserve and conservative ledger. It then charges **configured expert tensor plus runtime budgets**, even when weights allocate less. It admits a frozen plan or refuses; it does not reproduce native automatic sizing. The [diagnostic follow-up][v-expert-preflight] exposes the missing operands, not a new sizing heuristic. This is the immediate migration gap. |
+| Reserves and expert capacity | After weights/session allocations, [generation reads current free memory][n-auto]. Auto mode prices reserve and future prompt resources; its per-layer mode computes `q = floor(min(requested byte ceiling, free room) / sum(layer slot strides))` ([implementation][n-size]). [`RemoteExperts::open`][n-helper] independently accounts for helper weights/free reserve and optionally auto-sizes. | The current [portable budget invariant][v-budget-doc] combines an independent policy ceiling, backend availability, reserve and conservative ledger. Fixed-plan mode charges **configured expert tensor plus runtime budgets** and admits the frozen plan or refuses. The [diagnostic follow-up][v-expert-preflight] exposes those operands. In explicit [native-capacity mode][v-capacity], post-dense ledger and physical-free room bound the requested byte ceiling; the native per-layer formula and exact aligned cache estimate determine capacity before plans freeze. Runtime allowances, caps and reserves remain charged. This covers per-layer primary plus one helper, not native global fill, auto tail extension, multiple helpers or adaptive policies. |
 | Primary/helper ownership and profile order | [`ExpertCache::admit`][n-admit] supports per-layer no-eviction quotas. [Profile fill][n-fill] continues past a full layer; the [helper][n-helper] selects first distinct unclaimed source-ranked pairs. Native also supports other modes, multiple helpers, auto tail extension and optional adaptation. | [`partition_native`][v-select] mirrors the fixed-slot, per-layer primary plus one-helper selection. It does not implement all those other modes. [`dense_device`][v-topology] explicitly puts dense/state/head on the primary; portable's default remains contiguous split. GPU-plan assets are sorted **after ownership selection**: physical slot numbers may differ from native fill order, so compare ownership, masks and restored route order rather than slot-number equality. No invented alternating/balanced policy belongs in the native mode. |
 | Resident experts and CPU misses | Native [`ExpertCache`][n-cache] owns persistent expert blobs; [`RemoteExperts`][n-helper] owns helper cache/resources. Uncached experts remain CPU work through the existing `ExpertPool`, not implicit graph fallback. | The opt-in [`NativeQ8Cache`][v-cache] uses bounded GGML blocks and one fixed 80-entry scratch; its [address formation][v-address] checks owners/ranges. This is new Vulkan storage plumbing, not CUDA's allocator. The older portable per-expert graph path is a separate mode. [`LocalExperts`][v-local] dispatches plan-owned entries, restores original slots, and sends misses to [the original native CPU pool][v-cpu]. Keep weight bytes, scratch, runtime allowance and CPU work distinct. |
 | Router, shared expert and combine | Native [`route_multi`][n-router], dense MMVQ/BF16 shared expert methods and [`combine_k10_vec4`][n-combine] define tie/reduction behavior and ordered first-product/FMA/shared-add arithmetic. | Vulkan [router][v-router] emulates the native logical lane order; [shared source correspondence][v-shared-doc] preserves distinct dense versus grouped reductions; [combine][v-combine] preserves K10 ordering. These are shader ports, not the native kernel binaries. Descriptor components use Logical addressing; GU/down use physical64 ([ABI distinction][v-abi]). Denorm/Exp and cross-vendor arithmetic qualifications remain explicit. Shader instruction/unit tests alone do not establish native algorithm or full-model parity. |
@@ -65,7 +69,8 @@ applies to older example helper counts in [PORTABLE_MODEL.md](PORTABLE_MODEL.md)
 The native per-layer flag is itself optional; the native engine also supports
 global profile fill and automatic capacity paths.
 
-For a future native-sizing Vulkan mode, keep the native ordering:
+The explicit native-sizing mode in PR95 implements this ordering for its bounded
+primary-plus-one-helper target; retain it when broadening support:
 
 1. Bind the selected native model/method and price or allocate dense weights,
    session state, reusable scratch and future prompt requirements on their owners.
@@ -103,7 +108,9 @@ name a row above, the native reference function, the intended semantic result
 and its decisive test. Test constants and private operator scripts do not become
 production defaults. Keep failed runs and unsupported cases visible.
 
-1. **Reconcile post-dense capacity before another sizing change.** Preserve the
+1. **Reconcile post-dense capacity before another sizing change.** The source
+   audit is complete for this target: no duplicate retained owner was established,
+   so the conservative ledger is retained. Preserve the
    diagnostic-only PR93 follow-up. Host tests must cover both devices, exact fit,
    one-byte refusal, overflow, no ledger mutation and no free-memory observation
    granting ledger credit. Once this map is adopted, the smallest decisive
@@ -112,8 +119,10 @@ production defaults. Keep failed runs and unsupported cases visible.
    effective cap and shortfall before refusal. No load-only-plus-GEN duplicate,
    guessed smaller quotas, changed reserves or admission bypass. Use the data to
    choose between a resource-lifetime correction and the native sizing slice.
-2. **Implement native capacity planning at the existing load/plan seam.** Keep
-   explicit fixed-plan behavior. Add only the supported native sizing mode,
+2. **Implement native capacity planning at the existing load/plan seam.**
+   Implemented for the explicit bounded mode in PR95, with host golden,
+   immutable-plan and shared allocator-estimator tests. Preserve
+   explicit fixed-plan behavior and only the supported native sizing mode,
    applying the byte-ceiling/quota/rank sequence above. Golden host cases compare
    with the native formula: equal/unequal layer sizes, exact/short room, alignment,
    primary/helper exclusion, duplicate/short profiles and overflow. Refuse missing
@@ -210,3 +219,5 @@ does not authorize a new physical run.
 [v-timing-doc]: PORTABLE_MODEL.md#coarse-model-phase-totals
 
 [v-qsa-graph]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/portable_qsa_graph.hpp#L6
+
+[v-capacity]: https://github.com/Zutfen-LLC/Strata/blob/0216ec9b79f8109e160affa73bb5526b71466874/src/core/portable_model.cpp#L403
