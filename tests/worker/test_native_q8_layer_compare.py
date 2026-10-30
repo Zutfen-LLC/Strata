@@ -1,4 +1,7 @@
 import importlib.util
+import hashlib
+import json
+import sys
 import os
 import subprocess
 from pathlib import Path
@@ -36,13 +39,51 @@ class Comparison(unittest.TestCase):
                     with self.assertRaises(ValueError):m.compare(a,b)
             Path(str(a)+'.metadata').write_bytes(legacy)
             Path(str(b)+'.metadata').write_bytes(numeric)
-            with self.assertRaises(ValueError):m.compare(a,b)
+            result=m.compare(a,b)
+            self.assertTrue(result['exact_consumed_boundaries'])
+            self.assertEqual(result['metadata_format'],'legacy_uint8_stream')
+            self.assertEqual(result['vulkan_metadata_format'],'numeric_header')
+            self.assertEqual(result['metadata_sha256'],hashlib.sha256(legacy).hexdigest())
+            self.assertEqual(result['vulkan_metadata_sha256'],hashlib.sha256(numeric).hexdigest())
+            self.assertEqual(result['canonical_metadata_sha256'],hashlib.sha256(numeric).hexdigest())
+            # Valid encoding migration must not hide identity/order changes.
+            for old,new in ((b'record 0 ',b'record 1 '),(b'model 0 ',b'model 1 '),
+                            (b'placement 0 0 ',b'placement 1 0 '),(b'layer 0 ',b'layer 1 '),
+                            (b' T 2 K 10',b' T 3 K 10'),(b'00000000',b'10000000')):
+                changed=numeric.replace(old,new,1)
+                self.assertNotEqual(changed,numeric)
+                Path(str(b)+'.metadata').write_bytes(changed)
+                with self.assertRaises(ValueError):m.compare(a,b)
+            for line in range(2,8):
+                lines=numeric.split(b'\n')
+                values=lines[line].split()
+                values[0],values[-1]=values[-1],values[0]
+                lines[line]=b' '.join(values)+b' '
+                Path(str(b)+'.metadata').write_bytes(b'\n'.join(lines))
+                with self.assertRaises(ValueError):m.compare(a,b)
+            for bad in (numeric.replace(b'0 1 2 ',b'0  1 2 ',1),numeric.replace(b'\n',b'\r\n'),numeric+b'\n'):
+                # Also reject malformed identical inputs, not just differing bytes.
+                for prefix in (a,b):Path(str(prefix)+'.metadata').write_bytes(bad)
+                with self.assertRaises(ValueError):m.compare(a,b)
+            Path(str(a)+'.metadata').write_bytes(numeric)
+            Path(str(b)+'.metadata').write_bytes(legacy)
+            self.assertTrue(m.compare(a,b)['exact_consumed_boundaries'])
+            Path(str(b)+'.output.f32').write_bytes(struct.pack('<f',1.0)+bytes(204796))
+            report=Path(folder)/'report.json'
+            child=subprocess.run([sys.executable,str(m.__file__),str(a),str(b),str(report)],capture_output=True)
+            self.assertEqual(child.returncode,1)
+            result=json.loads(report.read_text())
+            self.assertFalse(result['exact_consumed_boundaries'])
+            self.assertFalse(result['qualified'])
+            self.assertEqual(result['stages']['.output.f32']['different'],1)
+            self.assertEqual(Path(str(a)+'.metadata').read_bytes(),numeric)
+            self.assertEqual(Path(str(b)+'.metadata').read_bytes(),legacy)
 
     def test_exact_failures_and_identity(self):
         with tempfile.TemporaryDirectory() as folder:
             a, b = Path(folder)/'a', Path(folder)/'b'
             for prefix in (a, b):
-                Path(str(prefix)+'.metadata').write_bytes(b'record 0 model 1 placement 1 2 layer 0 T 1 K 1\ndigests\n0\n0\n0 1\n0\n0\n0\n')
+                Path(str(prefix)+'.metadata').write_bytes(('record 0 model 1 placement 1 2 layer 0 T 1 K 1\n'+('0'*32+' ')*4+'\n0 \n0 \n0 1 \n0 \n0 \n0 \n').encode())
                 for suffix, size in zip(m.SUFFIXES, (2880,2560,2560,720,10240)):
                     Path(str(prefix)+suffix).write_bytes(bytes(size) if suffix.endswith('q8_1') else struct.pack('<f',1.0)*(size//4))
             self.assertTrue(m.compare(a,b)['exact_consumed_boundaries'])
@@ -52,9 +93,9 @@ class Comparison(unittest.TestCase):
             self.assertEqual(m.compare(a,b)['stages']['.output.f32']['nonfinite'], ['vulkan'])
             for groups in (20,24,25):
                 entries=groups
-                header=f'record 0 model 1 placement 1 2 layer 0 T 3 K 10\ndigests\n'
+                header=f'record 0 model 1 placement 1 2 layer 0 T 3 K 10\n'+('0'*32+' ')*4+'\n'
                 rows=[list(range(groups)),list(range(groups)),list(range(groups+1)),list(range(entries)),[i//10 for i in range(entries)],list(range(entries))]
-                metadata=header+''.join(' '.join(map(str,row))+'\n' for row in rows)
+                metadata=header+''.join(' '.join(map(str,row))+' \n' for row in rows)
                 for prefix in (a,b):
                     Path(str(prefix)+'.metadata').write_text(metadata)
                     for suffix,size in zip(m.SUFFIXES,(3*2880,entries*2560,entries*2560,entries*720,entries*10240)):

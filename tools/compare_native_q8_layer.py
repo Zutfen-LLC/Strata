@@ -16,7 +16,7 @@ def read(prefix, suffix):
         raise ValueError('boundary size outside one-layer bound: ' + suffix)
     return p.read_bytes()
 
-def parse_metadata(a):
+def normalize_metadata_header(a):
     # Old C++ ostream emitted uint8_t T/K as raw characters (K=10 is LF).
     # Match that exact producer header only; never discard arbitrary lines.
     legacy = re.match(rb'(record [0-9]+ model [0-9]+ placement [0-9]+ [0-9]+ layer [0-9]+ T )([\x01-\x08]) K ([\x01-\x0a])\n', a)
@@ -24,9 +24,18 @@ def parse_metadata(a):
     if legacy:
         canonical = (legacy[1] + str(legacy[2][0]).encode() + b' K ' +
                      str(legacy[3][0]).encode() + b'\n' + a[legacy.end():])
-    lines = canonical.decode('ascii').splitlines()
-    if len(lines) != 8:
+    return canonical, bool(legacy)
+
+def parse_metadata(a):
+    canonical, legacy = normalize_metadata_header(a)
+    lines = canonical.decode('ascii').split('\n')
+    if len(lines) != 9 or lines[-1] != '':
         raise ValueError('invalid one-layer metadata')
+    lines.pop()
+    if not re.fullmatch(r'(?:[0-9a-f]{32} ){4}', lines[1]):
+        raise ValueError('invalid one-layer request digests')
+    if any(not re.fullmatch(r'(?:-?[0-9]+ )+', line) for line in lines[2:]):
+        raise ValueError('invalid one-layer metadata array encoding')
     header = re.fullmatch(r'record [0-9]+ model [0-9]+ placement [0-9]+ [0-9]+ layer [0-9]+ T ([1-8]) K (10|[1-9])', lines[0])
     if not header:
         raise ValueError('invalid one-layer request header')
@@ -45,15 +54,21 @@ def parse_metadata(a):
 
 def compare(native, vulkan):
     a, b = read(native, '.metadata'), read(vulkan, '.metadata')
-    if a != b:
-        raise ValueError('request/plan/group/entry metadata mismatch')
     tokens, entries, legacy = parse_metadata(a)
+    _, _, vulkan_legacy = parse_metadata(b)
+    canonical_a, _ = normalize_metadata_header(a)
+    canonical_b, _ = normalize_metadata_header(b)
+    if canonical_a != canonical_b:
+        raise ValueError('request/plan/group/entry metadata mismatch')
     expected_sizes = (tokens*2880, entries*2560, entries*2560, entries*720, entries*10240)
     report = {'exact_consumed_boundaries' : True, 'qualified': False,
               'quantizer_qualified': False, 'observation_only': True,
               'historical_omnibus_failure_unchanged': True,
               'metadata_format': 'legacy_uint8_stream' if legacy else 'numeric_header',
-              'metadata_sha256': hashlib.sha256(a).hexdigest(), 'stages': {}}
+              'metadata_sha256': hashlib.sha256(a).hexdigest(),
+              'vulkan_metadata_format': 'legacy_uint8_stream' if vulkan_legacy else 'numeric_header',
+              'vulkan_metadata_sha256': hashlib.sha256(b).hexdigest(),
+              'canonical_metadata_sha256': hashlib.sha256(canonical_a).hexdigest(), 'stages': {}}
     for suffix, expected_size in zip(SUFFIXES, expected_sizes):
         a, b = read(native, suffix), read(vulkan, suffix)
         if len(a) != expected_size or len(a) != len(b):

@@ -1220,15 +1220,20 @@ characters. At T2/K10 this emits a control byte for T and a newline for K,
 creating nine text lines instead of eight. The writer now casts both values to
 unsigned integers. The offline comparator also recognizes the exact old header
 encoding, so retained captures can be compared without modifying or regenerating
-them. Raw native/Vulkan metadata must still be byte-identical before parsing.
-Only the legacy header is interpreted in memory; arbitrary extra lines are
-refused, and group, entry, token and boundary-length checks remain enforced.
-The report records the original metadata SHA256 and its encoding. No tolerance
+them. Each metadata input is parsed strictly before comparison. Only the exact
+legacy T/K header encoding is converted in memory; the complete resulting
+metadata must be byte-identical, including every identity field, digest and
+array. No whitespace is trimmed or lines discarded. LF records, digest fields,
+array syntax, group/entry/token geometry and boundary lengths are validated.
+The report retains both original metadata SHA256 values and encodings plus the
+canonical SHA256. Existing `metadata_format`/`metadata_sha256` identify the native
+input; `vulkan_metadata_format`/`vulkan_metadata_sha256` identify Vulkan. No tolerance
 or numerical success condition changes.
 
 An actual C++ emitter regression generates both the old byte format and the
 new numeric format for T2/K10. It checks retained-format parsing, immutable input
-bytes, extra-line refusal, header corruption and cross-format identity refusal.
+bytes, extra-line refusal, header corruption, equivalent legacy/numeric pairing,
+and genuine identity/shape/order mismatch refusal.
 For existing captures, run only the updated Python comparator:
 
 ```sh
@@ -1290,6 +1295,14 @@ No timing run on a GPU was performed. CUDA compilation of the shared replay
 entry-point change is not available locally; its single-call arithmetic remains
 unchanged.
 
+When a retained native capture has the old character header and a newer Vulkan
+capture has the numeric header, the updated offline comparator accepts them
+only after this strict canonical equality check. It then runs the unchanged
+exact numerical comparisons. An equivalent metadata encoding cannot convert a
+numerical failure into a pass: a regression exercises the real CLI and verifies
+exit 1, an official JSON report and unchanged qualification flags for a changed
+F32 word. No GPU recapture or original-file rewrite is required.
+
 ### Optional strict FP32 FMA diagnostic
 
 `STRATA_VULKAN_NATIVE_Q8_STRICT_FMA=ON` requires the existing native-stage
@@ -1302,11 +1315,12 @@ in an ordinary provider build merely to discover device support.
 The pin-checked bridge appends `VkPhysicalDeviceShaderFmaFeaturesKHR` to its
 existing feature query and logical-device creation chain, enables the extension,
 and requests only FP32. Its creation receipt becomes enabled only after
-`vkCreateDevice` succeeds. Strict component creation requires that receipt. The strict build also rolls
-back the pinned factory cache on initialization failure. Its destructor skips
+`vkCreateDevice` succeeds. Strict component creation requires that receipt.
+The strict build also rolls back the pinned factory cache on initialization failure. Its destructor skips
 Vulkan cleanup when no logical device was created; automatic host members
 still unwind. A refused lookup can therefore be retried without returning an
-incomplete cached object. There is no fallback to ordinary `fma`, software FMA or another device.
+incomplete cached object. There is no fallback to ordinary `fma`, software FMA
+or another device.
 
 The strict shader uses `GL_EXT_spirv_intrinsics` to emit `OpFmaKHR`, capability
 `FMAKHR` and extension `SPV_KHR_fma`. The separate scale multiply, signed packed
