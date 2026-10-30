@@ -46,6 +46,17 @@ int main(){try {
         try{native_q8_time_replay<FakeClock>(infer,snapshot,FakeClock::time_point(FakeClock::duration(60000)),error);}catch(const std::runtime_error&){stopped=true;}
         require(stopped,"owned allocation growth/change was accepted");
     }
+    {
+        GpuExecutionTrace trace;EntryRowsReply reply;std::vector<float> packed(80*H);
+        for(int i=0;i<80;++i)trace.original.push_back(i<40?i*2:(i-40)*2+1);
+        reply.rows.resize(80*H);
+        for(int i=0;i<80;++i){reply.indices.push_back(i);std::fill_n(packed.begin()+i*H,H,float(i+1));
+            std::fill_n(reply.rows.begin()+trace.original[i]*H,H,float(i+1));}
+        native_q8_check_restored_rows(reply,trace,packed);
+        reply.rows.back()=-1;bool rejected=false;
+        try{native_q8_check_restored_rows(reply,trace,packed);}catch(const std::exception&){rejected=true;}
+        require(rejected,"wrong restored row contents accepted");
+    }
     std::cout<<"fixed warmups/calls, timing scope, exact repeats, deadline, failures and fresh allocation counters checked; no GPU execution\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

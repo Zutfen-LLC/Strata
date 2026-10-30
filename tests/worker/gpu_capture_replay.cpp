@@ -650,7 +650,7 @@ void first_boundary_check() {
 }
 int main(int argc,char** argv) {
     try {
-        if(argc==2 && (std::string(argv[1])=="--stage-check" || std::string(argv[1])=="--stage-check80")) {
+        if((argc==2 && std::string(argv[1])=="--stage-check") || ((argc==2 || argc==3) && std::string(argv[1])=="--stage-check80")) {
             const int T=std::string(argv[1])=="--stage-check80"?8:1,K=T==8?10:2;
             Fixture fixture;const auto setup=fixture.setup();const auto path=(fixture.root/"capture.bin").string();std::string err;CpuCapture capture;
             require(capture.prepare(setup,fixture.m.identity,fixture.m.index_digest,path,err,1u<<20),err);
@@ -660,7 +660,9 @@ int main(int argc,char** argv) {
               require(capture.window(window?T:0,rows,T==8 && !window?1:2),"stage fixture capture window");
               for(int layer=0;layer<2;++layer){InferRequest q;q.session=1;q.sequence=layer+1;q.model_id=setup.model_id;q.partition_id=setup.partition_id;q.layer=layer;q.T=rows;q.K=K;
                 q.ids.resize(rows*K);for(int i=0;i<rows*K;++i)q.ids[i]=1-i%2;
-                q.mask.assign(rows*K,1);q.weights.assign(rows*K,.5f);q.activations.assign(rows*2560,.1f);std::vector<float> partial(rows*2560,.25f);
+                q.mask.assign(rows*K,1);q.weights.assign(rows*K,.5f);q.activations.assign(rows*2560,.1f);
+                for(int t=0;t<rows;++t)std::fill_n(q.activations.begin()+t*2560,2560,.1f+float(t)*.01f);
+                std::vector<float> partial(rows*2560,.25f);
                 require(capture.begin(q) && capture.finish(partial.data()),"stage fixture capture record");}
             }
             const float logits[]={1.f,2.f};require(capture.seal(logits,2),"stage fixture capture seal");
@@ -671,6 +673,26 @@ int main(int argc,char** argv) {
             GpuCache cache;require(cache.open(output+"/blobs",plan.assigned_bytes(),err),err);std::vector<uint8_t> missing,blob;
             require(cache.prepare(plan,missing,err) && missing==std::vector<uint8_t>({0,0}),"staged blobs failed reuse validation");
             for(const auto& a:plan.assets){require(cache.read(a,blob,err) && blob==fixture.blobs[a.expert],"staged expert bytes differ");}cache.close();
+            if(T==8) {
+                // Optional private export reuses this existing synthetic capture,
+                // verified staged plan and blobs. No model/backend is started.
+                const fs::path retained=argc==3?fs::path(argv[2]):fixture.root/"export-check";
+                require(retained.is_absolute() && fs::create_directory(retained),"stage export must be a new absolute directory");
+                fs::permissions(retained,fs::perms::owner_all,fs::perm_options::replace);
+                fs::copy_file(path,retained/"capture.bin");
+                fs::copy_file(output+"/one-layer.plan",retained/"one-layer.plan");
+                fs::copy_file(output+"/assignments.txt",retained/"assignments.txt");
+                fs::create_directory(retained/"blobs");
+                fs::permissions(retained/"blobs",fs::perms::owner_all,fs::perm_options::replace);
+                for(const auto& asset:plan.assets)fs::copy_file(fs::path(output)/"blobs"/key(plan,asset),retained/"blobs"/key(plan,asset));
+                CpuCaptureFile exported;GpuPlan exported_plan;
+                require(read_cpu_capture((retained/"capture.bin").string(),exported,err),err);
+                require(read_gpu_plan((retained/"one-layer.plan").string(),exported_plan,err),err);
+                require(exported.records.front().request.T==8 && exported.records.front().request.K==10 &&
+                    exported.records.front().request.mask==std::vector<uint8_t>(80,1) && exported_plan.assigned_bytes()==plan.assigned_bytes() && exported_plan.assets.size()==2,
+                    "exported 80-entry capture/plan changed");
+                if(argc==3)std::printf("STAGE_EXPORT synthetic=true GPU=0 record=0 entries=80 path=%s\n",retained.c_str());
+            }
             require(invoke()!=0,"stage overwrote existing output");std::puts("STAGE_CHECK full_record=1 existing_manifest_source_cache=1 exact_blobs=1 no_overwrite=1 GPU=0");return 0;
         }
         if(argc==7 && std::string(argv[1])=="--stage-record") {
@@ -762,7 +784,7 @@ int main(int argc,char** argv) {
         const bool survey_mode=argc>=6 && std::string(argv[1])=="--survey";
         const bool grouped=argc>=6 && std::string(argv[1])=="--grouped";
         const bool cpu_mode=argc>=6 && std::string(argv[1])=="--cpu-control";
-        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --stage-record CAPTURE RECORD LOCAL_MANIFEST MODEL_ROOT NEW_OUTPUT | --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check | --boundary CAPTURE PACKET BLOB_DIR NEW_OUTPUT B_PLAN... | --boundary-check");
+        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --stage-check80 [NEW_PRIVATE_EXPORT] | --stage-record CAPTURE RECORD LOCAL_MANIFEST MODEL_ROOT NEW_OUTPUT | --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check | --boundary CAPTURE PACKET BLOB_DIR NEW_OUTPUT B_PLAN... | --boundary-check");
         CpuCaptureFile f;std::string err;require(read_cpu_capture(argv[2],f,err),err);
         std::vector<GpuPlan> plans;const int begin=selecting?3:listing?4:5;
         for(int i=begin;i<argc;++i){GpuPlan p;require(read_gpu_plan(argv[i],p,err),err);plans.push_back(p);}

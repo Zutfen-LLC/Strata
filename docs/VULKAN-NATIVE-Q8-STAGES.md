@@ -1413,3 +1413,19 @@ Host call-recorder tests cover capacity, order restoration and allocations;
 they do not establish physical capacity or numerical qualification. Physical
 CUDA/Vulkan comparison remains a separate paired check, retaining the existing
 approximate-intrinsic qualifications.
+
+For a model-free production-cache check, the existing offline fixture can export
+its synthetic 80-entry capture and verified two-expert plan/blobs:
+`gpu_capture_replay_check --stage-check80 NEW_ABSOLUTE_PRIVATE_DIRECTORY`.
+This invokes no GPU and refuses an existing destination. Record 0 is T8/K10
+with all 80 entries active and distinct token inputs; captured partials are
+synthetic fixture placeholders, not a numerical reference. Feed its
+`capture.bin`, record `0`, `one-layer.plan` and `blobs` to the existing
+`vulkan_native_q8_replay --timing` invocation. That bounded replay checks
+18 identical requests and live allocation snapshots, a weights-only budget
+refusal, restored reply row bits against captured packed down output, and owned
+counter cleanup after release. It reports actual tensor/weight/scratch bytes
+and allocation count. These exclude driver/pipeline memory; external cleanup
+and resource observations remain separate. Timing samples do not establish a
+speed claim. The replay target requires the existing portable model/local-expert
+build gate; standalone composed fixtures do not require that gate.

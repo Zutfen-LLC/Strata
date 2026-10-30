@@ -79,6 +79,13 @@ int main(int argc,char** argv){try {
     ggml_backend_dev_props props{};ggml_backend_dev_get_props(ggml_backend_get_device(backend.get()),&props);
     require(props.description && std::string(props.description).find(expected)!=std::string::npos,"unexpected Vulkan device");
     std::cout<<"vulkan_device="<<props.description<<" device_id="<<(props.device_id?props.device_id:"unknown")<<"\n";
+    // Refuse a weights-only budget before any tensor workspace can be owned.
+    auto small=create_vulkan_native_q8_observation(backend.get(),p.assigned_bytes(),prefix+".budget-reject");
+    GpuCounters rejected;std::string budget_error;
+    require(!small->prepare_source(p,reader,rejected,budget_error) && budget_error.find("budget")!=std::string::npos &&
+        !rejected.gpu_allocated_bytes && !rejected.gpu_weight_bytes && !rejected.gpu_scratch_bytes && !rejected.gpu_allocation_count &&
+        !vulkan_native_q8_allocation_snapshot(small.get(),rejected),"native Q8 weights-only budget refusal/rollback failed");
+    small.reset();
     auto executor=create_vulkan_native_q8_observation(backend.get(),128u<<20,prefix,prefix,timing);GpuCounters counters;EntryRowsReply reply;
     require(executor->prepare_source(p,reader,counters,error),error);
     if(timing) {
@@ -94,8 +101,21 @@ int main(int argc,char** argv){try {
         std::cout<<"\n";
     } else require(executor->infer_rows(p,q,reply,error),error);
     size_t at=0;for(size_t j=0;j<q.mask.size();++j)if(q.mask[j])require(at<reply.indices.size() && reply.indices[at++]==j,"restored reply association mismatch");require(at==reply.indices.size(),"extra reply rows");
-    std::cout<<"tensor_bytes="<<counters.gpu_allocated_bytes<<" scratch_bytes="<<counters.gpu_scratch_bytes<<" host_staging_peak="<<counters.host_staging_peak<<"\n";
-    executor->release(counters);
+    std::vector<float> packed_output(t.original.size()*H);
+    std::ifstream output(prefix+".output.f32",std::ios::binary);
+    require(bool(output.read(reinterpret_cast<char*>(packed_output.data()),packed_output.size()*4)) && output.peek()==EOF,
+        "native Q8 captured down output shape/read failed");
+    native_q8_check_restored_rows(reply,t,packed_output);
+    GpuCounters actual;require(vulkan_native_q8_allocation_snapshot(executor.get(),actual) && native_q8_same_allocations(counters,actual),
+        "native Q8 final actual allocation snapshot differs");
+    std::cout<<"cache_accounting_observation=true qualified=false weights_only_budget_rejected=true restored_row_bits_checked=true"
+        <<" tensor_bytes="<<actual.gpu_allocated_bytes<<" weight_bytes="<<actual.gpu_weight_bytes
+        <<" scratch_bytes="<<actual.gpu_scratch_bytes<<" allocation_count="<<actual.gpu_allocation_count
+        <<" host_staging_peak="<<counters.host_staging_peak<<"\n";
+    executor->release(counters);GpuCounters after_release;
+    require(!counters.gpu_allocated_bytes && !counters.gpu_weight_bytes && !counters.gpu_scratch_bytes && !counters.gpu_allocation_count &&
+        !vulkan_native_q8_allocation_snapshot(executor.get(),after_release),"native Q8 release left owned allocations");
+    std::cout<<"cache_release_observation=true owned_tensor_counters_zero=true backend_still_borrowed=true\n";
 #endif
     std::ofstream meta(prefix+".metadata");native_q8_metadata_header(meta,ordinal,p,q);
     for(const auto& d:{blob_digest(q.activations.data(),q.activations.size()*4),blob_digest(q.ids.data(),q.ids.size()*sizeof(q.ids[0])),blob_digest(q.weights.data(),q.weights.size()*4),blob_digest(q.mask)}){meta<<hexid(d.a)<<hexid(d.b)<<' ';}meta<<'\n';
