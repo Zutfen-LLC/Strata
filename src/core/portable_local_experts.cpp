@@ -65,9 +65,11 @@ LocalExperts::LocalExperts(const GgufModel& model,CpuExperts& cpu,const Portable
         require(option.tensor_cap>0 && option.workspace_cap>0 && option.free_reserve>0 &&
                 option.tensor_cap<=SIZE_MAX-option.workspace_cap,
                 "invalid resident expert budgets");
+        require(option.native_frozen_plan.empty() || !opts.expert_native_profile.empty(),"native plan bytes require explicit native planning");
         Device d; d.options=option; d.backend=opts.accelerators[option.accelerator];
         std::string error;
-        require(worker::read_gpu_plan(option.plan_path,d.plan,error),error);
+        require(option.native_frozen_plan.empty()?worker::read_gpu_plan(option.plan_path,d.plan,error):
+            worker::decode_gpu_plan(option.native_frozen_plan.data(),option.native_frozen_plan.size(),d.plan,error),error);
         std::vector<std::pair<uint16_t,uint16_t>> pairs;
         for (const auto& a:d.plan.assets) {
             require(owned.emplace(a.layer,a.expert).second,"duplicate resident expert ownership");

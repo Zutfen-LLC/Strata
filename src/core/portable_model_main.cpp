@@ -115,6 +115,7 @@ int main(int argc, char **argv) {
                              " [--gdn-resident-state (trial, default off)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
+                             " [--expert-native-profile STRP --expert-native-primary-slots N --expert-native-helper-slots N --expert-native-plan-prefix NEW_PREFIX (native sizing, excludes fixed plans)]\n"
                              " [--native-shared RECEIPT_PREFIX (native shared method; not CUDA bit identity)]\n"
                              " [--native-router RECEIPT_PREFIX (native method; not CUDA bit identity)]\n"
                              " [--expert-native-q8-observation RECEIPT_PREFIX (unqualified)] [--native-moe-combine (strict K10 observation)]\n"
@@ -239,6 +240,10 @@ int main(int argc, char **argv) {
                 dump = value;
             else if (key == "--dump-executed-logits")
                 executed_dump = value;
+            else if (key == "--expert-native-profile") opts.expert_native_profile=value;
+            else if (key == "--expert-native-primary-slots") opts.expert_native_primary_slots=integer(value);
+            else if (key == "--expert-native-helper-slots") opts.expert_native_helper_slots=integer(value);
+            else if (key == "--expert-native-plan-prefix") opts.expert_native_plan_prefix=value;
             else if (key == "--expert-plan") {
                 const auto colon=value.find(':');
                 if(colon==std::string::npos || colon+1==value.size()) throw std::runtime_error("expert plan requires SLOT:FILE");
@@ -288,6 +293,14 @@ int main(int argc, char **argv) {
             throw std::runtime_error("separate cap required for each Vulkan device");
         if (devices.size() == 2 && devices[0] == devices[1])
             throw std::runtime_error("duplicate Vulkan device index");
+        if(!opts.expert_native_profile.empty()) {
+            if(!opts.expert_devices.empty() || opts.expert_native_q8_observation.empty() ||
+               opts.dense_topology!=strata::core::PortableDenseTopology::primary || devices.size()!=2 ||
+               !opts.expert_native_primary_slots || !opts.expert_native_helper_slots || opts.expert_native_plan_prefix.empty())
+                throw std::runtime_error("native capacity requires profile, positive primary/helper requests, plan prefix, native Q8 and primary topology; excludes --expert-plan");
+            for(size_t die=0;die<2;++die){strata::core::PortableExpertDevice d;d.accelerator=die;opts.expert_devices.push_back(d);}
+        } else if(opts.expert_native_primary_slots || opts.expert_native_helper_slots || !opts.expert_native_plan_prefix.empty())
+            throw std::runtime_error("native capacity options require --expert-native-profile");
         if(resident) {
             std::signal(SIGINT,interrupt); std::signal(SIGTERM,interrupt); std::signal(SIGPIPE,SIG_IGN);
         }
@@ -377,7 +390,8 @@ int main(int argc, char **argv) {
         auto paths = strata::gguf_split_paths(model);
         auto source_paths = paths;
         source_paths.push_back(manifest);
-        for(const auto& d:opts.expert_devices) source_paths.push_back(d.plan_path);
+        for(const auto& d:opts.expert_devices) if(!d.plan_path.empty()) source_paths.push_back(d.plan_path);
+        if(!opts.expert_native_profile.empty())source_paths.push_back(opts.expert_native_profile);
         // Capture before loading; observed change requires a new process.
         std::unique_ptr<strata::core::stdio_detail::Sources> sources;
         if(resident) sources=std::make_unique<strata::core::stdio_detail::Sources>(source_paths);

@@ -41,8 +41,9 @@ remaining distinct pairs, matching the fixed-slot, single-helper path in
 `RemoteExperts::open`. It has no per-layer quota. Repeated pairs keep their
 first rank. A short profile leaves slots unused, as native does; an empty
 helper is rejected. This slice covers fixed slots with adaptation off and no
-PCIe miss offload. Automatic cache sizing, multiple helpers and unranked tail
-extension are outside this slice.
+PCIe miss offload. This fixed-plan slice does not size capacity. The explicit post-dense mode
+below adds bounded capacity planning; multiple helpers and unranked tail
+extension remain outside that mode.
 
 `selected-ranks.tsv` preserves exact source ranks, expert IDs and owners;
 `assignments.json` records counts and hashes. Assignment files are sorted only
@@ -57,9 +58,10 @@ For this Q8 geometry, one expert's raw payload is
 contain 5,013,504,000 and 7,196,467,200 payload bytes. These are lower bounds,
 not tensor budgets or full admission estimates. Primary dense/state/head costs,
 aligned allocations, per-expert scratch, graph/private workspace and host
-metadata remain additional. The current portable implementation allocates a
-graph per expert and executes entries serially; native grouped/overlapped
-expert execution is not implemented by this ownership slice.
+metadata remain additional. The legacy portable expert path allocates a
+graph per expert and executes entries serially. The opt-in native Q8 cache
+uses bounded packed blocks and fixed grouped scratch; neither ownership
+selection alone nor grouped arithmetic establishes scheduling overlap.
 
 No native fit result establishes portable fit. The unchanged per-device
 preflight and ledger charge all dense costs to slot 0 in primary mode, then
@@ -81,6 +83,75 @@ do not require dense work on the helper. Split-based route discovery rejects
 primary mode: supply native assignments from the metadata exporter instead.
 These execution checks do not turn a load-only `QUIT` into a numerical or
 participation test.
+
+## Explicit post-dense native capacity planning
+
+This default-off mode supports the existing qwen4exp Q8_0 geometry, native Q8
+observation executor, primary dense topology and one expert helper. It is
+mutually exclusive with `--expert-plan`. Fixed-plan loading and its full
+configured tensor/runtime-budget refusal semantics remain unchanged.
+
+```text
+--vulkan 0,1 --dense-topology primary
+--device-cap-mib POLICY0,POLICY1
+--expert-tensor-mib CEILING0,CEILING1
+--expert-workspace-mib RUNTIME0,RUNTIME1
+--expert-free-reserve-mib RESERVE0,RESERVE1
+--expert-native-profile PROFILE
+--expert-native-primary-slots REQUESTED_PRIMARY_SLOTS
+--expert-native-helper-slots REQUESTED_HELPER_SLOTS
+--expert-native-plan-prefix NEW_PREFIX
+--expert-native-q8-observation RECEIPT_PREFIX
+```
+
+Keep the ordinary model/manifest, input or stdio, context and numerical-policy
+arguments. Native router/shared/combine are independent existing opt-ins; the
+planner does not enable them, dense residency, state production or chunks.
+The output prefix's parent must exist. The engine publishes
+`NEW_PREFIX.slot-0.plan` and `.slot-1.plan` using the existing no-replace writer;
+old plans are never resized or overwritten. Partial output receipts can remain
+after failure, so retries need a fresh output prefix.
+
+The planner runs after dense/head ledgers are final and before any routed
+expert-cache allocation. For each selected device it derives tensor room as
+`min(requested tensor ceiling, effective limit - dense ledger - runtime,
+post-dense available - reserve - runtime)`, with checked subtractions. Physical
+room never credits an overfull ledger and the other device never credits it.
+All dense bounds, caps, reserves and later live-memory guards remain intact.
+
+Primary quota follows native generation: the requested slot count gives a
+largest-blob byte ceiling, divided by the sum of per-layer strides. Within that
+upper quota, choose the greatest whole-layer quota whose projected aligned
+blocks plus fixed request scratch/component metadata fit the room. This is
+metadata-only: cache allocation consumes the same projected contexts/tensors;
+there is no trial weight allocation, upload or duplicated size formula.
+
+The shared native STRP-v1 reader supplies the original ranks. The primary fills
+its per-layer quota in source order; a full layer is skipped, not a reason to
+stop scanning. After primary ownership is final, the helper takes the first
+distinct unclaimed pairs that fit its own projected budget and request ceiling.
+It must be reselected after a primary quota change. Duplicate pairs retain their
+first rank; a short profile leaves primary ranges unused and limits the helper.
+An empty/unusable profile, no complete primary quota or no helper fit refuses.
+This mode does not invent unranked tail entries, hot-peer shares, adaptation,
+eviction or more helpers. Profile geometry/rank count and file size are bounded.
+The original native reader's six-argument API/default behavior is preserved.
+
+Only then are canonical plans bound to the trusted manifest, sorted and frozen.
+The executor consumes that immutable encoded binding; output files are receipts,
+not mutable runtime placement. Requested tensor ceilings remain visible in
+`native_capacity` receipts; the derived exact aligned tensor budget is charged
+and passed to the loader. Merely shrinking a plan while charging the old full
+ceiling would not reproduce this behavior. Receipts include selected counts,
+quota, dense ledger, effective limit, post-dense free/reserve, tensor room,
+aligned weights/scratch, block limits and runtime allowance. Actual allocations
+must agree, and all original source/digest/row/CPU-miss checks still apply.
+
+Capacity and backend feature/ABI failures refuse explicitly. Addressing receipts
+use stderr, preserving structured stdio stdout. No numerical kernel or default
+changes. Host golden/profile/allocator tests establish the planning and binding
+contracts; they do not establish physical admission, native numerical parity,
+quality or performance. A new placement requires new matched references.
 
 ## Bounded prompt chunks
 

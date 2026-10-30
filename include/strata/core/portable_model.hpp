@@ -38,6 +38,8 @@ struct PortableExpertDevice {
     size_t tensor_cap = 256ull << 20;
     size_t workspace_cap = 128ull << 20; // additional backend/runtime allowance, separate from tensors
     size_t free_reserve = 512ull << 20;
+    // Only populated internally by explicit native planning, never a fixed-plan resize.
+    std::vector<uint8_t> native_frozen_plan;
 };
 struct PortableExpertDeviceReport {
     size_t accelerator = 0, assigned = 0;
@@ -77,6 +79,8 @@ struct PortableModelOptions {
     std::string native_router_receipt_prefix;
     bool native_moe_combine = false; // opt-in strict K10 combine with native-Q8 observation
     std::string expert_native_q8_observation; // explicit receipt prefix; unqualified, unspecified FP32 denorm
+    std::string expert_native_profile, expert_native_plan_prefix;
+    size_t expert_native_primary_slots=0,expert_native_helper_slots=0;
     bool expert_timings = false; // opt-in coarse provider/executor host-call boundaries
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
     bool gdn_resident_weights = false; // opt-in GDN attention only

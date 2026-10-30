@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "strata/core/vmm.hpp"
+#include "strata/core/expert_profile.hpp"
 
 namespace strata::core {
 
@@ -51,8 +52,7 @@ inline constexpr int32_t kNotResident = -1;
 ///
 /// The frequency table is not returned: it is the profile's own working, and the engine measures `h` by
 /// running rather than by re-deriving what the file claims.
-bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_expert,
-                         std::vector<std::pair<int32_t, int32_t>>& ranked, int64_t& slots, std::string& err);
+// Declaration is shared with host-only planning in expert_profile.hpp.
 
 /// #477 (--expert-profile-save): what the adaptive tier learned, as a profile ranking EVERY (layer, expert) pair -
 /// the experts resident in VRAM now first (where the swaps left the cache), then the rest; within each, by `heat`
