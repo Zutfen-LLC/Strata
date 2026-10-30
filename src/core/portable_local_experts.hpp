@@ -33,6 +33,6 @@ private:
     bool check_rows_ = false, timings_ = false;
     uint64_t sequence_=0, gpu_entries_=0, cpu_entries_=0;
     void sources() const;
-    void guard(size_t);
+    void guard(size_t, const char* phase, size_t entry = SIZE_MAX, const worker::GpuAsset* asset = nullptr);
 };
 } // namespace

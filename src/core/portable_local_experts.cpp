@@ -1,7 +1,10 @@
 #include "portable_local_experts.hpp"
 #include "portable_expert_timer.hpp"
 #include <cmath>
+#include "ggml-backend.h"
 #include <set>
+#include <iomanip>
+#include <sstream>
 namespace strata::core::portable_detail {
 void LocalExperts::sources() const {
     for (size_t s=0;s<model_.size();++s) {
@@ -11,15 +14,44 @@ void LocalExperts::sources() const {
                 "resident expert source changed; reopen model");
     }
 }
-void LocalExperts::guard(size_t i) {
+void LocalExperts::guard(size_t i, const char* phase, size_t entry, const worker::GpuAsset* asset) {
     auto& r=report_[i]; const auto& d=devices_[i];
     const auto [free,total]=memory_(d.backend);
-    require(free<=total && free>=d.options.free_reserve,"resident expert free reserve breached");
-    r.tensor_bytes=d.counters.gpu_allocated_bytes;
     const uint64_t growth=free<r.free_before ? r.free_before-free : 0;
+    // Format only after a predicate fails. Identity plumbing supplies context;
+    // this heap-budget estimate still cannot attribute growth to an owner.
+    const auto diagnostic=[&](const char* reason) {
+        ggml_backend_dev_props props{};
+        auto* device=ggml_backend_get_device(d.backend);
+        if(device) ggml_backend_dev_get_props(device,&props);
+        const uint64_t charged=d.counters.gpu_allocated_bytes;
+        const uint64_t allowance=charged+d.options.workspace_cap;
+        std::ostringstream out;
+        out<<reason<<" slot="<<d.options.accelerator
+           <<" backend="<<std::quoted(ggml_backend_name(d.backend))
+           <<" device_name="<<std::quoted(props.name?props.name:"unknown")
+           <<" device_description="<<std::quoted(props.description?props.description:"unknown")
+           <<" device_id="<<std::quoted(props.device_id?props.device_id:"unknown")
+           <<" phase="<<phase<<" preparation_entry=";
+        if(entry==SIZE_MAX)out<<"none";else out<<entry;
+        out<<" layer=";if(asset)out<<asset->layer;else out<<"none";
+        out<<" expert=";if(asset)out<<asset->expert;else out<<"none";
+        out<<" prepared_entries="<<d.counters.gpu_allocation_count
+           <<" assigned_entries="<<d.plan.assets.size()
+           <<" free_before="<<r.free_before<<" free_now="<<free<<" total="<<total
+           <<" charged_tensor_bytes="<<charged<<" tensor_cap="<<d.options.tensor_cap
+           <<" workspace_cap="<<d.options.workspace_cap<<" growth="<<growth
+           <<" allowance="<<allowance<<" excess="<<(growth>allowance?growth-allowance:0)
+           <<" free_reserve="<<d.options.free_reserve
+           <<" reserve_shortfall="<<(free<d.options.free_reserve?d.options.free_reserve-free:0);
+        return out.str();
+    };
+    if(!(free<=total && free>=d.options.free_reserve))
+        require(false,diagnostic("resident expert free reserve breached"));
+    r.tensor_bytes=d.counters.gpu_allocated_bytes;
     r.free_after=free; r.peak_growth=std::max(r.peak_growth,growth);
-    require(growth<=r.tensor_bytes+d.options.workspace_cap,
-            "resident expert tensor/runtime growth budget exceeded");
+    if(!(growth<=r.tensor_bytes+d.options.workspace_cap))
+        require(false,diagnostic("resident expert tensor/runtime growth budget exceeded"));
 }
 LocalExperts::LocalExperts(const GgufModel& model,CpuExperts& cpu,const PortableModelOptions& opts,
                            Factory factory,Memory memory):model_(model),cpu_(cpu),memory_(std::move(memory)),check_rows_(opts.expert_check_rows),timings_(opts.expert_timings) {
@@ -66,8 +98,9 @@ LocalExperts::LocalExperts(const GgufModel& model,CpuExperts& cpu,const Portable
         d.executor=factory(d.backend,d.options.tensor_cap);
         require(bool(d.executor) && d.executor->supports_rows(),"resident executor lacks indexed rows");
         std::string error;
+        size_t next_entry=0;
         const worker::GpuAssetReader reader=[&](const worker::GpuAsset& asset,std::vector<uint8_t>& blob,std::string& e) {
-            sources(); guard(i);
+            sources(); guard(i,"prepare-before-read",next_entry++,&asset);
             return cpu.load_blob(asset.layer,asset.expert,blob,e);
         };
         require(d.executor->prepare_source(d.plan,reader,d.counters,error),error);
@@ -75,7 +108,7 @@ LocalExperts::LocalExperts(const GgufModel& model,CpuExperts& cpu,const Portable
         r.tensor_bytes=d.counters.gpu_allocated_bytes; r.weight_bytes=d.counters.gpu_weight_bytes;
         r.tensor_scratch_bytes=d.counters.gpu_scratch_bytes;
         r.staging_peak=d.counters.host_staging_peak;
-        guard(i); sources();
+        guard(i,"prepare-complete"); sources();
     }
 }
 LocalExperts::~LocalExperts() {
@@ -107,13 +140,13 @@ bool LocalExperts::run(int64_t layer,const PortableRoute& route,std::vector<floa
                 req.mask[slot]=1; cold[slot]=false; ++count;
             }
             if(!count) continue;
-            guard(die);
+            guard(die,"infer-before");
             worker::EntryRowsReply reply;
             {
                 ScopedExpertTimer<> timer(timings_, report.infer_rows_ms, report.infer_rows_calls);
                 require(d.executor->infer_rows(d.plan,req,reply,error),error);
             }
-            guard(die);
+            guard(die,"infer-after");
             require(reply.session==req.session && reply.sequence==sequence && reply.indices.size()==count &&
                     reply.rows.size()==count*H,"resident reply identity/shape mismatch");
             finite(reply.rows,"resident expert output");
@@ -187,13 +220,13 @@ bool LocalExperts::run_batch(int64_t layer,const std::vector<PortableRoute>& rou
                 req.mask[slot]=1; cold[slot/K][slot%K]=false; ++count;
             }
             if(!count) continue;
-            guard(die);
+            guard(die,"infer-batch-before");
             worker::EntryRowsReply reply;
             {
                 ScopedExpertTimer<> timer(timings_, report.infer_rows_ms, report.infer_rows_calls);
                 require(d.executor->infer_rows(d.plan,req,reply,error),error);
             }
-            guard(die);
+            guard(die,"infer-batch-after");
             require(reply.session==req.session && reply.sequence==sequence && reply.indices.size()==count &&
                     reply.rows.size()==count*H,"resident reply identity/shape mismatch");
             finite(reply.rows,"resident expert output");
