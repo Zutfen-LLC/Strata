@@ -19,6 +19,18 @@ class Comparison(unittest.TestCase):
             self.assertFalse(m.compare(a,b)['exact_consumed_boundaries'])
             Path(str(b)+'.output.f32').write_bytes(struct.pack('<I',0x7f800000)+struct.pack('<f',1.0)*2559)
             self.assertEqual(m.compare(a,b)['stages']['.output.f32']['nonfinite'], ['vulkan'])
+            for groups in (20,24,25):
+                entries=groups
+                header=f'record 0 model 1 placement 1 2 layer 0 T 3 K 10\ndigests\n'
+                rows=[list(range(groups)),list(range(groups)),list(range(groups+1)),list(range(entries)),[i//10 for i in range(entries)],list(range(entries))]
+                metadata=header+''.join(' '.join(map(str,row))+'\n' for row in rows)
+                for prefix in (a,b):
+                    Path(str(prefix)+'.metadata').write_text(metadata)
+                    for suffix,size in zip(m.SUFFIXES,(3*2880,entries*2560,entries*2560,entries*720,entries*10240)):
+                        Path(str(prefix)+suffix).write_bytes(bytes(size))
+                if groups<=24:self.assertTrue(m.compare(a,b)['exact_consumed_boundaries'])
+                else:
+                    with self.assertRaises(ValueError):m.compare(a,b)
             Path(str(b)+'.metadata').write_bytes(b'changed entry order\n')
             with self.assertRaises(ValueError):m.compare(a,b)
 if __name__ == '__main__':unittest.main()

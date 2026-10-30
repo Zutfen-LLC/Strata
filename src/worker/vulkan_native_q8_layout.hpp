@@ -29,7 +29,7 @@ inline GpuExecutionTrace native_q8_groups(const GpuPlan& p,const InferRequest& r
             group[i]=int32_t(t.experts.size()-1);
         } else group[i]=int32_t(it-t.experts.begin());
     }
-    require(!t.experts.empty() && t.experts.size()<=14,"native Q8 supports 1..14 active groups; no call splitting");
+    require(!t.experts.empty() && t.experts.size()<=24,"native Q8 supports 1..24 active groups; no call splitting");
     for(size_t g=0;g<t.experts.size();++g) {
         t.start.push_back(int32_t(t.dst.size()));
         for(size_t i=0;i<group.size();++i)if(group[i]==int32_t(g)) {

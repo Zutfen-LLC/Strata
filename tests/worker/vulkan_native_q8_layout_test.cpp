@@ -24,7 +24,11 @@ int main(){try {
     auto refused=[&](const InferRequest& q){try{native_q8_groups(p,q);}catch(const std::exception&){return;}throw std::runtime_error("unsupported call accepted");};
     auto q=r;q.mask[0]=2;refused(q);q=r;q.ids[0]=40;refused(q);q=r;q.mask.assign(6,0);refused(q);
     q.T=8;q.K=10;q.mask.assign(80,1);q.ids.assign(80,0);refused(q);
-    q.T=2;q.K=10;q.mask.assign(20,1);q.ids.resize(20);for(int i=0;i<20;++i)q.ids[i]=i;refused(q);
+    q.T=2;q.K=10;q.mask.assign(20,1);q.ids.resize(20);for(int i=0;i<20;++i)q.ids[i]=i;
+    require(native_q8_groups(p,q).experts.size()==20,"full 20-expert request refused");
+    q.T=3;q.K=10;q.mask.assign(30,0);q.ids.resize(30);for(int i=0;i<30;++i){q.ids[i]=i;q.mask[i]=i<24;}
+    require(native_q8_groups(p,q).experts.size()==24,"24-group boundary refused");
+    q.mask[24]=1;refused(q);
     q.T=7;q.K=10;q.mask.assign(70,0);q.ids.assign(70,0);for(int i=0;i<64;++i)q.mask[i]=1;
     require(native_q8_groups(p,q).dst.size()==64,"64-entry boundary refused");
     std::cout<<"native grouping, entry restoration, capacities and refusal checks pass\n";return 0;

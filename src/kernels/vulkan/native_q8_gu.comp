@@ -17,8 +17,8 @@ void main() {
     // Host validation makes 2*f a multiple of eight: no divergent barriers.
     for(uint group=gl_WorkGroupID.y;group<uint(m[p.mb]);group+=gl_NumWorkGroups.y) {
         uint base=uint(m[p.mb+1+group])+row*nb*34;
-        for(int e=m[p.mb+17+group];e<m[p.mb+18+group];++e) {
-            uint token=uint(m[p.mb+33+e]);
+        for(int e=m[p.mb+25+group];e<m[p.mb+26+group];++e) {
+            uint token=uint(m[p.mb+50+e]);
             float dot=q8_row_dot(base,token,nb,tid);
             if(lane==0) {
                 precise float value=dot*uintBitsToFloat(p.scale_bits); // native pure-Q8 scale

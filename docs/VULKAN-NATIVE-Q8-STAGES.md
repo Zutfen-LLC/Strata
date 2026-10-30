@@ -1070,7 +1070,7 @@ The source mapping is:
   applied by the existing caller, once, in its existing order.
 
 The frozen packed slot arena supports 1–24 resident experts (5,222,400 bytes
-per expert), at most 14 active groups and 64 active entries per call, T1–8 and
+per expert), at most 24 active groups and 64 active entries per call, T1–8 and
 K1–10. Larger calls are refused; they are not split or reassigned. The existing
 component metadata limits establish these bounds. The provider allocates one
 reusable tensor buffer sized for these capacities plus three existing component
@@ -1111,13 +1111,13 @@ the Vulkan replay records its own actual device description and device ID.
 Do not relabel either device as the other.
 
 Use the retained capture and staged expert blobs already held by the reviewer.
-Select one recorded layer and one existing owner's assignment on that layer.
-A layer-restricted plan must preserve exactly those existing ownership pairs;
+Select one complete recorded invocation and retain every originally active entry.
+A layer-restricted plan must cover every active expert in that invocation;
 `strata-gpu-manifest plan LOCAL_MANIFEST ASSIGNMENTS ONE_LAYER_PLAN` can encode
 that bounded metadata using the unchanged source manifest. No ownership is
 moved between devices. Keep the assignment at or below the stated limits. The
-replay restricts the original captured mask to this plan and preserves the raw
-activation, IDs, weights and request layer. Each blob is rechecked against its
+replay refuses a plan that excludes any active entry. It preserves the original
+mask, raw activation, IDs, weights and request layer. Each blob is rechecked against its
 existing size and digest before upload. Blob filenames use the existing staged
 `sgpu1-...blob` convention and can be reused unchanged.
 
@@ -1159,3 +1159,58 @@ retained real layer weights. Those are the next bounded validation, not claimed
 results. Timing is deferred: the provider's existing timer measures fenced host
 calls; there is no reusable GPU timestamp utility here. No benchmark framework
 or scheduling change is added.
+
+
+The earlier 14-group provider limit was a diagnostic metadata capacity, not a
+native group limit. The activation starts allocation is now 32 I32 words:
+starts occupy words 0–24 and count occupies word 31. Its logical allocation
+increases from 64 to 128 bytes; backend padding is queried and charged as before.
+Gate/up and down keep their existing 128-I32 metadata buffers, repacked as
+count[0], weight offsets[1..24], starts[25..49], entry IDs[50..113]. The spare
+words remain zero. Tensor capacities, 24 resident slots, workspace admission,
+and the 64 KiB component-metadata allowance are unchanged; actual metadata
+allocation sizes are still included in counters. The two matrix shader modules
+change metadata indices only. The activation/RN shader modules, native arithmetic,
+256-thread matrix workgroups, XOR reductions, and group grid-stride loops are
+unchanged. Native `native_gu_kernel` and `native_down_kernel` both stride groups
+by `gridDim.y`; the provider continues to launch one block row per actual group.
+
+To extract exactly the complete retained request, the existing offline decoder
+now has a bounded staging mode. It uses `read_cpu_capture`, the existing local
+manifest and `make_gpu_plan`, `GpuAssetSource` for the three native GGUF ranges,
+and `GpuCache` for digest-checked atomic publication. It creates a new private
+directory, reads one expert at a time and never connects to a GPU or service.
+It prints every active entry/token/expert ID; no expert is silently omitted.
+Capture/source identity and index must match exactly. Calls beyond 24 groups or
+64 entries are refused before staging. It does not replace a resident plan or
+change any running ownership.
+
+```sh
+cmake --build build-stages --target gpu_capture_replay_check strata-gpu-manifest
+timeout 120s build-stages/gpu_capture_replay_check --stage-record \
+  "$CAPTURE" 0 "$LOCAL_MANIFEST" "$MODEL_ROOT" "$NEW_PRIVATE_STAGE"
+# Outputs: assignments.txt, one-layer.plan, blobs/sgpu1-*.blob.
+# The same frozen metadata can also be encoded with the existing manifest CLI:
+build-stages/strata-gpu-manifest plan "$LOCAL_MANIFEST" \
+  "$NEW_PRIVATE_STAGE/assignments.txt" "$NEW_PRIVATE_STAGE/verified-copy.plan"
+cmp "$NEW_PRIVATE_STAGE/one-layer.plan" "$NEW_PRIVATE_STAGE/verified-copy.plan"
+```
+
+Use `one-layer.plan` and `blobs` from this output for both paired replay commands
+above. For a T2/K10 invocation with 20 distinct active experts, all 20 entries and
+all 20 groups must appear in both receipts: 104,448,000 weight bytes, 5,760 input
+Q8 bytes, 12,800 gate words, 12,800 up words, 14,400 hidden Q8 bytes and 51,200
+output words. This is an expected shape, not a completed GPU comparison.
+The selected expert IDs must come from the decoded capture, not an assumed
+router list or a previous single-entry receipt.
+
+Local checks for the 24-group extension: 19 focused CTests passed, including the
+full-record staging CLI round trip and overwrite refusal. The existing replay
+self-check also passed with its localhost socket fixture outside the restricted
+socket sandbox. All nine dumped matrix/strict SPIR-V modules validated for
+Vulkan 1.2. The strict activation module remains
+`67b8b434dc1ee35fab1e12956af0f181a8e5db4f93a6802fe0047260d347cde5`.
+No real record was staged or executed here. Rebuild both paired executables:
+the reference shares the changed admission header, and the Vulkan host/shaders
+share the changed metadata ABI. CUDA compilation of this revision remains a
+fleet build check; arithmetic and native source are unchanged.

@@ -649,6 +649,50 @@ void first_boundary_check() {
 }
 int main(int argc,char** argv) {
     try {
+        if(argc==2 && std::string(argv[1])=="--stage-check") {
+            Fixture fixture;const auto setup=fixture.setup();const auto path=(fixture.root/"capture.bin").string();std::string err;CpuCapture capture;
+            require(capture.prepare(setup,fixture.m.identity,fixture.m.index_digest,path,err,1u<<20),err);
+            require(capture.request("GEN 1 1",{1},1) && capture.window(0,1,2),"stage fixture capture request");
+            for(int layer=0;layer<2;++layer){InferRequest q;q.session=1;q.sequence=layer+1;q.model_id=setup.model_id;q.partition_id=setup.partition_id;q.layer=layer;q.T=1;q.K=2;
+                q.ids={1,0};q.mask={1,1};q.weights={.5f,.5f};q.activations.assign(2560,.1f);std::vector<float> partial(2560,.25f);
+                require(capture.begin(q) && capture.finish(partial.data()),"stage fixture capture record");}
+            const float logits[]={1.f,2.f};require(capture.seal(logits,2),"stage fixture capture seal");
+            const auto output=(fixture.root/"staged").string();
+            auto invoke=[&]{const pid_t child=fork();require(child>=0,"stage fixture fork");if(!child){execl(argv[0],argv[0],"--stage-record",path.c_str(),"0",(fixture.root/"local.manifest").c_str(),fixture.root.c_str(),output.c_str(),static_cast<char*>(nullptr));_exit(127);}int status=0;require(waitpid(child,&status,0)==child && WIFEXITED(status),"stage fixture wait");return WEXITSTATUS(status);};
+            require(invoke()==0,"stage CLI failed");GpuPlan plan;require(read_gpu_plan(output+"/one-layer.plan",plan,err),err);
+            require(plan.assets.size()==2 && plan.assets[0].expert==0 && plan.assets[1].expert==1,"full record staging lost an expert");
+            GpuCache cache;require(cache.open(output+"/blobs",plan.assigned_bytes(),err),err);std::vector<uint8_t> missing,blob;
+            require(cache.prepare(plan,missing,err) && missing==std::vector<uint8_t>({0,0}),"staged blobs failed reuse validation");
+            for(const auto& a:plan.assets){require(cache.read(a,blob,err) && blob==fixture.blobs[a.expert],"staged expert bytes differ");}cache.close();
+            require(invoke()!=0,"stage overwrote existing output");std::puts("STAGE_CHECK full_record=1 existing_manifest_source_cache=1 exact_blobs=1 no_overwrite=1 GPU=0");return 0;
+        }
+        if(argc==7 && std::string(argv[1])=="--stage-record") {
+            // Offline only: preserve every active entry, reuse verified manifest
+            // ranges and the existing one-blob source/cache publication path.
+            CpuCaptureFile f;LocalManifest m;std::string err;
+            require(read_cpu_capture(argv[2],f,err),err);
+            const std::string ordinal=argv[3];require(!ordinal.empty() && ordinal.find_first_not_of("0123456789")==std::string::npos,"invalid record index");
+            const size_t record=std::stoull(ordinal);require(record<f.records.size() && f.records[record].sent,"record absent/not sent");
+            const auto& q=f.records[record].request;
+            require(read_local_manifest(argv[4],m,err) && m.matches(f.setup) && m.identity==f.identity && m.index_digest==f.index,err.empty()?"capture/source manifest mismatch":err);
+            std::set<std::pair<uint16_t,uint16_t>> unique;size_t entries=0;
+            for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]){unique.emplace(q.layer,q.ids[i]);++entries;}
+            require(!unique.empty() && unique.size()<=24 && entries<=64,"full record exceeds provider bounds; not truncated");
+            GpuPlan plan;require(make_gpu_plan(m,{unique.begin(),unique.end()},plan,err),err);
+            const fs::path output=argv[6];require(fs::create_directory(output),"stage output must be a new directory");
+            fs::permissions(output,fs::perms::owner_all,fs::perm_options::replace);
+            require(write_gpu_plan((output/"one-layer.plan").string(),plan,err),err);
+            std::ofstream assignments(output/"assignments.txt");for(auto [layer,expert]:unique)assignments<<layer<<' '<<expert<<'\n';require(bool(assignments),"assignment write failed");
+            for(size_t i=0;i<q.mask.size();++i)if(q.mask[i])std::printf("FULL_ENTRY record=%zu layer=%u entry=%zu token=%zu expert=%u\n",record,q.layer,i,i/q.K,q.ids[i]);
+            GpuAssetSource source;GpuCache cache;std::vector<uint8_t> missing,blob;
+            require(source.open(argv[5],m,plan,err),err);
+            require(fs::create_directory(output/"blobs"),"stage blob directory create failed");
+            require(cache.open((output/"blobs").string(),plan.assigned_bytes(),err) && cache.prepare(plan,missing,err),err);
+            for(const auto& asset:plan.assets){require(source.read(asset,blob,err),err);require(cache.publish(asset,blob.data(),blob.size(),err),err);}
+            cache.close();
+            std::printf("FULL_RECORD record=%zu entries=%zu groups=%zu bytes=%llu source_staging_peak=%llu source_weight_bytes=%llu no_remask=1\n",record,entries,unique.size(),(unsigned long long)plan.assigned_bytes(),(unsigned long long)source.stats().host_staging_peak,(unsigned long long)source.stats().source_read_bytes);
+            return 0;
+        }
         if(argc==2 && std::string(argv[1])=="--boundary-check") {first_boundary_check();return 0;}
         if(argc>=2 && std::string(argv[1])=="--boundary") {
             require(argc==10,"--boundary requires CAPTURE PACKET BLOB_DIR NEW_OUTPUT and four B plans in original peer order");
@@ -711,7 +755,7 @@ int main(int argc,char** argv) {
         const bool survey_mode=argc>=6 && std::string(argv[1])=="--survey";
         const bool grouped=argc>=6 && std::string(argv[1])=="--grouped";
         const bool cpu_mode=argc>=6 && std::string(argv[1])=="--cpu-control";
-        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check | --boundary CAPTURE PACKET BLOB_DIR NEW_OUTPUT B_PLAN... | --boundary-check");
+        if(!selecting && !running && !listing && !survey_mode && !grouped && !cpu_mode)throw std::runtime_error("usage: --stage-record CAPTURE RECORD LOCAL_MANIFEST MODEL_ROOT NEW_OUTPUT | --select CAPTURE B_PLAN... | --run CAPTURE SELECTED_BLOB NEW_SCRATCH B_PLAN... | --inventory CAPTURE BLOB_DIR B_PLAN... | --survey/--grouped/--cpu-control CAPTURE BLOB_DIR NEW_OUTPUT B_PLAN... | --self-check | --boundary CAPTURE PACKET BLOB_DIR NEW_OUTPUT B_PLAN... | --boundary-check");
         CpuCaptureFile f;std::string err;require(read_cpu_capture(argv[2],f,err),err);
         std::vector<GpuPlan> plans;const int begin=selecting?3:listing?4:5;
         for(int i=begin;i<argc;++i){GpuPlan p;require(read_gpu_plan(argv[i],p,err),err);plans.push_back(p);}

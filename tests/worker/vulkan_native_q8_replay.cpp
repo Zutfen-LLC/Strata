@@ -34,7 +34,7 @@ int main(int argc,char** argv){try {
     require(p.model_id==f.setup.model_id && p.n_embd==2560 && p.n_ff==640 && p.gu_type==8 && p.d_type==8 &&
         p.n_layers==f.setup.n_layers && p.n_expert==f.setup.n_expert && p.assets.size()<=24,"capture/plan identity or native geometry mismatch");
     for(const auto& a:p.assets)require(a.layer==q.layer,"replay requires one-layer frozen plan");
-    for(size_t j=0;j<q.mask.size();++j)if(!p.owns(q.layer,q.ids[j]))q.mask[j]=0;
+    for(size_t j=0;j<q.mask.size();++j)require(!q.mask[j] || p.owns(q.layer,q.ids[j]),"full request not covered by plan; refusing to remask");
     q.model_id=p.model_id;q.partition_id=p.placement_id.a;q.session=1;q.sequence=1;
     require(q.activations.size()==size_t(q.T)*H && q.weights.size()==q.mask.size() && !q.packed,"replay requires raw F32 input");finite(q.activations);finite(q.weights);
     const auto t=native_q8_groups(p,q);

@@ -14,7 +14,7 @@ int main(){try {
     Q8GuLayout gu{2560,640,3,3,2,{0,0,0},geo::STARTS,geo::TOKENS_BY_ENTRY};
     Q8DownLayout down{2560,640,3,3,2,{3481600,3481600,3481600},geo::STARTS,geo::DESTINATIONS};
     const auto gm=q8_gu_metadata(gu,weights.size()),dm=q8_down_metadata(down,weights.size());
-    need(gm[0]==3 && gm[19]==2 && gm[20]==3 && gm[33]==2 && dm[33]==1,"empty group/entry maps lost");
+    need(gm[0]==3 && gm[27]==2 && gm[28]==3 && gm[50]==2 && dm[50]==1,"empty group/entry maps lost");
     bool rejected=false;try{(void)q8_down_metadata(down,weights.size()-4);}catch(...){rejected=true;}
     need(rejected,"truncated production weights accepted");
     puts("H2560/F640 finite fixture, native layout and metadata bounds checked; no GPU proof");return 0;

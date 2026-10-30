@@ -14,11 +14,11 @@ void main() {
     uint row=gl_WorkGroupID.x*8+warp,nb=p.f/32;
     for(uint group=gl_WorkGroupID.y;group<uint(m[p.mb]);group+=gl_NumWorkGroups.y) {
         uint base=uint(m[p.mb+1+group])+row*nb*34;
-        for(int e=m[p.mb+17+group];e<m[p.mb+18+group];++e) {
+        for(int e=m[p.mb+25+group];e<m[p.mb+26+group];++e) {
             float dot=q8_row_dot(base,uint(e),nb,tid);
             if(lane==0) {
                 precise float value=dot*uintBitsToFloat(p.scale_bits);
-                output_values[p.ob+uint(m[p.mb+33+e])*p.h+row]=value;
+                output_values[p.ob+uint(m[p.mb+50+e])*p.h+row]=value;
             }
             barrier();
         }
