@@ -15,7 +15,7 @@ int main(){try {
      std::vector<float> f(10240,1);o.put(Layer0Observer::embedding,f.data(),f.size());
      reject([&]{o.put(Layer0Observer::embedding,f.data(),f.size());});reject([&]{o.finish();});
      std::vector<float> zeros(786432,0);
-     for(size_t i=0;i<Layer0Observer::counts.size();++i)if(i!=Layer0Observer::token && i!=Layer0Observer::embedding &&
+     for(size_t i=0;i<Layer0Observer::counts.size();++i)if(i!=Layer0Observer::helper_reduction && i!=Layer0Observer::token && i!=Layer0Observer::embedding &&
         i!=Layer0Observer::state_after && i!=Layer0Observer::history_after && i!=Layer0Observer::materialized_post_residual)
         o.put(Layer0Observer::Field(i),zeros.data(),Layer0Observer::counts[i]);
      o.finish();need(o.finished()&&!o.active());}

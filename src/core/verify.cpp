@@ -667,13 +667,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     }
     release_gpu_fn().store(&release_live_verifiers);
     cudaGetDevice(&device_);   // a layer split's stage on another GPU: its streams, graphs and buffers live there
-    if(layer0_observer_ && (max_t!=1 || lb_!=0 || next_ || remote_opt_ || !hits.h_res ||
+    if(layer0_observer_ && (lb_!=0 || next_ || !hits.h_res ||
         strata::kernels::pdl_supported() ||
         g.n_layers!=48 || g.n_expert!=512 || ss.k!=10 || ss.gdn_ord0!=0 || !ss.gdn_state ||
         g.n_embd!=2560 || g.hc!=4 || g.ssm_state_size!=128 || g.ssm_v_heads!=48 ||
         g.ssm_conv_channels!=10240 || g.ssm_d_conv!=4)) {
-        err="layer0 observer: requires unsplit native T1 geometry and unreduced expert rows";return false;
+        err="layer0 observer: requires unsplit native geometry and primary residency";return false;
     }
+    if(layer0_observer_)layer0_observer_->set_helper_reduction(remote_opt_!=nullptr);
     rr_stats_ = route_resident_cfg().stats_on(device_);   // STRATA_ROUTE_RESIDENT: this GPU's counters, outside graph capture
     strata::kernels::fused_gr_check();   // once per card: which bitwise-equal hyper-connection read runs there
     strata::kernels::fused_gr_persist_init();   // opt-in STRATA_HC_PERSIST=1 (HIP)
@@ -1196,9 +1197,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
 
     if(layer0_observer_) {
         using O=Layer0Observer;
-        if(!layer0_observer_->snapshot(O::embedding,R_,cs,err) ||
-           !layer0_observer_->snapshot(O::state_before,ss.gdn_state,cs,err) ||
-           !layer0_observer_->snapshot(O::history_before,ss.gdn_state+786432,cs,err))return false;
+        if(!layer0_observer_->snapshot(T,O::embedding,R_,cs,err) ||
+           !layer0_observer_->snapshot(T,O::state_before,ss.gdn_state,cs,err) ||
+           !layer0_observer_->snapshot(T,O::history_before,ss.gdn_state+786432,cs,err))return false;
     }
     // per-layer state indices (GDN and QSA layers are numbered separately)
     std::vector<int64_t> gdn_idx((size_t) g.n_layers, -1), qsa_idx((size_t) g.n_layers, -1);
@@ -1902,9 +1903,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (!first_trace_copy(l, 0, tb, n, mixed_ + tb*N, cs, err)) return false;
         if(l==0 && layer0_observer_) {
             using O=Layer0Observer;
-            if(!layer0_observer_->snapshot(O::pending_residual,Rt(tb),cs,err) ||
-               !layer0_observer_->snapshot(O::inject,inj2_+tb*HC,cs,err) ||
-               !layer0_observer_->snapshot(O::moe_input,mixed_+tb*N,cs,err))return false;
+            if(!layer0_observer_->snapshot(T,O::pending_residual,Rt(tb),cs,err) ||
+               !layer0_observer_->snapshot(T,O::inject,inj2_+tb*HC,cs,err) ||
+               !layer0_observer_->snapshot(T,O::moe_input,mixed_+tb*N,cs,err))return false;
         }
         // R and inj2 are the residual BEFORE the pending MoE write (the next
         // layer applies it). Copy here before the reusable buffers are overwritten.
@@ -2006,9 +2007,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         if(l==0 && layer0_observer_) {
             using O=Layer0Observer;
-            if(!layer0_observer_->snapshot(O::router_scores,logits_+tb*NE,cs,err) ||
-               !layer0_observer_->snapshot(O::router_ids,ids_+tb*K,cs,err) ||
-               !layer0_observer_->snapshot(O::router_weights,w_+tb*K,cs,err))return false;
+            if(!layer0_observer_->snapshot(T,O::router_scores,logits_+tb*NE,cs,err) ||
+               !layer0_observer_->snapshot(T,O::router_ids,ids_+tb*K,cs,err) ||
+               !layer0_observer_->snapshot(T,O::router_weights,w_+tb*K,cs,err))return false;
         }
         stamp(l, 17, grp);
         bool qdedup = false;   // STRATA_VERIFY_QDEDUP took effect: the experts' q8_1 image of xm is already made
@@ -2176,8 +2177,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         if(l==0 && layer0_observer_) {
             using O=Layer0Observer;
-            if(!layer0_observer_->snapshot(O::shared_output,shared_+tb*N,cs,err) ||
-               !layer0_observer_->snapshot(O::expert_rows,parts_out,cs,err))return false;
+            if(!layer0_observer_->snapshot(T,O::shared_output,shared_+tb*N,cs,err))return false;
+            // Local helper reduction returns weighted partials; parts_out is not
+            // the complete unweighted matrix in that existing execution mode.
+            if(!remote_opt_ && !layer0_observer_->snapshot(T,O::expert_rows,parts_out,cs,err))return false;
         }
         if (sg_gated_[grp]) {   // STRATA_LFUSE: the shared expert's gate was not applied: the combine applies it (all rows are hits)
             try {
@@ -2205,9 +2208,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (!first_trace_copy(l, 4, tb, n, bo_ + tb*N, cs, err)) return false;
         if(l==0 && layer0_observer_) {
             using O=Layer0Observer;
-            if(!layer0_observer_->snapshot(O::combined_output,bo_+tb*N,cs,err))return false;
-            if(self_commit && (!layer0_observer_->snapshot(O::state_after,ss.gdn_state,cs,err) ||
-                !layer0_observer_->snapshot(O::history_after,ss.gdn_state+786432,cs,err)))return false;
+            if(!layer0_observer_->snapshot(T,O::combined_output,bo_+tb*N,cs,err))return false;
+            if(self_commit && (!layer0_observer_->snapshot(T,O::state_after,ss.gdn_state,cs,err) ||
+                !layer0_observer_->snapshot(T,O::history_after,ss.gdn_state+786432,cs,err)))return false;
         }
         stamp(l, 24, grp);
         if (l == g.n_layers - 1) {

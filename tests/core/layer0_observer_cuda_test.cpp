@@ -9,18 +9,32 @@ int main(){try {
     setenv("STRATA_LAYER0_OBSERVER",path.c_str(),1);setenv("STRATA_LAYER0_BINDING",std::string(64,'a').c_str(),1);
     {
         NativeLayer0Observer observer;need(observer_mock_allocations==1);
+        std::string error_for_skipped;
+        for(int capacity:{2,4,8})need(observer.snapshot(capacity,Layer0Observer::state_before,nullptr,nullptr,error_for_skipped));
+        need(observer_mock_async==0 && observer_mock_downloads==0);
         std::vector<float> state(Layer0Observer::counts[1],0);std::string error;
-        need(observer.snapshot(Layer0Observer::state_before,state.data(),nullptr,error));
+        need(observer.snapshot(1,Layer0Observer::state_before,state.data(),nullptr,error));
         need(observer_mock_async==1 && observer_mock_downloads==0);
         observer_mock_fail_copy=true;
-        need(!observer.snapshot(Layer0Observer::state_after,state.data(),nullptr,error));observer_mock_fail_copy=false;
+        need(!observer.snapshot(1,Layer0Observer::state_after,state.data(),nullptr,error));observer_mock_fail_copy=false;
         for(int i=0;i<12;++i)if(i!=Layer0Observer::state_before && i!=Layer0Observer::router_ids)
-            need(observer.snapshot(Layer0Observer::Field(i),state.data(),nullptr,error));
+            need(observer.snapshot(1,Layer0Observer::Field(i),state.data(),nullptr,error));
         std::array<int32_t,10> ids{};for(int i=0;i<10;++i)ids[i]=i;
-        need(observer.snapshot(Layer0Observer::router_ids,ids.data(),nullptr,error));
+        need(observer.snapshot(1,Layer0Observer::router_ids,ids.data(),nullptr,error));
         std::array<int32_t,512> res;res.fill(-1);res[7]=42;
         need(observer.flush(248045,res.data(),error));need(observer.finished());
         need(observer_mock_downloads==12);need(observer.flush(248045,res.data(),error));need(observer_mock_downloads==12);
+    }
+    need(observer_mock_allocations==0);std::filesystem::remove(path);
+    {
+        NativeLayer0Observer reduced;reduced.set_helper_reduction(true);
+        std::vector<float> zeros(786432,0);std::string error;
+        need(!reduced.snapshot(1,Layer0Observer::expert_rows,zeros.data(),nullptr,error));
+        for(int i=0;i<12;++i)if(i!=Layer0Observer::expert_rows)
+            need(reduced.snapshot(1,Layer0Observer::Field(i),zeros.data(),nullptr,error));
+        std::array<int32_t,512> primary;primary.fill(-1);
+        need(reduced.flush(248045,primary.data(),error));
+        need(reduced.finished() && observer_mock_downloads==23);
     }
     need(observer_mock_allocations==0);std::filesystem::remove(path);
     observer_mock_free=(512u<<20);bool failed=false;

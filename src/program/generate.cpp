@@ -4356,9 +4356,9 @@ int main(int argc, char** argv) {
 #if defined(STRATA_USE_HIP) || defined(STRATA_GPU_METAL)
         std::fprintf(stderr,"layer0 observer currently requires CUDA native reference\n");return 2;
 #else
-        if(!native_pack || multi_gpu || o.pipeline_windows>0 || o.spec!=1 || o.batch ||
-           o.remote_expert_opt || o.remote_cpu_experts || o.expert_cache_remote[1]>0 || o.expert_cache_remote[2]>0 || !o.serve) {
-            std::fprintf(stderr,"layer0 observer requires native serial T1 serve without split/pipeline/reduced remote path\n");return 2;
+        if(!native_pack || multi_gpu || o.pipeline_windows>0 || o.batch ||
+           o.remote_cpu_experts || o.expert_cache_remote[1]>0 || o.expert_cache_remote[2]>0 || !o.serve) {
+            std::fprintf(stderr,"layer0 observer requires native serial first-T1 serve without split/pipeline/remote CPU\n");return 2;
         }
         const auto& observer_layout=strata::kernels::cpu::expert_layout();
         if(observer_layout.fmt.empty() || observer_layout.fmt[0].gu_type!=8 || observer_layout.fmt[0].d_type!=8) {

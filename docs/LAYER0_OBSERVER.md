@@ -22,9 +22,15 @@ must agree. Physical cache slot numbers and allocation addresses are not
 numerical operands.
 
 Use a fresh one-token request, not a continuation of an earlier session. The
-native reference requires CUDA, the existing native pack, serial serving, T1
-(`--spec 1`), no layer split/pipeline, at most one local expert helper and the
-unreduced expert-row path. It refuses remote CPU/reduced remote-expert mode,
+native reference requires CUDA, the existing native pack and methods, serial
+serving, an actual first window of T1, no layer split/pipeline and at most one
+local expert helper. Preserve configured `--spec` capacity: native packs require
+at least two, while their first one-token window is T1. Only T1 graphs receive
+snapshot nodes. `--native` is the supported method preset; it resolves dense
+shards and enables the other native components, rather than merely aliasing
+`--native-dense-gguf`. Preserve that preset and its resolved role provenance.
+Local `--remote-expert-opt` remains selected when present. It is distinct from
+remote CPU serving. The observer refuses remote CPU mode,
 missing primary residency evidence and programmatic dependent launch, whose
 kernel-only graph dependencies cannot be preserved by inserting copy nodes.
 The portable observer requires the existing serial eager GDN policy; it refuses
@@ -33,12 +39,26 @@ The observer is never rearmed by reset. Later calls cannot append to the trace.
 
 ## Values and availability
 
-The fixed version-1 schema describes H2560, HC4, 512 experts, K10 and the existing
+The fixed version-2 schema describes H2560, HC4, 512 experts, K10 and the existing
 GDN state/history layout. It records embedding/HC residual, incoming GDN state
 and history, the FFN pending residual, normalized MoE input, router scores,
-ordered IDs/weights, gated shared output, original-order unweighted expert rows,
+ordered IDs/weights, gated shared output, original-order unweighted expert rows when available,
 combined output and injection coefficients. The pending residual, combined
 output and injection are separate operands of the native pending update.
+
+Local helper reduction is recorded explicitly in version 2. In that mode native
+helpers weight/reduce their rows before returning partials, and the main device
+adds those partials after its local combine. `Verifier` has no guaranteed complete
+unweighted row matrix, so that field is unavailable. It is not filled with zeros
+or reconstructed. Portable still combines complete unweighted rows in original
+route order. These are different full-FFN floating-point orders even though the
+component kernels follow native methods. The observer changes neither path.
+
+The final combined outputs remain comparable semantic outputs. Without matching
+complete inputs, the report cannot attribute a difference locally to combine.
+It explicitly reports incomplete row coverage and unavailable input boundaries.
+Version-1 traces remain readable under their original required-unreduced-row
+contract; they are never reinterpreted as reduced-mode evidence.
 
 Native does not materialize the post-FFN residual at that boundary. That field
 is explicitly unavailable. The observer does not reconstruct it or extend into
@@ -51,7 +71,7 @@ GGML already uses the trace order. No floating-point operation or live state
 changes. The mapping follows `gdn_step_commit_body` in `verify_kernels.cu` and
 the pinned GGML gated-delta state indexing; golden index and bijection tests
 cover it.
-convolution history uses `[channel][oldest..newest]`. Committed state is available
+Convolution history uses `[channel][oldest..newest]`. Committed state is available
 on native only when the original T1 window self-commits it. Snapshot copies follow
 those kernels, and host observation follows the window's existing completion.
 Otherwise state-after fields remain unavailable: no commit or synchronization is
@@ -97,5 +117,7 @@ matching observed inputs and incoming state; it is not causal proof.
 Exit 0 means all comparable captured boundaries are exact for this case. Exit 1
 means a captured numerical boundary differs. Exit 2 means invalid/missing input,
 identity mismatch or output failure. The report always retains `qualified=false`;
-missing optional state is not a state-parity success. Existing full-logit screens
+missing optional state or reduced-helper rows is not a parity success for those
+boundaries. A matching combined output does not establish equivalent reduction
+order or complete-input attribution. Existing full-logit screens
 and their numerical limits remain unchanged.

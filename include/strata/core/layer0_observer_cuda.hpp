@@ -10,8 +10,9 @@ class NativeLayer0Observer {
     Layer0Observer writer_;
     float* device_=nullptr;
     int device_id_=0;
-    std::array<size_t,18> offsets_{};
-    std::array<bool,18> available_{};
+    bool reduced_helper_=false;
+    std::array<size_t,19> offsets_{};
+    std::array<bool,19> available_{};
 public:
     std::array<int32_t,512> helper{}; // actual helper membership, filled after cache admission
     NativeLayer0Observer() {
@@ -28,9 +29,12 @@ public:
     }
     ~NativeLayer0Observer(){if(device_){int previous=0;cudaGetDevice(&previous);cudaSetDevice(device_id_);cudaFree(device_);cudaSetDevice(previous);}}
     bool finished() const{return writer_.finished();}
-    bool snapshot(Layer0Observer::Field field,const void* source,cudaStream_t stream,std::string& error) {
+    void set_helper_reduction(bool reduced) {reduced_helper_=reduced;}
+    bool snapshot(int tokens,Layer0Observer::Field field,const void* source,cudaStream_t stream,std::string& error) {
+        // Configured window capacity is independent of this captured graph.
+        if(tokens!=1)return true;
         const size_t id=size_t(field);
-        if(id>=offsets_.size() || !source || cudaMemcpyAsync(device_+offsets_[id],source,
+        if(id>=offsets_.size() || (reduced_helper_ && field==Layer0Observer::expert_rows) || !source || cudaMemcpyAsync(device_+offsets_[id],source,
             Layer0Observer::counts[id]*4,cudaMemcpyDeviceToDevice,stream)!=cudaSuccess) {
             error="layer0 observer: graph snapshot failed";return false;
         }
@@ -40,7 +44,7 @@ public:
     bool flush(int32_t token,const int32_t* primary,std::string& error) {
         if(finished())return true;
         try {
-            writer_.begin(token);
+            writer_.begin(token,reduced_helper_);
             writer_.put(Layer0Observer::helper_ownership,helper.data(),helper.size());
             if(primary){std::array<int32_t,512> owns{};for(size_t i=0;i<owns.size();++i)owns[i]=primary[i]>=0?1:0;
                 writer_.put(Layer0Observer::primary_ownership,owns.data(),owns.size());}

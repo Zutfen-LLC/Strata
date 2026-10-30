@@ -7,13 +7,14 @@ import unittest
 spec=importlib.util.spec_from_file_location('compare',Path(__file__).resolve().parents[2]/'tools/compare_layer0_observer.py')
 c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
 
-def image(change=None,missing=(),binding=b'a'*64):
-    raw=b'STRL001\0'+binding
-    for i,n in enumerate(c.COUNTS):
+def image(change=None,missing=(),binding=b'a'*64,reduced=False,legacy=False):
+    raw=(b'STRL001\0' if legacy else b'STRL002\0')+binding
+    for i,n in enumerate(c.COUNTS[:-1] if legacy else c.COUNTS):
         if i in missing:raw+=struct.pack('<II',i,0);continue
         data=bytes(n*4)
         if i==6:data=struct.pack('<10i',*range(10))
         if i==15:data=struct.pack('<i',248045)
+        if i==18:data=struct.pack('<i',int(reduced))
         if change and i==change[0]:data=change[1]+data[4:]
         raw+=struct.pack('<II',i,n)+data
     return raw+struct.pack('<II',0xffffffff,0)
@@ -43,6 +44,23 @@ class Test(unittest.TestCase):
             with self.assertRaises(ValueError):c.read(b)
             with b.open('wb') as f:f.truncate(c.LIMIT+1)
             with self.assertRaises(ValueError):c.read(b)
+    def test_reduced_helper_unavailability(self):
+        with tempfile.TemporaryDirectory() as t:
+            a,b=Path(t)/'native',Path(t)/'portable'
+            a.write_bytes(image(missing=(9,16),reduced=True));b.write_bytes(image())
+            r=c.compare(a,b)
+            self.assertTrue(r['native_helper_reduction']);self.assertFalse(r['complete_unweighted_rows_available'])
+            self.assertTrue(r['exact_observed_boundaries']);self.assertFalse(r['combine_inputs_observed_and_equal'])
+            b.write_bytes(image(change=(10,struct.pack('<f',1))))
+            r=c.compare(a,b);self.assertEqual(r['first_difference'],'combined_output')
+            combine=next(s for s in r['stages'] if s['boundary']=='combined_output')
+            self.assertEqual(combine['attribution'],'input_boundary_unavailable')
+            self.assertIn('expert_rows',combine['unavailable_inputs'])
+            for invalid in (image(missing=(9,)),image(reduced=True),image(missing=(18,))):
+                a.write_bytes(invalid)
+                with self.assertRaises(ValueError):c.read(a)
+            a.write_bytes(image(legacy=True));b.write_bytes(image())
+            self.assertTrue(c.compare(a,b)['exact_observed_boundaries'])
     def test_downstream_attribution(self):
         with tempfile.TemporaryDirectory() as t:
             a,b=Path(t)/'a',Path(t)/'b';a.write_bytes(image());raw=image(change=(4,struct.pack('<f',1)))
