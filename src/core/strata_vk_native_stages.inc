@@ -173,3 +173,7 @@ void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggm
 #endif
 
 #include "strata_vk_native_router.inc"
+
+#ifdef STRATA_ROUTER_DIAGNOSTIC
+#include "strata_vk_native_router_trace.inc"
+#endif
