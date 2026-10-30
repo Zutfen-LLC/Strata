@@ -15,7 +15,7 @@ std::unique_ptr<GpuExecutor> create_vulkan_executor_on_backend(ggml_backend_t ba
 // Explicit unqualified native Q8 branch; never a fallback. Receipt prefix is
 // mandatory. Optional private capture prefix writes only consumed boundaries.
 // capture_first_only is for bounded replay timing; default capture behavior stays unchanged.
-// Max 24 resident slots, 24 active groups, 64 active entries, T1..8, K1..10.
+// Max 24 resident slots, 24 active groups, 80 active entries, T1..8, K1..10.
 std::unique_ptr<GpuExecutor> create_vulkan_native_q8_observation(ggml_backend_t,uint64_t tensor_budget,
     const std::string& receipt_prefix,const std::string& capture_prefix = {},bool capture_first_only = false);
 // Fresh executor-owned tensor/metadata sizes, not total driver/device memory.

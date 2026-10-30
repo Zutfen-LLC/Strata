@@ -20,10 +20,27 @@ int main(){try {
     l.weight_offsets.clear();l.starts={1};l.destination_ids={-1,-1};m=q8_down_metadata(l,26112);need(m[0]==0,"empty down groups");
     // A same-group repeated destination stays a direct ordered overwrite.
     l.weight_offsets={17408};l.starts={0,2};l.destination_ids={1,1};q8_down_metadata(l,26112);
-    Q8DownLayout full{256,32,64,64,7,std::vector<uint32_t>(24,17408),std::vector<int32_t>(25),std::vector<int32_t>(64)};
-    for(int i=0;i<25;++i)full.starts[i]=i<24?i:64;
-    for(int i=0;i<64;++i)full.destination_ids[i]=63-i;
-    m=q8_down_metadata(full,26112);need(m[24]==17408 && m[25]==0 && m[49]==64 && m[50]==63 && m[113]==0 && m[114]==0,"24-group down metadata overlap");
-    full.weight_offsets.push_back(17408);full.starts.push_back(64);rejects([&]{q8_down_metadata(full,26112);});
+    // Exercise the final ID, all 25 starts and destinations above 63.
+    for(uint32_t n:{64u,65u,79u,80u}) {
+        Q8DownLayout full{256,32,n,n,7,std::vector<uint32_t>(24,17408),std::vector<int32_t>(25),std::vector<int32_t>(n)};
+        for(int i=0;i<25;++i)full.starts[i]=i<24?i:n;
+        for(uint32_t i=0;i<n;++i)full.destination_ids[i]=n-1-i;
+        struct Guarded {uint32_t before=0x12345678;Q8GroupMetadata data{};uint32_t after=0x87654321;} guarded;
+        guarded.data=q8_down_metadata(full,26112);m=guarded.data;
+        need(guarded.before==0x12345678 && guarded.after==0x87654321 && sizeof(m)==q8_metadata_words*4,"metadata guard/upload size");
+        need(m[24]==17408 && m[25]==0 && m[49]==int32_t(n) && m[50]==full.destination_ids[0] && m[49+n]==0,"24-group down metadata overlap");
+        for(size_t i=50+n;i<m.size();++i)need(m[i]==0,"metadata tail not zero");
+        auto stage=q8_stage_metadata(full.starts.data(),full.starts.size());
+        need(stage[24]==int32_t(n) && stage[31]==24 && stage[25]==0,"activation starts/count overlap");
+        auto bad=full;bad.destination_ids.back()=n;rejects([&]{q8_down_metadata(bad,26112);});
+        // Padded inactive endpoints and an empty group retain their IDs, ignored.
+        full.starts[0]=1;full.starts[1]=1;full.starts.back()=n-1;
+        full.destination_ids.front()=-1;full.destination_ids.back()=-1;
+        q8_down_metadata(full,26112);
+        bad=full;bad.entries=81;bad.destination_ids.resize(81);rejects([&]{q8_down_metadata(bad,26112);});
+        bad=full;bad.destinations=81;rejects([&]{q8_down_metadata(bad,26112);});
+        full.weight_offsets.push_back(17408);full.starts.push_back(n-1);rejects([&]{q8_down_metadata(full,26112);});
+        rejects([&]{q8_stage_metadata(full.starts.data(),full.starts.size());});
+    }
     puts("native down metadata tests passed; no GPU/numerical proof");return 0;
 }catch(const std::exception& e){fprintf(stderr,"%s\n",e.what());return 1;}}

@@ -6,6 +6,7 @@
 #include "mixed_rows.hpp"
 #include "cpu_capture_rows.hpp"
 #include "ggml-cpu.h"
+#include "../../src/core/native_q8_gu_layout.hpp"
 #include <cmath>
 #include <iomanip>
 #include <map>
@@ -649,13 +650,19 @@ void first_boundary_check() {
 }
 int main(int argc,char** argv) {
     try {
-        if(argc==2 && std::string(argv[1])=="--stage-check") {
+        if(argc==2 && (std::string(argv[1])=="--stage-check" || std::string(argv[1])=="--stage-check80")) {
+            const int T=std::string(argv[1])=="--stage-check80"?8:1,K=T==8?10:2;
             Fixture fixture;const auto setup=fixture.setup();const auto path=(fixture.root/"capture.bin").string();std::string err;CpuCapture capture;
             require(capture.prepare(setup,fixture.m.identity,fixture.m.index_digest,path,err,1u<<20),err);
-            require(capture.request("GEN 1 1",{1},1) && capture.window(0,1,2),"stage fixture capture request");
-            for(int layer=0;layer<2;++layer){InferRequest q;q.session=1;q.sequence=layer+1;q.model_id=setup.model_id;q.partition_id=setup.partition_id;q.layer=layer;q.T=1;q.K=2;
-                q.ids={1,0};q.mask={1,1};q.weights={.5f,.5f};q.activations.assign(2560,.1f);std::vector<float> partial(2560,.25f);
+            require(capture.request("GEN 1 1",std::vector<int64_t>(T==8?9:1,1),1),"stage fixture capture request");
+            for(int window=0;window<(T==8?2:1);++window) {
+              const int rows=window?1:T;
+              require(capture.window(window?T:0,rows,T==8 && !window?1:2),"stage fixture capture window");
+              for(int layer=0;layer<2;++layer){InferRequest q;q.session=1;q.sequence=layer+1;q.model_id=setup.model_id;q.partition_id=setup.partition_id;q.layer=layer;q.T=rows;q.K=K;
+                q.ids.resize(rows*K);for(int i=0;i<rows*K;++i)q.ids[i]=1-i%2;
+                q.mask.assign(rows*K,1);q.weights.assign(rows*K,.5f);q.activations.assign(rows*2560,.1f);std::vector<float> partial(rows*2560,.25f);
                 require(capture.begin(q) && capture.finish(partial.data()),"stage fixture capture record");}
+            }
             const float logits[]={1.f,2.f};require(capture.seal(logits,2),"stage fixture capture seal");
             const auto output=(fixture.root/"staged").string();
             auto invoke=[&]{const pid_t child=fork();require(child>=0,"stage fixture fork");if(!child){execl(argv[0],argv[0],"--stage-record",path.c_str(),"0",(fixture.root/"local.manifest").c_str(),fixture.root.c_str(),output.c_str(),static_cast<char*>(nullptr));_exit(127);}int status=0;require(waitpid(child,&status,0)==child && WIFEXITED(status),"stage fixture wait");return WEXITSTATUS(status);};
@@ -677,7 +684,7 @@ int main(int argc,char** argv) {
             require(read_local_manifest(argv[4],m,err) && m.matches(f.setup) && m.identity==f.identity && m.index_digest==f.index,err.empty()?"capture/source manifest mismatch":err);
             std::set<std::pair<uint16_t,uint16_t>> unique;size_t entries=0;
             for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]){unique.emplace(q.layer,q.ids[i]);++entries;}
-            require(!unique.empty() && unique.size()<=24 && entries<=64,"full record exceeds provider bounds; not truncated");
+            require(!unique.empty() && unique.size()<=24 && entries<=strata::core::portable_detail::q8_entry_capacity,"full record exceeds provider bounds; not truncated");
             GpuPlan plan;require(make_gpu_plan(m,{unique.begin(),unique.end()},plan,err),err);
             const fs::path output=argv[6];require(fs::create_directory(output),"stage output must be a new directory");
             fs::permissions(output,fs::perms::owner_all,fs::perm_options::replace);

@@ -1070,7 +1070,7 @@ The source mapping is:
   applied by the existing caller, once, in its existing order.
 
 The frozen packed slot arena supports 1–24 resident experts (5,222,400 bytes
-per expert), at most 24 active groups and 64 active entries per call, T1–8 and
+per expert), at most 24 active groups and 80 active entries per call, T1–8 and
 K1–10. Larger calls are refused; they are not split or reassigned. The existing
 component metadata limits establish these bounds. The provider allocates one
 reusable tensor buffer sized for these capacities plus three existing component
@@ -1182,7 +1182,7 @@ and `GpuCache` for digest-checked atomic publication. It creates a new private
 directory, reads one expert at a time and never connects to a GPU or service.
 It prints every active entry/token/expert ID; no expert is silently omitted.
 Capture/source identity and index must match exactly. Calls beyond 24 groups or
-64 entries are refused before staging. It does not replace a resident plan or
+80 entries are refused before staging. It does not replace a resident plan or
 change any running ownership.
 
 ```sh
@@ -1384,3 +1384,32 @@ component to PortableFfn after complete original-slot expert rows return. See
 [VULKAN-NATIVE-MOE-COMBINE.md](VULKAN-NATIVE-MOE-COMBINE.md#opt-in-ffn--model-connection)
 for gating, budget, rollback, focused FFN and T1 full-forward recipes. Both
 observation flags remain off by default; no full-forward qualification is claimed.
+
+
+### 80-entry active capacity
+
+The opt-in grouped provider now accepts all 80 active entries in a T8/K10
+request when its frozen plan covers them. Gate, up, hidden, hidden Q8 and down
+scratch tensors hold 80 entries; input FP32/Q8 still holds eight token rows.
+GU/down metadata now occupies 130 I32 words, keeping count at 0, weights at
+1–24, starts at 25–49 and entry IDs at 50–129. The same size controls host
+arrays, device allocations and uploads. Other users of the shared component
+owner keep their 128-word buffers. The aligned tensor and component sizes
+remain charged through the existing budget and allocation snapshots.
+
+The 24 resident slots/groups, packed weight ranges, 32-bit weight addressing,
+placement, stable group/entry ordering and native arithmetic stay unchanged.
+An 81-entry low-level layout is refused; the worker's T8/K10 limit already
+prevents such a request. No splitting or accumulation policy is added.
+
+`native_q8_capacity_component` and `native_q8_capacity_consumer` reuse the
+composed H2560/F640 fixture for 80 entries, eight input tokens, 24 groups (one
+empty), a seven-row group grid, repeated weights and a destination permutation.
+The `capacity_padded` variants leave the first and last entries/destinations
+inactive and check their canaries. Both capture input Q8, gate/up, separate
+hidden diagnostic, consumed hidden Q8 and down. These are standalone test
+fixtures, with no change to native dispatch selection or product defaults.
+Host call-recorder tests cover capacity, order restoration and allocations;
+they do not establish physical capacity or numerical qualification. Physical
+CUDA/Vulkan comparison remains a separate paired check, retaining the existing
+approximate-intrinsic qualifications.
