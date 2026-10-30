@@ -1,4 +1,6 @@
 """Fake observations only: no GPU, model, nvidia-smi or child execution."""
+import portable_model_smoke_v1 as B
+
 import argparse
 import pathlib
 import json
@@ -33,16 +35,56 @@ class DeviceObservation(unittest.TestCase):
         self.assertEqual(args.split, 31)
 
     def test_cap_bounds_and_selected_capacity(self):
-        for cap in ('0', '-1', '8193', str(1 << 100)):
+        for cap in ('0', '-1', '1,2,3', '1,', str(1 << 100)):
             with self.subTest(cap=cap), mock.patch('sys.stderr'), self.assertRaises(SystemExit):
                 self.args('--device-cap-mib', cap)
-        initial = [dict(total=8 << 30, used=0)] * 2
-        S.admit_vram(initial, [dict(total=8 << 30)]*2, 7680 << 20)
+        initial = [dict(pci=p,total=8 << 30,used=9 << 20) for p in S.PCI]
+        mapping = [dict(pci=p,total=8 << 30,free=(8 << 30)-(9 << 20)) for p in S.PCI]
+        budgets = S.admit_vram(initial, mapping, 7680 << 20)
+        self.assertEqual([b['effective_limit_bytes'] >> 20 for b in budgets], [7671,7671])
+        # The real conservative ledger fits even though policy ceiling + reserve does not.
+        self.assertLess(7550 << 20, budgets[0]['effective_limit_bytes'])
         for capacity in (7 << 30, 0):
             with self.assertRaisesRegex(ValueError, 'capacity/free'):
-                S.admit_vram(initial, [dict(total=capacity)]*2, 7680 << 20)
+                S.admit_vram(initial, [dict(d,total=capacity) for d in mapping], 7680 << 20)
+        constrained = S.admit_vram(initial, [dict(d,free=7800 << 20) for d in mapping], 7680 << 20)
+        self.assertEqual(constrained[0]['effective_limit_bytes'], 7288 << 20)
         with self.assertRaises(ValueError):
-            S.admit_vram([dict(total=8 << 30, used=1 << 30)]*2, [dict(total=8 << 30)]*2, 7680 << 20)
+            S.admit_vram(initial, [dict(d,free=512 << 20) for d in mapping], 7680 << 20)
+
+    def test_asymmetric_caps_follow_reversed_devices(self):
+        args, selection = self.args('--devices','2,0','--pci',','.join(reversed(S.PCI)),
+                                    '--device-cap-mib','11776,7680')
+        self.assertEqual(S.device_caps(args), [11776 << 20,7680 << 20])
+        self.assertEqual(S.cap_argv(args), '11776,7680')
+        physical = selection[1]
+        initial = [dict(pci=p,total=t << 20,used=9 << 20) for p,t in zip(physical,[12288,8192])]
+        mapping = [dict(pci=d['pci'],total=d['total'],free=d['total']-d['used']) for d in initial]
+        budgets = S.admit_vram(initial,mapping,S.device_caps(args))
+        self.assertEqual([b['effective_limit_bytes'] >> 20 for b in budgets],[11767,7671])
+        self.assertEqual(S.budget_argv(budgets)[0], '--device-free-bytes')
+        with self.assertRaises(ValueError): S.admit_vram(initial,mapping,list(reversed(S.device_caps(args))))
+        S.guard_vram([dict(d,used=d['used']+(7550 << 20)) for d in initial],initial,budgets)
+        for sample in ([dict(d,used=d['total']-(511 << 20)) for d in initial],
+                       [dict(d,pci=S.PCI[0]) for d in initial]):
+            with self.assertRaises(ValueError): S.guard_vram(sample,initial,budgets)
+
+    def test_larger_reserve_is_outside_ledger_once(self):
+        initial = [dict(pci=p,total=8192 << 20,used=9 << 20) for p in S.PCI]
+        mapping = [dict(pci=d['pci'],total=d['total'],free=d['total']-d['used']) for d in initial]
+        reserves = S.device_reserves(argparse.Namespace(expert_free_reserve_mib='1024,256'))
+        self.assertEqual(reserves,[1024 << 20,512 << 20])
+        budgets = S.admit_vram(initial,mapping,7680 << 20,reserves)
+        self.assertEqual([b['effective_limit_bytes'] >> 20 for b in budgets],[7159,7671])
+        S.guard_vram([dict(d,used=d['used']+(7000 << 20)) for d in initial],initial,budgets)
+
+    def test_missing_or_contradictory_memory_evidence(self):
+        initial = [dict(pci=p,total=8 << 30,used=0) for p in S.PCI]
+        mapping = [dict(pci=p,total=8 << 30,free=8 << 30) for p in S.PCI]
+        for changed in ([dict(d,free=-1) for d in mapping], [dict(d,free=9 << 30) for d in mapping],
+                        [dict(d,pci='wrong') for d in mapping], mapping[:1]):
+            with self.assertRaises(ValueError): S.admit_vram(initial,changed,7680 << 20)
+        with self.assertRaises(KeyError): S.admit_vram(initial,[dict(pci=p,total=8 << 30) for p in S.PCI],7680 << 20)
 
     def mapping(self, output):
         with mock.patch.object(S.subprocess, 'run', return_value=mock.Mock(stdout=output)) as run, \
@@ -97,7 +139,7 @@ class DeviceObservation(unittest.TestCase):
     def test_capacity_drift_stops(self):
         with mock.patch.object(S, 'vram', return_value=dict(total=7 << 30, used=0)), \
                 self.assertRaisesRegex(ValueError, 'capacity changed'):
-            S.sample_vram(S.PCI, [dict(total=8 << 30)]*2)
+            S.sample_vram(S.PCI, [dict(pci=p,free=8<<30,total=8<<30) for p in B.PCI])
 
     def test_failed_telemetry_reaps_owned_child_and_preserves_stop(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -110,8 +152,8 @@ class DeviceObservation(unittest.TestCase):
                     mock.patch.object(S, 'model_working_set', return_value={'working_set_bound_bytes': 0}), \
                     mock.patch.object(S, 'host_memory', return_value=host), \
                     mock.patch.object(S, 'rss', return_value={}), \
-                    mock.patch.object(S, 'verified_devices', return_value=[dict(total=8 << 30)]*2), \
-                    mock.patch.object(S, 'sample_vram', side_effect=[[dict(total=8 << 30, used=0)]*2, ValueError('telemetry unavailable')]), \
+                    mock.patch.object(S, 'verified_devices', return_value=[dict(pci=p,free=8<<30,total=8<<30) for p in B.PCI]), \
+                    mock.patch.object(S, 'sample_vram', side_effect=[[dict(pci=p,used=0,total=8<<30) for p in B.PCI], ValueError('telemetry unavailable')]), \
                     mock.patch.object(S.subprocess, 'Popen', return_value=child), \
                     mock.patch.object(S.os, 'killpg') as kill:
                 with self.assertRaisesRegex(ValueError, 'telemetry unavailable'):

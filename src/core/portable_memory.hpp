@@ -13,9 +13,26 @@ inline size_t layer_state_preflight_bytes(const PortableModelOptions &options, s
         return options.qsa_production ? PortableQsaLayer::device_state_allocation_size(backend, options.context) : 0;
     return options.gdn_resident_state ? PortableGdnOptions{}.resident_state_budget : 0;
 }
-inline void preflight_device_memory(size_t used, size_t cap, size_t next) {
-    if (used > cap || next > cap - used)
-        throw std::runtime_error("portable model: next module exceeds separate die admission cap");
+struct DeviceAdmissionContext {
+    size_t slot, layer;
+    const char* module;
+    size_t policy_cap, free_reserve;
+};
+inline void preflight_device_memory(size_t used, size_t cap, size_t next,
+                                    const DeviceAdmissionContext* context = nullptr) {
+    if (used > cap || next > cap - used) {
+        // Diagnostics only: keep the exact overflow-safe admission predicate.
+        // Optional API callers may lack the CLI's policy/reserve evidence.
+        throw std::runtime_error(std::string("portable model: next module exceeds separate die admission cap") +
+            " slot=" + (context ? std::to_string(context->slot) : "unknown") +
+            " layer=" + (context ? std::to_string(context->layer) : "unknown") +
+            " module=" + (context ? context->module : "unknown") +
+            " admitted_bytes=" + std::to_string(used) +
+            " next_estimated_bytes=" + std::to_string(next) +
+            " policy_cap_bytes=" + (context && context->policy_cap ? std::to_string(context->policy_cap) : "unknown") +
+            " effective_limit_bytes=" + std::to_string(cap) +
+            " reserve_bytes=" + (context && context->free_reserve ? std::to_string(context->free_reserve) : "unknown"));
+    }
 }
 // Serial model-layer ledger, one slot per unique physical backend. Retained
 // buffers/private allowances add; token-local schedulers use one peak. The

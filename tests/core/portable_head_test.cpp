@@ -208,6 +208,10 @@ int main(int argc, char **argv) {
             small = {};
             small.graph_budget = 1;
             check(!PortableHead::create({H, HC, R, V, 1e-6f}, weights, small, error), "head graph cap");
+            const auto aligned_weights=PortableHead::weight_allocation_size(
+                resident && backend ? backend.get() : guard_cpu.get(),{H,HC,R,V,1e-6f},weights);
+            check(head->weight_bytes()<=aligned_weights && guarded_head->weight_bytes()<=aligned_weights,
+                  "real head allocations must fit metadata-only selected-backend weight sizing");
             const auto memory = head->memory_usage();
             check(memory.host_weights + memory.device_weights == head->weight_bytes() &&
                       (memory.device_weights > 0) == (resident && bool(backend)) &&

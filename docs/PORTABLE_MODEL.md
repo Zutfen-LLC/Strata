@@ -454,6 +454,9 @@ TSV rows carry layer IDs. For the exact parent-dispatched real-model stages,
 use [the versioned operator recipe](../agenthandoffs/portable-model-hermes-v4.md),
 which also samples aggregate VRAM for both PCI devices during the run.
 
+For ordered heterogeneous caps, physical capacity checks and reserve semantics,
+see [portable device budgets](PORTABLE_DEVICE_BUDGETS.md).
+
 Repeated Vulkan indices are rejected before initialization. Session admission
 also rejects distinct backend handles that share the same ggml device identity,
 so one physical die cannot receive two independent ledgers. Equal device

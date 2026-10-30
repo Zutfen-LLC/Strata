@@ -1,5 +1,6 @@
 #include "ggml-backend.h"
 #include "portable_stdio.hpp"
+#include "portable_device_budget.hpp"
 #include <csignal>
 #ifndef _WIN32
 #include <poll.h>
@@ -71,7 +72,7 @@ int main(int argc, char **argv) {
         std::string model, manifest, token_text, dump, executed_dump, placement_path, timings_path;
         using Clock = std::chrono::steady_clock;
         Clock::time_point setup_start, prompt_start, decode_start, decode_end, last_prompt_start, last_selection;
-        std::vector<int64_t> devices, caps, expert_tensors, expert_workspaces, expert_reserves;
+        std::vector<int64_t> devices, caps, free_bytes, expert_tensors, expert_workspaces, expert_reserves;
         size_t max_new = 0, max_requests = 4;
         bool resident = false;
         auto integer = [](const std::string &s) {
@@ -105,7 +106,8 @@ int main(int argc, char **argv) {
                 std::cout << "portable_model --list-vulkan (read-only logical index/PCI/free/total/description TSV)\n"
                              "portable_model --model ANY_SHARD --manifest SWLOCAL1 --tokens ID,ID,...\n"
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
-                             " [--vulkan 0,1 --device-cap-mib 7680,7680 --split 32] [--host-cap-mib 32768]\n"
+                             " [--vulkan 0,1 --device-cap-mib 7680,7680 (or scalar) --split 32] [--host-cap-mib 32768]\n"
+                             " [--device-free-bytes N,N (optional external free evidence; only tightens admission)]\n"
                              " [--gdn-production (requires --gdn-resident-state and strict Vulkan)]\n"
                              " [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
                              " [--qsa-reuse-attention (trial, default off)]\n"
@@ -210,6 +212,8 @@ int main(int argc, char **argv) {
                 devices = numbers(value);
             else if (key == "--device-cap-mib")
                 caps = numbers(value);
+            else if (key == "--device-free-bytes")
+                free_bytes = numbers(value);
             else if (key == "--dump-logits")
                 dump = value;
             else if (key == "--dump-executed-logits")
@@ -256,6 +260,9 @@ int main(int argc, char **argv) {
         }
         if (tokens.size() > opts.context || max_new > opts.context)
             throw std::runtime_error("prompt/max-new exceeds context bound");
+        if (caps.size() == 1 && devices.size() == 2) caps.push_back(caps[0]);
+        if (!free_bytes.empty() && free_bytes.size() != devices.size())
+            throw std::runtime_error("separate free-memory observations required for each device");
         if (devices.size() != caps.size() || devices.size() > 2)
             throw std::runtime_error("separate cap required for each Vulkan device");
         if (devices.size() == 2 && devices[0] == devices[1])
@@ -280,9 +287,11 @@ int main(int argc, char **argv) {
             d.free_reserve=budget(expert_reserves,d.accelerator,d.free_reserve);
         }
         std::vector<std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)>> backends;
+        std::vector<size_t> device_totals, device_reserves;
         for (size_t i = 0; i < devices.size(); ++i) {
-            if (devices[i] < 0 || caps[i] <= 0 || caps[i] > 8192)
-                throw std::runtime_error("invalid Vulkan index or per-die cap (<=8192 MiB)");
+            if (devices[i] < 0 || devices[i] > INT32_MAX)
+                throw std::runtime_error("invalid Vulkan index");
+            const size_t policy_cap = strata::core::portable_detail::device_mib(caps[i]);
 #ifdef STRATA_PORTABLE_MODEL_VULKAN
             if (devices[i] >= ggml_backend_vk_get_device_count())
                 throw std::runtime_error("Vulkan device index out of range");
@@ -291,8 +300,27 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("requested Vulkan backend unavailable");
             backends.emplace_back(backend, ggml_backend_free);
             opts.accelerators.push_back(backend);
-            opts.device_caps.push_back(size_t(caps[i]) << 20);
+            size_t available = 0, total = 0;
+            ggml_backend_vk_get_device_memory(int(devices[i]), &available, &total);
+            if (!total || available > total)
+                throw std::runtime_error("missing/contradictory Vulkan memory evidence");
+            size_t reserve = 512u << 20;
+            for (const auto& expert : opts.expert_devices)
+                if (expert.accelerator == i) reserve = std::max(reserve, expert.free_reserve);
+            if (!free_bytes.empty()) {
+                if (free_bytes[i] <= 0 || uint64_t(free_bytes[i]) > total || uint64_t(free_bytes[i]) > SIZE_MAX)
+                    throw std::runtime_error("invalid external free-memory observation");
+                available = std::min(available, size_t(free_bytes[i]));
+            }
+            opts.device_caps.push_back(strata::core::portable_detail::device_admission_limit(
+                policy_cap, available, total, reserve));
+            opts.device_policy_caps.push_back(policy_cap);
+            opts.device_free_reserves.push_back(reserve);
+            device_totals.push_back(total);
+            device_reserves.push_back(reserve);
             std::cerr << "device=" << devices[i] << " backend=" << ggml_backend_name(backend)
+                      << " policy_cap_bytes=" << policy_cap << " available_bytes=" << available
+                      << " reserve_bytes=" << reserve << " effective_limit_bytes=" << opts.device_caps.back()
                       << " cap_bytes=" << opts.device_caps.back() << '\n';
 #else
             throw std::runtime_error("this build has no Vulkan backend");
@@ -304,6 +332,8 @@ int main(int argc, char **argv) {
                 size_t available = 0, total = 0;
                 char description[256]{};
                 ggml_backend_vk_get_device_memory(int(devices[i]), &available, &total);
+                if (total != device_totals[i] || available > total || available < device_reserves[i])
+                    throw std::runtime_error("Vulkan capacity changed or runtime free reserve breached");
                 ggml_backend_vk_get_device_description(int(devices[i]), description, sizeof(description));
                 std::cerr << "device_memory stage=" << stage << " position=" << position << " device=" << devices[i]
                           << " total_bytes=" << total << " available_bytes=" << available;
@@ -349,7 +379,10 @@ int main(int argc, char **argv) {
                       << " backend_private_bound=" << report.device_workspace_bound[i]
                       << " token_temporary_bound=" << report.device_token_temporary_bound[i]
                       << " shared_conversion_bound=" << report.device_shared_conversion_bound[i]
-                      << " admitted_bytes=" << report.device_admission[i] << " cap_bytes=" << opts.device_caps[i]
+                      << " admitted_bytes=" << report.device_admission[i]
+                      << " policy_cap_bytes=" << strata::core::portable_detail::device_mib(caps[i])
+                      << " effective_limit_bytes=" << opts.device_caps[i] << " reserve_bytes=" << device_reserves[i]
+                      << " cap_bytes=" << opts.device_caps[i]
                       << " headroom_bytes=" << opts.device_caps[i] - report.device_admission[i] << '\n';
         std::cerr << report.identity_evidence << '\n';
         std::cerr << (opts.prompt_chunk_size ? "Bounded prompt chunks; T=1 final prompt/decode; " : "T=1; ");

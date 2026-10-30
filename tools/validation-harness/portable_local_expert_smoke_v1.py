@@ -53,7 +53,7 @@ def main():
     S.device_arguments(p)
     args = p.parse_args()
     selected, physical = S.device_selection(p, args)
-    cap = args.device_cap_mib << 20
+    caps = S.device_caps(args)
     if len(args.plan) != (2 if args.phase == 'smoke' else 0): p.error('smoke requires exactly two plans; discover has none')
     binary = args.binary.resolve(strict=True)
     if Q.bundle.sha(binary) != args.binary_sha256: raise ValueError('binary hash mismatch')
@@ -62,14 +62,14 @@ def main():
     command = [str(binary), '--model', str((args.model_root or S.MODEL_ROOT)/'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
                '--manifest', args.manifest, '--tokens', str(S.PROMPT[0]), '--context', '256', '--max-new', '0',
                '--threads', '4', '--expert-workers', '12', '--host-cap-mib', '32768',
-               '--vulkan', args.devices, '--device-cap-mib', ','.join([str(args.device_cap_mib)]*2), '--split', str(args.split),
+               '--vulkan', args.devices, '--device-cap-mib', S.cap_argv(args), '--split', str(args.split),
                '--placements', str(args.out/'placements.tsv')]
     if args.phase == 'discover': command += ['--expert-record-routes']
     else:
         for slot, plan in enumerate(args.plan): command += ['--expert-plan', f'{slot}:{plan.resolve(strict=True)}']
         command += ['--expert-tensor-mib', args.tensor_mib, '--expert-workspace-mib', args.workspace_mib,
                     '--expert-free-reserve-mib', args.free_reserve_mib, '--expert-check-rows']
-    Q.write(args.out/'argv.json', command)
+    Q.write(args.out/'planned-argv.json', command)
     child = None
     try:
         baseline = S.host_memory()
@@ -87,7 +87,10 @@ def main():
         summary['peak_process'] = dict(VmRSS=0, VmHWM=0, VmSwap=0)
         summary['peak_swap_used'] = baseline.get('SwapUsed', 0)
         summary['maximum_swap_out_pages_delta'] = 0
-        S.admit_vram(initial, mapping, cap)
+        budgets = S.admit_vram(initial, mapping, caps, S.device_reserves(args))
+        summary['device_budgets'] = budgets
+        command += S.budget_argv(budgets)
+        Q.write(args.out/'argv.json', command)
         start = time.monotonic()
         with (args.out/'stdout.jsonl').open('x') as stdout, (args.out/'stderr.log').open('x') as stderr:
             child = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
@@ -107,8 +110,7 @@ def main():
                     summary['minimum_vram_free'][die] = min(summary['minimum_vram_free'][die], value['total']-value['used'])
                 summary['sampled_peak_growth'] = [summary['sampled_peak_vram'][i]-initial[i]['used'] for i in range(2)]
                 S.guard_host(host, baseline, process)
-                for die, value in enumerate(sample):
-                    if value['used']-initial[die]['used'] > cap: raise ValueError('per-die growth cap')
+                S.guard_vram(sample, initial, budgets)
                 if time.monotonic()-start > 300: raise TimeoutError('one-token case budget 300s; no retry')
                 if any((args.out/name).stat().st_size > 16 << 20 for name in ('stdout.jsonl','stderr.log')):
                     raise ValueError('output log cap')

@@ -109,6 +109,28 @@ int main(){
         try { portable_detail::preflight_device_memory(SIZE_MAX-1,SIZE_MAX,2); }
         catch(const std::exception&) {refused=true;}
         check(refused,"preflight addition overflow rejected by subtraction");
+        // Refusal must retain the operands needed to diagnose a real load gate.
+        std::string refusal;
+        try { portable_detail::preflight_device_memory(200,300,101); }
+        catch(const std::exception& e) { refusal=e.what(); }
+        check(refusal.find("admitted_bytes=200")!=std::string::npos &&
+              refusal.find("next_estimated_bytes=101")!=std::string::npos &&
+              refusal.find("effective_limit_bytes=300")!=std::string::npos,
+              "preflight refusal missing admission context");
+        const portable_detail::DeviceAdmissionContext context{1,48,"output-head",320,16};
+        refusal.clear();
+        try { portable_detail::preflight_device_memory(200,300,101,&context); }
+        catch(const std::exception& e) { refusal=e.what(); }
+        for(const auto* field:{"slot=1","layer=48","module=output-head","admitted_bytes=200",
+                               "next_estimated_bytes=101","policy_cap_bytes=320",
+                               "effective_limit_bytes=300","reserve_bytes=16"})
+            check(refusal.find(field)!=std::string::npos,"preflight diagnostic field missing");
+        // Metadata must neither supply admission credit nor change exact boundaries.
+        portable_detail::preflight_device_memory(200,300,100,&context);
+        refused=false;
+        try { portable_detail::preflight_device_memory(SIZE_MAX-1,SIZE_MAX,2,&context); }
+        catch(const std::exception&) { refused=true; }
+        check(refused,"diagnostic context preserves overflow refusal");
         auto overflow=fresh();overflow.device_admission[0]=std::numeric_limits<size_t>::max()-1;
         overflow.device_scheduler[0]=overflow.device_admission[0];
         q={};q.device_graph=2;refused=false;

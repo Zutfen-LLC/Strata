@@ -1,4 +1,6 @@
 """Report-admission checks only; these tests do not claim device execution."""
+import portable_model_smoke_v1 as B
+
 import csv
 import json
 import signal
@@ -145,8 +147,8 @@ class HostAdmission(unittest.TestCase):
             with mock.patch.object(sys, "argv", argv), \
                     mock.patch.object(smoke, "model_working_set", return_value={"working_set_bound_bytes": self.WORKING_SET}), \
                     mock.patch.object(smoke, "host_memory", side_effect=[self.host(), self.host(7 << 30)]), \
-                    mock.patch.object(smoke, "vram", return_value={"used": 0, "total": 8 << 30}), \
-                    mock.patch.object(smoke, "verified_devices", return_value=[{"total": 8 << 30}]*2), \
+                    mock.patch.object(smoke, "vram", side_effect=lambda pci:dict(pci=pci,used=0,total=8<<30)), \
+                    mock.patch.object(smoke, "verified_devices", return_value=[dict(pci=p,free=8<<30,total=8<<30) for p in B.PCI]), \
                     mock.patch.object(smoke, "rss", return_value={"VmSwap": 0, "VmRSS": 1024}), \
                     mock.patch.object(smoke.subprocess, "Popen", return_value=child), \
                     mock.patch.object(smoke.os, "killpg") as kill:
