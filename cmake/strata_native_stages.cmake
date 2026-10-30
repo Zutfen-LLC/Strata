@@ -38,7 +38,21 @@ function(strata_enable_native_stages)
     "// Generated host-only fixture of the exact pinned FP16 patch.\ninline std::vector<uint32_t> native_q8_test_helper_effective(const std::vector<uint32_t>& input, bool rte16, bool preserve16) {\nstruct Flags {bool float_controls_rte_fp16; bool float_controls_denorm_preserve_fp16;} flags{rte16,preserve16};auto* device=&flags;\nconst void* spv_data=input.data();size_t spv_size=input.size()*4;\nvk::ShaderModuleCreateInfo shader_module_create_info({},spv_size,input.data());std::vector<uint32_t> spirv;const auto CEIL_DIV=[](size_t a,size_t b){return (a+b-1)/b;};\n${fp_block}\nreturn {shader_module_create_info.pCode,shader_module_create_info.pCode+shader_module_create_info.codeSize/4};\n}\n")
 
   # Reuse the exact pin gate and single build-tree copy; original source untouched.
-  file(APPEND "${out}/ggml-vulkan-guard.cpp" "#include \"strata_vk_native_stages.inc\"\n")
+  include(cmake/strata_native_q8_integer_dot.cmake)
+  strata_native_q8_dot_patch("${original}" dot_patched)
+  file(WRITE "${out}/ggml-vulkan-guard.cpp" "${dot_patched}\n#include \"strata_vk_logits_guard.inc\"\n#include \"strata_vk_native_stages.inc\"\n")
+  # Host test executes the actual patched feature-chain block with a mock
+  # feature query and creation success/failure; no device or alternative chain.
+  set(dot_begin_text "        VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR shader_integer_dot_product_features {};")
+  string(FIND "${dot_patched}" "${dot_begin_text}" dot_begin)
+  string(FIND "${dot_patched}" "\n        VkPhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE" dot_end)
+  if(dot_begin LESS 0 OR dot_end LESS dot_begin)
+    message(FATAL_ERROR "native Q8 dot: feature-chain block missing")
+  endif()
+  math(EXPR dot_length "${dot_end} - ${dot_begin}")
+  string(SUBSTRING "${dot_patched}" ${dot_begin} ${dot_length} dot_block)
+  file(WRITE "${out}/strata_native_q8_dot_test.hpp"
+    "// Generated from the exact patched feature-chain block.\ninline DotReceipt dot_feature_chain(bool request, bool acceleration, bool support, bool create_success) {\nstruct Diagnostic {NativeQ8IntegerDotState strata_q8_dot;} diagnostic;auto* strata_q8_device=&diagnostic;diagnostic.strata_q8_dot.requested=request;\nVkPhysicalDeviceFeatures2 root{};root.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;auto* last_struct=reinterpret_cast<VkBaseOutStructure*>(&root);std::vector<const char*> device_extensions;\n${dot_block}\nconst bool chained=root.pNext==&shader_integer_dot_product_features;\nif(chained)shader_integer_dot_product_features.shaderIntegerDotProduct=support?VK_TRUE:VK_FALSE;\nif(create_success)strata_q8_device->strata_q8_dot.logical_device_created(shader_integer_dot_product_features.shaderIntegerDotProduct != VK_FALSE);\nreturn {diagnostic.strata_q8_dot,chained,request&&acceleration,device_extensions.size()};\n}\n")
   add_custom_command(OUTPUT "${out}/strata_native_stages_spv.hpp"
     COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
       "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_q8_stages.comp" -o "${out}/native_stages.spv"
@@ -80,6 +94,10 @@ function(strata_enable_native_stages)
   target_include_directories(native_q8_geometry_component PRIVATE src/core)
   target_link_libraries(native_q8_geometry_component PRIVATE ggml-vulkan ggml-base)
   if(STRATA_BUILD_TESTS)
+    add_executable(native_q8_integer_dot_test tests/kernels/native_q8_integer_dot_test.cpp)
+    target_include_directories(native_q8_integer_dot_test PRIVATE src/core "${out}")
+    target_link_libraries(native_q8_integer_dot_test PRIVATE Vulkan::Vulkan)
+    add_test(NAME native_q8_integer_dot_test COMMAND native_q8_integer_dot_test)
     add_executable(native_q8_gu_shader_test tests/kernels/native_q8_gu_shader_test.cpp)
     target_include_directories(native_q8_gu_shader_test PRIVATE src/core "${out}")
     target_link_libraries(native_q8_gu_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan)

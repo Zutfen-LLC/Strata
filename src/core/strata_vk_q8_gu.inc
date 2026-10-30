@@ -11,7 +11,12 @@ static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_ba
     auto& g=*owner;auto* ctx=static_cast<ggml_backend_vk_context*>(backend->context);
     const auto& limits=ctx->device->properties.limits;
     logits_guard_need(limits.maxComputeWorkGroupInvocations>=256 && limits.maxComputeWorkGroupSize[0]>=256 &&
-        limits.maxComputeSharedMemorySize>=256*4 && ctx->device->integer_dot_product,"Q8 component: geometry/integer dot unsupported");
+        limits.maxComputeSharedMemorySize>=256*4,"Q8 component: geometry unsupported");
+    // This build's pin-checked factory always constructs the derived receipt.
+    const auto& dot=static_cast<const StrataVkQ8Device*>(ctx->device.get())->strata_q8_dot;
+    std::printf("native_q8_integer_dot requested=%d queried_support=%d logical_enabled=%d ggml_accelerated=%d device=%s\n",
+        int(dot.requested),int(dot.supported),int(dot.enabled),int(ctx->device->integer_dot_product),ctx->device->properties.deviceName.data());
+    dot.require_enabled(ctx->device->integer_dot_product);
     const auto properties=ctx->device->physical_device.getProperties2<vk::PhysicalDeviceProperties2,vk::PhysicalDeviceVulkan12Properties>();
     const auto& fp=properties.get<vk::PhysicalDeviceVulkan12Properties>();q8_gu_require_controls(fp);
     logits_guard_need(effective_spv_path && *effective_spv_path,"Q8 component: effective shader receipt required");

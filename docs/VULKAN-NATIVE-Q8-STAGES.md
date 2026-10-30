@@ -755,3 +755,85 @@ bounded fixture match only. Both modes retain `qualified=false`,
 Strict DenormPreserve32 behavior, all shaders and product execution stay
 unchanged. This does not establish model inference, other weight formats,
 optional Split/fused kernels or performance.
+
+### Functional integer dot on an unaccelerated Vulkan implementation
+
+Native HIP's signed Q8 dot is a four-signed-byte integer sum, including on
+architectures where its compatibility layer lowers that sum to individual
+integer operations. A Vulkan driver that supports `shaderIntegerDotProduct`
+provides the same integer operation even if
+`integerDotProduct4x8BitPackedSignedAccelerated` is false. The acceleration
+property selects GGML performance paths; it is not an arithmetic requirement
+of this component.
+
+Only when `STRATA_VULKAN_NATIVE_STAGES=ON`, the exact pin-checked build-tree
+backend copy now has five small device-initialization changes. It retains the
+extension/compiler/explicit-disable admission **before** GGML applies its
+acceleration filter, appends that functional feature to the normal query and
+creation chain, and records enablement only after successful device creation.
+The record is a derived host-side device object owned by the same shared
+pointer; the base type ABI, GPU resource ownership and existing queue remain
+unchanged. The component requires that creation receipt. It does not infer
+enablement from a physical feature query alone.
+
+GGML's original `device->integer_dot_product` assignment and every performance
+use of it remain unchanged. `GGML_VK_DISABLE_INTEGER_DOT_PRODUCT` is still
+honored, as is absence of the extension/compiler support or queried shader
+feature. There is no replacement shader, arithmetic fallback, new device,
+subgroup-width requirement or quantization policy. The strict module and
+unsupported DenormPreserve32 refusal remain unchanged. With the native-stage
+option off, generated backend source remains the exact original plus the
+existing logits-guard include.
+
+Focused host checks include `native_q8_integer_dot_test`, executing the actual
+patched feature-chain block across support/acceleration/disable/creation
+combinations, and `portable_logits_guard_build_test`, checking the source pin,
+exact five patch hunks, unique anchors, unchanged helper and default generation.
+Run these along with the prior nine native Q8 checks:
+
+```sh
+cmake --build BUILD --target native_q8_integer_dot_test \
+  native_q8_geometry_component native_q8_composed_component \
+  native_q8_geometry_input_test native_q8_gu_shader_test \
+  native_q8_shader_test native_q8_down_shader_test native_q8_spec_test \
+  native_q8_gu_input_test native_q8_down_input_test native_q8_consumer_input_test -j4
+ctest --test-dir BUILD --output-on-failure -R '^(native_q8_(integer_dot|geometry_input|gu_shader|shader|down_shader|spec|gu_input|down_input|consumer_input|tools)_test|portable_logits_guard_build_test)$'
+```
+
+For independent execution, use the retained Release Vulkan build settings and
+GGML pin on each host. No CUDA rebuild/reference capture is needed: none of the
+native reference source fingerprints changes. First compare once on the
+verified RTX3060 on02 against its retained CUDA geometry reference. Only after
+that succeeds, compare once on the independently identified V340L die on05
+against the same unchanged reference. The four synthetic wrapper inputs are
+`fixture.bin`, `capture.raw`, `capture.raw.weights.bin`, and original native
+`receipt.json`. Retain the native component log and external identity/hash
+manifest as reference identity evidence. Never relabel native02/CUDA/RTX3060
+as Vulkan05/V340L; the observation command's device arguments name only its
+current Vulkan target.
+
+On each host, with fresh `OUTPUT`, the one bounded command is unchanged:
+
+```sh
+python3 tools/native_q8_geometry.py --observe-unspecified-fp32-denorm \
+  --component BUILD/native_q8_geometry_component \
+  --device "$VERIFIED_CURRENT_VK_INDEX" --expect-device "$VERIFIED_CURRENT_VK_NAME" \
+  --fixture "$REFERENCE/fixture.bin" \
+  --fixture-sha256 26c5ab4747b9957fd2fe9971d6389365ffca53b2f3b069c4c9d72754d35f39c8 \
+  --native-raw "$REFERENCE/capture.raw" \
+  --native-raw-sha256 6a0fa01669d9d1670b40c40ed551f6efca56babd1666ce909ba9f14bc8506883 \
+  --native-receipt "$REFERENCE/receipt.json" --native-receipt-sha256 "$NATIVE_RECEIPT_SHA256" \
+  --weights "$REFERENCE/capture.raw.weights.bin" --weights-sha256 "$NATIVE_WEIGHTS_SHA256" \
+  --output "$OUTPUT"
+```
+
+Record `native_q8_integer_dot` log tuples for both gate/up and down. On the
+reported unaccelerated V340L, admission requires `requested=1`,
+`queried_support=1`, `logical_enabled=1`, while `ggml_accelerated` must remain
+`0`. On RTX3060 the performance flag should retain its observed value. Do not
+change a disable control to force admission. Any refusal, mismatch, nonfinite,
+sentinel or deadline failure stops the sequence; no tolerance or automatic
+retry. Preserve all intermediate comparisons, three effective modules and
+`spirv-val --target-env vulkan1.2` exits, actual child/wrapper exits, source and
+binary identities and cleanup. Both observations remain unqualified and retain
+the original input-Q8 mismatch.

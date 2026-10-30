@@ -60,7 +60,58 @@ class GuardBuild(unittest.TestCase):
         suffix = b'\n#include "strata_vk_logits_guard.inc"\n'
         if NATIVE_STAGES:
             suffix += b'#include "strata_vk_native_stages.inc"\n'
+        if NATIVE_STAGES:
+            # Exactly these five native-only hunks; all remaining backend bytes
+            # and the acceleration assignment/disable controls stay unchanged.
+            replacements = {
+                'vk_device ggml_vk_get_device(size_t idx) {': '#include "native_q8_vk_device.hpp"\nvk_device ggml_vk_get_device(size_t idx) {',
+                '        vk_device device = std::make_shared<vk_device_struct>();': '        auto strata_q8_device = std::make_shared<StrataVkQ8Device>();\n        vk_device device = strata_q8_device;',
+                '        device->integer_dot_product = device->integer_dot_product && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;': '        strata_q8_device->strata_q8_dot.requested = device->integer_dot_product;\n        device->integer_dot_product = device->integer_dot_product && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;',
+                '        if (device->integer_dot_product) {\n            last_struct->pNext = (VkBaseOutStructure *)&shader_integer_dot_product_features;': '        if (strata_q8_device->strata_q8_dot.requested) {\n            last_struct->pNext = (VkBaseOutStructure *)&shader_integer_dot_product_features;',
+                '        device->device = device->physical_device.createDevice(device_create_info);': '        device->device = device->physical_device.createDevice(device_create_info);\n        strata_q8_device->strata_q8_dot.logical_device_created(shader_integer_dot_product_features.shaderIntegerDotProduct != VK_FALSE);',
+            }
+            for before, after in replacements.items():
+                self.assertEqual(original.count(before.encode()), 1)
+                original = original.replace(before.encode(), after.encode())
         self.assertEqual(copy, original + suffix)
+
+    def test_native_dot_patch_rejects_wrong_pin_and_ambiguous_anchors(self):
+        if not NATIVE_STAGES:self.skipTest('native stages disabled')
+        with tempfile.TemporaryDirectory() as temporary:
+            d = Path(temporary)
+            for text in ('nothing', 'anchor anchor'):
+                script = d / 'anchors.cmake'
+                script.write_text(f'include("{ROOT / "cmake/strata_native_q8_integer_dot.cmake"}")\n'
+                                  f'set(candidate "{text}")\nstrata_native_q8_dot_replace(candidate "anchor" "replacement")\n')
+                result = subprocess.run([CMAKE, '-P', str(script)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('exactly one pinned patch anchor', result.stderr)
+            script = d / 'pin.cmake'
+            script.write_text(f'include("{ROOT / "cmake/strata_native_q8_integer_dot.cmake"}")\n'
+                              'strata_native_q8_dot_patch("wrong source" result)\n')
+            result = subprocess.run([CMAKE, '-P', str(script)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('incompatible pinned backend source', result.stderr)
+
+    def test_default_guard_generation_remains_exact_without_native_patch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            d = Path(temporary)
+            candidate = d / 'ggml'
+            for name in FILES:
+                target = candidate / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(GGML / name, target)
+            backend = candidate / 'src/ggml-vulkan'
+            (backend / 'CMakeLists.txt').write_text('add_library(ggml-vulkan STATIC ggml-vulkan.cpp)\n')
+            (d / 'CMakeLists.txt').write_text(
+                'cmake_minimum_required(VERSION 3.20)\nproject(default_guard LANGUAGES CXX)\n'
+                'set(STRATA_BUILD_TESTS OFF)\n'
+                f'add_subdirectory("{backend}" backend)\n'
+                f'include("{ROOT / "cmake/strata_logits_guard.cmake"}")\nstrata_enable_logits_guard()\n')
+            result = subprocess.run([CMAKE, '-S', str(d), '-B', str(d / 'build')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected = (GGML / FILES[0]).read_bytes() + b'\n#include "strata_vk_logits_guard.inc"\n'
+            self.assertEqual((d / 'build/strata-logits-guard/ggml-vulkan-guard.cpp').read_bytes(), expected)
 
     def test_observation_helper_is_exact_pinned_copy_with_one_final_hook(self):
         if not NATIVE_STAGES:
