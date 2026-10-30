@@ -122,3 +122,5 @@ No hardware or model result is implied by this prospective run contract.
 The separate [100-case v2 contract](QUALITY_V2.md) uses explicit
 `quality_suite: "v2-100"` within quality mode. It keeps the original twelve-case
 suite/scorer intact and reports paired semantic and formatting regressions.
+
+- Native method option forwarding and frozen answer screen: [NATIVE_METHOD_SCREEN.md](NATIVE_METHOD_SCREEN.md).

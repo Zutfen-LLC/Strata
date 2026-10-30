@@ -163,10 +163,14 @@ def token_receipt(row, position, prompt_count, vocabulary, head_policy='eager_di
         raise ValueError('invalid token or greedy ID')
 
 
-def completion(records, prompt, vocabulary, head_policy='eager_diagnostic', prompt_chunk_size=0):
+def completion(records, prompt, vocabulary, head_policy='eager_diagnostic', prompt_chunk_size=0, native=None):
     if not prompt:
         raise ValueError('empty prompt')
-    if not records or set(records[-1]) != {'stop', 'position'}:
+    terminal = records[-1] if records else {}
+    if native is not None:
+        native_work(terminal, native, len(records)-1)
+        terminal = {key: value for key, value in terminal.items() if key not in NATIVE_WORK_FIELDS}
+    if not records or set(terminal) != {'stop', 'position'}:
         raise ValueError('missing final stop receipt')
     rows = records[:-1]
     for i, row in enumerate(rows):
@@ -219,7 +223,138 @@ def benchmark_receipt(args, summary):
     Q.write(args.out / 'benchmark.json', summary)
 
 
+# Explicit adapter switches use booleans; product receipt prefixes are reserved
+# per case. Omission preserves the historical adapter path and receipts.
+NATIVE_SWITCHES = ('native_router', 'native_shared', 'native_moe_combine')
+NATIVE_WORK_FIELDS = {
+    'native_router_method', 'router_numerical_parity', 'native_router_calls_delta', 'native_router_rows_delta',
+    'native_shared_method', 'shared_numerical_parity', 'native_shared_calls_delta', 'native_shared_rows_delta',
+}
+
+
+def native_arguments(parser):
+    for name in NATIVE_SWITCHES:
+        parser.add_argument('--'+name.replace('_', '-'), action=argparse.BooleanOptionalAction, default=None,
+                            help='explicit native method selection; declare all three switches together')
+    parser.add_argument('--expert-native-q8-observation', action='store_true',
+                        help='native grouped expert observation in both declared method arms; fresh case receipts')
+
+
+def native_policy(args):
+    values = [getattr(args, name, None) for name in NATIVE_SWITCHES]
+    expert = getattr(args, 'expert_native_q8_observation', False)
+    if all(value is None for value in values) and expert is False:
+        return None
+    if any(type(value) is not bool for value in values) or expert is not True:
+        raise ValueError('declare all three native method switches and --expert-native-q8-observation')
+    if not getattr(args, 'expert_plan', []):
+        raise ValueError('native method screen requires explicit frozen expert plans')
+    if (getattr(args, 'benchmark', False) or getattr(args, 'single_case', False) or chunk_size(args) or
+            getattr(args, 'prompt_head_elision', False) or getattr(args, 'dump_executed_logits', False)):
+        raise ValueError('native method screen requires full twelve-case serial eager suite')
+    return dict(zip(NATIVE_SWITCHES, values), expert_native_q8_observation=True)
+
+
+def native_plans(args):
+    # Existing bounded plan decoder, including the native placement digest.
+    import quality_v2 as V
+    result = []
+    for record in args.expert_plan:
+        slot, path = record.split(':', 1)
+        if slot not in ('0', '1') or any(row['slot'] == int(slot) for row in result):
+            raise ValueError('duplicate/invalid native expert plan slot')
+        target = Path(path).resolve(strict=True)
+        binding, _ = V.read_plan(target)
+        result.append(dict(slot=int(slot), path=str(target), **binding))
+    return result
+
+
+def native_flags(policy, case):
+    if policy is None:
+        return []
+    receipt = case/'native-receipts'
+    receipt.mkdir()  # Refuse collisions before launching a child.
+    flags = ['--expert-native-q8-observation', str(receipt/'expert')]
+    for name in ('native_router', 'native_shared'):
+        if policy[name]:
+            flags += ['--'+name.replace('_', '-'), str(receipt/name.removeprefix('native_'))]
+    if policy['native_moe_combine']:
+        flags += ['--native-moe-combine']
+    return flags
+
+
+def native_work(row, policy, consumed):
+    expected = {}
+    for name, label in (('native_router', 'router'), ('native_shared', 'shared')):
+        if policy[name]:
+            expected.update({name+'_method': True, label+'_numerical_parity': False,
+                             name+'_calls_delta': 48*consumed, name+'_rows_delta': 48*consumed})
+    actual = {key: row[key] for key in NATIVE_WORK_FIELDS if key in row}
+    if actual.keys() != expected.keys() or any(type(actual[key]) is not type(value) or actual[key] != value
+                                              for key, value in expected.items()):
+        raise ValueError('native completed-method counters/policy mismatch')
+    return actual
+
+
+def native_case_receipts(case, policy, plans, selected, consumed):
+    # Check actual completed provider entries; the frozen one-plan screen does
+    # not require exercising an unassigned helper device or pretend CPU misses vanished.
+    log = (case/'stderr.log').read_text()
+    reports = L.devices(log, 'token-complete', selected)
+    if set(reports) != {row['slot'] for row in plans}:
+        raise ValueError('native expert completion reports differ from frozen plan slots')
+    entries = 0
+    for plan in plans:
+        report = reports[plan['slot']]
+        count = int(report['entries'])
+        if (int(report['position']) != consumed-1 or int(report['assigned']) != plan['assigned_experts'] or
+                int(report['weight_bytes']) != plan['assigned_bytes'] or count < 0 or
+                int(report['row_checks']) != count):
+            raise ValueError('native expert assignment/entry/row-check receipt mismatch')
+        for key in ('row_max_abs', 'row_relative_l2'):
+            if not math.isfinite(float(report[key])) or float(report[key]) < 0:
+                raise ValueError('nonfinite native expert row observation')
+        entries += count
+    if entries <= 0:
+        raise ValueError('native screen has no actual Vulkan expert participation')
+    dispatches = [dict(part.split('=', 1) for part in line.split()[1:]) for line in log.splitlines()
+                  if line.startswith('expert_dispatch ')]
+    if not dispatches or any(int(dispatches[-1].get(key, -1)) != value for key, value in
+            (('position', consumed-1), ('gpu_entries', entries), ('cpu_entries', 48*10*consumed-entries))):
+        raise ValueError('native GPU/CPU completion entry totals mismatch')
+    root = case/'native-receipts'
+    expected = {f'expert.slot-{i}.{stage}.spv' for i in range(len(plans)) for stage in ('activation', 'gu', 'down')}
+    for layer in range(48):
+        if policy['native_router']:
+            expected.add(f'router.layer-{layer}.t-1.owner-*/effective.spv')
+        if policy['native_shared']:
+            expected.update(f'shared.layer-{layer}.t-1.owner-*/{name}-effective.spv'
+                            for name in ('dense-scalar', 'quant'))
+        if policy['native_moe_combine']:
+            expected.add(f'expert.combine.layer-{layer}.t-1.owner-*/effective.spv')
+    # Owner counters are process-local allocation identities, not layer IDs.
+    # Bind each layer and filename once, allowing retained failed-plan owners.
+    found = sorted(root.rglob('*.spv'))
+    for pattern in expected:
+        if not list(root.glob(pattern)):
+            raise ValueError('missing native effective module: '+pattern)
+    if len(found) > 1024:
+        raise ValueError('native effective module count exceeded')
+    for path in found:
+        if (path.is_symlink() or not path.resolve().is_relative_to(root.resolve()) or not path.is_file() or
+                not 20 <= path.stat().st_size <= 1 << 20 or
+                not any(path.relative_to(root).match(pattern) for pattern in expected)):
+            raise ValueError('invalid/unrequested native effective module receipt')
+        with path.open('rb') as module:
+            if module.read(4) != b'\x03\x02\x23\x07':
+                raise ValueError('invalid native effective module header')
+    return dict(expert_entries=entries, expert_reports=reports,
+                effective_modules={str(path.relative_to(root)): Q.bundle.sha(path) for path in found})
+
+
 def run_portable(args, tok):
+    native = native_policy(args)
+    plans = native_plans(args) if native is not None else None
     selected, physical = S.device_selection(argparse.ArgumentParser(), args)
     caps = S.device_caps(args)
     prompts, binding = frozen(tok, args.suite)
@@ -238,6 +373,8 @@ def run_portable(args, tok):
                    qsa_policy='device_production' if getattr(args, 'qsa_production', False) else 'eager_diagnostic',
                    qsa_reuse_attention=bool(getattr(args, 'qsa_reuse_attention', False)),
                    gdn_policy='device_production' if getattr(args, 'gdn_production', False) else 'eager_diagnostic')
+    if native is not None:
+        summary.update(native_methods=native, native_expert_plans=plans)
     if projections:summary['gdn_batch_input_projections']=True
     if causal:summary['gdn_causal_chunk']=True
     size=chunk_size(args)
@@ -287,6 +424,11 @@ def run_portable(args, tok):
             if benchmark or size:
                 command += ['--timings', str(case / 'timings.json')]
             command += residency_flags(args)
+            if native is not None:
+                if native_plans(args) != plans:
+                    raise ValueError('frozen native expert plans changed')
+                command += ['--expert-check-rows'] if '--expert-check-rows' not in command else []
+                command += native_flags(native, case)
             if capture:
                 requested=case/'executed-logits';requested.mkdir()
                 command += ['--dump-executed-logits',str(requested)]
@@ -325,10 +467,18 @@ def run_portable(args, tok):
                     L.primary_plan_reports((case/'stderr.log').read_text(), primary_paths,
                                            summary['primary_expert_plans'], selected)
                 records = [json.loads(line) for line in (case / 'stdout.jsonl').read_text().splitlines()]
-                ids, stop = completion(records,prompt,len(tok.tokens),summary['head_policy'],size)
+                ids, stop = completion(records,prompt,len(tok.tokens),summary['head_policy'],size,native)
+                native_receipt = None
+                if native is not None:
+                    if native_plans(args) != plans:
+                        raise ValueError('frozen native expert plans changed')
+                    native_receipt = native_case_receipts(case, native, plans, selected, len(records)-1)
                 summary['requests'].append(dict(index=index, tokens=ids, finish=stop, seconds=time.monotonic()-began,
                     tensor_operations_by_device=participation, baseline_vram=initial, device_budgets=budgets, sampled_peak_vram=peak,
                     minimum_effective_available=minimum))
+                if native is not None:
+                    summary['requests'][-1]['native_work'] = native_work(records[-1], native, len(records)-1)
+                    summary['requests'][-1]['native_receipts'] = native_receipt
                 if capture:
                     diagnostic,_=E.load(requested,size)
                     if diagnostic['prompt_tokens']!=prompt or diagnostic['output_count']!=len(ids) or diagnostic['stop']!=stop or \
@@ -543,6 +693,7 @@ def main():
     p.add_argument('--expert-check-rows', action='store_true')
     S.device_arguments(p)
     residency_arguments(p)
+    native_arguments(p)
     p.add_argument('--dump-executed-logits',action='store_true',help='capture executed heads in each case/executed-logits; requires head elision')
     p.add_argument('--single-case', action='store_true', help='only frozen case 1 once, timed; no warmup or scoring')
     p.add_argument('--suite', type=Path, required=True)
