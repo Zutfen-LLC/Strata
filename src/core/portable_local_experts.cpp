@@ -36,7 +36,7 @@ void LocalExperts::guard(size_t i, const char* phase, size_t entry, const worker
         if(entry==SIZE_MAX)out<<"none";else out<<entry;
         out<<" layer=";if(asset)out<<asset->layer;else out<<"none";
         out<<" expert=";if(asset)out<<asset->expert;else out<<"none";
-        out<<" prepared_entries="<<d.counters.gpu_allocation_count
+        out<<" prepared_entries="<<(entry!=SIZE_MAX?entry:d.plan.assets.size())
            <<" assigned_entries="<<d.plan.assets.size()
            <<" free_before="<<r.free_before<<" free_now="<<free<<" total="<<total
            <<" charged_tensor_bytes="<<charged<<" tensor_cap="<<d.options.tensor_cap

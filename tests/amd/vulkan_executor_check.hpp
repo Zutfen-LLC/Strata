@@ -36,7 +36,7 @@ void executor_check(const std::string& backend, int device, const std::filesyste
     require(!executor->prepare(plan,1,cache,c,err),"unsupported reserve accepted");
     require(executor->prepare(plan,0,cache,c,err),err);
     require(c.gpu_weight_bytes == blob.size() && c.gpu_allocated_bytes >= blob.size() &&
-            c.gpu_allocated_bytes < (16u<<20) && c.gpu_allocation_count == 1,"owned allocation accounting");
+            c.gpu_allocated_bytes < (16u<<20) && c.gpu_allocation_count == 2,"owned allocation accounting");
     InferReply weighted;
     require(!executor->infer(plan,r,weighted,err),"weighted inference accepted");
     auto bad=r; bad.T=2;

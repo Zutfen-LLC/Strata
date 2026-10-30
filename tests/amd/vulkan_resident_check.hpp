@@ -47,7 +47,7 @@ void resident_check(const std::string& backend, int device, const std::filesyste
     GpuCounters c;
     require(executor->prepare(plan,0,cache,c,err),err);
     require(c.gpu_allocation_count == 2 && c.gpu_weight_bytes == 2*first.size() &&
-            c.gpu_allocated_bytes <= budget && c.gpu_scratch_bytes == c.gpu_allocated_bytes-c.gpu_weight_bytes,
+            c.gpu_allocated_bytes <= budget && c.gpu_scratch_bytes > 0 && c.gpu_allocated_bytes-c.gpu_scratch_bytes >= c.gpu_weight_bytes,
             "resident tensor accounting exceeds budget");
     const auto owned=c.gpu_allocated_bytes;
     InferRequest r;
@@ -95,9 +95,10 @@ void resident_check(const std::string& backend, int device, const std::filesyste
         require(make_gpu_plan(m,{{0,0},{0,1},{0,3}},three,err),err);
         require(cache.prepare(three,missing,err),err);
         require(cache.publish(three.assets[0],first.data(),first.size(),err),err);
-        auto larger=create_vulkan_executor_cpu_test(3*(owned/2));
-        require(larger->prepare(three,0,cache,c,err) && c.gpu_allocation_count == 3 &&
-                c.gpu_allocated_bytes == 3*(owned/2),"third resident or exact tensor budget rejected");
+        const auto three_bytes=owned+first.size();
+        auto larger=create_vulkan_executor_cpu_test(three_bytes);
+        require(larger->prepare(three,0,cache,c,err) && c.gpu_allocation_count == 2 &&
+                c.gpu_allocated_bytes == three_bytes,"third resident or exact tensor budget rejected");
         larger->release(c);
         require(c.gpu_allocated_bytes == 0 && c.gpu_allocation_count == 0,"third resident release counters");
     }

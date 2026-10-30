@@ -1,5 +1,5 @@
 #include "strata/worker/vulkan_executor.hpp"
-#include "vulkan_expert_graph.hpp"
+#include "vulkan_expert_cache.hpp"
 #ifdef STRATA_AMD_PROBE_VULKAN
 #include "ggml-vulkan.h"
 #endif
@@ -17,7 +17,7 @@ class VulkanExecutor final : public GpuExecutor {
     uint64_t tensor_budget_;
     Backend owned_backend_{nullptr,ggml_backend_free};
     ggml_backend_t borrowed_ = nullptr, backend_ = nullptr;
-    std::vector<std::unique_ptr<ExpertGraph>> graphs_;
+    std::unique_ptr<ExpertCache> cache_;
     std::vector<uint8_t> binding_;
     GpuPlan plan_;
 public:
@@ -72,19 +72,18 @@ public:
             require(bool(backend_),"Vulkan unavailable; no CPU fallback");
             cpu::NativeFmt fmt;
             require(cpu::native_fmt(8,8,H,F,fmt,err),err);
-            graphs_.reserve(p.assets.size());
+            cache_=std::make_unique<ExpertCache>(backend_,fmt,p.assets.size(),size_t(tensor_budget_));
+            c.gpu_allocated_bytes=cache_->buffer_bytes();
+            c.gpu_scratch_bytes=cache_->scratch_bytes();
+            c.gpu_allocation_count=cache_->allocation_count();
+            c.gpu_peak_bytes=std::max(c.gpu_peak_bytes,c.gpu_allocated_bytes);
             for(size_t i=0;i<p.assets.size();++i) {
                 if(i) require(read(p.assets[i],blob,err),err);
                 c.host_staging_peak=std::max(c.host_staging_peak,uint64_t(blob.capacity()));
                 require(blob.size() == p.assets[i].bytes && blob_digest(blob) == p.assets[i].digest,
                         "Vulkan local asset size/digest mismatch");
-                graphs_.push_back(std::make_unique<ExpertGraph>(backend_,fmt,blob,true,
-                    size_t(tensor_budget_-c.gpu_allocated_bytes)));
-                c.gpu_allocated_bytes+=graphs_.back()->buffer_bytes();
+                cache_->upload(i,fmt,blob);
                 c.gpu_weight_bytes+=blob.size();
-                c.gpu_scratch_bytes=c.gpu_allocated_bytes-c.gpu_weight_bytes;
-                c.gpu_allocation_count=graphs_.size();
-                c.gpu_peak_bytes=std::max(c.gpu_peak_bytes,c.gpu_allocated_bytes);
             }
             plan_=p;
             return true;
@@ -97,7 +96,7 @@ public:
     bool infer_rows(const GpuPlan& p,const InferRequest& r,EntryRowsReply& out,std::string& err) override {
         out={}; err.clear();
         try {
-            require(!graphs_.empty(),"Vulkan adapter is not prepared");
+            require(bool(cache_),"Vulkan adapter is not prepared");
             std::vector<uint8_t> binding;
             require(encode_gpu_plan(p,binding,err),err);
             require(binding == binding_,"Vulkan adapter plan changed after prepare");
@@ -106,7 +105,7 @@ public:
             require(r.T >= 1 && r.T <= kMaxT && r.K > 0 && r.K <= kMaxK && !r.packed && r.mask.size() == size_t(r.T)*r.K &&
                     r.ids.size() == r.mask.size() && r.weights.size() == r.mask.size() && r.activations.size() == size_t(r.T)*H,
                     "Vulkan adapter requires bounded T1..8 F32 input and indexed entries");
-            // Validate the entire window before compute; one resident single-row graph per entry.
+            // Validate the entire window before compute; one shared single-row execution owner.
             finite(r.activations);
             // Slots follow the frozen plan; returned indices stay in the original T*K space.
             std::vector<std::pair<uint16_t,size_t>> entries;
@@ -118,7 +117,7 @@ public:
                     if (!asset)
                         require(false,"Vulkan adapter request contains unassigned expert");
                     const size_t slot=size_t(asset-plan_.assets.data());
-                    if (!(slot < graphs_.size()))
+                    if (!(slot < cache_->size()))
                         require(false,"Vulkan resident slot missing");
                     entries.emplace_back(uint16_t(i),slot);
                 }
@@ -130,7 +129,7 @@ public:
             for(const auto& entry:entries) {
                 const auto begin=r.activations.begin()+(entry.first/r.K)*H;
                 std::vector<float> token(begin,begin+H);
-                auto rows=graphs_[entry.second]->run(token);
+                auto rows=cache_->run(entry.second,token);
                 result.indices.push_back(entry.first);
                 result.rows.insert(result.rows.end(),rows.out.begin(),rows.out.end());
             }
@@ -139,7 +138,7 @@ public:
         } catch(const std::exception& e) { err=e.what(); return false; }
     }
     void release(GpuCounters& c) override {
-        graphs_.clear(); owned_backend_.reset(); backend_ = nullptr; binding_.clear(); plan_={};
+        cache_.reset(); owned_backend_.reset(); backend_ = nullptr; binding_.clear(); plan_={};
         c.gpu_allocated_bytes=c.gpu_weight_bytes=c.gpu_scratch_bytes=c.gpu_allocation_count=0;
     }
 };
