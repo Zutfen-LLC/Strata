@@ -219,6 +219,8 @@ def benchmark_receipt(args, summary):
 
 
 def run_portable(args, tok):
+    selected, physical = S.device_selection(argparse.ArgumentParser(), args)
+    cap = args.device_cap_mib << 20
     prompts, binding = frozen(tok, args.suite)
     single = getattr(args, 'single_case', False)
     benchmark = getattr(args, 'benchmark', False) or single
@@ -252,18 +254,22 @@ def run_portable(args, tok):
     summary.update(baseline_host=baseline, host_admission=S.host_admission_terms(work['working_set_bound_bytes']))
     start = time.monotonic()
     try:
+        mapping = S.verified_devices(binary, selected, physical)
+        summary['selected_devices'] = mapping
+        summary['device_policy'] = dict(devices=args.devices, pci=physical, split=args.split,
+                                      device_cap_mib=args.device_cap_mib)
         for index, prompt in enumerate(prompts, 1):
             S.admit_host(S.host_memory(), work['working_set_bound_bytes'])
             case = args.out / f'case-{index:02d}'
             case.mkdir()
-            initial = [S.vram(pci) for pci in S.PCI]
-            if any(v['total'] - v['used'] < 7680 << 20 for v in initial):
-                raise ValueError('insufficient per-die cap headroom')
+            initial = S.sample_vram(physical)
+            S.admit_vram(initial, mapping, cap)
             command = [str(binary), '--model', str((getattr(args, 'model_root', None) or S.MODEL_ROOT) / 'Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf'),
                        '--manifest', getattr(args, 'manifest', S.MANIFEST), '--tokens', ','.join(map(str, prompt)),
                        '--context', '256', '--max-new', '32', '--threads', '4', '--expert-workers', '12',
-                       '--host-cap-mib', '32768', '--vulkan', '0,1', '--device-cap-mib', '7680,7680',
-                       '--split', '32', '--placements', str(case / 'placements.tsv')]
+                       '--host-cap-mib', '32768', '--vulkan', args.devices,
+                       '--device-cap-mib', ','.join([str(args.device_cap_mib)] * 2),
+                       '--split', str(args.split), '--placements', str(case / 'placements.tsv')]
             for plan in getattr(args, 'expert_plan', []):
                 command += ['--expert-plan', plan]
             if getattr(args, 'expert_plan', []):
@@ -288,10 +294,10 @@ def run_portable(args, tok):
                         host, child = S.host_memory(), S.rss(process.pid)
                         S.guard_host(host, baseline, child)
                         minimum = min(minimum, host['effective_available'])
-                        for die, pci in enumerate(S.PCI):
-                            used = S.vram(pci)['used']
+                        for die, sample in enumerate(S.sample_vram(physical, initial)):
+                            used = sample['used']
                             peak[die] = max(peak[die], used)
-                            if used - initial[die]['used'] > 7680 << 20:
+                            if used - initial[die]['used'] > cap:
                                 raise ValueError('aggregate per-die VRAM growth cap')
                         if any((case / name).stat().st_size > 8 << 20 for name in ('stdout.jsonl', 'stderr.log')):
                             raise ValueError('bounded output log exceeded8MiB')
@@ -303,11 +309,11 @@ def run_portable(args, tok):
                         time.sleep(.2)
                 if status:
                     raise RuntimeError(f'portable_model exited{status}')
-                participation = S.placements(case / 'placements.tsv', [0, 1], 32)
+                participation = S.placements(case / 'placements.tsv', selected, args.split)
                 records = [json.loads(line) for line in (case / 'stdout.jsonl').read_text().splitlines()]
                 ids, stop = completion(records,prompt,len(tok.tokens),summary['head_policy'],size)
                 summary['requests'].append(dict(index=index, tokens=ids, finish=stop, seconds=time.monotonic()-began,
-                    tensor_operations_by_device=participation, sampled_peak_vram=peak,
+                    tensor_operations_by_device=participation, baseline_vram=initial, sampled_peak_vram=peak,
                     minimum_effective_available=minimum))
                 if capture:
                     diagnostic,_=E.load(requested,size)
@@ -521,8 +527,7 @@ def main():
     p.add_argument('--expert-workspace-mib', default='128,128')
     p.add_argument('--expert-free-reserve-mib', default='512,512')
     p.add_argument('--expert-check-rows', action='store_true')
-    p.add_argument('--model-root', type=Path)
-    p.add_argument('--manifest', default=S.MANIFEST)
+    S.device_arguments(p)
     residency_arguments(p)
     p.add_argument('--dump-executed-logits',action='store_true',help='capture executed heads in each case/executed-logits; requires head elision')
     p.add_argument('--single-case', action='store_true', help='only frozen case 1 once, timed; no warmup or scoring')
