@@ -16,6 +16,7 @@ class NativeQ8Cache {
     size_t slots_,weights_,scratch_,bytes_;
     std::vector<bool> uploaded_;
     std::string capture_;
+    bool capture_first_only_;
     using Stages=strata::core::portable_detail::StrataVkNativeStages;
     using Gu=strata::core::portable_detail::StrataVkQ8Gu;
     using Down=strata::core::portable_detail::StrataVkQ8Down;
@@ -28,7 +29,7 @@ class NativeQ8Cache {
         std::ofstream f(capture_+suffix,std::ios::binary);require(bool(f.write(reinterpret_cast<const char*>(b.data()),b.size())),"native Q8 boundary write failed");
     }
 public:
-    NativeQ8Cache(ggml_backend_t backend,size_t slots,size_t budget,const std::string& receipt,const std::string& capture):backend_(backend),slots_(slots),uploaded_(slots,false),capture_(capture) {
+    NativeQ8Cache(ggml_backend_t backend,size_t slots,size_t budget,const std::string& receipt,const std::string& capture,bool capture_first_only):backend_(backend),slots_(slots),uploaded_(slots,false),capture_(capture),capture_first_only_(capture_first_only) {
         using namespace strata::core::portable_detail;
         require(!receipt.empty() && slots>=1 && slots<=24,"native Q8 requires receipt prefix and 1..24 frozen slots");
         weights_=native_q8_weight_bytes(slots,budget);
@@ -58,6 +59,14 @@ public:
         bytes_+=component_bytes;scratch_+=component_bytes;
         std::fprintf(stderr,"native_q8_provider_observation=true qualified=false quantizer_qualified=false fp32_denorm_mode=unspecified tensor_bytes=%zu scratch_bytes=%zu\n",bytes_,scratch_);
     }
+    GpuCounters allocation_snapshot() const {
+        using namespace strata::core::portable_detail;
+        GpuCounters c;
+        c.gpu_allocated_bytes=ggml_backend_buffer_get_size(buffer_.get())+
+            strata_vk_native_stages_bytes(activation_.get())+strata_vk_q8_gu_bytes(gu_.get())+strata_vk_q8_down_bytes(down_.get());
+        c.gpu_weight_bytes=weights_;c.gpu_scratch_bytes=c.gpu_allocated_bytes-weights_;
+        c.gpu_allocation_count=1+bool(activation_)+bool(gu_)+bool(down_);return c;
+    }
     size_t size() const{return slots_;}
     size_t buffer_bytes()const{return bytes_;}
     size_t scratch_bytes()const{return scratch_;}
@@ -83,6 +92,7 @@ public:
         strata_vk_q8_down_run(down_.get(),w_,q,o,{H,F,n,n,uint32_t(t.experts.size()),doo,t.start,t.dst});
         std::vector<float> rows(size_t(n)*H);ggml_backend_tensor_get(o,rows.data(),0,rows.size()*4);finite(rows);
         dump(".input.q8_1",x);dump(".gate.f32",g);dump(".up.f32",u);dump(".hidden.q8_1",q);dump(".output.f32",o);
+        if(capture_first_only_)capture_.clear();
         std::vector<int32_t> packed(r.mask.size(),-1);for(size_t j=0;j<t.original.size();++j)packed[t.original[j]]=int32_t(j);
         EntryRowsReply result;result.session=r.session;result.sequence=r.sequence;
         for(size_t j=0;j<r.mask.size();++j)if(r.mask[j]) {

@@ -4,6 +4,7 @@
 #else
 #include "strata/worker/vulkan_executor.hpp"
 #include "ggml-vulkan.h"
+#include "native_q8_replay_timing.hpp"
 #endif
 #include "vulkan_native_q8_layout.hpp"
 #include "strata/worker/cpu_capture.hpp"
@@ -12,6 +13,10 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <chrono>
+#include <csignal>
+#include <cstdlib>
+#include <unistd.h>
 using namespace strata::worker;
 using namespace strata::worker::vulkan_detail;
 namespace fs=std::filesystem;
@@ -23,8 +28,18 @@ void cu(cudaError_t e){require(e==cudaSuccess,cudaGetErrorString(e));}
 struct Device {void* p=nullptr;size_t n;explicit Device(size_t size):n(size){cu(cudaMalloc(&p,n));}~Device(){if(p)cudaFree(p);}void put(const void* s){cu(cudaMemcpy(p,s,n,cudaMemcpyHostToDevice));}void dump(const std::string& path){std::vector<uint8_t> b(n);cu(cudaMemcpy(b.data(),p,n,cudaMemcpyDeviceToHost));write(path,b.data(),n);}};
 #endif
 int main(int argc,char** argv){try {
-    require(argc==10 && std::string(argv[1])=="--device" && std::string(argv[3])=="--expect-device",
-        "usage: --device INDEX --expect-device NAME CAPTURE RECORD ONE_LAYER_PLAN BLOB_DIR NEW_OUTPUT");
+    const bool timing=argc==11 && std::string(argv[10])=="--timing";
+    require((argc==10 || timing) && std::string(argv[1])=="--device" && std::string(argv[3])=="--expect-device",
+        "usage: --device INDEX --expect-device NAME CAPTURE RECORD ONE_LAYER_PLAN BLOB_DIR NEW_OUTPUT [--timing]");
+#ifdef STRATA_Q8_REPLAY_CUDA
+    require(!timing,"--timing is the Vulkan provider observation only");
+#endif
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(60);
+    struct Deadline {
+        bool enabled;
+        explicit Deadline(bool on):enabled(on){if(on){std::signal(SIGALRM,[](int){std::_Exit(124);});alarm(60);}}
+        ~Deadline(){if(enabled)alarm(0);}
+    } watchdog(timing);
     const std::string index=argv[2];require(!index.empty() && index.find_first_not_of("0123456789")==std::string::npos,"invalid device index");
     const int device=std::stoi(index);const std::string expected=argv[4];require(!expected.empty(),"expected device required");
     CpuCaptureFile f;GpuPlan p;std::string error;require(read_cpu_capture(argv[5],f,error),error);require(read_gpu_plan(argv[7],p,error),error);
@@ -64,8 +79,20 @@ int main(int argc,char** argv){try {
     ggml_backend_dev_props props{};ggml_backend_dev_get_props(ggml_backend_get_device(backend.get()),&props);
     require(props.description && std::string(props.description).find(expected)!=std::string::npos,"unexpected Vulkan device");
     std::cout<<"vulkan_device="<<props.description<<" device_id="<<(props.device_id?props.device_id:"unknown")<<"\n";
-    auto executor=create_vulkan_native_q8_observation(backend.get(),128u<<20,prefix,prefix);GpuCounters counters;EntryRowsReply reply;
-    require(executor->prepare_source(p,reader,counters,error),error);require(executor->infer_rows(p,q,reply,error),error);
+    auto executor=create_vulkan_native_q8_observation(backend.get(),128u<<20,prefix,prefix,timing);GpuCounters counters;EntryRowsReply reply;
+    require(executor->prepare_source(p,reader,counters,error),error);
+    if(timing) {
+        auto infer=[&](EntryRowsReply& rows){const bool ok=executor->infer_rows(p,q,rows,error);++q.sequence;return ok;};
+        auto snapshot=[&]{GpuCounters c;require(vulkan_native_q8_allocation_snapshot(executor.get(),c),"native Q8 allocation snapshot unavailable");return c;};
+        require(native_q8_same_allocations(counters,snapshot()),"native Q8 prepared allocation snapshot differs");
+        const auto result=native_q8_time_replay(infer,snapshot,deadline,error);reply=result.first_reply;
+        std::cout<<std::setprecision(17)<<"timing_observation=true qualified=false quantizer_qualified=false metric=fenced_host_call_ms warmups=2 timed_calls=16 overall_deadline_seconds=60 capture_io_timed=false repeated_output_bits_stable=true owned_allocations_stable=true"
+            <<" min_ms="<<result.minimum_ms<<" median_ms="<<result.median_ms<<" max_ms="<<result.maximum_ms
+            <<" tensor_bytes="<<result.allocations.gpu_allocated_bytes<<" weight_bytes="<<result.allocations.gpu_weight_bytes
+            <<" scratch_bytes="<<result.allocations.gpu_scratch_bytes<<" allocation_count="<<result.allocations.gpu_allocation_count<<" samples_ms=";
+        for(size_t i=0;i<result.samples_ms.size();++i)std::cout<<(i?",":"")<<result.samples_ms[i];
+        std::cout<<"\n";
+    } else require(executor->infer_rows(p,q,reply,error),error);
     size_t at=0;for(size_t j=0;j<q.mask.size();++j)if(q.mask[j])require(at<reply.indices.size() && reply.indices[at++]==j,"restored reply association mismatch");require(at==reply.indices.size(),"extra reply rows");
     std::cout<<"tensor_bytes="<<counters.gpu_allocated_bytes<<" scratch_bytes="<<counters.gpu_scratch_bytes<<" host_staging_peak="<<counters.host_staging_peak<<"\n";
     executor->release(counters);

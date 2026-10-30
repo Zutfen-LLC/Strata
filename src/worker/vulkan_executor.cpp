@@ -24,13 +24,14 @@ class VulkanExecutor final : public GpuExecutor {
     std::vector<uint8_t> binding_;
     GpuPlan plan_;
     std::string native_receipt_,native_capture_;
+    bool capture_first_only_=false;
 #ifdef STRATA_VULKAN_NATIVE_Q8_PROVIDER
     std::unique_ptr<NativeQ8Cache> native_;
 #endif
 public:
     VulkanExecutor(int device, bool cpu_test, uint64_t budget):device_(device),cpu_test_(cpu_test),tensor_budget_(budget) {}
     VulkanExecutor(ggml_backend_t backend, uint64_t budget):device_(-1),cpu_test_(false),tensor_budget_(budget),borrowed_(backend) {}
-    VulkanExecutor(ggml_backend_t backend,uint64_t budget,std::string receipt,std::string capture):device_(-1),cpu_test_(false),tensor_budget_(budget),borrowed_(backend),native_receipt_(std::move(receipt)),native_capture_(std::move(capture)) {}
+    VulkanExecutor(ggml_backend_t backend,uint64_t budget,std::string receipt,std::string capture,bool capture_first_only):device_(-1),cpu_test_(false),tensor_budget_(budget),borrowed_(backend),native_receipt_(std::move(receipt)),native_capture_(std::move(capture)),capture_first_only_(capture_first_only) {}
     ~VulkanExecutor() override { GpuCounters ignored; release(ignored); }
     bool prepare(const GpuPlan& p,uint64_t reserve,GpuCache& cache,GpuCounters& c,std::string& err) override {
         return prepare_impl(p,reserve, [&](const GpuAsset& a, std::vector<uint8_t>& blob, std::string& error) {
@@ -82,7 +83,7 @@ public:
             require(cpu::native_fmt(8,8,H,F,fmt,err),err);
             if(!native_receipt_.empty()) {
 #ifdef STRATA_VULKAN_NATIVE_Q8_PROVIDER
-                native_=std::make_unique<NativeQ8Cache>(backend_,p.assets.size(),size_t(tensor_budget_),native_receipt_,native_capture_);
+                native_=std::make_unique<NativeQ8Cache>(backend_,p.assets.size(),size_t(tensor_budget_),native_receipt_,native_capture_,capture_first_only_);
                 c.gpu_allocated_bytes=native_->buffer_bytes();c.gpu_scratch_bytes=native_->scratch_bytes();c.gpu_allocation_count=4;
                 c.gpu_peak_bytes=std::max(c.gpu_peak_bytes,c.gpu_allocated_bytes);
                 for(size_t j=0;j<p.assets.size();++j) {
@@ -164,6 +165,13 @@ public:
             return true;
         } catch(const std::exception& e) { err=e.what(); return false; }
     }
+    bool native_allocation_snapshot(GpuCounters& c) const {
+        (void)c;
+#ifdef STRATA_VULKAN_NATIVE_Q8_PROVIDER
+        if(native_){c=native_->allocation_snapshot();return true;}
+#endif
+        return false;
+    }
     void release(GpuCounters& c) override {
 #ifdef STRATA_VULKAN_NATIVE_Q8_PROVIDER
         native_.reset();
@@ -176,9 +184,13 @@ public:
 std::unique_ptr<GpuExecutor> create_vulkan_executor_on_backend(ggml_backend_t backend, uint64_t budget) {
     return std::make_unique<VulkanExecutor>(backend,budget);
 }
-std::unique_ptr<GpuExecutor> create_vulkan_native_q8_observation(ggml_backend_t backend,uint64_t budget,const std::string& receipt,const std::string& capture) {
+std::unique_ptr<GpuExecutor> create_vulkan_native_q8_observation(ggml_backend_t backend,uint64_t budget,const std::string& receipt,const std::string& capture,bool capture_first_only) {
     if(receipt.empty())throw std::runtime_error("native Q8 observation requires a shader receipt prefix");
-    return std::make_unique<VulkanExecutor>(backend,budget,receipt,capture);
+    return std::make_unique<VulkanExecutor>(backend,budget,receipt,capture,capture_first_only);
+}
+bool vulkan_native_q8_allocation_snapshot(const GpuExecutor* executor,GpuCounters& counters) {
+    const auto* native=dynamic_cast<const VulkanExecutor*>(executor);
+    return native && native->native_allocation_snapshot(counters);
 }
 std::unique_ptr<GpuExecutor> create_vulkan_gpu_executor(int device, uint64_t tensor_budget) {
     return std::make_unique<VulkanExecutor>(device,false,tensor_budget);

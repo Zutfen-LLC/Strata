@@ -38,7 +38,7 @@ StrataVkQ8Gu* strata_vk_q8_gu_create(ggml_backend_t backend,const char* effectiv
         "strata_native_gu_q8_0_fullwarp_component",5,8,effective_spv_path);
     return result.release();
 }
-size_t strata_vk_q8_gu_bytes(const StrataVkQ8Gu* p) {return p?p->owner->bytes:0;}
+size_t strata_vk_q8_gu_bytes(const StrataVkQ8Gu* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}
 void strata_vk_q8_gu_destroy(StrataVkQ8Gu* p) noexcept {delete p;}
 void strata_vk_q8_gu_run(StrataVkQ8Gu* s,const ggml_tensor* weights,const ggml_tensor* packed,
     ggml_tensor* gate,ggml_tensor* up,const Q8GuLayout& l) {

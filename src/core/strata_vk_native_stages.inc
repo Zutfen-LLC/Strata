@@ -112,7 +112,7 @@ StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_b
     return strata_vk_native_stages_create_variant_observation(backend,path,strata_native_quant_rn_spv,sizeof(strata_native_quant_rn_spv)/4,
         "strata_native_q8_quant_rn_observation",false);
 }
-size_t strata_vk_native_stages_bytes(const StrataVkNativeStages* p) {return p?p->owner->bytes:0;}
+size_t strata_vk_native_stages_bytes(const StrataVkNativeStages* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}
 void strata_vk_native_stages_destroy(StrataVkNativeStages* s) noexcept {delete s;}
 void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggml_tensor* gate,
     const ggml_tensor* up,ggml_tensor* hidden,ggml_tensor* packed,uint32_t n_ff,

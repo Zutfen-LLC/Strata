@@ -1238,3 +1238,54 @@ python3 tools/compare_native_q8_layer.py \
 
 A numerical mismatch still writes the official report and exits 1. No GPU
 rerun is needed to repair this metadata parsing failure.
+
+### Optional bounded provider timing
+
+Append `--timing` to the Vulkan one-layer replay command to prepare one owner
+once, run two warmups, then time exactly 16 repeated calls on the same resident
+weights and tensor workspace. Without the flag, the existing single-call replay
+is unchanged. The CUDA reference refuses this Vulkan-only option.
+
+```sh
+cmake --build build-stages --target vulkan_native_q8_replay native_q8_replay_timing_test
+# Run under the existing independent device guard, with verified private inputs.
+# NEW_TIMING_OUTPUT must not exist; do not overwrite historical reports.
+timeout 60s build-stages/vulkan_native_q8_replay \
+  --device 0 --expect-device 'VEGA10' \
+  "$CAPTURE" 0 "$FULL_RECORD0_PLAN" "$FULL_RECORD0_BLOBS" \
+  "$NEW_TIMING_OUTPUT" --timing
+```
+
+Keep the external 60-second timeout: it covers process startup as well as
+execution. Timed mode also arms a process-local 60-second alarm before reading
+the capture or creating the backend, and checks a steady-clock deadline between
+calls. Deadline termination is exit 124; it is not a partial successful result.
+
+The first warmup writes the same consumed-boundary files as normal replay.
+Capture-once is enabled only for this timing owner, so no boundary reads/file
+writes occur in the timed calls. Setup, pipeline creation, weight staging,
+warmups, reply checks, allocation snapshots and report I/O are outside the 16
+measurements. The measurements include the existing executor's input/metadata
+uploads, dispatch fences, final output readback and row restoration. They are
+fenced host-call milliseconds, not GPU timestamps or tokens per second.
+
+The report retains all 16 samples plus min/median/max. Every repeated reply must
+preserve its expected sequence/index association and match the first reply's
+F32 bits exactly. Fresh snapshots query live executor-owned tensor/metadata
+buffer sizes and count after each call and must match preparation. These
+counters exclude backend/driver-private allocations and do not measure total
+VRAM or transient driver allocation events.
+
+Timing does not invoke or alter the exact native comparator. Stable repeated
+outputs establish repeatability only. Preserve the existing numerical failures,
+original reports, `qualified=false` and `quantizer_qualified=false`. This mode
+makes no native parity or throughput claim. The default model/provider path and
+all shader/native arithmetic are unchanged.
+
+Local verification built the Vulkan replay, portable model and existing provider
+tests. Twenty focused CTests passed, including deterministic clock checks that
+exclude warmup/capture and snapshot overhead, the fixed 2+16 calls, exact-output
+and sequence failure controls, owned-allocation changes and deadline refusal.
+No timing run on a GPU was performed. CUDA compilation of the shared replay
+entry-point change is not available locally; its single-call arithmetic remains
+unchanged.
