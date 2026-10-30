@@ -71,6 +71,6 @@ function(strata_enable_logits_guard)
   if(STRATA_BUILD_TESTS)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_test(NAME portable_logits_guard_build_test COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/test_logits_guard_build.py" "${ggml_root}" "${out}" "${CMAKE_COMMAND}" "${STRATA_VULKAN_NATIVE_STAGES}")
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/test_logits_guard_build.py" "${ggml_root}" "${out}" "${CMAKE_COMMAND}" "${STRATA_VULKAN_NATIVE_STAGES}" "${STRATA_VULKAN_NATIVE_Q8_STRICT_FMA}")
   endif()
 endfunction()

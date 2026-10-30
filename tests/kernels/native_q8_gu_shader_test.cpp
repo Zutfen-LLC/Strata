@@ -1,6 +1,11 @@
 #include "native_q8_gu_spirv.hpp"
 #include <vulkan/vulkan.hpp>
+#ifdef STRATA_TEST_STRICT_FMA
+#include "strata_q8_gu_strict_fma_spv.hpp"
+#define strata_q8_gu_spv strata_q8_gu_strict_fma_spv
+#else
 #include "strata_q8_gu_spv.hpp"
+#endif
 #include "strata_native_observe_test_helper.hpp"
 #include "native_q8_fixture.hpp"
 #include <set>
@@ -13,7 +18,13 @@ int main(int argc,char** argv){try {
         need(code[p]>>16 && p+(code[p]>>16)<=code.size(),"GU malformed shader");
         if(op==spv::OpDecorate && code[p+2]==spv::DecorationNoContraction)precise.insert(code[p+1]);
         if(op==spv::OpSDot)++dots;
+#ifdef STRATA_TEST_STRICT_FMA
+        // Read the registry opcode; no binary instruction is hand-encoded.
+        if(op==4427)++fmas; // SPV_KHR_fma OpFmaKHR
+        need(!(op==spv::OpExtInst && code[p+4]==50),"strict shader contains legacy Fma");
+#else
         if(op==spv::OpExtInst && code[p+4]==50)++fmas; // GLSL.std.450 Fma
+#endif
         if(op==spv::OpFMul){++muls;need(precise.count(code[p+2]),"GU scale multiply can contract");}
         if(op==spv::OpFAdd){++adds;need(precise.count(code[p+2]),"GU reduction can contract");}
         if(op==spv::OpControlBarrier)++barriers;

@@ -1,11 +1,19 @@
 #include "strata_vk_q8_down.hpp"
 #include "strata_q8_down_spv.hpp"
+#ifdef STRATA_NATIVE_Q8_STRICT_FMA
+#include "strata_q8_down_strict_fma_spv.hpp"
+#endif
 namespace strata::core::portable_detail {
 struct StrataVkQ8Down {std::unique_ptr<StrataVkLogitsGuard> owner;};
 StrataVkQ8Down* strata_vk_q8_down_create(ggml_backend_t backend,const char* path) {
     auto result=std::make_unique<StrataVkQ8Down>();
+#ifdef STRATA_NATIVE_Q8_STRICT_FMA
+    result->owner=strata_vk_q8_component_owner(backend,strata_q8_down_strict_fma_spv,sizeof(strata_q8_down_strict_fma_spv)/4,
+        "strata_native_down_q8_0_strict_fma_component",4,7,path);
+#else
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_down_spv,sizeof(strata_q8_down_spv)/4,
         "strata_native_down_q8_0_fullwarp_component",4,7,path);
+#endif
     return result.release();
 }
 size_t strata_vk_q8_down_bytes(const StrataVkQ8Down* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}

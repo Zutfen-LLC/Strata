@@ -13,6 +13,7 @@ GGML = Path(sys.argv.pop(1)).resolve()
 BUILD = Path(sys.argv.pop(1)).resolve()
 CMAKE = sys.argv.pop(1)
 NATIVE_STAGES = len(sys.argv) > 1 and sys.argv.pop(1).upper() in ("ON", "TRUE", "1")
+STRICT_FMA = len(sys.argv) > 1 and sys.argv.pop(1).upper() in ("ON", "TRUE", "1")
 FILES = ('src/ggml-vulkan/ggml-vulkan.cpp', 'src/ggml-vulkan/ggml-vulkan-common.h',
          'src/ggml-vulkan/ggml-vulkan-types.h', 'src/ggml-vulkan/ggml-vulkan-push-constants.h',
          'src/ggml-backend-impl.h', 'src/ggml-impl.h', 'include/ggml.h',
@@ -73,6 +74,17 @@ class GuardBuild(unittest.TestCase):
             for before, after in replacements.items():
                 self.assertEqual(original.count(before.encode()), 1)
                 original = original.replace(before.encode(), after.encode())
+        if STRICT_FMA:
+            # Only the two strict-build insertion points may change the backend.
+            patch = (ROOT / 'cmake/strata_native_q8_strict_fma.cmake').read_text()
+            chain = patch.split('set(fma_chain [=[', 1)[1].split(']=])', 1)[0]
+            admit = patch.split('set(fma_admit [=[', 1)[1].split(']=])', 1)[0]
+            query = b'        vkGetPhysicalDeviceFeatures2(device->physical_device, &device_features2);'
+            create = b'        device->device = device->physical_device.createDevice(device_create_info);'
+            self.assertEqual(original.count(query), 1)
+            self.assertEqual(original.count(create), 1)
+            original = original.replace(query, chain.encode() + query + b'\n' + admit.encode())
+            original = original.replace(create, create + b'\n        strata_q8_device->strata_q8_fma.logical_device_created();')
         self.assertEqual(copy, original + suffix)
 
     def test_native_dot_patch_rejects_wrong_pin_and_ambiguous_anchors(self):

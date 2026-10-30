@@ -1,0 +1,22 @@
+// Generated from the exact build-tree patch blocks. No GPU access.
+inline FmaReceipt fma_feature_chain(bool extension,bool support,bool created) {
+    struct Diagnostic {NativeQ8StrictFmaState strata_q8_fma;} diagnostic;
+    auto* strata_q8_device=&diagnostic;
+    struct Extension {const char* extensionName;};
+    const std::vector<Extension> ext_props=extension?std::vector<Extension>{{VK_KHR_SHADER_FMA_EXTENSION_NAME}}:std::vector<Extension>{};
+    VkPhysicalDeviceFeatures2 root{};root.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    auto* last_struct=reinterpret_cast<VkBaseOutStructure*>(&root);
+    std::vector<const char*> device_extensions;
+@STRATA_FMA_CHAIN@
+    const bool chained=root.pNext==&strata_fma_features && last_struct==reinterpret_cast<VkBaseOutStructure*>(&strata_fma_features);
+    // Mock the query: all supported widths are reported, then the request must
+    // retain only FP32 in the same pNext chain used at logical-device creation.
+    if(chained){strata_fma_features.shaderFmaFloat32=support;strata_fma_features.shaderFmaFloat16=VK_TRUE;strata_fma_features.shaderFmaFloat64=VK_TRUE;}
+    bool admitted=true;
+    try {
+@STRATA_FMA_ADMIT@
+    } catch(const std::runtime_error&) {admitted=false;}
+    if(admitted && created)strata_q8_device->strata_q8_fma.logical_device_created();
+    return {diagnostic.strata_q8_fma,chained,admitted,device_extensions.size(),
+        strata_fma_features.shaderFmaFloat32,strata_fma_features.shaderFmaFloat16,strata_fma_features.shaderFmaFloat64};
+}

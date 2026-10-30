@@ -1289,3 +1289,67 @@ and sequence failure controls, owned-allocation changes and deadline refusal.
 No timing run on a GPU was performed. CUDA compilation of the shared replay
 entry-point change is not available locally; its single-call arithmetic remains
 unchanged.
+
+### Optional strict FP32 FMA diagnostic
+
+`STRATA_VULKAN_NATIVE_Q8_STRICT_FMA=ON` requires the existing native-stage
+option and selects strict gate/up and down variants for this diagnostic build.
+It is off by default. All backend devices initialized by this build must
+advertise `VK_KHR_shader_fma` and report `shaderFmaFloat32`; otherwise device
+initialization fails. Use a separate build directory. Do not enable this flag
+in an ordinary provider build merely to discover device support.
+
+The pin-checked bridge appends `VkPhysicalDeviceShaderFmaFeaturesKHR` to its
+existing feature query and logical-device creation chain, enables the extension,
+and requests only FP32. Its creation receipt becomes enabled only after
+`vkCreateDevice` succeeds. Strict component creation requires that receipt.
+There is no fallback to ordinary `fma`, software FMA or another device.
+
+The strict shader uses `GL_EXT_spirv_intrinsics` to emit `OpFmaKHR`, capability
+`FMAKHR` and extension `SPV_KHR_fma`. The separate scale multiply, signed packed
+integer dot, conversion, accumulation order, XOR reductions, activation and RN
+quantizer are unchanged. The default GLSL `fma` variant remains available with
+the option off. Strict FMA does not resolve activation/denormal differences or
+establish complete native parity: `qualified=false`, `quantizer_qualified=false`
+and all historical exact comparison failures remain observations to preserve.
+
+The [Vulkan proposal](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_shader_fma.html)
+explains why GLSL.std.450 Fma does not guarantee fused accuracy. The
+[SPIR-V extension](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_fma.html)
+defines the strict instruction and required capability. Static inspection of
+Mesa 26.2.6's `src/amd/vulkan/radv_physical_device.c` finds the extension and
+FP32 feature advertised without a VEGA10 exclusion; its SPIR-V frontend maps
+`OpFmaKHR` to `nir_op_ffma`. This is source evidence, not execution evidence.
+The retained official source archive matches the SHA256 published in
+[Mesa's release notes](https://docs.mesa3d.org/relnotes/26.2.6.html):
+`b9436b3e1a8be76fbd4823dc884f90596ab7c6ac5e1867a305e66ffccfb31a92`.
+No driver upgrade is part of this option.
+
+Configure the same pinned diagnostic build with the additional flag:
+
+```sh
+cmake -S . -B BUILD_STRICT [EXISTING_DIAGNOSTIC_OPTIONS] \
+  -DSTRATA_VULKAN_NATIVE_STAGES=ON \
+  -DSTRATA_VULKAN_NATIVE_Q8_STRICT_FMA=ON
+cmake --build BUILD_STRICT --target vulkan_native_q8_replay \
+  native_q8_strict_fma_test strata_q8_gu_shader strata_q8_down_shader
+ctest --test-dir BUILD_STRICT --output-on-failure \
+  -R '^(native_q8_strict_fma(_shader)?_test|portable_logits_guard_build_test)$'
+```
+
+Configuration checks the Vulkan feature declarations, compiles both actual
+strict consumers and validates them for Vulkan 1.2. It refuses unsupported
+headers, compiler emission, validator or disassembler support with the failing
+tool's diagnostic. Every strict shader rebuild also runs `spirv-val`. No
+unvalidated opcode is inserted by host code. The locally checked toolchain is
+Vulkan headers 1.4.363, glslc/shaderc 2026.4, glslang 16.6.0 and SPIRV-Tools
+2026.4; these are observed working versions, not inferred minimum versions.
+
+Host tests exercise the inserted feature-chain blocks across extension,
+support and creation outcomes. Shader tests validate strict and legacy modules,
+check strict FMA and the separately rounded scale multiply, compare arithmetic,
+barrier/reduction order and contraction controls, and forbid fast-math modes.
+The unchanged effective-module validator still preserves every shader input
+instruction through the pinned helper's FP16 metadata insertions. Host checks
+and compilation do not verify hardware FMA execution, native numerical parity
+or performance. No GPU run is authorized by this build recipe.

@@ -1,6 +1,9 @@
 // Standalone consumer of already packed inputs; included in the pin-checked TU.
 #include "strata_vk_q8_gu.hpp"
 #include "strata_q8_gu_spv.hpp"
+#ifdef STRATA_NATIVE_Q8_STRICT_FMA
+#include "strata_q8_gu_strict_fma_spv.hpp"
+#endif
 #include "native_q8_gu_spirv.hpp"
 namespace strata::core::portable_detail {
 struct StrataVkQ8Gu {std::unique_ptr<StrataVkLogitsGuard> owner;};
@@ -17,6 +20,12 @@ static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_ba
     std::printf("native_q8_integer_dot requested=%d queried_support=%d logical_enabled=%d ggml_accelerated=%d device=%s\n",
         int(dot.requested),int(dot.supported),int(dot.enabled),int(ctx->device->integer_dot_product),ctx->device->properties.deviceName.data());
     dot.require_enabled(ctx->device->integer_dot_product);
+#ifdef STRATA_NATIVE_Q8_STRICT_FMA
+    const auto& fma=static_cast<const StrataVkQ8Device*>(ctx->device.get())->strata_q8_fma;
+    fma.require_enabled();
+    std::printf("native_q8_strict_fma requested=%d queried_support=%d logical_enabled=%d qualified=false\n",
+        int(fma.requested),int(fma.supported),int(fma.enabled));
+#endif
     const auto properties=ctx->device->physical_device.getProperties2<vk::PhysicalDeviceProperties2,vk::PhysicalDeviceVulkan12Properties>();
     const auto& fp=properties.get<vk::PhysicalDeviceVulkan12Properties>();q8_gu_require_controls(fp);
     logits_guard_need(effective_spv_path && *effective_spv_path,"Q8 component: effective shader receipt required");
@@ -34,8 +43,13 @@ static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_ba
 }
 StrataVkQ8Gu* strata_vk_q8_gu_create(ggml_backend_t backend,const char* effective_spv_path) {
     auto result=std::make_unique<StrataVkQ8Gu>();
+#ifdef STRATA_NATIVE_Q8_STRICT_FMA
+    result->owner=strata_vk_q8_component_owner(backend,strata_q8_gu_strict_fma_spv,sizeof(strata_q8_gu_strict_fma_spv)/4,
+        "strata_native_gu_q8_0_strict_fma_component",5,8,effective_spv_path);
+#else
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_gu_spv,sizeof(strata_q8_gu_spv)/4,
         "strata_native_gu_q8_0_fullwarp_component",5,8,effective_spv_path);
+#endif
     return result.release();
 }
 size_t strata_vk_q8_gu_bytes(const StrataVkQ8Gu* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}
