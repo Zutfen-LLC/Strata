@@ -1,8 +1,8 @@
 # Standalone native top-10 Vulkan router probe
 
 This component follows Strata's native finite F32 512-expert/top-10 algorithm.
-It is an unqualified port: exact exponential/reciprocal parity is still pending.
-It is a standalone observation, with no model or FFN connection. Default
+It is an unqualified numerical port; the retained exact comparison fails.
+The standalone observation also has an [explicit FFN/model opt-in](PORTABLE-NATIVE-ROUTER.md). Default
 routing still calls `portable_ffn.cpp::route_logits`. No routing policy,
 expert placement, cache bound or native CUDA kernel changes.
 
@@ -57,8 +57,9 @@ The shader currently uses GLSL `Exp` and FP32 reciprocal expressions. CUDA's
 fast intrinsics and Vulkan's transcendental/division approximations have no
 cross-vendor exact-bit guarantee. This is an unresolved arithmetic boundary,
 not an exact native port qualification. No host double, software exp/division,
-error tolerance or alternative routing policy hides it. A mismatch fails the
-paired comparator and must be investigated before model integration.
+error tolerance or alternative routing policy hides it. The retained mismatch remains a failed
+paired numerical comparison. The opt-in integration follows the native method
+without claiming cross-vendor bit identity.
 [NVIDIA's fast-math mapping](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/mathematical-functions.html)
 explains why a host `exp`/division oracle would not establish the CUDA result.
 
@@ -154,3 +155,16 @@ Not run: CUDA reference compilation (no local CUDA compiler), physical CUDA or
 Vulkan dispatch, native PTX/SASS inspection, paired router comparison, model
 integration, fleet tests or performance measurement. The draft remains
 unqualified; the physical comparison above is pending, not denied.
+
+
+## Retained row-2 finding and opt-in integration
+
+Private evidence `306b3710058bd20a601b073dd06045f04eeb98c0` preserves both
+backends' original final outputs and has zero sum/product replay discrepancies.
+Five same-input exp outputs differ by one ULP; both reciprocal inputs differ,
+so no independent same-input reciprocal conclusion follows. The original 21/80
+weight mismatch remains. This single synthetic row supports the inspected
+methodology, not global correctness or complete active-resource qualification.
+The [explicit portable FFN/model connection](PORTABLE-NATIVE-ROUTER.md) keeps
+default routing unchanged, adds completed participation receipts and provides
+a bounded OFF/ON generation comparison recipe.

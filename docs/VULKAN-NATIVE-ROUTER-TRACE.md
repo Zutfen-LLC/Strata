@@ -144,3 +144,18 @@ and five focused baseline checks also pass. The original baseline router SPIR-V 
 CUDA diagnostic compilation is not run locally because this workspace has no
 CUDA compiler. No GPU capture, fleet test, model integration or numerical
 qualification has been performed by this change.
+
+
+## Subsequent retained capture
+
+Private agenthandoffs commit `306b3710058bd20a601b073dd06045f04eeb98c0` records
+the one paired diagnostic. Both runs preserve all final outputs and padded
+views; replay exits zero with no arithmetic discrepancies. Same-input exp
+outputs differ at -3/8, -5/8, -6/8, -7/8 and -9/8, each Vulkan one ULP above
+native. Reciprocal inputs differ at both boundaries, preventing an independent
+same-input reciprocal claim. The original 21-weight strict comparison failure
+is unchanged. Guard records have only baseline/early samples and limited
+descendant swap coverage; they do not establish full active-resource
+qualification. No repeat microtest is needed for that telemetry. The next
+explicit step is [opt-in model routing](PORTABLE-NATIVE-ROUTER.md) and a bounded
+same-prompt functional OFF/ON comparison, without tolerance changes.

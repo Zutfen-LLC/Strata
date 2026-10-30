@@ -11,6 +11,7 @@ StrataVkNativeRouter* strata_vk_native_router_create(ggml_backend_t backend,cons
         "strata_native_router_k10_observation",4,4,path);
     return result.release();
 }
+size_t strata_vk_native_router_bytes(const StrataVkNativeRouter* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}
 void strata_vk_native_router_destroy(StrataVkNativeRouter* p) noexcept {delete p;}
 void strata_vk_native_router_run(StrataVkNativeRouter* s,const ggml_tensor* logits,
     ggml_tensor* ids,ggml_tensor* weights,uint32_t tokens) {
