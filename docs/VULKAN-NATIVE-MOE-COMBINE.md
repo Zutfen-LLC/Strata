@@ -2,12 +2,12 @@
 
 This explicit strict-FMA diagnostic component computes one missing boundary:
 original-order routed expert rows and routing weights, followed by the already
-gated shared-expert output. It does not run a model or replace the portable
-FFN combine. Default portable execution, routing, placement, cache capacities
+gated shared-expert output. It does not run a model by itself. An explicit FFN/model option connects it
+to the existing expert-row boundary (see below). Default execution, routing, placement, cache capacities
 and all earlier comparison failures stay unchanged.
 
 The component is compiled only with `STRATA_VULKAN_NATIVE_STAGES=ON` and
-`STRATA_VULKAN_NATIVE_Q8_STRICT_FMA=ON`. Calling the standalone executable is
+`STRATA_VULKAN_NATIVE_Q8_STRICT_FMA=ON`. Calling the standalone executable or setting the explicit FFN/model flag is
 its runtime opt-in. It retains `observation_only=true`, `qualified=false`,
 `quantizer_qualified=false` and unspecified FP32 denorm mode.
 
@@ -37,12 +37,12 @@ a different operation; it contains no reusable native K10 expert weighted
 reduction. This slice reuses existing component/view ownership and admission,
 without importing that independent branch or duplicating an attention graph.
 
-The current portable host combine remains in
-[`PortableFfn::step` / `step_batch`](../src/core/portable_ffn.cpp). A later
-integration must supply the complete original router-order rows, including
+The default portable host combine remains in
+[`PortableFfn::step` / `step_batch`](../src/core/portable_ffn.cpp). The opt-in
+integration supplies the complete original router-order rows, including
 native CPU misses, and the existing gated shared row. The grouped provider's
-packed order is not the combine's input order. This component does not invent
-that handoff or change its ownership.
+packed order is not the combine's input order. The existing provider owns
+that handoff; the connection preserves its ownership.
 
 ## Interface and bounds
 
@@ -57,8 +57,8 @@ No resident/group/entry capacity or byte-address limit is widened.
 
 Configuration and every shader rebuild compile and validate strict SPIR-V for
 Vulkan 1.2. Effective-module validation preserves every input instruction
-through the pinned helper's FP16 metadata insertions. The existing GPU Q8
-provider and replay do not call this component yet.
+through the pinned helper's FP16 metadata insertions. The standalone GPU Q8
+provider replay does not call this component; the opt-in FFN caller does.
 
 ## Fixture and checks
 
@@ -145,3 +145,98 @@ Read the JSON as well: it must report all 5,120 words, zero differing bits,
 zero nonfinite words and `sentinels_ok=true`. Preserve exact CUDA/Vulkan module,
 executable, fixture and output hashes. Do not edit an earlier failure or infer
 qualification, end-to-end parity or performance from this fixture.
+
+## Opt-in FFN / model connection
+
+`PortableFfnOptions::native_moe_combine` now connects the same component to
+`PortableFfn::step` and `step_batch`. The model exposes it as
+`--native-moe-combine`, requiring `--expert-native-q8-observation`, explicit
+expert plans and strict accelerator execution. Both flags remain off by default.
+The strict-FMA build and its feature receipt are mandatory; an unsupported build
+or device refuses the request. This remains an unqualified observation.
+
+The pre graph still computes `down(silu(gate(mixed))*up(mixed))` and multiplies
+it by `sigmoid(shared_gate(mixed))` exactly once. That already gated row is
+passed to the combine, which performs no gating. `LocalExperts::run/run_batch`
+restores each indexed GPU reply to its original router slot and fills cold
+slots with the existing native CPU expert pool. The complete token-major,
+rank-order host rows and corresponding weights are uploaded without sorting.
+The component result directly supplies `post_block`; the host weighted sum is
+skipped. The existing post graph applies HC injection/residual as before.
+
+This deliberately retains the existing host expert-row boundary and gated
+shared-row readback. It adds no placement or scheduler policy. A separate
+bounded staging buffer and component owner belong to each FFN execution shape.
+Their actual aligned bytes count toward the existing aggregate graph cap and
+`device_graph`; a 16 KiB metadata context counts toward the host bound. Shared
+T1/chunk weights still count once, while both combine buffers count together.
+Failure leaves the FFN residual/routes unpublished; the enclosing session's
+existing poison behavior applies. No CPU/GPU expert cache capacity changes.
+
+`portable_ffn_native_combine_test` compiles the real FFN coordinator against a
+mocked component boundary. T1/T2/T8 checks cover exact row/weight uploads,
+nontrivial ranked IDs, token association, the gated shared row, one consumption
+by the post graph, absence of a redundant host sum, unchanged legacy selection,
+budget/shape/fallback refusal, chunk accounting and exception/nonfinite rollback.
+This is a host integration regression, not a GPU arithmetic result.
+
+The explicit-device executable runs the same synthetic FFN fixture with the
+real component, pre graph and post graph:
+
+```sh
+cmake --build "$BUILD" --target portable_model portable_ffn_native_combine_vulkan
+# Use the approved private ICD / SDK-loader environment from the rootless
+# prerequisite recipe. INDEX and DESCRIPTION must identify the intended device.
+timeout 60s "$BUILD/portable_ffn_native_combine_vulkan" \
+  --device "$INDEX" --expect-device "$DESCRIPTION"
+```
+
+It checks finite T1/T2/T8 FFN residuals with a fixed 4e-6 absolute integration
+tolerance against the simple synthetic shared/injection graph. That tolerance
+covers graph arithmetic; it is not a raw-bit native/CUDA qualification. The
+standalone paired K10 fixture remains the raw-bit arithmetic check. This FFN
+executable performs no attention, routing-plan creation or full model run.
+
+For one T1 full 48-layer forward, use the existing frozen plan and ordinary
+model CLI, adding only the two observation flags. For example, in the approved
+private process environment (all paths/caps/IDs below are supplied evidence):
+
+```sh
+timeout "$FORWARD_TIMEOUT_SECONDS" "$BUILD/portable_model" \
+  --model "$ANY_OF_SIX_SHARDS" --manifest "$LOCAL_MANIFEST" \
+  --tokens "$ONE_TOKEN_ID" --max-new 0 --context 1 \
+  --threads "$THREADS" --expert-workers "$EXPERT_WORKERS" \
+  --vulkan "$DENSE_DEVICE_INDEX" --device-cap-mib "$DEVICE_CAP_MIB" \
+  --host-cap-mib "$HOST_CAP_MIB" \
+  --expert-plan "0:$FROZEN_PLAN" --expert-tensor-mib "$EXPERT_TENSOR_MIB" \
+  --expert-workspace-mib "$EXPERT_WORKSPACE_MIB" \
+  --expert-free-reserve-mib "$EXPERT_FREE_RESERVE_MIB" \
+  --expert-native-q8-observation "$NEW_PRIVATE_RECEIPT_PREFIX" \
+  --native-moe-combine --expert-record-routes \
+  --placements "$NEW_PRIVATE_PLACEMENTS" --dump-logits "$NEW_PRIVATE_LOGITS_DIR"
+```
+
+Retain the existing approved dense topology/residency flags if required by its
+admission recipe; do not silently change them or add CPU fallback. Capture the
+actual child exit directly, enforce the timeout, and keep all payloads private.
+This command is a recipe, not a locally executed or qualified result.
+
+Static assessment: a legal frozen plan has 1–24 total assigned assets per
+native-Q8 executor. It need not cover every expert in all 48 layers: an empty
+hit mask skips GPU dispatch and existing CPU misses fill the original slots.
+For T1/K10, each GPU request has at most 10 entries/groups, so the existing
+24-group/64-entry bounds cannot block that request. A plan containing more than
+24 assets still refuses preparation; no eviction, reassignment or call splitting
+is introduced. The replay tool's all-active-resident requirement is specific to
+standalone replay, not the model's CPU-miss path.
+
+After a physical FFN check, the remaining execution prerequisites are the exact
+six-shard Q8 model/manifest and frozen plan identities, strict-FMA support on
+every selected Vulkan device, an admitted dense/state/head/expert memory ledger
+including these buffers, and a bounded T1 forward using the unchanged CPU miss
+pool. No known source-level combine or resident-capacity change is needed for
+that bounded invocation. Full-forward correctness remains unverified: shared,
+router/HC, attention/GDN/QSA, CPU-miss boundaries and final logits still need
+comparison against a matching native forward. The eight retained expert records
+and synthetic combine checks do not establish those boundaries or 48-layer
+qualification. Preserve the earlier unused Q8 sum-field representation failure.

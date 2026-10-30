@@ -133,6 +133,8 @@ struct PortableModelSession::Impl {
         : opts(std::move(options)), model(shards) {
         require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
                 "native Q8 observation requires explicit expert plans and strict accelerator execution");
+        require(!opts.native_moe_combine || (!opts.expert_native_q8_observation.empty() && !opts.accelerators.empty()),
+                "native MoE combine requires native Q8 observation and explicit accelerators");
         require(opts.prompt_chunk_size==0 || (opts.prompt_chunk_size>=2&&opts.prompt_chunk_size<=8),
                 "portable model: prompt chunk size must be zero or [2,8]");
         require(!opts.gdn_batch_input_projections || opts.prompt_chunk_size,
@@ -214,6 +216,7 @@ struct PortableModelSession::Impl {
         auto execution = [&](size_t index, bool output) {
             PortableFfnOptions o;
             o.threads = opts.threads;
+            o.native_moe_combine = !output && opts.native_moe_combine;
             o.allow_cpu_fallback = opts.allow_cpu_fallback;
             o.resident_dense_weights = opts.dense_resident_weights;
             o.weight_budget = output ? opts.head_weight_cap : opts.layer_weight_cap;

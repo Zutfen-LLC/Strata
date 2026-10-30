@@ -3,8 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 namespace strata::core::portable_detail {
-// Standalone observation component; available only in the explicit strict-FMA
-// native-stage build. No PortableFfn integration or default selection yet.
+// Observation component, available only in the explicit strict-FMA native-stage
+// build. PortableFfn selects it only through its explicit runtime option.
 struct StrataVkNativeMoeCombine;
 StrataVkNativeMoeCombine* strata_vk_native_moe_combine_create(ggml_backend_t,const char* effective_spv_path);
 size_t strata_vk_native_moe_combine_bytes(const StrataVkNativeMoeCombine*);

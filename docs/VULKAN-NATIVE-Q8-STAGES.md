@@ -1375,7 +1375,12 @@ instruction through the pinned helper's FP16 metadata insertions. Host checks
 and compilation do not verify hardware FMA execution, native numerical parity
 or performance. No GPU run is authorized by this build recipe.
 
-The next standalone arithmetic boundary is the opt-in
-[native K10 weighted combine](VULKAN-NATIVE-MOE-COMBINE.md). Its shader/component
-and paired synthetic fixture do not replace the portable host combine or
-change the existing expert provider.
+The opt-in [native K10 weighted combine](VULKAN-NATIVE-MOE-COMBINE.md)
+adds the native arithmetic boundary with a paired synthetic fixture. The
+default portable host combine and existing expert provider remain unchanged.
+
+The explicit `--native-moe-combine` option now connects the validated strict K10
+component to PortableFfn after complete original-slot expert rows return. See
+[VULKAN-NATIVE-MOE-COMBINE.md](VULKAN-NATIVE-MOE-COMBINE.md#opt-in-ffn--model-connection)
+for gating, budget, rollback, focused FFN and T1 full-forward recipes. Both
+observation flags remain off by default; no full-forward qualification is claimed.
