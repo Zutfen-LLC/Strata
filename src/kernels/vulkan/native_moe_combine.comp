@@ -1,0 +1,24 @@
+#version 450
+// Arithmetic/order maps src/kernels/cuda/native_moe.cu combine_k10_vec4.
+#extension GL_EXT_spirv_intrinsics : require
+// SPV_KHR_fma is compiled/validated by the same strict toolchain gate.
+spirv_instruction(extensions = ["SPV_KHR_fma"], capabilities = [6030], id = 4427)
+vec4 native_combine_fma(vec4 a,vec4 b,vec4 c);
+layout(local_size_x=128) in;
+layout(binding=0,std430) readonly buffer Parts {vec4 parts[];};
+layout(binding=1,std430) readonly buffer Weights {float weights[];};
+layout(binding=2,std430) readonly buffer Shared {vec4 shared_rows[];};
+layout(binding=3,std430) writeonly buffer Output {vec4 output_rows[];};
+layout(push_constant) uniform Params {uint h,tokens,pb,wb,sb,ob;} p;
+void main() {
+    uint col=gl_GlobalInvocationID.x,token=gl_WorkGroupID.y,n4=p.h/4;
+    if(col>=n4 || token>=p.tokens)return;
+    uint first=p.pb+token*10*n4+col,weight=p.wb+token*10;
+    // native_moe.cu combine_k10_vec4: first product rounded separately.
+    precise vec4 sum=parts[first]*weights[weight];
+    for(uint expert=1;expert<10;++expert)
+        sum=native_combine_fma(parts[first+expert*n4],vec4(weights[weight+expert]),sum);
+    // Shared output is already gated. No scaling, normalization or routing here.
+    precise vec4 result=sum+shared_rows[p.sb+token*n4+col];
+    output_rows[p.ob+token*n4+col]=result;
+}

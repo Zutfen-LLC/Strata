@@ -1374,3 +1374,8 @@ The unchanged effective-module validator still preserves every shader input
 instruction through the pinned helper's FP16 metadata insertions. Host checks
 and compilation do not verify hardware FMA execution, native numerical parity
 or performance. No GPU run is authorized by this build recipe.
+
+The next standalone arithmetic boundary is the opt-in
+[native K10 weighted combine](VULKAN-NATIVE-MOE-COMBINE.md). Its shader/component
+and paired synthetic fixture do not replace the portable host combine or
+change the existing expert provider.
