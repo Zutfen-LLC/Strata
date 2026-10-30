@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <atomic>
 
 namespace strata::core {
 namespace {
@@ -85,6 +86,56 @@ void write(ggml_tensor *t, const std::vector<float> &x) {
 }
 } // namespace
 
+struct PortableGdnScratch::Impl {
+    static constexpr size_t metadata_bound = 3 * (size_t(GGML_DEFAULT_GRAPH_SIZE) * 30 * 2 * sizeof(ggml_tensor) + (20u << 20));
+    PortableFfnOptions options;
+    portable_detail::Backend cpu{ggml_backend_cpu_init(), ggml_backend_free};
+    std::array<portable_detail::Scheduler, 3> schedulers{{
+        {nullptr, ggml_backend_sched_free}, {nullptr, ggml_backend_sched_free}, {nullptr, ggml_backend_sched_free}}};
+    std::array<size_t, 3> workspace{};
+    std::array<ggml_backend_sched_t, 3> active{};
+    std::atomic_flag borrowed = ATOMIC_FLAG_INIT;
+    explicit Impl(PortableFfnOptions o) : options(o) {
+        require(bool(cpu), "portable GDN: shared CPU unavailable");
+        require(o.graph_budget > 0 && o.graph_budget <= SIZE_MAX - metadata_bound,
+                "portable GDN: invalid/overflowing shared graph budget");
+        ggml_backend_cpu_set_n_threads(cpu.get(), o.threads);
+    }
+};
+PortableGdnScratch::PortableGdnScratch(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+PortableGdnScratch::~PortableGdnScratch() = default;
+std::shared_ptr<PortableGdnScratch> PortableGdnScratch::create(PortableFfnOptions options, std::string &error) {
+    error.clear();
+    try { return std::shared_ptr<PortableGdnScratch>(new PortableGdnScratch(std::make_unique<Impl>(options))); }
+    catch (const std::exception &e) { error=e.what(); return nullptr; }
+}
+size_t PortableGdnScratch::host_metadata_bound() { return Impl::metadata_bound; }
+PortableMemoryUsage PortableGdnScratch::memory_usage() const {
+    const auto& s=*impl_;
+    PortableMemoryUsage m;
+    size_t workspace=0;
+    for(size_t i=0;i<3;++i) {
+        workspace+=s.workspace[i];
+        auto* sched=s.active[i]?s.active[i]:s.schedulers[i].get();
+        if(!sched) continue;
+        m.host_graph+=ggml_backend_sched_get_buffer_size(sched,s.cpu.get());
+        if(s.options.request_accelerator && s.options.accelerator)
+            m.device_graph+=ggml_backend_sched_get_buffer_size(sched,s.options.accelerator);
+    }
+    require(m.host_graph <= s.options.graph_budget && m.device_graph <= s.options.graph_budget-m.host_graph &&
+            workspace <= s.options.graph_budget-m.host_graph-m.device_graph,
+            "portable GDN: shared retained scratch exceeds cap");
+    m.host_extra_bound=s.options.graph_budget-m.host_graph+Impl::metadata_bound;
+    if(s.options.request_accelerator) m.device_extra_bound=s.options.graph_budget-m.device_graph;
+    return m;
+}
+size_t PortableGdnScratch::graph_bytes() const {
+    const auto m=memory_usage();
+    size_t bytes=m.host_graph+m.device_graph;
+    for(auto workspace:impl_->workspace) bytes+=workspace;
+    return bytes;
+}
+
 struct PortableGdnLayer::Impl {
     PortableGdnOptions options;
     portable_detail::Backend cpu{nullptr, ggml_backend_free};
@@ -159,7 +210,9 @@ struct PortableGdnLayer::Impl {
         if (!batch_projections() || projection_tokens == T) return;
         // Drop the old shape before allocating its replacement. The tail and T1
         // schedulers keep their own buffers and are included in graphs_size.
-        projection_scheduler.reset(); projection_ctx.reset(); projection_bytes=0; projection_tokens=0;
+        if(projection_scheduler) ggml_backend_sched_reset(projection_scheduler.get());
+        if(!shared()) projection_scheduler.reset();
+        projection_ctx.reset(); projection_bytes=0; projection_tokens=0;
         projection_graph=nullptr; projection_input=nullptr; projection_outputs={};
         causal_residuals=nullptr; causal_outputs={};
         placement.erase(std::remove_if(placement.begin(),placement.end(),[](const auto& p) {
@@ -216,8 +269,10 @@ struct PortableGdnLayer::Impl {
         }
         auto opts=options.execution;
         require(graphs_size+chunk_graphs()<opts.graph_budget,"portable GDN: no projection graph budget");
-        opts.graph_budget-=graphs_size+(chunk_ffn?chunk_ffn->graph_bytes():0);
-        projection_scheduler=portable_detail::schedule(projection_graph,causal()?"gdn-causal-chunk":"gdn-input-projections",opts,cpu,placement,projection_bytes,causal());
+        // schedule_graph consumes the combined layer budget, including fixed graphs.
+        projection_bytes=graphs_size+(chunk_ffn?chunk_ffn->graph_bytes():0);
+        schedule_graph(projection_graph,causal()?"gdn-causal-chunk":"gdn-input-projections",1,projection_bytes,projection_scheduler,causal());
+        projection_bytes-=graphs_size+(chunk_ffn?chunk_ffn->graph_bytes():0);
         projection_tokens=T;
     }
 
@@ -233,8 +288,12 @@ struct PortableGdnLayer::Impl {
                 "portable GDN: projection host scratch budget exceeded");
         if (T == 1 || (s.chunk_ffn && s.chunk_ffn->tokens() != int64_t(T))) s.chunk_ffn.reset();
         if (T > 1 && !s.chunk_ffn) {
-            require(s.graphs_size+s.projection_bytes < s.options.execution.graph_budget,"portable GDN: no chunk graph budget");
-            s.chunk_ffn = s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-s.graphs_size-s.projection_bytes);
+            // A previous borrower can retain a larger projection shape than
+            // this layer's fresh metadata. Admit that backing before allocating
+            // another private FFN shape, rather than discovering it afterwards.
+            const size_t fixed=shared()?s.ffn->graph_bytes()+options.scratch->graph_bytes():s.graphs_size+s.projection_bytes;
+            require(fixed < s.options.execution.graph_budget,"portable GDN: no chunk graph budget");
+            s.chunk_ffn = s.ffn->create_chunk_execution(int64_t(T),error,s.options.execution.graph_budget-fixed);
             require(bool(s.chunk_ffn),error);
         }
         s.prepare_projections(T);
@@ -367,93 +426,52 @@ struct PortableGdnLayer::Impl {
             (options.ple_table ? PLE_STATE_BYTES - (production() ? 2 * PLE_HISTORY * sizeof(float) : 0) : 0);
     }
 
-    Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
-        require(layer >= 0 && layer < 48 && layer % 4 != 3,
-                "portable GDN: expected a non-QSA layer in [0,47]");
-        require(!options.ple_table || layer == 1,
-                "portable GDN: this model supports PLE only at layer 1");
-        require(!production() || (options.resident_state && options.execution.request_accelerator &&
-                    options.execution.accelerator && !options.execution.allow_cpu_fallback),
-                "portable GDN: production requires resident state and strict selected backend");
-        require(!options.causal_chunk || (options.batch_input_projections && production()),
-                "portable GDN: causal chunk requires production and batched input projections");
-        const std::string prefix = "blk." + std::to_string(layer) + ".";
-        auto expected_shapes = shapes();
-        if (options.ple_table)
-            expected_shapes.insert(ple_shapes().begin(), ple_shapes().end());
-        require(options.state_budget >= host_state_bytes(),
-                "portable GDN: host state budget exceeded");
-        std::vector<PortableTensorView> fw, aw;
-        for (const auto &t : tensors) {
-            require(t.name.rfind(prefix, 0) == 0, "portable GDN: tensor belongs to another layer");
-            (expected_shapes.count(t.name.substr(prefix.size())) ? aw : fw).push_back(t);
+    PortableGdnScratch::Impl* shared() const { return options.scratch ? options.scratch->impl_.get() : nullptr; }
+    void schedule_graph(ggml_cgraph* g, const char* phase, size_t index, size_t& bytes,
+                        portable_detail::Scheduler& sched, bool credit=false) {
+        if(!shared()) { sched=portable_detail::schedule(g,phase,options.execution,cpu,placement,bytes,credit); return; }
+        auto& o=*shared();
+        const size_t workspace=std::max(o.workspace[index],ggml_graph_plan(g,options.execution.threads,nullptr).work_size);
+        size_t used=ffn->graph_bytes()+(chunk_ffn?chunk_ffn->graph_bytes():0);
+        const std::array<ggml_backend_sched_t,3> all{{scheduler.get(),projection_scheduler.get(),tail_scheduler.get()}};
+        for(size_t i=0;i<3;++i) {
+            const size_t work=i==index?workspace:o.workspace[i];
+            require(used<=options.execution.graph_budget && work<=options.execution.graph_budget-used,
+                    "portable GDN: shared workspace budget exceeded");
+            used+=work;
+            if(i==index || !all[i]) continue;
+            const size_t retained=ggml_backend_sched_get_buffer_size(all[i],o.cpu.get())+
+                (options.execution.request_accelerator && options.execution.accelerator ?
+                 ggml_backend_sched_get_buffer_size(all[i],options.execution.accelerator):0);
+            require(retained<=options.execution.graph_budget-used,"portable GDN: shared retained budget exceeded");
+            used+=retained;
         }
-        require(aw.size() == expected_shapes.size() && fw.size() == 9,
-                "portable GDN: missing/extra attention, PLE or FFN tensors");
-        std::string error;
-        ffn = PortableFfn::create({H, HC, R, 640, 512, 10, 1e-6f}, layer, fw, options.execution, error);
-        require(bool(ffn), error);
-        weights_size = ffn->weight_bytes();
-        graphs_size = ffn->graph_bytes();
-        placement = ffn->placements();
-        cpu.reset(ggml_backend_cpu_init());
-        require(bool(cpu), "portable GDN: CPU unavailable");
-        ggml_backend_cpu_set_n_threads(cpu.get(), options.execution.threads);
-        weights_ctx = context();
-        ctx = context();
-        std::map<std::string, ggml_tensor *> w;
-        for (const auto &view : aw) {
-            const auto key = view.name.substr(prefix.size());
-            const auto &expected = expected_shapes.at(key);
-            const bool flat_norm = key.rfind("ple_norm_", 0) == 0 && view.shape == std::vector<int64_t>{H * HC};
-            require(!w.count(key) && (view.shape == expected || flat_norm),
-                    "portable GDN: bad/duplicate tensor shape: " + view.name);
-            const bool quantized = expected.size() == 2 && key != "ssm_conv1d.weight" &&
-                                   (key.rfind("ple_", 0) != 0 || key == "ple_key.weight" || key == "ple_value.weight");
-            const bool half_conv = key == "ple_conv1d.weight" && view.type == 1;
-            require((view.type == (quantized ? 8u : 0u) || half_conv) && view.data,
-                    "portable GDN: expected fleet Q8_0/F32 encoding: " + view.name);
-            auto *t = ggml_new_tensor(weights_ctx.get(), ggml_type(view.type), int(expected.size()), expected.data());
-            ggml_set_name(t, view.name.c_str());
-            require(ggml_nbytes(t) == view.bytes && view.bytes <= options.execution.weight_budget - weights_size,
-                    "portable GDN: weight size/budget mismatch");
-            weights_size += view.bytes;
-            w[key] = t;
-        }
-        const bool resident = (options.resident_attention_weights || options.execution.resident_dense_weights) &&
-                              options.execution.request_accelerator &&
-                              options.execution.accelerator;
-        auto *weight_backend = resident ? options.execution.accelerator : cpu.get();
-        const size_t allocation = ggml_backend_alloc_ctx_tensors_from_buft_size(
-            weights_ctx.get(), ggml_backend_get_default_buffer_type(weight_backend));
-        require(allocation <= options.execution.weight_budget - ffn->weight_bytes(),
-                "portable GDN: aligned weight budget exceeded");
-        weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), weight_backend));
-        require(bool(weights_buffer), "portable GDN: weight allocation failed");
-        ggml_backend_buffer_set_usage(weights_buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-        for (const auto &view : aw)
-            ggml_backend_tensor_set(w.at(view.name.substr(prefix.size())), view.data, 0, view.bytes);
-        const size_t actual_weights = ggml_backend_buffer_get_size(weights_buffer.get());
-        require(actual_weights <= options.execution.weight_budget - ffn->weight_bytes(),
-                "portable GDN: actual aligned weight budget exceeded");
-        attention_device_weights = resident ? actual_weights : 0;
-        weights_size = ffn->weight_bytes() + actual_weights;
-        weights=w;
+        const size_t before=used;
+        portable_detail::schedule_reusing(g,phase,options.execution,o.cpu,placement,used,sched,credit);
+        o.workspace[index]=workspace;
+        o.active[index]=sched.get();
+        bytes+=used-before+workspace;
+    }
+    void build_graphs() {
+        ctx=context();
+        const auto& w=weights;
         auto *c = ctx.get();
         input = ggml_new_tensor_3d(c, GGML_TYPE_F32, H, HC, 1);
         const bool keep_state = options.resident_state && options.execution.request_accelerator &&
                                 options.execution.accelerator;
-        if (keep_state)
+        if (keep_state && !state_ctx)
             state_ctx = context();
         auto *sc = keep_state ? state_ctx.get() : c;
-        state_input = ggml_new_tensor_4d(sc, GGML_TYPE_F32, D, D, HV, 1);
-        history_input = ggml_new_tensor_3d(sc, GGML_TYPE_F32, 3, CHANNELS, 1);
+        if (!keep_state || !state_input) {
+            state_input = ggml_new_tensor_4d(sc, GGML_TYPE_F32, D, D, HV, 1);
+            history_input = ggml_new_tensor_3d(sc, GGML_TYPE_F32, 3, CHANNELS, 1);
+        }
         for (auto *t : {input, state_input, history_input})
             ggml_set_input(t);
         auto *hidden = input;
         if (options.ple_table) {
             ple_emb = ggml_new_tensor_2d(c, GGML_TYPE_F32, H, 1);
-            ple_hist = ggml_new_tensor_2d(sc, GGML_TYPE_F32, 9, RESIDUAL);
+            if (!keep_state || !ple_hist) ple_hist = ggml_new_tensor_2d(sc, GGML_TYPE_F32, 9, RESIDUAL);
             ggml_set_input(ple_emb);
             ggml_set_input(ple_hist);
             auto grouped = [&](ggml_tensor *x, const char *name) {
@@ -521,12 +539,13 @@ struct PortableGdnLayer::Impl {
                     ggml_set_output(t);
                     ggml_build_forward_expand(graph, t);
                 }
-                if (!production()) {
+                if (!production() && ple_history.empty()) {
                     ple_history.assign(PLE_HISTORY, 0);
                     candidate_ple_history.resize(PLE_HISTORY);
                 }
             }
             if (keep_state && !external) {
+              if (!state_buffer) {
                 // Native session ownership: one committed state allocation per layer.
                 // Candidate graph outputs remain separate until attention AND FFN pass.
                 auto *backend = options.execution.accelerator;
@@ -540,6 +559,7 @@ struct PortableGdnLayer::Impl {
                         "portable GDN: actual resident state budget exceeded");
                 ggml_backend_buffer_clear(state_buffer.get(), 0);
                 ggml_backend_synchronize(backend);
+              }
                 // The copy API requires identical layouts. These are metadata-only
                 // views of the unchanged candidate bytes, allocated before scheduling.
                 state_output = ggml_reshape_4d(c, state_output, D, D, HV, 1);
@@ -554,15 +574,145 @@ struct PortableGdnLayer::Impl {
                 history_output=ggml_reshape_3d(c,history_output,3,CHANNELS,1);
                 for(auto* t:{state_output,history_output}) {ggml_set_output(t);ggml_build_forward_expand(graph,t);}
             }
-            auto sched=portable_detail::schedule(graph,external?"gdn-chunk-recurrence":"gdn-attention",options.execution,cpu,placement,graphs_size);
-            if(external) { tail_scheduler=std::move(sched); tail_graph=graph; tail_outputs=outputs(); }
-            else scheduler=std::move(sched);
+            auto& sched=external?tail_scheduler:scheduler;
+            schedule_graph(graph,external?"gdn-chunk-recurrence":"gdn-attention",external?2:0,graphs_size,sched);
+            if(external) { tail_graph=graph; tail_outputs=outputs(); }
         };
         build(false);
         if(batch_projections() && !causal()) {
             const auto saved=outputs(); auto* saved_graph=graph;
             build(true); outputs(saved); graph=saved_graph;
         }
+    }
+    // A lease spans attention, host readback, the provider, and state commit.
+    // Synchronize and forget all old tensor identities before freeing metadata.
+    struct Borrow {
+        Impl& s;
+        bool held=false;
+        explicit Borrow(Impl& layer, bool rebuild=true) : s(layer) {
+            auto* o=s.shared();
+            if(!o) return;
+            require(!o->borrowed.test_and_set(std::memory_order_acquire), "portable GDN: shared scratch already borrowed");
+            held=true;
+            if(rebuild) s.placement.erase(std::remove_if(s.placement.begin(),s.placement.end(),[](const auto& p){ return p.phase.rfind("gdn-",0)==0; }),s.placement.end());
+            s.scheduler=std::move(o->schedulers[0]);
+            s.projection_scheduler=std::move(o->schedulers[1]);
+            s.tail_scheduler=std::move(o->schedulers[2]);
+            o->active={s.scheduler.get(),s.projection_scheduler.get(),s.tail_scheduler.get()};
+            try { if(rebuild) s.build_graphs(); } catch(...) { release(); throw; }
+        }
+        void release() {
+            if(!held) return;
+            auto& o=*s.shared();
+            for(auto* sched:{s.scheduler.get(),s.projection_scheduler.get(),s.tail_scheduler.get()}) if(sched) {
+                if(s.ctx || s.projection_ctx) ggml_backend_sched_synchronize(sched);
+                ggml_backend_sched_reset(sched);
+            }
+            // reset() takes a lease without graph metadata. Its state clear
+            // performs its own synchronization and can report a failed reset.
+            if(s.ctx || s.projection_ctx) {
+                if(o.options.accelerator) ggml_backend_synchronize(o.options.accelerator);
+                ggml_backend_synchronize(o.cpu.get());
+            }
+            o.schedulers[0]=std::move(s.scheduler);
+            o.schedulers[1]=std::move(s.projection_scheduler);
+            o.schedulers[2]=std::move(s.tail_scheduler);
+            o.active={};
+            s.ctx.reset(); s.projection_ctx.reset();
+            s.graph=nullptr; s.tail_graph=nullptr; s.projection_graph=nullptr;
+            s.projection_tokens=0; s.projection_bytes=0;
+            s.graphs_size=s.ffn->graph_bytes();
+            if(!s.state_buffer) { s.state_input=nullptr; s.history_input=nullptr; s.ple_hist=nullptr; }
+            held=false; o.borrowed.clear(std::memory_order_release);
+        }
+        ~Borrow() { release(); }
+    };
+
+    Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
+        require(layer >= 0 && layer < 48 && layer % 4 != 3,
+                "portable GDN: expected a non-QSA layer in [0,47]");
+        require(!options.ple_table || layer == 1,
+                "portable GDN: this model supports PLE only at layer 1");
+        require(!production() || (options.resident_state && options.execution.request_accelerator &&
+                    options.execution.accelerator && !options.execution.allow_cpu_fallback),
+                "portable GDN: production requires resident state and strict selected backend");
+        require(!options.causal_chunk || (options.batch_input_projections && production()),
+                "portable GDN: causal chunk requires production and batched input projections");
+        if(auto* o=shared()) {
+            const auto& a=o->options; const auto& b=options.execution;
+            require(a.accelerator==b.accelerator && a.request_accelerator==b.request_accelerator &&
+                    a.allow_cpu_fallback==b.allow_cpu_fallback && a.threads==b.threads && a.graph_budget==b.graph_budget,
+                    "portable GDN: incompatible shared scratch backend/options");
+        }
+        const std::string prefix = "blk." + std::to_string(layer) + ".";
+        auto expected_shapes = shapes();
+        if (options.ple_table)
+            expected_shapes.insert(ple_shapes().begin(), ple_shapes().end());
+        require(options.state_budget >= host_state_bytes(),
+                "portable GDN: host state budget exceeded");
+        std::vector<PortableTensorView> fw, aw;
+        for (const auto &t : tensors) {
+            require(t.name.rfind(prefix, 0) == 0, "portable GDN: tensor belongs to another layer");
+            (expected_shapes.count(t.name.substr(prefix.size())) ? aw : fw).push_back(t);
+        }
+        require(aw.size() == expected_shapes.size() && fw.size() == 9,
+                "portable GDN: missing/extra attention, PLE or FFN tensors");
+        std::string error;
+        auto ffn_options=options.execution;
+        if(options.scratch) {
+            const size_t retained=options.scratch->graph_bytes();
+            require(retained<ffn_options.graph_budget,"portable GDN: no private FFN graph budget");
+            ffn_options.graph_budget-=retained;
+        }
+        ffn = PortableFfn::create({H, HC, R, 640, 512, 10, 1e-6f}, layer, fw, ffn_options, error);
+        require(bool(ffn), error);
+        weights_size = ffn->weight_bytes();
+        graphs_size = ffn->graph_bytes();
+        placement = ffn->placements();
+        cpu.reset(ggml_backend_cpu_init());
+        require(bool(cpu), "portable GDN: CPU unavailable");
+        ggml_backend_cpu_set_n_threads(cpu.get(), options.execution.threads);
+        weights_ctx = context();
+        std::map<std::string, ggml_tensor *> w;
+        for (const auto &view : aw) {
+            const auto key = view.name.substr(prefix.size());
+            const auto &expected = expected_shapes.at(key);
+            const bool flat_norm = key.rfind("ple_norm_", 0) == 0 && view.shape == std::vector<int64_t>{H * HC};
+            require(!w.count(key) && (view.shape == expected || flat_norm),
+                    "portable GDN: bad/duplicate tensor shape: " + view.name);
+            const bool quantized = expected.size() == 2 && key != "ssm_conv1d.weight" &&
+                                   (key.rfind("ple_", 0) != 0 || key == "ple_key.weight" || key == "ple_value.weight");
+            const bool half_conv = key == "ple_conv1d.weight" && view.type == 1;
+            require((view.type == (quantized ? 8u : 0u) || half_conv) && view.data,
+                    "portable GDN: expected fleet Q8_0/F32 encoding: " + view.name);
+            auto *t = ggml_new_tensor(weights_ctx.get(), ggml_type(view.type), int(expected.size()), expected.data());
+            ggml_set_name(t, view.name.c_str());
+            require(ggml_nbytes(t) == view.bytes && view.bytes <= options.execution.weight_budget - weights_size,
+                    "portable GDN: weight size/budget mismatch");
+            weights_size += view.bytes;
+            w[key] = t;
+        }
+        const bool resident = (options.resident_attention_weights || options.execution.resident_dense_weights) &&
+                              options.execution.request_accelerator &&
+                              options.execution.accelerator;
+        auto *weight_backend = resident ? options.execution.accelerator : cpu.get();
+        const size_t allocation = ggml_backend_alloc_ctx_tensors_from_buft_size(
+            weights_ctx.get(), ggml_backend_get_default_buffer_type(weight_backend));
+        require(allocation <= options.execution.weight_budget - ffn->weight_bytes(),
+                "portable GDN: aligned weight budget exceeded");
+        weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), weight_backend));
+        require(bool(weights_buffer), "portable GDN: weight allocation failed");
+        ggml_backend_buffer_set_usage(weights_buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        for (const auto &view : aw)
+            ggml_backend_tensor_set(w.at(view.name.substr(prefix.size())), view.data, 0, view.bytes);
+        const size_t actual_weights = ggml_backend_buffer_get_size(weights_buffer.get());
+        require(actual_weights <= options.execution.weight_budget - ffn->weight_bytes(),
+                "portable GDN: actual aligned weight budget exceeded");
+        attention_device_weights = resident ? actual_weights : 0;
+        weights_size = ffn->weight_bytes() + actual_weights;
+        weights=w;
+        if (options.scratch) { Borrow borrow(*this); }
+        else build_graphs();
         if (!production()) {
             state.assign(STATES, 0);
             history.assign(HISTORY, 0);
@@ -657,6 +807,7 @@ std::unique_ptr<PortableGdnLayer> PortableGdnLayer::from_gguf(const GgufModel &m
 bool PortableGdnLayer::reset(std::string &error) {
     error.clear();
     try {
+        Impl::Borrow borrow(*impl_,false);
         impl_->state_healthy = false;
         require(!impl_->chunk_active, "portable GDN: chunk execution active");
         std::vector<PortablePlacement> next_placement;
@@ -704,6 +855,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         *trace = {};
     try {
         auto &s = *impl_;
+        Impl::Borrow borrow(s);
         require(!s.chunk_active, "portable GDN: chunk execution active");
         require(s.state_healthy, "portable GDN: resident state poisoned; reset required");
         require(!s.production() || !trace, "portable GDN: trace requires eager diagnostic policy");
@@ -759,7 +911,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
 }
 bool PortableGdnLayer::prepare_chunk(size_t tokens,std::string& error) {
     error.clear();
-    try { require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
+    try { Impl::Borrow borrow(*impl_); require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
     catch(const std::exception& e) { error=e.what(); return false; }
 }
 bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t position0,
@@ -768,6 +920,7 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
     routes.clear(); error.clear();
     auto& s = *impl_;
     try {
+        Impl::Borrow borrow(s);
         require(s.state_healthy && !s.chunk_active, "portable GDN: poisoned or active chunk; reset required");
         const size_t T = tokens.size();
         require(T >= 1 && T <= 8 && residual_rows.size() == T*RESIDUAL && bool(dispatch),
@@ -875,7 +1028,11 @@ const std::vector<float> &PortableGdnLayer::last_residual() const { return impl_
 uint64_t PortableGdnLayer::tokens() const { return impl_->count; }
 const std::vector<PortablePlacement> &PortableGdnLayer::placements() const { return impl_->placement; }
 size_t PortableGdnLayer::weight_bytes() const { return impl_->weights_size; }
-size_t PortableGdnLayer::graph_bytes() const { return impl_->graphs_size+impl_->chunk_graphs(); }
+size_t PortableGdnLayer::graph_bytes() const {
+    return impl_->shared() ? impl_->ffn->graph_bytes()+(impl_->chunk_ffn?impl_->chunk_ffn->graph_bytes():0)
+                           : impl_->graphs_size+impl_->chunk_graphs();
+}
+const PortableGdnScratch* PortableGdnLayer::scratch_owner() const { return impl_->options.scratch.get(); }
 size_t PortableGdnLayer::state_bytes() const { return impl_->host_state_bytes()+impl_->chunk_host_bound; }
 PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     const auto &s = *impl_;
@@ -887,20 +1044,22 @@ PortableMemoryUsage PortableGdnLayer::memory_usage() const {
         m.host_extra_bound += (4u << 20) + STATES * sizeof(float);
     m.device_weights += s.attention_device_weights;
     m.host_weights = s.weights_size - m.device_weights;
-    m.host_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
-    if (s.options.execution.accelerator && s.options.execution.request_accelerator)
-        m.device_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.options.execution.accelerator);
-    for(auto* sched:{s.tail_scheduler.get(),s.projection_scheduler.get()}) if(sched) {
-        m.host_graph+=ggml_backend_sched_get_buffer_size(sched,s.cpu.get());
-        if(s.options.execution.accelerator && s.options.execution.request_accelerator)
-            m.device_graph+=ggml_backend_sched_get_buffer_size(sched,s.options.execution.accelerator);
+    if(!s.shared()) {
+        m.host_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
+        if (s.options.execution.accelerator && s.options.execution.request_accelerator)
+            m.device_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.options.execution.accelerator);
+        for(auto* sched:{s.tail_scheduler.get(),s.projection_scheduler.get()}) if(sched) {
+            m.host_graph+=ggml_backend_sched_get_buffer_size(sched,s.cpu.get());
+            if(s.options.execution.accelerator && s.options.execution.request_accelerator)
+                m.device_graph+=ggml_backend_sched_get_buffer_size(sched,s.options.execution.accelerator);
+        }
+        if(s.tail_graph) m.host_extra_bound+=ggml_graph_plan(s.tail_graph,s.options.execution.threads,nullptr).work_size;
+        if(s.projection_ctx) m.host_extra_bound+=(4u<<20)+ggml_graph_plan(s.projection_graph,s.options.execution.threads,nullptr).work_size;
     }
-    if(s.tail_graph) m.host_extra_bound+=ggml_graph_plan(s.tail_graph,s.options.execution.threads,nullptr).work_size;
-    if(s.projection_ctx) m.host_extra_bound+=(4u<<20)+ggml_graph_plan(s.projection_graph,s.options.execution.threads,nullptr).work_size;
     const size_t buffers = m.host_graph + m.device_graph;
     const size_t allowance = graph_bytes() > buffers ? graph_bytes() - buffers : 0;
     m.host_extra_bound += state_bytes() + (8u << 20) + allowance +
-                          ggml_graph_plan(s.graph, s.options.execution.threads, nullptr).work_size;
+                          (s.shared()?0:ggml_graph_plan(s.graph, s.options.execution.threads, nullptr).work_size);
     if (s.options.execution.request_accelerator) {
         m.device_extra_bound += allowance + (8u << 20);
         portable_detail::account_matrix_conversion(m,s.options.execution.accelerator,size_t(H*CHANNELS)*sizeof(float));

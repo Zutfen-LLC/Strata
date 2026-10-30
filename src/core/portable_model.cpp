@@ -117,6 +117,7 @@ struct PortableModelSession::Impl {
 #endif
     PortableTensorView embedding;
     std::map<ggml_backend_t, std::shared_ptr<PortableQsaAttention>> qsa_attention;
+    std::map<ggml_backend_t, std::shared_ptr<PortableGdnScratch>> gdn_scratch;
     std::vector<Layer> layers;
     std::unique_ptr<PortableHead> head;
     PortableModelReport report;
@@ -234,6 +235,16 @@ struct PortableModelSession::Impl {
                 account(owner->memory_usage(), device(l));
             }
         }
+        for(size_t l=0;l<L;++l) if(l%4!=3) {
+            const auto execution_options=execution(l,false);
+            auto& owner=gdn_scratch[execution_options.accelerator];
+            if(!owner) {
+                preflight(device(l),l,"gdn-shared-scratch",0,opts.layer_graph_cap,PortableGdnScratch::host_metadata_bound());
+                owner=PortableGdnScratch::create(execution_options,error);
+                require(bool(owner),error);
+                account(owner->memory_usage(),device(l));
+            }
+        }
         layers.reserve(L);
         for (size_t l = 0; l < L; ++l) {
             // Fixed schedulers obey layer_graph_cap. Native backend-private
@@ -276,6 +287,7 @@ struct PortableModelSession::Impl {
                 o.policy = opts.gdn_production ? PortableGdnPolicy::device_production : PortableGdnPolicy::eager_diagnostic;
                 o.resident_attention_weights = opts.gdn_resident_weights;
                 o.execution = execution(l, false);
+                o.scratch = gdn_scratch.at(o.execution.accelerator);
                 layer.gdn = PortableGdnLayer::from_gguf(model, int64_t(l), o, error);
                 require(bool(layer.gdn), "portable model: layer " + std::to_string(l) + ": " + error);
             }
@@ -324,6 +336,21 @@ struct PortableModelSession::Impl {
                 report.device_scheduler[die] += memory.device_graph;
                 report.device_workspace_bound[die] -= memory.device_graph;
                 report.qsa_attention_device_scheduler += memory.device_graph;
+            }
+        }
+        report.gdn_scratch_resources=gdn_scratch.size();
+        for(const auto& [backend,owner]:gdn_scratch) {
+            const auto memory=owner->memory_usage();
+            host_graph+=memory.host_graph;
+            report.host_scheduler=host_graph;
+            report.host_state_bound-=memory.host_graph;
+            report.graph_admission_bound+=memory.host_graph;
+            report.gdn_scratch_host_scheduler+=memory.host_graph;
+            if(backend) {
+                const size_t die=size_t(std::find(opts.accelerators.begin(),opts.accelerators.end(),backend)-opts.accelerators.begin());
+                report.device_scheduler[die]+=memory.device_graph;
+                report.device_workspace_bound[die]-=memory.device_graph;
+                report.gdn_scratch_device_scheduler+=memory.device_graph;
             }
         }
         std::vector<PortableTensorView> hw;

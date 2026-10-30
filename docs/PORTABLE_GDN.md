@@ -77,3 +77,68 @@ then run the full trunk with the existing expert dispatch. Validate actual-model
 teacher-forced logits, routing and reset before measuring full-local AMD inference.
 There is no full-model serving path, optimized prefill, MTP or simultaneous
 dual-die orchestration in this PR.
+
+### Session transient scratch ownership
+
+Whole-model portable sessions share the GDN transient family across sequential
+GDN layers on each physical dense backend. Standalone `PortableGdnLayer` callers
+can supply `PortableGdnOptions::scratch`; omitting it keeps private execution.
+The borrowed backend must outlive its scratch owner and layers.
+
+Native `SessionState::gdn` and `gdn_point_at` in `src/core/session.cpp` define the
+lifetime split:
+
+| Native storage | Portable ownership |
+| --- | --- |
+| Input/output activation formats, QKV/convolution intermediates, alpha/beta/gate, recurrence output and output-format scratch | One `PortableGdnScratch` per session/backend, with the existing attention, projection and tail scheduler backing |
+| Recurrent `state` and `conv_state` carves | Separate layer allocations; the current geometry has 3,268,608 raw bytes per layer |
+| PLE convolution history and token predecessors | Separate layer-1 state; table and weights retain their existing lifetime |
+| Attention and FFN weights | Existing persistent owners |
+| FFN/chunk FFN and experts | Existing private owners; outside this slice |
+
+The three existing graph phases retain their backing and candidate-output commit
+lifetimes within the shared family. This changes their owner, not graph arithmetic
+or shapes. No allocator, dispatch policy or tuning option is
+added. A lease rebuilds metadata against the borrowing layer's weights and state.
+It spans compute, copy/readback, provider completion and commit. Release waits
+for the schedulers and backends before forgetting tensor identities and destroying
+metadata. Only the reusable backing survives between borrowers. Concurrent or
+reentrant borrowers are rejected, including calls from a provider.
+
+`PortableGdnLayer::memory_usage()` reports private storage. Add its scratch
+owner's `memory_usage()` once per session/backend. The owner reports actual
+scheduler backing separately from a full graph-cap growth allowance and a
+conservative metadata allowance for three scheduler contexts and companion
+arenas. CPU work-data high waters and all retained phase buffers must fit the
+unchanged module cap before a graph is allocated. Layers keep their existing
+fixed/private bounds. Module, total and free-reserve guards remain in force.
+The head's transient preflight allowance remains separate from retained charges.
+
+The shared fixture compares alternating layers with different persistent weights
+and state against private execution byte-for-byte, including T1, chunks 2–8,
+tails, causal/noncausal projections, PLE predecessors/history, reset/replay,
+provider and planning failures, lease rejection and destruction. It also checks
+backing identity, retained-byte reduction and exact-cap/one-byte-over admission.
+Borrowed-CPU fault injection covers compute and final causal state-copy failure;
+those injected failures are not a GPU qualification. A tight-cap transition
+primes retained T8 projection backing in one borrower, calibrates a separate FFN
+plan at the exact remaining budget, then requires the other borrower's T2 plan
+to reject before any backend graph-buffer allocation. Restoring the former
+incomplete-budget expression makes this regression fail.
+
+Local CPU check:
+
+```sh
+ctest --test-dir build-cpu -R '^portable_gdn_shared_test$' --output-on-failure
+```
+
+Next targeted GPU check, after verifying the selected device is idle:
+
+```sh
+build-vulkan/portable_gdn_vulkan_test --device INDEX --expect-device DEVICE_SUBSTRING --shared-scratch-only
+```
+
+This executes synthetic component fixtures only. GPU execution, two-physical-device
+isolation and model-level quality/performance remain separate validation. It does
+not establish complete native parity or full-model fit. QSA behavior, placement,
+precision, thresholds, GGML pin, FFN/expert owners and capacities are unchanged.

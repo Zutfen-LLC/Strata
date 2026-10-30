@@ -4,6 +4,7 @@
 #include "portable_gdn_fixture.hpp"
 #include "portable_gdn_projection_probe.hpp"
 #include "portable_gdn_production.hpp"
+#include "portable_gdn_shared_fixture.hpp"
 #include <cstdlib>
 #include <limits>
 using namespace strata::core;
@@ -12,11 +13,12 @@ int main(int argc, char **argv) {
     try {
         int index = 0;
         std::string expected;
-        bool projection_probe=false;
+        bool projection_probe=false,shared_scratch_only=false;
         for (int i = 1; i < argc;) {
             const std::string key=argv[i++];
+            if(key=="--shared-scratch-only"){shared_scratch_only=true;continue;}
             if(key=="--projection-probe"){projection_probe=true;continue;}
-            check(i < argc, "usage: --device INDEX --expect-device SUBSTRING [--projection-probe]");
+            check(i < argc, "usage: --device INDEX --expect-device SUBSTRING [--projection-probe | --shared-scratch-only]");
             const char* value=argv[i++];
             if (key == "--device") {
                 char *end = nullptr;
@@ -36,6 +38,18 @@ int main(int argc, char **argv) {
                                                                            ggml_backend_free);
         check(bool(device) && !ggml_backend_supports_buft(device.get(), ggml_backend_cpu_buffer_type()),
               "distinct Vulkan buffers required");
+        if(shared_scratch_only) {
+            for(bool production:{false,true}) for(bool causal:{false,true}) {
+                if(causal && !production)continue;
+                PortableGdnOptions options;options.resident_state=true;
+                options.execution.accelerator=device.get();options.execution.request_accelerator=true;
+                options.execution.resident_dense_weights=true;
+                options.batch_input_projections=true;options.causal_chunk=causal;
+                options.policy=production?PortableGdnPolicy::device_production:PortableGdnPolicy::eager_diagnostic;
+                gdn_shared_fixture::run(options,true);
+            }
+            return 0;
+        }
         if(projection_probe){
             std::fprintf(stderr,"[gdn-projection-probe] isolated synthetic diagnostic; no qualification gate evaluated\n");
             gdn_projection_probe::run(device.get(),false);

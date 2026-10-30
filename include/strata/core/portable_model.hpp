@@ -116,6 +116,8 @@ struct PortableModelReport {
     size_t mapped_bytes = 0, host_weights = 0, host_state_bound = 0, expert_staging = 0;
     size_t graph_admission_bound = 0;
     size_t host_scheduler = 0;
+    size_t gdn_scratch_resources = 0;
+    size_t gdn_scratch_host_scheduler = 0, gdn_scratch_device_scheduler = 0;
     size_t qsa_attention_resources = 0;
     size_t qsa_attention_host_scheduler = 0, qsa_attention_device_scheduler = 0;
     std::vector<size_t> device_scheduler, device_workspace_bound, device_token_temporary_bound, device_shared_conversion_bound, device_admission;

@@ -2,6 +2,20 @@
 #include "strata/core/portable_ple.hpp"
 
 namespace strata::core {
+// Native SessionState::gdn transient family. Borrowed backends must outlive all layers.
+class PortableGdnScratch {
+  public:
+    static std::shared_ptr<PortableGdnScratch> create(PortableFfnOptions options, std::string &error);
+    ~PortableGdnScratch();
+    size_t graph_bytes() const;
+    PortableMemoryUsage memory_usage() const;
+    static size_t host_metadata_bound();
+  private:
+    struct Impl;
+    explicit PortableGdnScratch(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+    friend class PortableGdnLayer;
+};
 enum class PortableGdnPolicy { eager_diagnostic, device_production };
 struct PortableGdnOptions {
     PortableFfnOptions execution;
@@ -13,6 +27,7 @@ struct PortableGdnOptions {
     size_t resident_state_budget = 4ull << 20; // aligned persistent backend inputs, separate from graphs
     bool resident_attention_weights = false; // opt-in; CPU execution retains CPU allocation
     PortableGdnPolicy policy = PortableGdnPolicy::eager_diagnostic;
+    std::shared_ptr<PortableGdnScratch> scratch; // omit for private standalone execution
 };
 // Cumulative host-call wall scopes. Compute is nested in attention/exchange;
 // full FFN includes the provider. Reset does not clear caller-owned totals.
@@ -87,6 +102,7 @@ class PortableGdnLayer {
     size_t graph_bytes() const;
     PortableMemoryUsage memory_usage() const;
     size_t state_bytes() const;
+    const PortableGdnScratch *scratch_owner() const;
 
   private:
     struct Impl;
