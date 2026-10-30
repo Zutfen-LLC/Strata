@@ -6,7 +6,7 @@ struct StrataVkNativeShared {std::unique_ptr<StrataVkLogitsGuard> owner;};
 StrataVkNativeShared* strata_vk_native_shared_create(ggml_backend_t backend,const char* path,size_t budget) {
     auto result=std::make_unique<StrataVkNativeShared>();
     result->owner=strata_vk_q8_component_owner(backend,strata_native_shared_spv,sizeof(strata_native_shared_spv)/4,
-        "strata_native_shared_dense_mmvq_mmvf_observation",4,9,path,budget);
+        NativeComponentAddressing::descriptor,"strata_native_shared_dense_mmvq_mmvf_observation",4,9,path,budget);
     return result.release();
 }
 size_t strata_vk_native_shared_bytes(const StrataVkNativeShared* p) {return p?p->owner->bytes:0;}

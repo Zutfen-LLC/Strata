@@ -10,10 +10,10 @@ StrataVkQ8Down* strata_vk_q8_down_create(ggml_backend_t backend,const char* path
     auto result=std::make_unique<StrataVkQ8Down>();
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_down_strict_fma_spv,sizeof(strata_q8_down_strict_fma_spv)/4,
-        "strata_native_down_q8_0_strict_fma_component",3,6,path,size_t(-1),q8_metadata_words);
+        NativeComponentAddressing::physical64,"strata_native_down_q8_0_strict_fma_component",3,6,path,size_t(-1),q8_metadata_words);
 #else
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_down_spv,sizeof(strata_q8_down_spv)/4,
-        "strata_native_down_q8_0_fullwarp_component",3,6,path,size_t(-1),q8_metadata_words);
+        NativeComponentAddressing::physical64,"strata_native_down_q8_0_fullwarp_component",3,6,path,size_t(-1),q8_metadata_words);
 #endif
     return result.release();
 }

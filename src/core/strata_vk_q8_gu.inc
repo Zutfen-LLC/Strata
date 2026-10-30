@@ -28,7 +28,7 @@ static uint64_t strata_vk_q8_weight_address(ggml_backend_vk_context* ctx,const g
 }
 struct StrataVkQ8Gu {std::unique_ptr<StrataVkLogitsGuard> owner;};
 static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_backend_t backend,
-    const uint32_t* shader,size_t shader_words,const char* name,uint32_t parameters,uint32_t push_words,const char* effective_spv_path,size_t budget=size_t(-1),size_t metadata_words=128) {
+    const uint32_t* shader,size_t shader_words,NativeComponentAddressing addressing,const char* name,uint32_t parameters,uint32_t push_words,const char* effective_spv_path,size_t budget=size_t(-1),size_t metadata_words=128) {
     logits_guard_need(backend && ggml_backend_is_vk(backend),"Q8 component: Vulkan required");
     auto owner=std::make_unique<StrataVkLogitsGuard>(backend);
     auto& g=*owner;auto* ctx=static_cast<ggml_backend_vk_context*>(backend->context);
@@ -60,7 +60,7 @@ static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_ba
     g.bytes=ggml_backend_buffer_get_size(g.buffer.get());auto& pipe=g.pipeline;
     pipe->name=name;pipe->parameter_count=parameters;pipe->push_constant_size=push_words*4;
     pipe->wg_denoms={1,1,1};pipe->align=1;pipe->initialized=true;
-    const auto code=q8_gu_float_controls(shader,shader_words);
+    const auto code=native_component_float_controls(shader,shader_words,addressing);
     strata_vk_observation_create_pipeline_func(ctx->device,pipe,code.size()*4,code.data(),"main",parameters,{1,1,1},{},false,false,0,effective_spv_path);
     return owner;
 }
@@ -69,10 +69,10 @@ StrataVkQ8Gu* strata_vk_q8_gu_create(ggml_backend_t backend,const char* effectiv
     auto result=std::make_unique<StrataVkQ8Gu>();
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_gu_strict_fma_spv,sizeof(strata_q8_gu_strict_fma_spv)/4,
-        "strata_native_gu_q8_0_strict_fma_component",4,7,effective_spv_path,size_t(-1),q8_metadata_words);
+        NativeComponentAddressing::physical64,"strata_native_gu_q8_0_strict_fma_component",4,7,effective_spv_path,size_t(-1),q8_metadata_words);
 #else
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_gu_spv,sizeof(strata_q8_gu_spv)/4,
-        "strata_native_gu_q8_0_fullwarp_component",4,7,effective_spv_path,size_t(-1),q8_metadata_words);
+        NativeComponentAddressing::physical64,"strata_native_gu_q8_0_fullwarp_component",4,7,effective_spv_path,size_t(-1),q8_metadata_words);
 #endif
     return result.release();
 }
