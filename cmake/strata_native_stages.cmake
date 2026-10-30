@@ -134,7 +134,7 @@ function(strata_enable_native_stages)
       "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_q8_gu.comp" -o "${out}/native_q8_gu.spv"
     COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_q8_gu.spv" "-DOUTPUT=${out}/strata_q8_gu_spv.hpp"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_q8_gu_embed.cmake"
-    DEPENDS src/kernels/vulkan/native_q8_gu.comp src/kernels/vulkan/native_q8_dot.glsl cmake/strata_q8_gu_embed.cmake VERBATIM)
+    DEPENDS src/kernels/vulkan/native_q8_gu.comp src/kernels/vulkan/native_q8_dot.glsl src/kernels/vulkan/native_q8_abi.h cmake/strata_q8_gu_embed.cmake VERBATIM)
   add_custom_target(strata_q8_gu_shader DEPENDS "${out}/strata_q8_gu_spv.hpp")
   add_dependencies(ggml-vulkan strata_q8_gu_shader)
   add_executable(native_q8_gu_component tests/kernels/native_q8_gu_component.cpp)
@@ -145,7 +145,7 @@ function(strata_enable_native_stages)
       "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_q8_down.comp" -o "${out}/native_q8_down.spv"
     COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_q8_down.spv" "-DOUTPUT=${out}/strata_q8_down_spv.hpp"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_q8_down_embed.cmake"
-    DEPENDS src/kernels/vulkan/native_q8_down.comp src/kernels/vulkan/native_q8_dot.glsl cmake/strata_q8_down_embed.cmake VERBATIM)
+    DEPENDS src/kernels/vulkan/native_q8_down.comp src/kernels/vulkan/native_q8_dot.glsl src/kernels/vulkan/native_q8_abi.h cmake/strata_q8_down_embed.cmake VERBATIM)
   add_custom_target(strata_q8_down_shader DEPENDS "${out}/strata_q8_down_spv.hpp")
   add_dependencies(ggml-vulkan strata_q8_down_shader)
   add_executable(native_q8_down_component tests/kernels/native_q8_down_component.cpp)

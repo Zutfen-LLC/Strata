@@ -1,24 +1,28 @@
 #version 450
 #extension GL_EXT_integer_dot_product : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_GOOGLE_include_directive : require
 // native_down_kernel<8>: same row_dot, entry-indexed hq and direct scatter.
 layout(local_size_x=256) in;
-layout(binding=0,std430) readonly buffer W {uint w[];};
-layout(binding=1,std430) readonly buffer X {uint x[];};
-layout(binding=2,std430) readonly buffer M {int m[];};
-layout(binding=3,std430) writeonly buffer O {float output_values[];};
-layout(push_constant) uniform P {uint h,f,wb,xb,mb,ob,scale_bits;} p;
+layout(binding=0,std430) readonly buffer X {uint x[];};
+layout(binding=1,std430) readonly buffer M {int m[];};
+layout(binding=2,std430) writeonly buffer O {float output_values[];};
+layout(push_constant) uniform P {uint h,f,xb,mb,ob,scale_bits;} p;
+#include "native_q8_abi.h"
 #include "native_q8_dot.glsl"
 void main() {
     uint tid=gl_LocalInvocationID.x,lane=tid%32,warp=tid/32;
     uint row=gl_WorkGroupID.x*8+warp,nb=p.f/32;
     for(uint group=gl_WorkGroupID.y;group<uint(m[p.mb]);group+=gl_NumWorkGroups.y) {
-        uint base=uint(m[p.mb+1+group])+row*nb*34;
-        for(int e=m[p.mb+25+group];e<m[p.mb+26+group];++e) {
+        uint address_word=p.mb+STRATA_Q8_ADDRESS_WORD+2*group;
+        uint64_t base=(uint64_t(uint(m[address_word+1]))<<32)|uint64_t(uint(m[address_word]));
+        base+=uint64_t(row)*nb*34;
+        for(int e=m[p.mb+STRATA_Q8_START_WORD+group];e<m[p.mb+STRATA_Q8_START_WORD+1+group];++e) {
             float dot=q8_row_dot(base,uint(e),nb,tid);
             if(lane==0) {
                 precise float value=dot*uintBitsToFloat(p.scale_bits);
-                output_values[p.ob+uint(m[p.mb+50+e])*p.h+row]=value;
+                output_values[p.ob+uint(m[p.mb+STRATA_Q8_ID_WORD+e])*p.h+row]=value;
             }
             barrier();
         }

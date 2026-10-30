@@ -1162,7 +1162,8 @@ or scheduling change is added.
 
 
 The earlier 14-group provider limit was a diagnostic metadata capacity, not a
-native group limit. The activation starts allocation is now 32 I32 words:
+native group limit. At the intermediate 24-group step (superseded by the
+80-group BDA ABI below), the activation starts allocation was 32 I32 words:
 starts occupy words 0–24 and count occupies word 31. Its logical allocation
 increases from 64 to 128 bytes; backend padding is queried and charged as before.
 Gate/up and down keep their existing 128-I32 metadata buffers, repacked as
@@ -1391,16 +1392,23 @@ observation flags remain off by default; no full-forward qualification is claime
 The opt-in grouped provider now accepts all 80 active entries in a T8/K10
 request when its frozen plan covers them. Gate, up, hidden, hidden Q8 and down
 scratch tensors hold 80 entries; input FP32/Q8 still holds eight token rows.
-GU/down metadata now occupies 130 I32 words, keeping count at 0, weights at
-1–24, starts at 25–49 and entry IDs at 50–129. The same size controls host
-arrays, device allocations and uploads. Other users of the shared component
-owner keep their 128-word buffers. The aligned tensor and component sizes
-remain charged through the existing budget and allocation snapshots.
+GU/down metadata occupies 322 I32 words: count at 0, 80 low/high address
+pairs at 1–160, 81 starts at 161–241 and entry IDs at 242–321. Activation
+metadata has 81 starts and a separate count at word 81. The shared
+`native_q8_abi.h` controls host arrays and shader indexing. Aligned tensor and
+component allocation sizes remain charged through the budget and snapshots.
 
-The 24 resident slots/groups, packed weight ranges, 32-bit weight addressing,
-placement, stable group/entry ordering and native arithmetic stay unchanged.
-An 81-entry low-level layout is refused; the worker's T8/K10 limit already
-prevents such a request. No splitting or accumulation policy is added.
+Residency follows the immutable placement plan and actual memory admission.
+Whole expert blobs pack in frozen order into existing GGML backend blocks;
+request scratch stays fixed at 80 entries. Each block respects GGML's block
+policy and Vulkan buffer/allocation limits. GU/down receive checked 64-bit BDA
+references from each owning buffer plus tensor, view and matrix offsets. They
+execute one grouped call in native first-occurrence order across blocks. The
+logical device must have `bufferDeviceAddress` and `shaderInt64` enabled;
+otherwise the opt-in path refuses before resident allocation.
+`shader64BitIndexing` is not required. No placement, default, arithmetic,
+splitting, rebalancing or accumulation policy changes accompany this extension.
+An 81-entry/group low-level layout is refused; worker T8/K10 already bounds it.
 
 `native_q8_capacity_component` and `native_q8_capacity_consumer` reuse the
 composed H2560/F640 fixture for 80 entries, eight input tokens, 24 groups (one
@@ -1429,3 +1437,16 @@ and allocation count. These exclude driver/pipeline memory; external cleanup
 and resource observations remain separate. Timing samples do not establish a
 speed claim. The replay target requires the existing portable model/local-expert
 build gate; standalone composed fixtures do not require that gate.
+
+The same replay accepts a complete multi-layer frozen plan and an optional
+`--budget-bytes N` tensor budget (default 128 MiB). It uploads all assigned
+assets without remasking the selected request. Larger admission and address
+checks need real resident allocations and active references across blocks;
+host arithmetic tests above 4 GiB do not establish physical capacity. Use a
+budget admitted for one device after existing resident/dense memory and reserve.
+Do not combine device heaps or allocate a buffer above its individual limit.
+
+Optional provider captures also retain `.gu.metadata.i32` and
+`.down.metadata.i32`, the actual uploaded 322-word address/start/ID arrays.
+They are diagnostics tied to the current buffer lifetime; never replay their
+raw device addresses on another allocation, backend or device.
