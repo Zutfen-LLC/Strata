@@ -20,6 +20,7 @@ struct PortableFfnGeometry {
 };
 
 // GGUF layout: dimension zero varies fastest. FFN accepts F32 (0)/Q8_0 (8).
+// Opt-in native shared scalar also accepts raw BF16 (30); F32 must be an exact promoted BF16.
 // QSA additionally accepts BF16 (30) only for indexer Q/K projections and
 // widens them exactly to F32. Payloads are copied at construction.
 struct PortableTensorView {
@@ -39,6 +40,8 @@ struct PortableFfnOptions {
     size_t weight_budget = 256ull << 20;
     size_t graph_budget = 256ull << 20; // aggregate scheduler buffers, both phases
     bool resident_dense_weights = false; // model-lifetime weights on requested backend; default off
+    bool native_shared = false; // native-method Q8_0 shared expert; original F32 input, BF16 scalar
+    std::string native_shared_receipt_prefix;
     bool native_router = false; // native-method Vulkan 512/top10; not CUDA bit identity
     std::string native_router_receipt_prefix; // private unique per-owner shader receipts
     bool native_moe_combine = false; // strict Vulkan K10 observation; shared is already gated
@@ -72,6 +75,7 @@ struct PortableRoute {
     std::vector<int32_t> ids;
     std::vector<float> weights;
     bool native_router = false; // validated native-method component result
+    bool native_shared = false; // validated native shared execution before provider dispatch
 };
 
 // One unweighted hidden-width row per selected expert, in route.ids order.
@@ -86,6 +90,7 @@ using PortableExpertRowsBatch = std::function<bool(int64_t layer, const std::vec
                                                   std::vector<float>& rows, std::string& error)>;
 struct PortableFfnWork {
     uint64_t logical_rows = 0, completed_chunks = 0;
+    uint64_t native_shared_calls = 0, native_shared_rows = 0; // completed FFN calls only
     uint64_t native_router_calls = 0, native_router_rows = 0; // completed FFN calls only
     uint64_t pre_graph_calls = 0, provider_calls = 0, post_graph_calls = 0;
 };

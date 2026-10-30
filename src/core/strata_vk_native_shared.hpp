@@ -5,7 +5,7 @@
 namespace strata::core::portable_detail {
 struct StrataVkNativeShared;
 // Standalone opt-in observation. Owner/weights/scratch must survive synchronous
-// calls; caller serializes this component and its backend. No model integration.
+// calls; caller serializes this component and its backend. Model use is opt-in.
 StrataVkNativeShared* strata_vk_native_shared_create(ggml_backend_t,const char* effective_spv_path,size_t metadata_budget=65536);
 size_t strata_vk_native_shared_bytes(const StrataVkNativeShared*);
 void strata_vk_native_shared_destroy(StrataVkNativeShared*) noexcept;

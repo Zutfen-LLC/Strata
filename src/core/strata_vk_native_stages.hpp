@@ -14,7 +14,7 @@ StrataVkNativeStages* strata_vk_native_stages_create_observation(ggml_backend_t,
 StrataVkNativeStages* strata_vk_native_stages_create_quant_trace_observation(ggml_backend_t,const char* effective_spv_path);
 // Explicit corrected quantizer diagnostic: only amax/127 and xi/d use integer
 // IEEE binary32 nearest-even division; activation arithmetic stays unchanged.
-StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_backend_t,const char* effective_spv_path);
+StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_backend_t,const char* effective_spv_path,size_t metadata_budget=SIZE_MAX);
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages*);
 void strata_vk_native_stages_destroy(StrataVkNativeStages*) noexcept;
 // mode 0: quantize all input; 1: separate SwiGLU all capacity; 2: fused

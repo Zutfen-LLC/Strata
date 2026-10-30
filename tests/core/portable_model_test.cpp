@@ -45,6 +45,15 @@ int main() {
                       error.find("native router requires")!=std::string::npos,"native router model preflight refusal");
             }
         }
+        {
+            std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> cpu(ggml_backend_cpu_init(),ggml_backend_free);
+            for(int refusal=0;refusal<3;++refusal) {
+                auto invalid=opts;invalid.native_shared=true;invalid.native_shared_receipt_prefix=(fixture.root/"shared").string();
+                if(refusal)invalid.accelerators={cpu.get()};
+                if(refusal==1)invalid.native_shared_receipt_prefix.clear();if(refusal==2)invalid.allow_cpu_fallback=true;
+                check(!PortableModelSession::open(fixture.paths,(fixture.root/"manifest").string(),invalid,error) && error.find("native shared requires")!=std::string::npos,"native shared model preflight refusal");
+            }
+        }
         std::vector<std::vector<float>> reference;
         opts.expert_dispatch_oracle = true;
         {
@@ -56,6 +65,7 @@ int main() {
                 reference.push_back(std::move(logits));
             }
             const auto untimed=baseline->model_work();
+            check(untimed.native_shared_calls==0 && untimed.native_shared_rows==0,"default model credited native shared work");
             check(untimed.native_router_calls==0 && untimed.native_router_rows==0,"default model credited native router work");
             check(untimed.heads_executed==2 && untimed.heads_skipped==0, "default exhaustive head counters without timers");
             check(untimed.gdn_phases.attention_exchange_ms==0 && untimed.gdn_phases.attention_compute_ms==0 &&

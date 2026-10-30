@@ -9,5 +9,8 @@ int main(){
     std::string error;
     auto result=strata::core::PortableFfn::create({2560,4,1,32,512,10,1e-6f},0,{},options,error);
     if(result || error.find("native router requires Vulkan native-stage build")==std::string::npos){fprintf(stderr,"unsupported router build not refused: %s\n",error.c_str());return 1;}
+    options.native_router=false;options.native_shared=true;options.native_shared_receipt_prefix="unused-shared";
+    result=strata::core::PortableFfn::create({2560,4,1,32,512,10,1e-6f},0,{},options,error);
+    if(result || error.find("native shared requires strict-FMA native-stage build")==std::string::npos){fprintf(stderr,"unsupported shared build not refused: %s\n",error.c_str());return 1;}
     puts("native router unavailable-build refusal precedes allocation/dispatch");return 0;
 }

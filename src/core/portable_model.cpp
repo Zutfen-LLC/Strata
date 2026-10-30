@@ -1,6 +1,7 @@
 #include "strata/core/portable_model.hpp"
 #include "portable_graph.hpp"
 #include "portable_router_work.hpp"
+#include "portable_shared_work.hpp"
 #include "portable_memory.hpp"
 #include "portable_topology.hpp"
 #include "portable_cpu_experts.hpp"
@@ -134,6 +135,8 @@ struct PortableModelSession::Impl {
         : opts(std::move(options)), model(shards) {
         require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
                 "native Q8 observation requires explicit expert plans and strict accelerator execution");
+        require(!opts.native_shared || (!opts.accelerators.empty() && !opts.allow_cpu_fallback && !opts.native_shared_receipt_prefix.empty()),
+                "native shared requires explicit accelerators, strict execution and private receipt prefix");
         require(!opts.native_router || (!opts.accelerators.empty() && !opts.allow_cpu_fallback && !opts.native_router_receipt_prefix.empty()),
                 "native router requires explicit accelerators, strict execution and private receipt prefix");
         require(!opts.native_moe_combine || (!opts.expert_native_q8_observation.empty() && !opts.accelerators.empty()),
@@ -219,6 +222,8 @@ struct PortableModelSession::Impl {
         auto execution = [&](size_t index, bool output) {
             PortableFfnOptions o;
             o.threads = opts.threads;
+            o.native_shared=!output && opts.native_shared;
+            if(o.native_shared)o.native_shared_receipt_prefix=opts.native_shared_receipt_prefix;
             o.native_router = !output && opts.native_router;
             if(o.native_router)o.native_router_receipt_prefix=opts.native_router_receipt_prefix;
             o.native_moe_combine = !output && opts.native_moe_combine;
@@ -517,9 +522,10 @@ struct PortableModelSession::Impl {
             finite(residual,"chunk embedding");
             std::ostringstream trace;
             portable_detail::RouterParticipation router_participation(opts.native_router);
+            portable_detail::SharedParticipation shared_participation(opts.native_shared);
             const PortableExpertRowsBatch dispatch=[&](int64_t layer,const auto& routes,auto& rows,auto& e) {
                 portable_detail::ScopedExpertTimer<> timer(opts.expert_timings,provider_ms,provider_calls);
-                router_participation.observe(routes);
+                router_participation.observe(routes);shared_participation.observe(routes);
                 if(opts.expert_record_routes) for(size_t t=0;t<T;++t) {
                     trace<<"expert_route position="<<pos+t<<" layer="<<layer<<" ids=";
                     for(size_t k=0;k<routes[t].ids.size();++k)trace<<(k?",":"")<<routes[t].ids[k];
@@ -549,7 +555,7 @@ struct PortableModelSession::Impl {
 #endif
             if(opts.expert_record_routes)std::cerr<<trace.str();
             placement.swap(next);pos+=T;
-            router_participation.commit(model_work);
+            router_participation.commit(model_work);shared_participation.commit(model_work);
             ++model_work.completed_forward_calls;model_work.completed_layer_calls+=L;
             model_work.completed_ffn_pre_calls+=L;model_work.completed_provider_calls+=L;model_work.completed_ffn_post_calls+=L;
             model_work.logical_tokens+=T;model_work.heads_skipped+=T;
@@ -580,10 +586,11 @@ struct PortableModelSession::Impl {
             for (size_t stream = 1; stream < HC; ++stream)
                 std::copy_n(residual.begin(), H, residual.begin() + stream * H);
             portable_detail::RouterParticipation router_participation(opts.native_router);
+            portable_detail::SharedParticipation shared_participation(opts.native_shared);
             const PortableExpertRows dispatch = [&](int64_t l, const PortableRoute &r, std::vector<float> &rows,
                                                     std::string &e) {
                 portable_detail::ScopedExpertTimer<> timer(opts.expert_timings, provider_ms, provider_calls);
-                router_participation.observe(r);
+                router_participation.observe(r);shared_participation.observe(r);
                 if (opts.expert_record_routes) {
                     std::cerr << "expert_route position=" << pos << " layer=" << l << " ids=";
                     for(size_t i=0;i<r.ids.size();++i) std::cerr << (i ? "," : "") << r.ids[i];
@@ -625,7 +632,7 @@ struct PortableModelSession::Impl {
             if (local_experts) report.expert_devices=local_experts->report();
 #endif
             ++pos; ++model_work.logical_tokens;
-            router_participation.commit(model_work);
+            router_participation.commit(model_work);shared_participation.commit(model_work);
             ++model_work.completed_forward_calls;model_work.completed_layer_calls+=L;
             model_work.completed_ffn_pre_calls+=L;model_work.completed_provider_calls+=L;model_work.completed_ffn_post_calls+=L;
             eos_seen = kind == PortableTokenKind::generated && token == eos_id;
