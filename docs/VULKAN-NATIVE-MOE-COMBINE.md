@@ -167,6 +167,14 @@ skipped. The existing post graph applies HC injection/residual as before.
 This deliberately retains the existing host expert-row boundary and gated
 shared-row readback. It adds no placement or scheduler policy. A separate
 bounded staging buffer and component owner belong to each FFN execution shape.
+`PortableFfnOptions::native_moe_combine_receipt_prefix` is mandatory. The model
+uses `RECEIPT_PREFIX.combine` from its native-Q8 flag; the FFN adds `.layer-L`
+and atomically reserves an unused `.t-T.owner-N` directory, storing the normal
+component receipt as `effective.spv` inside it. Existing directories are skipped,
+including after restart or replanning, and old receipts remain untouched.
+The parent directory must already exist and be writable. Empty prefixes,
+filesystem failures or namespace exhaustion refuse construction. No fallback
+or change to the component's receipt/validation contract is introduced.
 Their actual aligned bytes count toward the existing aggregate graph cap and
 `device_graph`; a 16 KiB metadata context counts toward the host bound. Shared
 T1/chunk weights still count once, while both combine buffers count together.
@@ -178,6 +186,8 @@ mocked component boundary. T1/T2/T8 checks cover exact row/weight uploads,
 nontrivial ranked IDs, token association, the gated shared row, one consumption
 by the post graph, absence of a redundant host sum, unchanged legacy selection,
 budget/shape/fallback refusal, chunk accounting and exception/nonfinite rollback.
+The component mock enforces the real mandatory nonempty shader-receipt contract;
+with this check the previous null-path connection fails before dispatch.
 This is a host integration regression, not a GPU arithmetic result.
 
 The explicit-device executable runs the same synthetic FFN fixture with the
@@ -188,7 +198,8 @@ cmake --build "$BUILD" --target portable_model portable_ffn_native_combine_vulka
 # Use the approved private ICD / SDK-loader environment from the rootless
 # prerequisite recipe. INDEX and DESCRIPTION must identify the intended device.
 timeout 60s "$BUILD/portable_ffn_native_combine_vulkan" \
-  --device "$INDEX" --expect-device "$DESCRIPTION"
+  --device "$INDEX" --expect-device "$DESCRIPTION" \
+  --receipt-prefix "$NEW_PRIVATE_FFN_RECEIPT_PREFIX"
 ```
 
 It checks finite T1/T2/T8 FFN residuals with a fixed 4e-6 absolute integration

@@ -217,6 +217,7 @@ struct PortableModelSession::Impl {
             PortableFfnOptions o;
             o.threads = opts.threads;
             o.native_moe_combine = !output && opts.native_moe_combine;
+            if(o.native_moe_combine) o.native_moe_combine_receipt_prefix = opts.expert_native_q8_observation + ".combine";
             o.allow_cpu_fallback = opts.allow_cpu_fallback;
             o.resident_dense_weights = opts.dense_resident_weights;
             o.weight_budget = output ? opts.head_weight_cap : opts.layer_weight_cap;

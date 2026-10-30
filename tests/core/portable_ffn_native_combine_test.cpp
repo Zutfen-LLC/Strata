@@ -5,6 +5,10 @@
 #include "ggml-cpu.h"
 #include <cmath>
 #include <cfenv>
+#include <filesystem>
+#include <fstream>
+#include <chrono>
+#include <set>
 #include <cstring>
 #include <cstdio>
 #include <stdexcept>
@@ -18,6 +22,7 @@ namespace {
 void need(bool ok,const std::string& message){if(!ok)throw std::runtime_error(message);}
 std::vector<float> expected_rows,expected_weights,expected_shared,combined;
 size_t calls=0,owners=0;
+std::set<std::string> receipt_paths;
 bool reject=false,nonfinite=false;
 void equal(const std::vector<float>& a,const std::vector<float>& b,const char* message) {
     need(a.size()==b.size() && !std::memcmp(a.data(),b.data(),a.size()*4),message);
@@ -54,7 +59,14 @@ struct Fixture {
 #ifndef STRATA_COMBINE_REAL_VULKAN
 namespace strata::core::portable_detail {
 struct StrataVkNativeMoeCombine {};
-StrataVkNativeMoeCombine* strata_vk_native_moe_combine_create(ggml_backend_t,const char*) {++owners;return new StrataVkNativeMoeCombine;}
+StrataVkNativeMoeCombine* strata_vk_native_moe_combine_create(ggml_backend_t,const char* path) {
+    need(path && *path,"Q8 component: effective shader receipt required");
+    const std::filesystem::path receipt(path);
+    need(std::filesystem::is_directory(receipt.parent_path()) && !std::filesystem::exists(receipt),"receipt must have a fresh owner namespace");
+    need(receipt_paths.insert(path).second,"component receipt path reused");
+    std::ofstream out(receipt);out<<"mock effective shader receipt\n";out.close();need(bool(out),"mock receipt write failed");
+    ++owners;return new StrataVkNativeMoeCombine;
+}
 size_t strata_vk_native_moe_combine_bytes(const StrataVkNativeMoeCombine*) {return 512;}
 void strata_vk_native_moe_combine_destroy(StrataVkNativeMoeCombine* p) noexcept {--owners;delete p;}
 void strata_vk_native_moe_combine_run(StrataVkNativeMoeCombine*,const ggml_tensor* rows,const ggml_tensor* weights,
@@ -75,8 +87,8 @@ int main(int argc,char** argv){try {
     need(std::fesetround(FE_TONEAREST)==0,"host reference requires RNE");
     std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(nullptr,ggml_backend_free);
 #ifdef STRATA_COMBINE_REAL_VULKAN
-    need(argc==5 && std::string(argv[1])=="--device" && std::string(argv[3])=="--expect-device",
-        "usage: portable_ffn_native_combine_vulkan --device INDEX --expect-device SUBSTRING");
+    need(argc==7 && std::string(argv[1])=="--device" && std::string(argv[3])=="--expect-device" && std::string(argv[5])=="--receipt-prefix",
+        "usage: portable_ffn_native_combine_vulkan --device INDEX --expect-device SUBSTRING --receipt-prefix PRIVATE_PREFIX");
     const std::string index=argv[2];need(!index.empty() && index.find_first_not_of("0123456789")==std::string::npos,"invalid device index");
     const auto device=std::stoull(index);need(device<size_t(ggml_backend_vk_get_device_count()),"device unavailable");
     backend.reset(ggml_backend_vk_init(device));need(bool(backend),"Vulkan unavailable");
@@ -85,8 +97,32 @@ int main(int argc,char** argv){try {
 #else
     (void)argc;(void)argv;backend.reset(ggml_backend_cpu_init());
 #endif
+#ifndef STRATA_COMBINE_REAL_VULKAN
+    struct ReceiptDirectory {
+        std::filesystem::path path;
+        ReceiptDirectory() {
+            const auto seed=std::chrono::steady_clock::now().time_since_epoch().count();
+            for(size_t i=0;i<1024;++i) {
+                auto candidate=std::filesystem::temp_directory_path()/("strata-combine-test-"+std::to_string(seed)+"-"+std::to_string(i));
+                if(std::filesystem::create_directory(candidate)){path=std::move(candidate);return;}
+            }
+            throw std::runtime_error("test receipt directory unavailable");
+        }
+        ~ReceiptDirectory(){std::error_code ignored;std::filesystem::remove_all(path,ignored);}
+    } private_receipts;
+#endif
     Fixture fixture;std::string error;
     PortableFfnOptions opts;opts.accelerator=backend.get();opts.request_accelerator=true;opts.native_moe_combine=true;
+#ifdef STRATA_COMBINE_REAL_VULKAN
+    opts.native_moe_combine_receipt_prefix=argv[6];
+#else
+    opts.native_moe_combine_receipt_prefix=(private_receipts.path/"combine").string();
+    const auto retained=std::filesystem::path(opts.native_moe_combine_receipt_prefix+".layer-0.t-1.owner-0")/"effective.spv";
+    need(std::filesystem::create_directory(retained.parent_path()),"retained receipt fixture setup");
+    {std::ofstream out(retained);out<<"retained earlier receipt\n";need(bool(out),"retained receipt fixture write");}
+    auto missing_receipt=opts;missing_receipt.native_moe_combine_receipt_prefix.clear();
+    need(!PortableFfn::create(fixture.g,0,fixture.views,missing_receipt,error),"empty receipt prefix accepted");
+#endif
     for(int64_t T:{1,2,8}) {
         expected_rows.clear();expected_weights.clear();expected_shared.clear();
         std::vector<float> initial(size_t(T)*10240);
@@ -156,6 +192,15 @@ int main(int argc,char** argv){try {
     }
 #ifndef STRATA_COMBINE_REAL_VULKAN
     need(owners==0,"combine owner leaked");
+    need(receipt_paths.size()==4,"T1/chunk/T2/T8 owners require distinct receipts");
+    for(const auto& path:receipt_paths) {
+        std::ifstream in(path);std::string line;std::getline(in,line);
+        need(line=="mock effective shader receipt","earlier receipt overwritten");
+    }
+    // A second T1 owner for the same layer/prefix must retain the first file.
+    {auto repeat=PortableFfn::create(fixture.g,0,fixture.views,opts,error);need(bool(repeat),error);}
+    need(receipt_paths.size()==5,"recreated T1 owner reused receipt");
+    {std::ifstream in(retained);std::string line;std::getline(in,line);need(line=="retained earlier receipt","restart collision overwrote an earlier receipt");}
     auto bad=opts;bad.graph_budget=1;need(!PortableFfn::create(fixture.g,0,fixture.views,bad,error),"tiny graph budget accepted");
     bad=opts;bad.allow_cpu_fallback=true;need(!PortableFfn::create(fixture.g,0,fixture.views,bad,error),"fallback accepted");
     auto shape=fixture.g;shape.selected=9;need(!PortableFfn::create(shape,0,fixture.views,opts,error),"non-K10 accepted");

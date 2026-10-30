@@ -143,8 +143,9 @@ struct PortableFfn::Impl {
                 std::isfinite(g.epsilon) && g.epsilon > 0 && options.threads > 0,
                 "portable FFN: invalid geometry/options");
         require(!options.native_moe_combine || (g.hidden == 2560 && g.selected == 10 &&
-                options.request_accelerator && options.accelerator && !options.allow_cpu_fallback),
-                "portable FFN: native combine requires H2560/K10 and strict accelerator execution");
+                options.request_accelerator && options.accelerator && !options.allow_cpu_fallback &&
+                !options.native_moe_combine_receipt_prefix.empty()),
+                "portable FFN: native combine requires H2560/K10, strict accelerator execution and private receipt prefix");
 #ifndef STRATA_PORTABLE_NATIVE_MOE_COMBINE
         require(!options.native_moe_combine, "portable FFN: native combine requires strict-FMA native-stage build");
 #endif
@@ -183,7 +184,8 @@ struct PortableFfn::Impl {
         const auto& w = owned_weights->w;
 #ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
         if(options.native_moe_combine) {
-            native_combine = std::make_unique<portable_detail::PortableNativeMoeCombine>(options.accelerator, tokens, options.graph_budget);
+            native_combine = std::make_unique<portable_detail::PortableNativeMoeCombine>(options.accelerator, tokens, options.graph_budget,
+                options.native_moe_combine_receipt_prefix + ".layer-" + std::to_string(layer));
             graphs_size = native_combine->bytes();
         }
 #endif
