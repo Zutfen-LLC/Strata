@@ -1,0 +1,10 @@
+#version 450
+layout(local_size_x = 1) in;
+layout(set=0,binding=0,std430) buffer Data { float a; float b; float c; float fused; float separate; } d;
+void main() {
+    precise float f = fma(d.a, d.b, d.c);
+    precise float m = d.a * d.b;
+    precise float s = m + d.c;
+    d.fused = f;
+    d.separate = s;
+}
