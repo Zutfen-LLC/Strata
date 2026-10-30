@@ -16,6 +16,16 @@ from test_portable_quality_v1 import Tokenizer
 from test_portable_topology_v1 import plan
 
 
+# Exact diagnostic lines extracted from retained host05 stdout SHA256
+# bba52be6b8e404a1d416a6b120a6c0539019e2332ff325b5dc1cf70f970e1d4b.
+NATIVE_DIAGNOSTICS = (
+    'native_q8_integer_dot requested=1 queried_support=1 logical_enabled=1 ggml_accelerated=0 device=AMD Radeon Pro V340 (RADV VEGA10)\n'
+    'native_q8_strict_fma requested=1 queried_support=1 logical_enabled=1 qualified=false\n'
+    'native_q8_integer_dot requested=1 queried_support=1 logical_enabled=1 ggml_accelerated=0 device=AMD Radeon Pro V340 (RADV VEGA10)\n'
+    'native_q8_strict_fma requested=1 queried_support=1 logical_enabled=1 qualified=false\n'
+)
+
+
 class NativeMethods(unittest.TestCase):
     def arguments(self, root, enabled):
         binary = root/'binary'; binary.write_bytes(b'mock model, never executed')
@@ -30,7 +40,7 @@ class NativeMethods(unittest.TestCase):
             expert_free_reserve_mib='512,512')
         return args
 
-    def suite(self, root, enabled, failure=None, parser=None):
+    def suite(self, root, enabled, failure=None, parser=None, diagnostics=""):
         args = self.arguments(root, enabled)
         commands = []; children = []; checks = []; expected_prompts, _ = P.frozen(Tokenizer(), args.suite)
         native = P.native_policy(args); binding = P.native_plans(args)[0]
@@ -68,6 +78,11 @@ class NativeMethods(unittest.TestCase):
             if failure == ('counter', index): terminal['native_shared_calls_delta'] = 48
             if failure == ('cumulative', index): terminal['native_shared_calls_delta'] += 48*sum(len(p)+32 for p in expected_prompts[:index])
             if failure == ('off-counter', index): terminal['native_router_calls_delta'] = 0
+            stdout.write(diagnostics)
+            if failure and failure[1] == index and failure[0] in ('stdout', 'stdout-json', 'stdout-error'):
+                stdout.write({'stdout':'native_q8_unknown error=failed',
+                              'stdout-json':'{"position":',
+                              'stdout-error':'{"error":"failed"}'}[failure[0]]+'\n')
             for record in rows+[terminal]: stdout.write(json.dumps(record)+'\n')
             stdout.flush()
             entries = 0 if failure == ('participation', index) else 2
@@ -134,12 +149,40 @@ class NativeMethods(unittest.TestCase):
                 roots.append(summary['suite'])
         self.assertEqual(roots[0], roots[1])
 
+    def test_retained_native_diagnostics_through_actual_suite_parser(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            summary, commands, _, _ = self.suite(Path(tmp), False, diagnostics=NATIVE_DIAGNOSTICS)
+            self.assertEqual(summary['status'], 'complete')
+            self.assertEqual(len(commands), 12)
+            for row in summary['requests']:
+                self.assertEqual(row['stdout_diagnostics'], NATIVE_DIAGNOSTICS.splitlines())
+                raw = (Path(tmp)/'run'/f"case-{row['index']:02d}"/'stdout.jsonl').read_text()
+                self.assertTrue(raw.startswith(NATIVE_DIAGNOSTICS))
+
+    def test_stdout_classifier_rejects_malformed_unknown_and_error_output(self):
+        bad = ['{"position":', '{"error":"failed"}', '[]', 'null', '',
+               'unrecognized failure', 'native_q8_unknown error=failed',
+               'native_q8_strict_fma ERROR failed',
+               NATIVE_DIAGNOSTICS.splitlines()[0]+'\tERROR',
+               NATIVE_DIAGNOSTICS.splitlines()[1]+' {"error":"failed"}']
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'stdout.jsonl'
+            for line in bad:
+                with self.subTest(line=line):
+                    path.write_text(NATIVE_DIAGNOSTICS+line+'\n')
+                    with self.assertRaises(ValueError): P.stdout_records(path)
+            # Unknown JSON objects are still rejected by the existing protocol.
+            path.write_text(NATIVE_DIAGNOSTICS+'{"unexpected":true}\n')
+            records, _ = P.stdout_records(path)
+            with self.assertRaises(ValueError): P.completion(records, [1], 248320)
+
     def test_failures_stop_before_next_case_and_keep_previous_results(self):
         for kind, enabled in (('exit', True), ('counter', True), ('off-counter', False),
                               ('participation', True), ('module', True), ('plan', True), ('cumulative', True),
-                              ('module-header', True), ('unrequested', False)):
+                              ('module-header', True), ('unrequested', False), ('stdout', False),
+                              ('stdout-json', True), ('stdout-error', False)):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
-                summary, commands, _, _ = self.suite(Path(tmp), enabled, (kind, 2))
+                summary, commands, _, _ = self.suite(Path(tmp), enabled, (kind, 2), diagnostics=NATIVE_DIAGNOSTICS)
                 self.assertEqual(summary['status'], 'STOP')
                 self.assertEqual(len(commands), 3)
                 self.assertEqual(len(summary['requests']), 2)

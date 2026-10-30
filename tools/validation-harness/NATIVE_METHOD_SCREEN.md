@@ -20,7 +20,7 @@ prefixes under each `case-NN/native-receipts` directory. The product receives
 `--native-router PREFIX`, `--native-shared PREFIX` and `--native-moe-combine`
 only when enabled. Both arms retain the same native expert implementation and
 frozen placement/CPU misses. Omission of all new options preserves the previous
-adapter argv, default receipt parsing and summary fields. Partial declarations
+adapter argv and summary fields for JSON-only output. Partial declarations
 are rejected before model launch. This declared screen excludes benchmark,
 single-case, chunking, head elision and executed-head dumps.
 
@@ -86,3 +86,17 @@ requests through a compiled exact product parser prefix stopped before backend
 setup, fresh child ownership/reset boundaries, receipt uniqueness, plan/counter/
 module/participation failures and no continuation after failure. Existing default
 quality, resident and scorer checks remain unchanged.
+
+The native Q8 component also prints `native_q8_integer_dot` and
+`native_q8_strict_fma` creation diagnostics to stdout. The adapter accepts only
+these source-shaped diagnostic lines, keeps the raw stdout unchanged, and adds
+`stdout_diagnostics` to that completed case. Diagnostics are excluded from token
+positions and participation counters. Malformed JSON, child error objects,
+unknown text and malformed diagnostic fields still stop the arm; child exit
+status is checked before parsing.
+
+There is no resume or case-range option. A stopped root stays stopped and cannot
+be overwritten. Retained stdout can be parsed and its answer checked offline,
+but this does not complete the case's resource/receipt review or make the suite
+complete. A subsequent authorized full screen needs a new root and starts at
+case 1. No resume framework is added here.

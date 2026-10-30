@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -161,6 +162,34 @@ def token_receipt(row, position, prompt_count, vocabulary, head_policy='eager_di
             (available and (type(row['greedy_next']) is not int or not 0 <= row['greedy_next'] < vocabulary)) or
             (not available and row['greedy_next'] is not None)):
         raise ValueError('invalid token or greedy ID')
+
+
+# The native Q8 component prints these two diagnostics to stdout at creation.
+# Keep the retained stdio supervisor's two-name allowlist, with source-shaped
+# fields. Raw stdout remains untouched; diagnostics never count as token work.
+NATIVE_STDOUT_DIAGNOSTICS = (
+    re.compile(r'native_q8_integer_dot requested=[01] queried_support=[01] logical_enabled=[01] '
+               r'ggml_accelerated=[01] device=[^\x00-\x1f]+'),
+    re.compile(r'native_q8_strict_fma requested=[01] queried_support=[01] logical_enabled=[01] qualified=false'),
+)
+
+
+def stdout_records(path):
+    records, diagnostics = [], []
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        if any(pattern.fullmatch(line) for pattern in NATIVE_STDOUT_DIAGNOSTICS):
+            diagnostics.append(line)
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f'malformed JSON or unexpected stdout at line {number}') from exc
+        if not isinstance(record, dict):
+            raise ValueError(f'stdout record is not an object at line {number}')
+        if 'error' in record:
+            raise ValueError(f'child error record at line {number}')
+        records.append(record)
+    return records, diagnostics
 
 
 def completion(records, prompt, vocabulary, head_policy='eager_diagnostic', prompt_chunk_size=0, native=None):
@@ -466,7 +495,7 @@ def run_portable(args, tok):
                 if S.dense_topology(args) == 'primary':
                     L.primary_plan_reports((case/'stderr.log').read_text(), primary_paths,
                                            summary['primary_expert_plans'], selected)
-                records = [json.loads(line) for line in (case / 'stdout.jsonl').read_text().splitlines()]
+                records, diagnostics = stdout_records(case / 'stdout.jsonl')
                 ids, stop = completion(records,prompt,len(tok.tokens),summary['head_policy'],size,native)
                 native_receipt = None
                 if native is not None:
@@ -476,6 +505,8 @@ def run_portable(args, tok):
                 summary['requests'].append(dict(index=index, tokens=ids, finish=stop, seconds=time.monotonic()-began,
                     tensor_operations_by_device=participation, baseline_vram=initial, device_budgets=budgets, sampled_peak_vram=peak,
                     minimum_effective_available=minimum))
+                if diagnostics:
+                    summary['requests'][-1]['stdout_diagnostics'] = diagnostics
                 if native is not None:
                     summary['requests'][-1]['native_work'] = native_work(records[-1], native, len(records)-1)
                     summary['requests'][-1]['native_receipts'] = native_receipt
