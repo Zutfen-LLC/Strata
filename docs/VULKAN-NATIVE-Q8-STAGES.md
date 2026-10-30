@@ -551,3 +551,85 @@ and original failure are retained. Exit 0 means this bounded comparison matched;
 exit 1 means invalid input, execution failure, sentinel failure or mismatch.
 It does not qualify quantization or integrate the pipeline into the product.
 No new native execution or model work occurs in this command.
+
+### Composed packed-boundary observation (H=256, F=32 only)
+
+The isolated stage results do not establish that the activation/quantization
+stage matches on actual gate/up outputs. `native_q8_composed_component` connects
+the same two-entry fixture through the existing runners: packed input to
+`native_gu_kernel<8>` port, fused observation SwiGLU/Q8_1, then
+`native_down_kernel<8>` port. Gate/up and the 72 packed hidden bytes stay in their
+original Vulkan tensor views between calls. The existing runners synchronize
+each stage. There is no host reconstruction or intermediate upload.
+
+Both the wrapper and component require `--observe-unspecified-fp32-denorm`.
+The strict shader, strict creator and unsupported DenormPreserve32 refusal are
+unchanged. The component explicitly creates the existing observation module;
+it does not fall back from a strict failure. Any remaining required-property
+refusal stops before dispatch. Product execution is unchanged.
+
+Build and run the focused host/SPIR-V checks with the retained Vulkan settings:
+
+```sh
+cmake --build BUILD --target native_q8_composed_component \
+  native_q8_gu_shader_test native_q8_shader_test native_q8_down_shader_test \
+  native_q8_spec_test native_q8_gu_input_test native_q8_down_input_test \
+  native_q8_consumer_input_test -j4
+ctest --test-dir BUILD --output-on-failure -R '^native_q8_(gu_shader|shader|down_shader|spec|gu_input|down_input|consumer_input|tools)_test$'
+```
+
+One bounded process follows. Reuse the same verified native hq receipt, original
+captures, output oracle and weights as the standalone down check above. No
+new CUDA capture or fixture generation is needed. `EVIDENCE` is the retained hq
+result directory. All hash variables must come from the retained receipts and
+be checked against the actual files. Use the independently verified archive
+identity for the historical null Git field; do not edit that receipt. Omit the
+three archive identity flags only for an ordinary Git producer receipt.
+
+```sh
+python3 tools/native_q8_composed.py --observe-unspecified-fp32-denorm \
+  --component BUILD/native_q8_composed_component \
+  --device "$DEVICE" --expect-device "$DEVICE_NAME" --output "$OUTPUT" \
+  --fixture "$EVIDENCE/fixture.bin" --fixture-sha256 "$FIXTURE_SHA256" \
+  --native "$EVIDENCE/native.bin" --native-sha256 "$NATIVE_SHA256" \
+  --observation "$EVIDENCE/observation.bin" --observation-sha256 "$OBSERVATION_SHA256" \
+  --oracle "$EVIDENCE/native-consumer.raw" --oracle-sha256 "$ORACLE_SHA256" \
+  --weights "$EVIDENCE/native-consumer.raw.weights.bin" --weights-sha256 "$WEIGHTS_SHA256" \
+  --hq "$EVIDENCE/native-consumer.raw.hq.bin" --hq-sha256 "$HQ_SHA256" \
+  --native-receipt "$EVIDENCE/receipt.json" --native-receipt-sha256 "$RECEIPT_SHA256" \
+  --native-source-head "$VERIFIED_NATIVE_COMMIT" \
+  --native-source-archive-sha256 "$VERIFIED_NATIVE_ARCHIVE_SHA256" \
+  --native-consumer-sha256 "$VERIFIED_NATIVE_BINARY_SHA256"
+```
+
+The reused wrapper validates all input hashes, native hq reuse and original
+packed-input mismatch, then launches one process with a 30-second deadline.
+It saves actual child PID/exit and the assembled command. The component makes
+three fixed stage dispatches; it has no sparse/empty repetitions. Both actual
+packed-input representations are consumed, as in the retained native oracle.
+The native hq file is an offline reference only, never a component input.
+
+`vulkan-composed.raw` has magic `0x3150384e`, a sentinel status and count-prefixed
+sections of 64 gate words, 64 up words, 18 packed hidden words (72 bytes), and
+512 final output words. The comparator checks every float bit, including zero
+signs, and every hidden byte, reporting metadata versus code differences and
+nonfinite outputs. A hidden mismatch fails even if the final output matches.
+All differences are retained; there is no tolerance. Final down consumes the
+actual Vulkan-produced hidden bytes even when those differ from the oracle.
+Readback occurs after all three dispatches.
+
+`.views.bin` (magic `0x3156434e`) saves the seven complete backing views in order:
+weights, packed input, gate, up, unused hidden scratch, packed hidden and final
+output. Prefix/suffix canaries, unchanged weights/input and untouched fused
+hidden scratch are checked. The three final modules are retained as
+`.gu.effective.spv`, `.activation.effective.spv`, `.down.effective.spv`; run
+`spirv-val --target-env vulkan1.2` on each and retain their hashes with the
+wrapper receipt. The existing shader tests check arithmetic controls and the
+pinned helper transformations; no new shader is introduced.
+
+Exit 0 means only that this bounded composed observation matched. Exit 1 means
+an input, execution, sentinel or exact-comparison failure. All receipts and
+comparison reports retain `qualified=false`, `quantizer_qualified=false`,
+`observation_only=true`, `fp32_denorm_mode=unspecified` and the original packed
+comparator failure. This does not qualify strict quantization, CUDA/Vulkan
+exponential behavior for other inputs, production shapes or full inference.

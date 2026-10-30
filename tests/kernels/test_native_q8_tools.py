@@ -286,6 +286,63 @@ class Tools(unittest.TestCase):
             b.write_bytes(b.read_bytes()[:-1])
             with self.assertRaises(ValueError):compare.compare(fixture, a, b)
 
+class ComposedTools(unittest.TestCase):
+    def test_composed_boundary_and_failure_reporting(self):
+        composed = module('native_q8_composed')
+        oracle = [[0x3f800000] * 64, [0x40000000] * 64, [0x40400000] * 512]
+        hq = bytes(72)
+        with tempfile.TemporaryDirectory() as directory:
+            raw = Path(directory) / 'composed.raw'
+            def capture(parts, sentinels=1):
+                raw.write_bytes(struct.pack('<2I', 0x3150384e, sentinels) + b''.join(
+                    struct.pack('<I', len(part)) + struct.pack('<' + 'I' * len(part), *part) for part in parts))
+            parts = [oracle[0][:], oracle[1][:], [0] * 18, oracle[2][:]]
+            capture(parts)
+            exact = composed.compare(oracle, hq, raw)
+            self.assertTrue(exact['exact'])
+            self.assertFalse(exact['qualified'])
+            self.assertFalse(exact['quantizer_qualified'])
+            self.assertEqual(exact['original_comparator_exit'], 1)
+            self.assertEqual(exact['fp32_denorm_mode'], 'unspecified')
+            # A single code byte is a failure even if final output still matches.
+            parts[2][1] = 1
+            capture(parts)
+            mismatch = composed.compare(oracle, hq, raw)
+            self.assertFalse(mismatch['exact'])
+            self.assertEqual(mismatch['stages']['hidden_q8_1']['different_bytes'], 1)
+            self.assertEqual(mismatch['stages']['hidden_q8_1']['differences'][0]['kind'], 'code')
+            parts[2][1] = 0
+            parts[2][0] = 0x7c00
+            capture(parts)
+            metadata = composed.compare(oracle, hq, raw)['stages']['hidden_q8_1']
+            self.assertEqual(metadata['nonfinite_metadata_offsets'], [0])
+            self.assertEqual(metadata['differences'][0]['kind'], 'metadata')
+            parts[2][0] = 0
+            parts[3][0] = 0x80000000
+            oracle[2][0] = 0  # isolate the sign bit of zero
+            capture(parts)
+            self.assertFalse(composed.compare(oracle, hq, raw)['exact'])
+            parts[3][0] = 0x7f800000
+            capture(parts)
+            self.assertEqual(composed.compare(oracle, hq, raw)['stages']['down']['nonfinite_indices'], [0])
+            capture(parts, 0)
+            self.assertFalse(composed.compare(oracle, hq, raw)['sentinels_ok'])
+            raw.write_bytes(raw.read_bytes()[:-1])
+            with self.assertRaises(ValueError):composed.compare(oracle, hq, raw)
+
+    def test_composition_explicit_selection_and_no_intermediate_host_upload(self):
+        import subprocess
+        result = subprocess.run(['python3', str(ROOT / 'tools/native_q8_composed.py')], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--observe-unspecified-fp32-denorm', result.stderr)
+        source = (ROOT / 'tests/kernels/native_q8_composed_component.cpp').read_text()
+        begin = source.index('strata_vk_q8_gu_run(')
+        end = source.index('Bytes hq(72)', begin)
+        self.assertNotIn('ggml_backend_tensor_set', source[begin:end])
+        self.assertNotIn('ggml_backend_tensor_get', source[begin:end])
+        self.assertIn('strata_vk_native_stages_run(activation.get(),2,g,u,h,q', source[begin:end])
+        self.assertIn('strata_vk_q8_down_run(down.get(),w,q,o', source[begin:end])
+
 
 if __name__ == '__main__':
     unittest.main()

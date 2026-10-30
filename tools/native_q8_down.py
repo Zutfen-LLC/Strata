@@ -52,8 +52,8 @@ def compare(oracle, path):
     return report
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
+def main(*, composed_compare=None):
+    p = argparse.ArgumentParser(description=("Explicit device-resident composed observation" if composed_compare else __doc__))
     names = ('fixture', 'native', 'observation', 'oracle', 'weights', 'native-receipt', 'hq')
     for name in names:
         p.add_argument('--' + name, type=Path, required=True)
@@ -65,6 +65,8 @@ def main():
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--device', required=True)
     p.add_argument('--expect-device', required=True)
+    if composed_compare:
+        p.add_argument('--observe-unspecified-fp32-denorm', action='store_true', required=True)
     a = p.parse_args()
     if not a.device.isdecimal() or not a.expect_device:
         raise ValueError('down: verified numeric device and device substring required')
@@ -89,15 +91,22 @@ def main():
     oracle = gu.validate_oracle(paths['oracle'])
     (a.output / 'original-comparison.json').write_text(json.dumps(original, indent=2, allow_nan=False) + '\n')
     exe = a.component.resolve(strict=True)
-    raw = (a.output / 'vulkan-down.raw').resolve()
+    raw = (a.output / ('vulkan-composed.raw' if composed_compare else 'vulkan-down.raw')).resolve()
     command = [str(exe), '--device', a.device, '--expect-device', a.expect_device,
                '--hq', str(paths['hq'].resolve()),
                '--weights', str(paths['weights'].resolve()), '--output', str(raw)]
+    if composed_compare:
+        command = [str(exe), '--observe-unspecified-fp32-denorm', '--device', a.device,
+                   '--expect-device', a.expect_device, '--native', str(paths['native'].resolve()),
+                   '--observation', str(paths['observation'].resolve()),
+                   '--weights', str(paths['weights'].resolve()), '--output', str(raw)]
     provenance = {'qualified': False, 'quantizer_qualified': False, 'original_comparator_exit': 1, 'native_hq_reuse_verified': True,
                   'sha256': hashes, 'component_sha256': hashlib.sha256(exe.read_bytes()).hexdigest(),
                   'argv': command, 'native_source_head': receipt.get('source_head'),
                   'native_consumer_sha256': receipt.get('consumer_sha256'),
                   'native_dispatch_basis': 'source and retained environment, not a dynamic launch trace'}
+    if composed_compare:
+        provenance.update(observation_only=True, fp32_denorm_mode='unspecified', device_resident_intermediates=True)
     if archive_identity is not None:
         provenance['native_archive_identity'] = archive_identity
         provenance['native_archive_identity_basis'] = 'explicit independently verified later inspection; not the original producer receipt'
@@ -120,13 +129,19 @@ def main():
     result = None
     if raw.is_file():
         try:
-            result = compare(oracle, raw)
+            result = composed_compare(oracle, sources['hq'], raw) if composed_compare else compare(oracle, raw)
         except ValueError as error:
             result = {'exact': False, 'qualified': False, 'quantizer_qualified': False,
                       'original_comparator_exit': 1, 'capture_error': str(error)}
+        if composed_compare:
+            result.update(observation_only=True, fp32_denorm_mode='unspecified')
         (a.output / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
-    for file in (raw, Path(str(raw) + '.views.bin'), Path(str(raw) + '.effective.spv')):
+    modules = ('gu', 'activation', 'down') if composed_compare else ()
+    for file in (raw, Path(str(raw) + '.views.bin'), Path(str(raw) + '.effective.spv'),
+                 *(Path(str(raw) + '.' + stage + '.effective.spv') for stage in modules)):
         if file.is_file():provenance['sha256'][file.name] = hashlib.sha256(file.read_bytes()).hexdigest()
+    if composed_compare:
+        provenance['comparison_exit'] = (0 if result['exact'] else 1) if result else None
     receipt_path.write_text(json.dumps(provenance, indent=2) + '\n')
     print(json.dumps({'receipt': provenance, 'comparison': result}))
     return 0 if provenance.get('actual_child_exit') == 0 and not provenance.get('timeout') and result and result['exact'] else 1
