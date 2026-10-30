@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import struct
 
@@ -15,27 +16,44 @@ def read(prefix, suffix):
         raise ValueError('boundary size outside one-layer bound: ' + suffix)
     return p.read_bytes()
 
-def compare(native, vulkan):
-    a, b = read(native, '.metadata'), read(vulkan, '.metadata')
-    if a != b:
-        raise ValueError('request/plan/group/entry metadata mismatch')
-    lines = a.decode('ascii').splitlines()
+def parse_metadata(a):
+    # Old C++ ostream emitted uint8_t T/K as raw characters (K=10 is LF).
+    # Match that exact producer header only; never discard arbitrary lines.
+    legacy = re.match(rb'(record [0-9]+ model [0-9]+ placement [0-9]+ [0-9]+ layer [0-9]+ T )([\x01-\x08]) K ([\x01-\x0a])\n', a)
+    canonical = a
+    if legacy:
+        canonical = (legacy[1] + str(legacy[2][0]).encode() + b' K ' +
+                     str(legacy[3][0]).encode() + b'\n' + a[legacy.end():])
+    lines = canonical.decode('ascii').splitlines()
     if len(lines) != 8:
         raise ValueError('invalid one-layer metadata')
-    header = lines[0].split()
-    tokens = int(header[header.index('T') + 1])
+    header = re.fullmatch(r'record [0-9]+ model [0-9]+ placement [0-9]+ [0-9]+ layer [0-9]+ T ([1-8]) K (10|[1-9])', lines[0])
+    if not header:
+        raise ValueError('invalid one-layer request header')
+    tokens, routes = map(int, header.groups())
     groups, slots, starts, dst, tok, original = ([int(v) for v in line.split()] for line in lines[2:])
     entries = len(dst)
     if not (1 <= tokens <= 8 and 1 <= len(groups) <= 24 and len(slots) == len(groups)
             and len(starts) == len(groups)+1 and starts[0] == 0 and starts[-1] == entries
             and starts == sorted(starts) and 1 <= entries <= 64 and dst == list(range(entries))
             and len(tok) == len(original) == entries and len(set(original)) == entries
-            and all(0 <= v < tokens for v in tok)):
+            and all(0 <= v < tokens for v in tok)
+            and all(0 <= v < tokens*routes for v in original)
+            and all(t == i//routes for t, i in zip(tok, original))):
         raise ValueError('invalid group/entry geometry')
+    return tokens, entries, bool(legacy)
+
+def compare(native, vulkan):
+    a, b = read(native, '.metadata'), read(vulkan, '.metadata')
+    if a != b:
+        raise ValueError('request/plan/group/entry metadata mismatch')
+    tokens, entries, legacy = parse_metadata(a)
     expected_sizes = (tokens*2880, entries*2560, entries*2560, entries*720, entries*10240)
     report = {'exact_consumed_boundaries' : True, 'qualified': False,
               'quantizer_qualified': False, 'observation_only': True,
-              'historical_omnibus_failure_unchanged': True, 'stages': {}}
+              'historical_omnibus_failure_unchanged': True,
+              'metadata_format': 'legacy_uint8_stream' if legacy else 'numeric_header',
+              'metadata_sha256': hashlib.sha256(a).hexdigest(), 'stages': {}}
     for suffix, expected_size in zip(SUFFIXES, expected_sizes):
         a, b = read(native, suffix), read(vulkan, suffix)
         if len(a) != expected_size or len(a) != len(b):

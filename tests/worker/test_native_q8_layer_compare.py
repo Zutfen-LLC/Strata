@@ -1,4 +1,6 @@
 import importlib.util
+import os
+import subprocess
 from pathlib import Path
 import struct
 import tempfile
@@ -7,6 +9,35 @@ spec = importlib.util.spec_from_file_location('comparison', Path(__file__).resol
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 class Comparison(unittest.TestCase):
+    def test_actual_cpp_emitted_headers(self):
+        executable = os.environ.get('STRATA_Q8_METADATA_FIXTURE_EXE')
+        if not executable:
+            self.skipTest('CMake supplies the actual C++ metadata emitter')
+        with tempfile.TemporaryDirectory() as folder:
+            fixture = Path(folder)/'emitted'
+            subprocess.run([executable,'--metadata-fixture',str(fixture)],check=True,capture_output=True)
+            numeric = Path(str(fixture)+'.numeric').read_bytes()
+            legacy = Path(str(fixture)+'.legacy').read_bytes()
+            self.assertIn(b' T 2 K 10\n', numeric)
+            self.assertIn(b' T \x02 K \x0a\n', legacy)
+            self.assertEqual(len(legacy.splitlines()),9)
+            a,b = Path(folder)/'a',Path(folder)/'b'
+            for metadata,kind in ((legacy,'legacy_uint8_stream'),(numeric,'numeric_header')):
+                for prefix in (a,b):
+                    Path(str(prefix)+'.metadata').write_bytes(metadata)
+                    for suffix,size in zip(m.SUFFIXES,(5760,51200,51200,14400,204800)):
+                        Path(str(prefix)+suffix).write_bytes(bytes(size))
+                result=m.compare(a,b)
+                self.assertTrue(result['exact_consumed_boundaries'])
+                self.assertEqual(result['metadata_format'],kind)
+                self.assertEqual(Path(str(a)+'.metadata').read_bytes(),metadata)
+                for bad in (metadata+b'\n',metadata.replace(b' K ',b' K  ')):
+                    for prefix in (a,b):Path(str(prefix)+'.metadata').write_bytes(bad)
+                    with self.assertRaises(ValueError):m.compare(a,b)
+            Path(str(a)+'.metadata').write_bytes(legacy)
+            Path(str(b)+'.metadata').write_bytes(numeric)
+            with self.assertRaises(ValueError):m.compare(a,b)
+
     def test_exact_failures_and_identity(self):
         with tempfile.TemporaryDirectory() as folder:
             a, b = Path(folder)/'a', Path(folder)/'b'

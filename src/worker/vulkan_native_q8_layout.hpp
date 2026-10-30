@@ -2,7 +2,12 @@
 #include "vulkan_expert_graph.hpp"
 #include "strata/worker/gpu_worker.hpp"
 #include <algorithm>
+#include <ostream>
 namespace strata::worker::vulkan_detail {
+inline void native_q8_metadata_header(std::ostream& out,size_t record,const GpuPlan& p,const InferRequest& r) {
+    out<<"record "<<record<<" model "<<p.model_id<<" placement "<<p.placement_id.a<<' '<<p.placement_id.b
+       <<" layer "<<r.layer<<" T "<<unsigned(r.T)<<" K "<<unsigned(r.K)<<'\n';
+}
 inline ggml_tensor* native_q8_view(ggml_context* context,ggml_tensor* base,size_t count) {
     auto* result=ggml_view_1d(context,base,count,0);
     require(ggml_backend_view_init(result)==GGML_STATUS_SUCCESS,"native Q8 backend view initialization failed");

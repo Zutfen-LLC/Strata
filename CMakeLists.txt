@@ -2812,6 +2812,7 @@ if(STRATA_VULKAN_NATIVE_STAGES)
     target_link_libraries(vulkan_native_q8_layout_test PRIVATE strata_gpu_assets ggml-base ggml-cpu)
     add_test(NAME vulkan_native_q8_layout_test COMMAND vulkan_native_q8_layout_test)
     add_test(NAME native_q8_layer_compare_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/worker/test_native_q8_layer_compare.py")
+    set_tests_properties(native_q8_layer_compare_test PROPERTIES ENVIRONMENT "STRATA_Q8_METADATA_FIXTURE_EXE=$<TARGET_FILE:vulkan_native_q8_layout_test>")
   endif()
 endif()
 

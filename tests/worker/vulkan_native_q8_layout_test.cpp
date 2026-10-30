@@ -1,9 +1,10 @@
 #include "vulkan_native_q8_layout.hpp"
 #include <iostream>
+#include <fstream>
 #include "ggml-cpu.h"
 using namespace strata::worker;
 using namespace strata::worker::vulkan_detail;
-int main(){try {
+int main(int argc,char** argv){try {
     require(native_q8_weight_bytes(24,128u<<20)==24*size_t(5222400),"packed slot accounting");
     for(auto [slots,budget]:{std::pair<size_t,size_t>{0,SIZE_MAX},{25,SIZE_MAX},{1,5222399}}){bool denied=false;try{native_q8_weight_bytes(slots,budget);}catch(const std::exception&){denied=true;}require(denied,"invalid resident weights accepted");}
     Backend backend(ggml_backend_cpu_init(),ggml_backend_free);
@@ -31,5 +32,17 @@ int main(){try {
     q.mask[24]=1;refused(q);
     q.T=7;q.K=10;q.mask.assign(70,0);q.ids.assign(70,0);for(int i=0;i<64;++i)q.mask[i]=1;
     require(native_q8_groups(p,q).dst.size()==64,"64-entry boundary refused");
+    if(argc==3 && std::string(argv[1])=="--metadata-fixture") {
+        InferRequest emitted;emitted.T=2;emitted.K=10;emitted.layer=0;
+        const std::string prefix=argv[2];
+        for(bool legacy:{false,true}) {
+            std::ofstream out(prefix+(legacy?".legacy":".numeric"),std::ios::binary);
+            if(legacy)out<<"record "<<0<<" model "<<p.model_id<<" placement "<<p.placement_id.a<<' '<<p.placement_id.b<<" layer "<<emitted.layer<<" T "<<emitted.T<<" K "<<emitted.K<<'\n';
+            else native_q8_metadata_header(out,0,p,emitted);
+            out<<"00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000 \n";
+            for(int row=0;row<6;++row){const int count=row==2?21:20;for(int i=0;i<count;++i)out<<(row==4?i/10:i)<<' ';out<<'\n';}
+            require(bool(out),"metadata fixture write failed");
+        }
+    } else require(argc==1,"invalid metadata fixture arguments");
     std::cout<<"native grouping, entry restoration, capacities and refusal checks pass\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

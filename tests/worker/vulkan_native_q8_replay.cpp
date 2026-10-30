@@ -70,7 +70,7 @@ int main(int argc,char** argv){try {
     std::cout<<"tensor_bytes="<<counters.gpu_allocated_bytes<<" scratch_bytes="<<counters.gpu_scratch_bytes<<" host_staging_peak="<<counters.host_staging_peak<<"\n";
     executor->release(counters);
 #endif
-    std::ofstream meta(prefix+".metadata");meta<<"record "<<ordinal<<" model "<<p.model_id<<" placement "<<p.placement_id.a<<' '<<p.placement_id.b<<" layer "<<q.layer<<" T "<<q.T<<" K "<<q.K<<'\n';
+    std::ofstream meta(prefix+".metadata");native_q8_metadata_header(meta,ordinal,p,q);
     for(const auto& d:{blob_digest(q.activations.data(),q.activations.size()*4),blob_digest(q.ids.data(),q.ids.size()*sizeof(q.ids[0])),blob_digest(q.weights.data(),q.weights.size()*4),blob_digest(q.mask)}){meta<<hexid(d.a)<<hexid(d.b)<<' ';}meta<<'\n';
     for(const auto* a:{&t.experts,&t.asset_slots,&t.start,&t.dst,&t.tok,&t.original}){for(auto v:*a)meta<<v<<' ';meta<<'\n';}require(bool(meta),"metadata write failed");
     std::cout<<"one_layer_observation=true qualified=false quantizer_qualified=false record="<<ordinal<<" groups="<<t.experts.size()<<" entries="<<t.dst.size()<<'\n';return 0;

@@ -1214,3 +1214,27 @@ No real record was staged or executed here. Rebuild both paired executables:
 the reference shares the changed admission header, and the Vulkan host/shaders
 share the changed metadata ABI. CUDA compilation of this revision remains a
 fleet build check; arithmetic and native source are unchanged.
+
+The original layer replay metadata writer streamed `uint8_t` T and K as
+characters. At T2/K10 this emits a control byte for T and a newline for K,
+creating nine text lines instead of eight. The writer now casts both values to
+unsigned integers. The offline comparator also recognizes the exact old header
+encoding, so retained captures can be compared without modifying or regenerating
+them. Raw native/Vulkan metadata must still be byte-identical before parsing.
+Only the legacy header is interpreted in memory; arbitrary extra lines are
+refused, and group, entry, token and boundary-length checks remain enforced.
+The report records the original metadata SHA256 and its encoding. No tolerance
+or numerical success condition changes.
+
+An actual C++ emitter regression generates both the old byte format and the
+new numeric format for T2/K10. It checks retained-format parsing, immutable input
+bytes, extra-line refusal, header corruption and cross-format identity refusal.
+For existing captures, run only the updated Python comparator:
+
+```sh
+python3 tools/compare_native_q8_layer.py \
+  "$NATIVE_RETAINED_PREFIX" "$VULKAN_RETAINED_PREFIX" "$NEW_OFFICIAL_REPORT"
+```
+
+A numerical mismatch still writes the official report and exits 1. No GPU
+rerun is needed to repair this metadata parsing failure.
