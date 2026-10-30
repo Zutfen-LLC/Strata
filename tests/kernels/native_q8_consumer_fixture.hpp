@@ -55,17 +55,18 @@ inline void validate_pair(const Result& native,const Result& observation) {
 // A single finite synthetic Q8_0 expert. No model weights or dequantization.
 // The signed rows and zero-scale rows exercise output signs; positive rows keep
 // the common nonzero input signal from degenerating into an all-zero test.
-inline Bytes weights() {
-    Bytes out((2*F*H/32+H*F/32)*34);
+inline Bytes weights(size_t h=H,size_t f=F) {
+    need((h==H && f==F) || (h==2560 && f==640),"consumer: unsupported synthetic geometry");
+    Bytes out((2*f*h/32+h*f/32)*34);
     size_t at=0;
-    for(int matrix=0;matrix<3;++matrix){const size_t rows=matrix==2?H:F,columns=matrix==2?F:H;
+    for(int matrix=0;matrix<3;++matrix){const size_t rows=matrix==2?h:f,columns=matrix==2?f:h;
         for(size_t row=0;row<rows;++row)for(size_t block=0;block<columns/32;++block){
             const uint16_t scale=row%4==2?0x8000:0x1000; // -0 or +2^-11, both finite half
             out[at]=uint8_t(scale);out[at+1]=uint8_t(scale>>8);
             for(size_t i=0;i<32;++i){const int q=row%4==1?-1:row%4==3?(i%2?-1:1):1;
                 out[at+2+i]=uint8_t(q);}
             at+=34;}}
-    need(at==out.size() && out.size()==26112,"consumer: weight layout mismatch");
+    need(at==out.size() && out.size()==(h==H?26112:5222400),"consumer: weight layout mismatch");
     for(size_t i=0;i<out.size();i+=34)need(((uint16_t(out[i])|(uint16_t(out[i+1])<<8))&0x7c00)!=0x7c00,
         "consumer: nonfinite weight scale");
     return out;

@@ -633,3 +633,125 @@ comparison reports retain `qualified=false`, `quantizer_qualified=false`,
 `observation_only=true`, `fp32_denorm_mode=unspecified` and the original packed
 comparator failure. This does not qualify strict quantization, CUDA/Vulkan
 exponential behavior for other inputs, production shapes or full inference.
+
+### Native model geometry control (Q8_0 H=2560, F=640)
+
+`--native --spec2` names model/speculation modes, not a guarantee that an
+optional expert fusion ran. In the retained source, `kSplit<8>` exists but
+`split_off<8>()` is true unless `STRATA_KQ_SPLIT` starts with `1`. The unset
+control therefore takes `launch_gu<8>`'s per-entry `native_gu_kernel<8>` and
+`launch_down<8>`'s `native_down_kernel<8>`. Geometry does not enable Split by
+itself. `gu_split(8)` is false, so gate/up uses eight full-warp rows per block.
+Q8_0 down also uses eight full-warp rows. The existing Vulkan shaders implement
+these branches, including their longer accumulation loops, without a new port.
+
+Do not force old kernels or unset a retained opt-in to obtain this branch.
+The new native capture reads the actual production selectors and refuses if
+Split is selected, grouped-v1 is selected, old kernels are forced, or the
+execution phase differs. It records `gu_swiglu_on()` rather than assuming its
+value: even when requested, `launch_gu_swiglu<8>` declines `split_off<8>()`.
+The V2/V2K, EXPDEC and experimental fused layouts do not cover a Q8_0 gate/up
+pair. With grouped-v1 false and no Hadamard, activation is the existing
+`swiglu_q8_1_entries_kernel`. The exact control environment must be inherited
+from the retained receipt; `STRATA_KQ_SPLIT` remains unset when the receipt
+leaves it unset. No environment override is applied by the wrapper.
+
+The standalone CUDA target includes the **unchanged** production
+`src/kernels/cuda/iq_kernels.cu`. It inherits `strata_kernels` target options,
+definitions, include paths and the configured CUDA architecture/global flags.
+There are no source-specific fast-math flags on that production file. It links
+the existing library for external dependencies; its included production
+symbols already satisfy references to that translation unit. It invokes the
+unchanged `quantize_q8_1_rows` and `native_expert_grouped` APIs. A runtime
+selector receipt records the source-selected kernel names and operands. This
+is runtime selector evidence in the actual production TU, **not** a profiler
+launch trace. Keep the build command/compile_commands.json and log with it;
+compilation alone cannot establish numerical parity.
+
+The fixture uses one finite synthetic expert (5,222,400 bytes), three distinct
+F32 input token rows, three entries, three groups with starts `[0,2,2,3]`, and
+a two-group grid. This covers an empty group and group striding. Token IDs
+`[2,0,1]` and destination IDs `[1,2,0]` distinguish entry, input and output
+indices. Each active group references the same expert; no duplicate expert
+allocation or new scheduling policy is needed. The up/down offsets are
+1,740,800/3,481,600 bytes. Old H256/F32 recipes and their weight bytes remain
+unchanged. Only the weight-file hash check receives the exact new 5,222,400-byte
+bound; other inputs retain their original 1 MiB limit.
+
+Native and Vulkan captures each retain 8,640 input-Q8 bytes, 1,920 gate words,
+1,920 up words, 2,160 hidden-Q8 bytes and 7,680 destination-ordered output words.
+Fused activation does not materialize a float hidden plane. For diagnosis,
+after final output exists, each component also runs its **existing separate**
+SwiGLU stage into a separate plane and captures 1,920 float words. This is
+labelled `hidden_float_diagnostic`; it never supplies packed hidden or down.
+No CPU intermediate reconstruction occurs. Vulkan input quantization is also
+explicit observation; all actual intermediate tensor connections stay on GPU.
+
+Build `native_q8_geometry_consumer` once with the retained successful CUDA
+13.1/host compiler/sm_86 Release configuration, same GGML pin and unchanged
+compiler/kernel flags. Build `native_q8_geometry_component` with the retained
+Vulkan configuration. Add only `CMAKE_EXPORT_COMPILE_COMMANDS=ON` for compiler
+receipts. No dependencies, clocks, native flags or model configuration change.
+On the Vulkan build, focused checks are:
+
+```sh
+cmake --build VK_BUILD --target native_q8_geometry_component \
+  native_q8_geometry_input_test native_q8_composed_component \
+  native_q8_gu_shader_test native_q8_shader_test native_q8_down_shader_test \
+  native_q8_spec_test native_q8_gu_input_test native_q8_down_input_test \
+  native_q8_consumer_input_test -j4
+ctest --test-dir VK_BUILD --output-on-failure -R '^native_q8_(geometry_input|gu_shader|shader|down_shader|spec|gu_input|down_input|consumer_input|tools)_test$'
+cmake --build CUDA_BUILD --target native_q8_geometry_consumer -j4
+```
+
+Run only the following one native capture, then one observation on the same
+verified RTX 3060. Use fresh result directories and retained resource guards.
+Stop on any build/check/capture failure; do not change selectors or retry.
+The fixture-generation command returns before backend initialization. Its
+SHA-256 is `26c5ab4747b9957fd2fe9971d6389365ffca53b2f3b069c4c9d72754d35f39c8`.
+`CUDA_DEVICE` and `VK_DEVICE` are independently verified API indices for that
+physical device. Each wrapper invocation has one 30-second child deadline.
+
+```sh
+VK_BUILD/native_q8_geometry_component --make-fixture "$FIXTURE"
+sha256sum "$FIXTURE"
+python3 tools/native_q8_geometry.py --capture-native \
+  --component CUDA_BUILD/native_q8_geometry_consumer \
+  --device "$CUDA_DEVICE" --expect-device "$DEVICE_NAME" \
+  --fixture "$FIXTURE" \
+  --fixture-sha256 26c5ab4747b9957fd2fe9971d6389365ffca53b2f3b069c4c9d72754d35f39c8 \
+  --output "$NATIVE_OUTPUT"
+# Verify the new native receipt, dispatch selectors and actual artifact hashes.
+# Populate these three hash variables from that retained, successful capture.
+python3 tools/native_q8_geometry.py --observe-unspecified-fp32-denorm \
+  --component VK_BUILD/native_q8_geometry_component \
+  --device "$VK_DEVICE" --expect-device "$DEVICE_NAME" \
+  --fixture "$FIXTURE" \
+  --fixture-sha256 26c5ab4747b9957fd2fe9971d6389365ffca53b2f3b069c4c9d72754d35f39c8 \
+  --native-raw "$NATIVE_OUTPUT/capture.raw" --native-raw-sha256 "$RAW_SHA256" \
+  --native-receipt "$NATIVE_OUTPUT/receipt.json" --native-receipt-sha256 "$RECEIPT_SHA256" \
+  --weights "$NATIVE_OUTPUT/capture.raw.weights.bin" --weights-sha256 "$WEIGHTS_SHA256" \
+  --output "$VULKAN_OUTPUT"
+```
+
+The native receipt binds original source/fixture-helper hashes, binary, runtime
+selectors, environment, input fixture, raw output and captured weights. A null
+archive `source_head` is preserved, with source identity established by exact
+file hashes; it is not a Git-only prerequisite. Record the staged revision and
+archive hash separately. The observation checks those bindings and the same
+native source mapping before launch. Both raw roles have distinct magic,
+status and six count-prefixed sections in the order above, with the float
+hidden diagnostic before hidden-Q8. Every float bit, zero sign, packed byte,
+nonfinite metadata/output and canary failure is checked without tolerance.
+Hidden-Q8 mismatch fails even when final output matches.
+
+Preserve native `.dispatch.json` and `.weights.bin`; Vulkan `.views.bin` saves
+the eight complete bases (weights, packed input, gate, up, hidden float,
+hidden-Q8, output, F32 input). Its three effective modules use the same names
+as the smaller composition. Run `spirv-val --target-env vulkan1.2` on each;
+retain actual exits, binary/module/output hashes and cleanup. Exit 0 is a
+bounded fixture match only. Both modes retain `qualified=false`,
+`quantizer_qualified=false` and the original input-Q8 comparator failure.
+Strict DenormPreserve32 behavior, all shaders and product execution stay
+unchanged. This does not establish model inference, other weight formats,
+optional Split/fused kernels or performance.

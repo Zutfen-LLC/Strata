@@ -344,5 +344,55 @@ class ComposedTools(unittest.TestCase):
         self.assertIn('strata_vk_q8_down_run(down.get(),w,q,o', source[begin:end])
 
 
+class GeometryTools(unittest.TestCase):
+    def test_production_sections_roles_and_exact_failures(self):
+        geometry = module('native_q8_geometry')
+        sections = [[0] * n if i in (0, 4) else [0x3f800000] * n for i, n in enumerate(geometry.COUNTS)]
+        def raw(parts, observation=False, status=1):
+            return struct.pack('<II', 0x324d384e if observation else 0x314d384e, status) + b''.join(
+                struct.pack('<I', len(part)) + struct.pack('<' + 'I' * len(part), *part) for part in parts)
+        with tempfile.TemporaryDirectory() as directory:
+            n, v = Path(directory) / 'native', Path(directory) / 'vulkan'
+            n.write_bytes(raw(sections));v.write_bytes(raw(sections, True))
+            report = geometry.compare(n, v)
+            self.assertTrue(report['exact']);self.assertFalse(report['qualified']);self.assertFalse(report['quantizer_qualified'])
+            self.assertEqual(report['stages']['input_q8']['compared'], 8640)
+            self.assertEqual(report['stages']['hidden_q8']['compared'], 2160)
+            self.assertEqual(report['stages']['gate']['compared'], 1920)
+            self.assertEqual(report['stages']['output']['compared'], 7680)
+            sections[4][1] = 1;v.write_bytes(raw(sections, True))
+            report = geometry.compare(n, v)
+            self.assertFalse(report['exact']);self.assertEqual(report['stages']['hidden_q8']['different'], 1)
+            self.assertEqual(report['stages']['hidden_q8']['differences'][0]['kind'], 'code')
+            sections[4][0] = 0x7c00;v.write_bytes(raw(sections, True))
+            self.assertEqual(geometry.compare(n, v)['stages']['hidden_q8']['vulkan_nonfinite'], [0])
+            sections[4][0] = 0;sections[4][1] = 0
+            sections[5][0] = 0;n.write_bytes(raw(sections))
+            sections[5][0] = 0x80000000;v.write_bytes(raw(sections, True))
+            self.assertEqual(geometry.compare(n, v)['stages']['output']['different'], 1)
+            sections[5][0] = 0xa5a5a5a5;v.write_bytes(raw(sections, True))
+            self.assertFalse(geometry.compare(n, v)['vulkan_sentinels_ok'])
+            with self.assertRaises(ValueError):geometry.capture(n, True)
+            v.write_bytes(v.read_bytes()[:-1])
+            with self.assertRaises(ValueError):geometry.compare(n, v)
+
+    def test_production_dispatch_and_narrow_weight_bound(self):
+        geometry = module('native_q8_geometry')
+        dispatch = dict(h=2560, f=640, entries=3, groups=3, grid_groups=2, split_off_q8=True,
+                        kq_split=False, gu_split_q8=False, grouped_v1=False, old_kernels=False, exp_phase=0,
+                        gate_up='native_gu_kernel<8>', activation='swiglu_q8_1_entries_kernel', down='native_down_kernel<8>')
+        geometry.validate_dispatch(dispatch)
+        for key, bad in (('kq_split', True), ('grouped_v1', True), ('gate_up', 'native_gu_swiglu_kernel<8>'), ('split_off_q8', 1)):
+            changed = dict(dispatch);changed[key] = bad
+            with self.assertRaises(ValueError):geometry.validate_dispatch(changed)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'weights';path.write_bytes(bytes(geometry.WEIGHT_BYTES))
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            with self.assertRaises(ValueError):geometry.preflight.checked_bytes(path, digest)
+            self.assertEqual(len(geometry.preflight.checked_bytes(path, digest, max_bytes=geometry.WEIGHT_BYTES)), 5222400)
+            path.write_bytes(path.read_bytes() + b'x')
+            with self.assertRaises(ValueError):geometry.preflight.checked_bytes(path, hashlib.sha256(path.read_bytes()).hexdigest(), max_bytes=geometry.WEIGHT_BYTES)
+
+
 if __name__ == '__main__':
     unittest.main()

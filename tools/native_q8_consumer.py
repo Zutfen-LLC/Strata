@@ -15,10 +15,10 @@ captures = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(captures)
 
 
-def checked_bytes(path, expected):
+def checked_bytes(path, expected, *, max_bytes=1 << 20):
     if not re.fullmatch('[0-9a-fA-F]{64}', expected):
         raise ValueError('expected a complete SHA256')
-    if path.stat().st_size > 1 << 20:
+    if path.stat().st_size > max_bytes:
         raise ValueError('input exceeds bounded fixture size')
     data = path.read_bytes()
     if hashlib.sha256(data).hexdigest() != expected.lower():
