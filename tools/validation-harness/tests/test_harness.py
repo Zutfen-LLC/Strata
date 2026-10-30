@@ -66,6 +66,66 @@ class HarnessTests(unittest.TestCase):
             bad=copy.deepcopy(cfg);bad['argv']=argv
             with self.assertRaises(ValueError):bundle.validate_network_gpu(bad)
 
+    def test_external_gpu_private_endpoints_and_exact_uniqueness(self):
+        cfg=copy.deepcopy(self.cfg)
+        cfg.update(external_gpu_rows=True,cpu_route='group',attach_root=str(self.root))
+        prefix=['@engine','--remote-cpu-worker','127.0.0.1:27431',
+                '--remote-cpu-entry-rows','--remote-cpu-resident']
+        endpoints=['127.0.0.1:27432','10.0.0.1:27432','172.16.0.1:27432',
+                   '172.31.255.254:27432','192.168.1.2:27432','10.0.0.1:27433']
+        def argv(peers):
+            return prefix+[arg for peer in peers for arg in ('--remote-gpu-worker',peer,'/fixed.plan')]
+        cfg['argv']=argv(endpoints)
+        bundle.validate_network_gpu(cfg)
+        invalid=['0.0.0.0:27432','8.8.8.8:27432','192.0.2.1:27432','169.254.1.2:27432',
+                 '172.15.255.255:27432','172.32.0.1:27432','192.169.1.1:27432',
+                 '224.0.0.1:27432','255.255.255.255:27432','localhost:27432','::1:27432',
+                 '10.0.0.1/24:27432','10.0.0.999:27432','10.0.0.1','10.0.0.1:',
+                 '10.0.0.1:0','10.0.0.1:65536','10.0.0.1:-1','10.0.0.1:+1',
+                 '10.0.0.1: 1','10.0.0.1:abc','10.0.0.1:１','10.0.0.1\0:27432']
+        for peer in invalid:
+            with self.subTest(peer=peer),self.assertRaises(ValueError):
+                bundle.validate_network_gpu(dict(cfg,argv=argv([peer])))
+        for peers in [['10.0.0.1:27432']*2,['127.0.0.1:27432']*2,
+                      ['10.0.0.1:27432','10.0.0.1:027432']]:
+            with self.subTest(peers=peers),self.assertRaises(ValueError):
+                bundle.validate_network_gpu(dict(cfg,argv=argv(peers)))
+
+    def test_external_gpu_private_stage_verify_and_run_preflight(self):
+        self.cfg.update(external_gpu_rows=True,cpu_route='group',attach_root=str(self.root),
+                        attached_worker_idle=True)
+        self.arm.update(restart=False)
+        self.cfg['argv'][self.cfg['argv'].index('--remote-cpu-experts')]='--remote-cpu-worker'
+        self.cfg['argv']+=['--remote-cpu-entry-rows','--remote-cpu-resident']
+        plan=self.root/'fixed.plan';plan.write_bytes(b'synthetic plan')
+        self.cfg['assets']['gpu_plan']=str(plan)
+        endpoints=['10.1.2.3:27432','10.1.2.4:27432','172.16.1.2:27432','192.168.1.2:27432']
+        for endpoint in endpoints:self.cfg['argv']+=['--remote-gpu-worker',endpoint,'@gpu_plan']
+        with patch('subprocess.Popen') as spawn:
+            root=self.stage()
+        spawn.assert_not_called()
+        with patch.object(bundle.shutil,'which',return_value='/synthetic/nvidia-smi'):
+            cfg=bundle.verify(root)
+            runpy.run_path(str(root/'bundle.py'))['validate_network_gpu'](cfg)
+            self.assertEqual([cfg['argv'][i+1] for i,a in enumerate(cfg['argv'])
+                              if a=='--remote-gpu-worker'],endpoints)
+            # Exercise run.py's real repeated verify/arm configuration, without hardware or owners.
+            with patch.object(C,'__file__',str(root/'campaign.py')), \
+                 patch.object(C.worker_control,'__file__',str(root/'worker_control.py')), \
+                 patch.object(C,'configure'),patch.object(driver,'masks'), \
+                 patch.object(C,'run_arm',return_value={'requests':[]}) as execute, \
+                 patch('subprocess.Popen') as spawn:
+                driver.run(root)
+            spawn.assert_not_called()
+            self.assertEqual(execute.call_count,1)
+            derived=execute.call_args.args[1]
+            self.assertEqual(derived['argv'],cfg['argv'])
+            self.assertEqual(derived['binary_sha256'],bundle.sha(cfg['assets']['engine']))
+            self.assertIn(C.CPU_ROWS_MIXED,derived['placement_markers'])
+            (root/'bundle.py').write_text('# changed helper')
+            with self.assertRaisesRegex(ValueError,'staged bytes differ'):
+                bundle.verify(root)
+
     def test_entry_row_startup_markers_match_actual_a0_and_b(self):
         a0_argv=['@engine','--remote-cpu-worker','127.0.0.1:17431',
                  '--remote-cpu-resident','--remote-cpu-entry-rows']
