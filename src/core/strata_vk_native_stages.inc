@@ -170,6 +170,7 @@ void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggm
 
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
 #include "strata_vk_native_moe_combine.inc"
+#include "strata_vk_native_shared.inc"
 #endif
 
 #include "strata_vk_native_router.inc"

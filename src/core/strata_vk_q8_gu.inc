@@ -8,7 +8,7 @@
 namespace strata::core::portable_detail {
 struct StrataVkQ8Gu {std::unique_ptr<StrataVkLogitsGuard> owner;};
 static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_backend_t backend,
-    const uint32_t* shader,size_t shader_words,const char* name,uint32_t parameters,uint32_t push_words,const char* effective_spv_path) {
+    const uint32_t* shader,size_t shader_words,const char* name,uint32_t parameters,uint32_t push_words,const char* effective_spv_path,size_t budget=size_t(-1)) {
     logits_guard_need(backend && ggml_backend_is_vk(backend),"Q8 component: Vulkan required");
     auto owner=std::make_unique<StrataVkLogitsGuard>(backend);
     auto& g=*owner;auto* ctx=static_cast<ggml_backend_vk_context*>(backend->context);
@@ -33,7 +33,10 @@ static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_ba
         bool(fp.shaderRoundingModeRTEFloat16)==ctx->device->float_controls_rte_fp16,"Q8 component: cached controls differ from query");
     g.metadata.reset(ggml_init({4096,nullptr,true}));logits_guard_need(bool(g.metadata),"Q8 component: metadata allocation failed");
     g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,128);
+    const size_t bound=ggml_backend_alloc_ctx_tensors_from_buft_size(g.metadata.get(),ggml_backend_get_default_buffer_type(backend));
+    logits_guard_need(bound<=budget,"Q8 component: aligned metadata budget exceeded");
     g.buffer.reset(ggml_backend_alloc_ctx_tensors(g.metadata.get(),backend));logits_guard_need(bool(g.buffer),"Q8 component: buffer allocation failed");
+    logits_guard_need(ggml_backend_buffer_get_size(g.buffer.get())<=budget,"Q8 component: actual metadata budget exceeded");
     g.bytes=ggml_backend_buffer_get_size(g.buffer.get());auto& pipe=g.pipeline;
     pipe->name=name;pipe->parameter_count=parameters;pipe->push_constant_size=push_words*4;
     pipe->wg_denoms={1,1,1};pipe->align=1;pipe->initialized=true;
