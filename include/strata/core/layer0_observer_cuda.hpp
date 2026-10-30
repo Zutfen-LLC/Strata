@@ -24,6 +24,7 @@ public:
            free<(512u<<20)+Layer0Observer::limit ||
            cudaMalloc(reinterpret_cast<void**>(&device_),Layer0Observer::limit)!=cudaSuccess)
             throw std::runtime_error("layer0 observer: primary snapshot admission failed; reserve unchanged");
+        std::fprintf(stderr,"layer0_observer native_snapshot_bytes=%zu host_bound_bytes=%zu reservation_before_expert_sizing=true\n",Layer0Observer::limit,Layer0Observer::host_bound);
     }
     ~NativeLayer0Observer(){if(device_){int previous=0;cudaGetDevice(&previous);cudaSetDevice(device_id_);cudaFree(device_);cudaSetDevice(previous);}}
     bool finished() const{return writer_.finished();}

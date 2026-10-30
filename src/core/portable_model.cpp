@@ -141,6 +141,7 @@ struct PortableModelSession::Impl {
             require(!opts.prompt_chunk_size && !opts.gdn_production,"layer0 observer requires existing serial eager diagnostic policy");
             require(opts.host_cap>=Layer0Observer::host_bound,"layer0 observer host cap exceeded");
             observer=std::make_unique<Layer0Observer>();
+            std::clog<<"layer0_observer native_snapshot_bytes=0 host_bound_bytes="<<Layer0Observer::host_bound<<'\n';
         }
         require(!opts.expert_native_profile.empty() || (!opts.expert_native_primary_slots && !opts.expert_native_helper_slots &&
             opts.expert_native_plan_prefix.empty()),"native capacity options require a profile");
