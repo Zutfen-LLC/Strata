@@ -3,6 +3,8 @@
 #include "portable_router_work.hpp"
 #include "portable_shared_work.hpp"
 #include "portable_memory.hpp"
+#include "portable_native_capacity.hpp"
+#include "strata/core/expert_profile.hpp"
 #include "portable_topology.hpp"
 #include "portable_cpu_experts.hpp"
 #include "portable_expert_timer.hpp"
@@ -133,6 +135,8 @@ struct PortableModelSession::Impl {
     size_t vocabulary = 0;
     Impl(const std::vector<std::string> &shards, const std::string &manifest, PortableModelOptions options)
         : opts(std::move(options)), model(shards) {
+        require(!opts.expert_native_profile.empty() || (!opts.expert_native_primary_slots && !opts.expert_native_helper_slots &&
+            opts.expert_native_plan_prefix.empty()),"native capacity options require a profile");
         require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
                 "native Q8 observation requires explicit expert plans and strict accelerator execution");
         require(!opts.native_shared || (!opts.accelerators.empty() && !opts.allow_cpu_fallback && !opts.native_shared_receipt_prefix.empty()),
@@ -397,6 +401,63 @@ struct PortableModelSession::Impl {
         require(bool(head), error);
         account(head->memory_usage(), device(L - 1));
         append_placements(head->placements(), int64_t(L));
+        // Explicit native mode resolves capacity and ownership only now, then
+        // freezes canonical plans. Fixed-plan mode never enters this branch.
+        if(!opts.expert_native_profile.empty()) {
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+            require(opts.dense_topology==PortableDenseTopology::primary && opts.accelerators.size()==2 &&
+                opts.expert_devices.size()==2 && opts.expert_devices[0].accelerator==0 && opts.expert_devices[1].accelerator==1 &&
+                !opts.expert_native_q8_observation.empty() && !opts.expert_native_plan_prefix.empty() &&
+                opts.expert_native_primary_slots && opts.expert_native_helper_slots,"native capacity: requires primary/two native Q8 devices and explicit requests/output");
+            for(const auto& d:opts.expert_devices)require(d.plan_path.empty() && d.native_frozen_plan.empty(),"native capacity excludes fixed plans");
+            std::vector<std::pair<int32_t,int32_t>> ranked;int64_t profile_slots=0;
+            const auto profile_time=std::filesystem::last_write_time(opts.expert_native_profile);
+            const auto profile_size=std::filesystem::file_size(opts.expert_native_profile);
+            require(profile_size<=4u<<20,"native capacity: profile file exceeds bound");
+            require(read_expert_profile_bounded(opts.expert_native_profile,L,NE,ranked,profile_slots,error,L*NE),error);
+            require(profile_time==std::filesystem::last_write_time(opts.expert_native_profile) && profile_size==std::filesystem::file_size(opts.expert_native_profile),"native capacity: profile changed during read");
+            std::array<size_t,2> room{},available{},total{};
+            for(size_t die=0;die<2;++die) {
+                const auto& d=opts.expert_devices[die];
+                ggml_backend_dev_memory(ggml_backend_get_device(opts.accelerators[die]),&available[die],&total[die]);
+                room[die]=portable_detail::NativeCapacityRoom{report.device_admission[die],opts.device_caps[die],
+                    available[die],total[die],d.free_reserve,d.tensor_cap,d.workspace_cap}.tensor_room();
+            }
+            auto estimate=[&](size_t die,size_t slots) {
+                worker::NativeQ8AllocationEstimate e;
+                require(worker::estimate_vulkan_native_q8(opts.accelerators[die],slots,e,error),error);return e;
+            };
+            const auto q=portable_detail::native_primary_quota(opts.expert_native_primary_slots,NE,
+                std::vector<size_t>(L,5222400),room[0],[&](size_t n){return estimate(0,n).total_bytes;});
+            auto selected=portable_detail::native_ranked_selection(ranked,L,NE,q);
+            const auto helper=portable_detail::native_fit_count(std::min(opts.expert_native_helper_slots,selected.remaining.size()),
+                room[1],[&](size_t n){return estimate(1,n).total_bytes;});
+            require(helper>0,"native capacity: no unclaimed helper expert fits");selected.remaining.resize(helper);
+            std::array<worker::GpuPlan,2> plans;
+            for(size_t die=0;die<2;++die) {
+                auto& d=opts.expert_devices[die];const auto ceiling=d.tensor_cap;
+                auto pairs=die==0?selected.primary:selected.remaining;std::sort(pairs.begin(),pairs.end());
+                std::vector<std::pair<uint16_t,uint16_t>> canonical(pairs.begin(),pairs.end());
+                require(worker::make_gpu_plan(experts->identity(),canonical,plans[die],error),error);
+                const auto e=estimate(die,pairs.size());require(e.total_bytes<=room[die],"native capacity: projected plan exceeds room");
+                d.tensor_cap=e.total_bytes;
+                d.plan_path=opts.expert_native_plan_prefix+".slot-"+std::to_string(die)+".plan";
+                require(worker::encode_gpu_plan(plans[die],d.native_frozen_plan,error),error);
+                require(!std::filesystem::exists(d.plan_path),"native capacity: plan output already exists");
+                std::clog<<"native_capacity slot="<<die<<" requested_slots="<<(die?opts.expert_native_helper_slots:opts.expert_native_primary_slots)
+                    <<" primary_quota="<<q<<" selected="<<pairs.size()<<" dense_admitted_bytes="<<report.device_admission[die]
+                    <<" effective_limit_bytes="<<opts.device_caps[die]<<" available_after_dense_bytes="<<available[die]
+                    <<" reserve_bytes="<<d.free_reserve<<" tensor_ceiling_bytes="<<ceiling<<" tensor_room_bytes="<<room[die]
+                    <<" admitted_tensor_bytes="<<d.tensor_cap<<" weight_bytes="<<e.weight_bytes<<" scratch_bytes="<<e.scratch_bytes
+                    <<" blocks="<<e.blocks<<" block_limit="<<e.block_limit<<" workspace_bytes="<<d.workspace_cap<<'\n';
+            }
+            // Existing no-replace publisher. Partial receipts survive failure;
+            // no resident allocation has occurred and neither old plan is changed.
+            for(size_t die=0;die<2;++die)require(worker::write_gpu_plan(opts.expert_devices[die].plan_path,plans[die],error),error);
+#else
+            require(false,"native capacity planning requires local Vulkan experts");
+#endif
+        }
         // Dense/head ledgers are final before expert allocation on the same physical dies.
         if (!opts.expert_devices.empty()) {
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
@@ -420,7 +481,8 @@ struct PortableModelSession::Impl {
                 portable_detail::preflight_resident_expert_memory(report,d.accelerator,opts.device_caps[d.accelerator],
                     d.tensor_cap,d.workspace_cap,available_after_dense,total_after_dense,&context);
                 worker::GpuPlan plan;
-                require(worker::read_gpu_plan(d.plan_path,plan,error),error);
+                require(d.native_frozen_plan.empty()?worker::read_gpu_plan(d.plan_path,plan,error):
+                    worker::decode_gpu_plan(d.native_frozen_plan.data(),d.native_frozen_plan.size(),plan,error),error);
                 const size_t per_expert=(2u<<20)+(32u<<10); // ggml metadata + persistent host boundaries
                 require(plan.assets.size()<=(SIZE_MAX-(16u<<20))/per_expert,"resident host metadata overflow");
                 const size_t h=plan.assets.size()*per_expert+(16u<<20); // load blob, plan/rows/request slack

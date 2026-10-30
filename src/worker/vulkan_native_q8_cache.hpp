@@ -1,5 +1,5 @@
 #pragma once
-#include "vulkan_native_q8_layout.hpp"
+#include "vulkan_native_q8_storage.hpp"
 #include "vulkan_expert_cache.hpp"
 #include "../core/strata_vk_native_stages.hpp"
 #include "../core/strata_vk_q8_gu.hpp"
@@ -13,10 +13,7 @@ class NativeQ8Cache {
     static constexpr size_t blob_bytes=5222400, down_offset=3481600;
     Context ctx_{nullptr,ggml_free};Buffer buffer_{nullptr,ggml_backend_buffer_free};
     ggml_backend_t backend_;
-    struct Block {
-        Context ctx{nullptr,ggml_free};Buffer buffer{nullptr,ggml_backend_buffer_free};
-        ggml_tensor* tensor=nullptr;size_t bytes=0;
-    };
+    using Block=NativeQ8Storage::Block;
     std::vector<std::unique_ptr<Block>> blocks_;
     size_t per_block_=0;
     bool poisoned_=false;
@@ -40,50 +37,16 @@ public:
     NativeQ8Cache(ggml_backend_t backend,size_t slots,size_t budget,const std::string& receipt,const std::string& capture,bool capture_first_only):backend_(backend),slots_(slots),capture_(capture),capture_first_only_(capture_first_only) {
         using namespace strata::core::portable_detail;
         require(!receipt.empty(),"native Q8 requires receipt prefix");
-        const size_t raw_weights=native_q8_weight_bytes(slots,budget);
+        native_q8_weight_bytes(slots,budget);
         // Refuse unsupported logical devices before resident allocations. Reuse
         // GGML's existing block policy and Vulkan per-buffer/allocation limits.
         const size_t limit=strata_vk_q8_resident_block_limit(backend);
-        auto buft=ggml_backend_get_default_buffer_type(backend);
-        const size_t alignment=ggml_backend_buft_get_alignment(buft);
-        const auto layout=expert_block_layout(slots,blob_bytes,limit);
-        per_block_=layout.slots_per_block;
-        // A whole blob already has native 256-byte alignment. Query real GGML
-        // allocation sizes, including end padding, before creating any buffer.
-        weights_=0;
-        for(size_t first=0;first<slots;) {
-            const size_t count=std::min(slots-first,per_block_);
-            auto block=std::make_unique<Block>();
-            block->ctx.reset(ggml_init({4096,nullptr,true}));require(bool(block->ctx),"native Q8 block metadata allocation failed");
-            block->tensor=ggml_new_tensor_1d(block->ctx.get(),GGML_TYPE_I32,count*blob_bytes/4);
-            block->bytes=ggml_backend_alloc_ctx_tensors_from_buft_size(block->ctx.get(),buft);
-            require(alignment && !(alignment&(alignment-1)) && block->bytes>=count*blob_bytes && block->bytes<=limit && blob_bytes%alignment==0,
-                "native Q8 backend block layout exceeded");
-            weights_=expert_checked_add(weights_,block->bytes);
-            blocks_.push_back(std::move(block));first+=count;
-        }
-        require(weights_>=raw_weights && weights_<=budget,"native Q8 aligned weight budget exceeded");
-        ctx_.reset(ggml_init({64*1024,nullptr,true}));require(bool(ctx_),"native Q8 metadata allocation failed");
-        i_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,8*H);
-        x_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_I32,8*(H/32)*9);
-        g_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,q8_entry_capacity*F);
-        u_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,q8_entry_capacity*F);
-        h_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,q8_entry_capacity*F);
-        q_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_I32,q8_entry_capacity*(F/32)*9);
-        o_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,q8_entry_capacity*H);
-        const size_t tensor_scratch=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),buft);
-        require(tensor_scratch<=limit,"native Q8 scratch exceeds backend block limit");
-        auto metadata_size=[&](size_t words) {
-            Context probe(ggml_init({4096,nullptr,true}),ggml_free);require(bool(probe),"native Q8 component probe failed");
-            ggml_new_tensor_1d(probe.get(),GGML_TYPE_I32,words);
-            return ggml_backend_alloc_ctx_tensors_from_buft_size(probe.get(),buft);
-        };
-        const size_t stage_bytes=metadata_size(STRATA_Q8_STAGE_WORDS),group_bytes=metadata_size(q8_metadata_words);
-        require(stage_bytes<=limit && group_bytes<=limit,"native Q8 component exceeds backend block limit");
-        const size_t projected_components=expert_checked_add(stage_bytes,expert_checked_add(group_bytes,group_bytes));
-        scratch_=expert_checked_add(tensor_scratch,projected_components);
-        bytes_=expert_checked_add(weights_,scratch_);
-        require(bytes_<=budget,"native Q8 tensor/component budget exceeded");
+        auto storage=make_native_q8_storage(backend,slots,budget,limit);
+        blocks_=std::move(storage.blocks_);ctx_=std::move(storage.ctx_);
+        per_block_=storage.per_block_;weights_=storage.weights_;scratch_=storage.scratch_;bytes_=storage.bytes_;
+        i_=storage.i_;x_=storage.x_;g_=storage.g_;u_=storage.u_;h_=storage.h_;q_=storage.q_;o_=storage.o_;
+        const size_t tensor_scratch=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),ggml_backend_get_default_buffer_type(backend));
+        const size_t projected_components=scratch_-tensor_scratch;
         uploaded_.resize(slots,false);
         // All size and budget checks finish before any backend allocation.
         activation_.reset(strata_vk_native_stages_create_quant_rn_observation(backend,(receipt+".activation.spv").c_str()));

@@ -183,6 +183,17 @@ public:
     }
 };
 } // namespace
+bool estimate_vulkan_native_q8(ggml_backend_t backend,size_t slots,NativeQ8AllocationEstimate& out,std::string& error) {
+#ifdef STRATA_VULKAN_NATIVE_Q8_PROVIDER
+    try {
+        const auto limit=strata::core::portable_detail::strata_vk_q8_resident_block_limit(backend);
+        const auto s=vulkan_detail::make_native_q8_storage(backend,slots,SIZE_MAX,limit);
+        out={s.weights_,s.scratch_,s.bytes_,s.blocks_.size(),limit};return true;
+    } catch(const std::exception& e){error=e.what();return false;}
+#else
+    (void)backend;(void)slots;(void)out;error="native Q8 capacity planning requires Vulkan native stages";return false;
+#endif
+}
 std::unique_ptr<GpuExecutor> create_vulkan_executor_on_backend(ggml_backend_t backend, uint64_t budget) {
     return std::make_unique<VulkanExecutor>(backend,budget);
 }

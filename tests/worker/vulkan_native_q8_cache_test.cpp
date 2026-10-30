@@ -102,6 +102,10 @@ int main(){try {
     for(int repeat=0;repeat<2;++repeat) {
         NativeQ8Cache cache(backend.get(),2,128u<<20,"call-recorder","",false);
         require(owners==3,"component ownership");
+        const auto allocation_before=allocation_attempts;
+        const auto projected=make_native_q8_storage(backend.get(),2,SIZE_MAX,strata::core::portable_detail::block_limit);
+        require(allocation_attempts==allocation_before,"readonly capacity estimate allocated a backend buffer");
+        require(projected.bytes_==cache.buffer_bytes() && projected.scratch_==cache.scratch_bytes(),"planner/allocation estimate diverged");
         const auto initial=cache.allocation_snapshot();
         require(initial.gpu_allocation_count==5 && initial.gpu_weight_bytes==2*size_t(5222400) && initial.gpu_allocated_bytes==cache.buffer_bytes() && initial.gpu_scratch_bytes==cache.scratch_bytes(),"actual allocation accounting");
         if(repeat)require(actual==cache.buffer_bytes() && scratch==cache.scratch_bytes(),"recreated allocations unstable");
