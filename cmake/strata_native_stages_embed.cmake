@@ -1,4 +1,7 @@
-# Specific build-only embedding for the native stages shader.
+# Build-only embedding for the native stages and explicit diagnostic variants.
+if(NOT DEFINED ARRAY_NAME)
+  set(ARRAY_NAME strata_native_stages_spv)
+endif()
 file(READ "${INPUT}" hex HEX)
 string(LENGTH "${hex}" length)
 math(EXPR remainder "${length} % 8")
@@ -15,4 +18,4 @@ foreach(offset RANGE 0 ${last} 8)
   string(SUBSTRING "${word}" 6 2 d)
   string(APPEND words "0x${d}${c}${b}${a}u,\n")
 endforeach()
-file(WRITE "${OUTPUT}" "#pragma once\n#include <cstdint>\nalignas(4) static const uint32_t strata_native_stages_spv[] = {\n${words}};\n")
+file(WRITE "${OUTPUT}" "#pragma once\n#include <cstdint>\nalignas(4) static const uint32_t ${ARRAY_NAME}[] = {\n${words}};\n")

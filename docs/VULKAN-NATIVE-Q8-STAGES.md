@@ -837,3 +837,207 @@ retry. Preserve all intermediate comparisons, three effective modules and
 `spirv-val --target-env vulkan1.2` exits, actual child/wrapper exits, source and
 binary identities and cleanup. Both observations remain unqualified and retain
 the original input-Q8 mismatch.
+
+### Optional quantization-only division trace
+
+This probe is optional and is not a prerequisite for the corrected RN module below.
+
+The retained AMD geometry observation differs first at input quantization. An
+offline rounded-reciprocal/multiply model reproduces its full input-Q8 vector,
+while a rounded-division model reproduces CUDA's. This is a supported numerical
+model, not proof of the driver's ISA. Packed half scales cannot expose the
+original FP32 scale bits. Do not change integer rounding, add an epsilon or
+attribute downstream differences to separate matrix bugs from this evidence.
+
+The separate `native_q8_quant_trace_component` adds only four stores per
+selected element to a generated copy of the unchanged stage shader. Elements
+36, 118, 1046 and 4479 cover the four differing operand patterns. Stores
+capture existing `amax`, `d`, `ratio` and `rounded` values into the first 16
+words of the existing hidden binding. That binding keeps its normal full input
+shape; unused words and all view boundaries must remain untouched canaries.
+No new arithmetic, qualifiers, folding/reassociation controls, shader compile
+flags, descriptors or push constants are added. The original strict and
+observation modules remain unchanged. The probe has a distinct module identity
+and explicit observation creator, and only admits mode0 on the complete
+retained 7,680-element fixture.
+
+One existing quantization dispatch processes all input elements. There are no
+gate/up, activation, down or model requests. Its complete 8,640 output bytes
+must reproduce the retained AMD capture exactly before any trace is eligible
+for interpretation. Even a difference outside the four traced blocks fails
+that condition. Raw traces remain saved on failure, but `trace_interpretable`
+is false. Nonfinite, unwritten or out-of-bounds trace results also fail. The
+cause remains marked `cause_isa_proven=false`; a matching output is not a
+qualification or corrective-algorithm test.
+
+Build with the retained Vulkan Release configuration and GGML pin, then run
+all previous checks plus the new bounds/instrumentation checks:
+
+```sh
+cmake --build BUILD --target native_q8_quant_trace_component native_q8_quant_trace_test \
+  native_q8_integer_dot_test native_q8_geometry_component native_q8_composed_component \
+  native_q8_geometry_input_test native_q8_gu_shader_test native_q8_shader_test \
+  native_q8_down_shader_test native_q8_spec_test native_q8_gu_input_test \
+  native_q8_down_input_test native_q8_consumer_input_test -j4
+ctest --test-dir BUILD --output-on-failure -R '^(native_q8_(quant_trace|integer_dot|geometry_input|gu_shader|shader|down_shader|spec|gu_input|down_input|consumer_input|tools)_test|portable_logits_guard_build_test)$'
+```
+
+The source-generation test checks exact original source plus only the fixed
+stores, and rejects a changed base shader. The shader test compares arithmetic
+instruction profiles and NoContraction counts against the original, checks all
+three divisions retain their decorations, and validates the pinned helper's
+four effective-module variants. Host tests check the fixed bounds and that
+full-output mismatch, canary, nonfinite, unwritten or truncated captures cannot
+be interpreted. These checks do not establish hardware arithmetic.
+
+After review, the proposed single 30-second-bounded observation is on the same
+verified AMD V340L die on05 as the retained failure. Transfer only the original
+synthetic fixture and AMD geometry capture for this command; no weights,
+NVIDIA binary or model files are needed. Preserve their identity manifest and
+all historical files. Use a fresh output directory and existing guards with
+unchanged clocks and environment. No CUDA or geometry capture is repeated.
+
+```sh
+python3 tools/native_q8_quant_trace.py --observe-unspecified-fp32-denorm \
+  --component BUILD/native_q8_quant_trace_component \
+  --device "$VERIFIED_AMD_VK_INDEX" --expect-device "$VERIFIED_AMD_NAME" \
+  --fixture "$REFERENCE/fixture.bin" \
+  --fixture-sha256 26c5ab4747b9957fd2fe9971d6389365ffca53b2f3b069c4c9d72754d35f39c8 \
+  --retained-amd "$REFERENCE/amd-capture.raw" \
+  --retained-amd-sha256 31fbc95071ca4d901d7c811b6f59e825c3977c683ed58f660035127c27e8afe5 \
+  --output "$FRESH_TRACE_OUTPUT"
+```
+
+`quant-trace.raw` has magic `0x3154384e`, a canary status and word-counted sections
+of 2,160 packed input words and 16 raw FP32 trace words. Trace rows follow the
+four element indices above; columns are amax/d/ratio/rounded. `.views.bin`
+retains input, hidden/trace and packed backing buffers; `.effective.spv` is the
+final instrumented module. Retain `spirv-val --target-env vulkan1.2` exit,
+source/binary/module/output hashes, assembled command, child/wrapper exits and
+cleanup. Wrapper exit0 means only reproducible output plus interpretable trace;
+exit1 stops without interpretation or retry. All qualification flags remain
+false, and both the original subnormal failure and AMD comparison failure
+remain recorded as exit1.
+
+### Division contracts in Strata's backends
+
+The observed NVIDIA Vulkan match and AMD/RADV difference are implementation
+results within Vulkan's division accuracy allowance, not evidence that AMD
+hardware cannot compute a correctly rounded divide. Vulkan lists `OpFDiv`
+with a 2.5-ULP single-precision bound in the relevant normal-divisor range.
+`RoundingModeRTE` controls operations specified as correctly rounded;
+`precise`/NoContraction does not upgrade that division accuracy requirement.
+There is no correctly-rounded-divide switch in this existing Vulkan1.2/GLSL
+pipeline. No precision-control change or replacement algorithm is proposed by
+this probe. [Vulkan operation precision](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html#spirvenv-precision-core).
+
+Native HIP shares `roundf(xi/d)` in
+`include/strata/kernels/q8_1_finite.hpp`, and uses `amax/127.0f` in the original
+Q8 store. Its compatibility headers do not replace this division with a custom
+algorithm. Strata's HIP CMake paths do not explicitly set a divide-accuracy
+flag for this source. The inspected ROCm compiler source defaults
+`HIPCorrectlyRoundedDivSqrt` to true and exposes the corresponding
+`-fhip-fp32-correctly-rounded-divide-sqrt` and negative option. This is a
+compiler-source fact, not a measurement or verified fleet compiler setting.
+[ROCm option default](https://github.com/ROCm/llvm-project/blob/amd-staging/clang/include/clang/Basic/CodeGenOptions.def),
+[Clang HIP option](https://clang.llvm.org/docs/ClangCommandLineReference.html#cmdoption-clang-fhip-fp32-correctly-rounded-divide-sqrt).
+
+SYCL uses `sycl::round(xi/d)` and `amax/127.0f`. Its `sycl/CMakeLists.txt`
+explicitly passes `-cl-fp32-correctly-rounded-divide-sqrt` to both JIT and AOT
+backends, along with `-fp-model=precise`; it does not rely on generic precise
+alone. Neither native AMD HIP nor Intel SYCL has been run against this retained
+fixture in the current comparison. Their actual results must not be inferred
+from the AMD Vulkan observation or from compiler flags alone.
+
+### Explicit native nearest-even quantizer division
+
+`--native-rn-quantization` selects a separate corrected diagnostic module. It
+replaces only `amax/127` and `xi/d`, in both input and fused hidden quantization,
+with binary32 round-to-nearest-even division. Integer rounding stays halfway
+away from zero, as native `roundf` specifies. SwiGLU's division/exponential,
+maximum/sum reduction, half packing, matrix stages, guards and product paths
+are unchanged. The ordinary failed shader/module remains available unchanged;
+there is no automatic fallback and no trace-capture prerequisite.
+
+The established method is SoftFloat's direct significand quotient/remainder
+with guard/sticky rounding, using a 32-bit restoring divide instead of a 64-bit
+integer quotient. `native_f32_div_rn.glsl` is shared verbatim with its host test.
+After normalizing two nonzero finite 24-bit significands, it generates a 31-bit
+quotient and exact remainder. Every remainder is less than 2^25. Packing uses
+seven guard/round bits plus the remainder as sticky; underflow extends the
+right shift before rounding, including the half-minimum-subnormal boundary.
+Overflow produces signed infinity, and tiny rounded results preserve signed
+zero. No FP64, integer64, reciprocal approximation or floating division is
+needed inside the helper.
+
+Zero, subnormal, infinity and NaN inputs are classified by their original
+bits. Subnormal inputs/outputs are preserved by the helper's integer path.
+NaNs are quieted while preserving the first NaN operand's payload; invalid
+0/0 and infinity/infinity return `0x7fc00000`. This explicit convention does
+not claim bitwise NaN-payload agreement across CUDA/HIP drivers, nor expose
+floating exception flags. The original native NaN-to-int8 domain remains
+unqualified. Full capture comparisons still report all byte differences;
+there is no NaN/tolerance waiver. Surrounding reduction/activation arithmetic
+and observation-mode denorm limitations are unchanged.
+
+The conceptual prior art and BSD attribution are retained in
+`third_party/softfloat/NOTICE`. No library dependency is added. This bounded
+correctness implementation costs a 31-step integer quotient loop per divide,
+plus normalization for subnormal inputs. It is not a performance claim or a
+model-wide software-arithmetic change. Further optimization requires its own
+numerical proof and measurements.
+
+Local checks include 250,000 raw-bit random operand pairs and targeted IEEE
+edge pairs against host nearest-even division. Host NaN comparisons validate
+classification, with the helper's payload convention checked separately; they
+do not claim native GPU payload parity. Subnormal ties, signed zero, overflow,
+normalization and the four retained boundary patterns are covered. The host
+quantizer formula using the same helper also checks the existing 832-element
+host fixture. With the actual retained native geometry capture supplied, it
+compares all 8,640 input bytes. These are host checks, not GPU execution.
+
+The shader check requires exactly one remaining `OpFDiv` (unchanged SwiGLU),
+its existing NoContraction decoration, no 64-bit types, and the integer loops.
+The generation test checks exact original source plus the helper and the two
+quantizer call replacements. All legacy module/control checks still apply.
+
+```sh
+cmake --build BUILD --target native_f32_div_rn_test native_q8_geometry_component \
+  native_q8_quant_trace_component native_q8_quant_trace_test native_q8_integer_dot_test \
+  native_q8_geometry_input_test native_q8_gu_shader_test native_q8_shader_test \
+  native_q8_down_shader_test native_q8_spec_test native_q8_gu_input_test \
+  native_q8_down_input_test native_q8_consumer_input_test -j4
+ctest --test-dir BUILD --output-on-failure -R '^(native_f32_div_rn_test|native_q8_(quant_trace|integer_dot|geometry_input|gu_shader|shader|down_shader|spec|gu_input|down_input|consumer_input|tools)_test|portable_logits_guard_build_test)$'
+# Optional host check against the retained native capture, no GPU:
+BUILD/native_f32_div_rn_test --fixture "$REFERENCE/fixture.bin" --native "$REFERENCE/native-capture.raw"
+```
+
+After review, one corrected geometry observation can compare directly with the
+retained CUDA reference, without another diagnostic campaign or HIP hardware
+run as a prerequisite. Reuse the same verified V340L die, settings, synthetic
+weights and reference hashes. Do not change or overwrite the original AMD
+failure. The existing geometry wrapper retains all six intermediate boundaries
+and its 30-second child deadline. An input match alone does not waive any
+remaining gate/up, activation, hidden or output difference.
+
+```sh
+python3 tools/native_q8_geometry.py --observe-unspecified-fp32-denorm \
+  --native-rn-quantization --component BUILD/native_q8_geometry_component \
+  --device "$VERIFIED_AMD_VK_INDEX" --expect-device "$VERIFIED_AMD_NAME" \
+  --fixture "$REFERENCE/fixture.bin" \
+  --fixture-sha256 26c5ab4747b9957fd2fe9971d6389365ffca53b2f3b069c4c9d72754d35f39c8 \
+  --native-raw "$REFERENCE/native-capture.raw" \
+  --native-raw-sha256 6a0fa01669d9d1670b40c40ed551f6efca56babd1666ce909ba9f14bc8506883 \
+  --native-receipt "$REFERENCE/receipt.json" --native-receipt-sha256 "$NATIVE_RECEIPT_SHA256" \
+  --weights "$REFERENCE/capture.raw.weights.bin" --weights-sha256 "$NATIVE_WEIGHTS_SHA256" \
+  --output "$FRESH_RN_OUTPUT"
+```
+
+Verify the actual child command includes `--native-rn-quantization` and its log
+reports `native_rn_quantization=true`. Preserve effective modules and validate
+them with `spirv-val --target-env vulkan1.2`, all intermediate results, identity
+records, source/binary/module hashes, actual exits and cleanup. Native02/CUDA
+and Vulkan05/V340L identities remain distinct. Stop at any failure without
+retry or tolerance change. `qualified=false` and `quantizer_qualified=false`
+remain in force, and the historical failures remain intact even if a new
+observation matches.

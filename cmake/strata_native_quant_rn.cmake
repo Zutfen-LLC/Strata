@@ -1,0 +1,11 @@
+# Explicit corrected diagnostic variant. Original failed modules stay intact.
+function(strata_native_quant_rn_source base division output)
+  string(SHA256 digest "${base}")
+  if(NOT digest STREQUAL "c23db4f75b3b09a5bf5675f5a91753578255ecc0614f0822de46d72052044256")
+    message(FATAL_ERROR "Q8 RN quantizer: incompatible original shader")
+  endif()
+  string(REPLACE "#version 450" "#version 450\n${division}\nfloat native_quant_div_rn(float a,float b) {return uintBitsToFloat(strata_f32_div_rn_bits(floatBitsToUint(a),floatBitsToUint(b)));}" result "${base}")
+  string(REPLACE "precise float scale=maxima[lane]/127.0;" "precise float scale=native_quant_div_rn(maxima[lane],127.0);" result "${result}")
+  string(REPLACE "precise float ratio=xi/d;" "precise float ratio=native_quant_div_rn(xi,d);" result "${result}")
+  set(${output} "${result}" PARENT_SCOPE)
+endfunction()

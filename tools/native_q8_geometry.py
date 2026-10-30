@@ -85,6 +85,7 @@ def main():
     mode.add_argument('--observe-unspecified-fp32-denorm', action='store_true')
     for name in ('component', 'fixture', 'output'):
         p.add_argument('--' + name, type=Path, required=True)
+    p.add_argument('--native-rn-quantization', action='store_true', help='Explicit RN quantizer diagnostic; never a fallback')
     p.add_argument('--fixture-sha256', required=True)
     p.add_argument('--device', required=True)
     p.add_argument('--expect-device', required=True)
@@ -92,6 +93,7 @@ def main():
         p.add_argument('--' + name, type=Path)
         p.add_argument('--' + name + '-sha256')
     a = p.parse_args()
+    if a.capture_native and a.native_rn_quantization:raise ValueError('RN diagnostic is Vulkan-only')
     if not a.device.isdecimal() or not a.expect_device:
         raise ValueError('geometry: verified numeric device and device name required')
     fixture = preflight.checked_bytes(a.fixture, a.fixture_sha256)
@@ -119,13 +121,13 @@ def main():
         paths[name] = (a.output / (name + '.bin')).resolve()
         with paths[name].open('xb') as f:f.write(data)
     exe, raw = a.component.resolve(strict=True), (a.output / 'capture.raw').resolve()
-    command = [str(exe)] + ([] if a.capture_native else ['--observe-unspecified-fp32-denorm'])
+    command = [str(exe)] + (['--native-rn-quantization'] if a.native_rn_quantization else []) + ([] if a.capture_native else ['--observe-unspecified-fp32-denorm'])
     command += ['--device', a.device, '--expect-device', a.expect_device, '--fixture', str(paths['fixture'])]
     if not a.capture_native:command += ['--weights', str(paths['weights'])]
     command += ['--output', str(raw)]
     revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], capture_output=True, text=True)
     receipt = {'qualified': False, 'quantizer_qualified': False, 'original_comparator_exit': 1,
-               'capture_native': a.capture_native, 'observation_only': not a.capture_native,
+               'capture_native': a.capture_native, 'native_rn_quantization': a.native_rn_quantization, 'observation_only': not a.capture_native,
                'fp32_denorm_mode': 'unspecified' if not a.capture_native else 'native CUDA; no Vulkan claim',
                'source_head': revision.stdout.strip() if revision.returncode == 0 else None,
                'source_files_sha256': sources, 'component_sha256': sha(exe.read_bytes()),
@@ -133,6 +135,9 @@ def main():
                    'STRATA_GROUPED_V1', 'STRATA_GU_SWIGLU', 'STRATA_NO_SUB16_GU', 'STRATA_EXPERT_V2',
                    'STRATA_EXPERT_V2K', 'STRATA_EXPDEC', 'STRATA_EXP_MODE')},
                'sha256': {k: sha(v) for k, v in inputs.items()}, 'argv': command}
+    if a.native_rn_quantization:
+        receipt['quantizer_source_sha256'] = {name: sha((ROOT / name).read_bytes()) for name in (
+            'src/kernels/vulkan/native_f32_div_rn.glsl', 'cmake/strata_native_quant_rn.cmake')}
     report_path = a.output / 'receipt.json'
     report_path.write_text(json.dumps(receipt, indent=2) + '\n')
     with (a.output / 'component.log').open('wb') as log:

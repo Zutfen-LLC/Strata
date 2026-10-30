@@ -132,6 +132,34 @@ class GuardBuild(unittest.TestCase):
         self.assertEqual((BUILD / 'strata_native_observe_pipeline.inc').read_text(),
             '// Generated from the exact pinned MIT-licensed GGML helper.\n' + expected)
 
+    def test_quant_trace_is_original_plus_fixed_stores_and_rejects_wrong_base(self):
+        if not NATIVE_STAGES:self.skipTest('native stages disabled')
+        original = (ROOT / 'src/kernels/vulkan/native_q8_stages.comp').read_text()
+        stores = (ROOT / 'src/kernels/vulkan/native_q8_quant_trace.glsl').read_text()
+        anchor = '    float clamped=rounded>127.0?127.0:rounded< -127.0?-127.0:rounded;'
+        self.assertEqual(original.count(anchor), 1)
+        self.assertEqual((BUILD / 'native_q8_quant_trace.comp').read_text(), original.replace(anchor, stores + anchor))
+        self.assertEqual(hashlib.sha256(original.encode()).hexdigest(), 'c23db4f75b3b09a5bf5675f5a91753578255ecc0614f0822de46d72052044256')
+        for field in ('maxima[lane]', 'd', 'ratio', 'rounded'):
+            self.assertIn('=' + field + ';', stores)
+        with tempfile.TemporaryDirectory() as temporary:
+            script = Path(temporary) / 'trace.cmake'
+            script.write_text(f'include("{ROOT / "cmake/strata_native_quant_trace.cmake"}")\n'
+                              'strata_native_quant_trace_source("wrong base" "stores" result)\n')
+            result = subprocess.run([CMAKE, '-P', str(script)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('incompatible original shader', result.stderr)
+
+    def test_rn_variant_changes_only_quantizer_divisions(self):
+        if not NATIVE_STAGES:self.skipTest('native stages disabled')
+        original = (ROOT / 'src/kernels/vulkan/native_q8_stages.comp').read_text()
+        division = (ROOT / 'src/kernels/vulkan/native_f32_div_rn.glsl').read_text()
+        expected = original.replace('#version 450', '#version 450\n' + division + '\nfloat native_quant_div_rn(float a,float b) {return uintBitsToFloat(strata_f32_div_rn_bits(floatBitsToUint(a),floatBitsToUint(b)));}')
+        expected = expected.replace('precise float scale=maxima[lane]/127.0;', 'precise float scale=native_quant_div_rn(maxima[lane],127.0);')
+        expected = expected.replace('precise float ratio=xi/d;', 'precise float ratio=native_quant_div_rn(xi,d);')
+        self.assertEqual((BUILD / 'native_q8_quant_rn.comp').read_text(), expected)
+        self.assertIn('precise float silu=gate[p.gate_bias+i]/denominator;', expected)
+
     def test_shader_has_integer_classification_and_no_float_type(self):
         data = (BUILD / 'logits_nonfinite.spv').read_bytes()
         words = struct.unpack('<' + 'I' * (len(data) // 4), data)

@@ -394,5 +394,41 @@ class GeometryTools(unittest.TestCase):
             with self.assertRaises(ValueError):geometry.preflight.checked_bytes(path, hashlib.sha256(path.read_bytes()).hexdigest(), max_bytes=geometry.WEIGHT_BYTES)
 
 
+class QuantTraceTools(unittest.TestCase):
+    def test_full_output_reproduction_precedes_trace_interpretation(self):
+        trace = module('native_q8_quant_trace')
+        geometry = trace.geometry
+        parts = [[0] * n if i in (0, 4) else [0x3f800000] * n for i, n in enumerate(geometry.COUNTS)]
+        def section(words):return struct.pack('<I', len(words)) + struct.pack('<' + 'I' * len(words), *words)
+        with tempfile.TemporaryDirectory() as directory:
+            ref, probe = Path(directory) / 'ref', Path(directory) / 'probe'
+            ref.write_bytes(struct.pack('<II', 0x324d384e, 1) + b''.join(section(v) for v in parts))
+            words = [0x3f800000] * 16
+            def write(status=1):probe.write_bytes(struct.pack('<II', 0x3154384e, status) + section(parts[0]) + section(words))
+            write();result = trace.compare(ref, probe)
+            self.assertTrue(result['trace_interpretable']);self.assertEqual(result['compared_bytes'], 8640)
+            self.assertFalse(result['qualified']);self.assertFalse(result['quantizer_qualified']);self.assertFalse(result['cause_isa_proven'])
+            self.assertEqual(result['original_comparator_exit'], 1);self.assertEqual(result['retained_amd_comparator_exit'], 1)
+            self.assertEqual([r['element'] for r in result['traces']], [36,118,1046,4479])
+            # A change outside every traced block still invalidates interpretation.
+            parts[0][-1] = 1;write();result = trace.compare(ref, probe)
+            self.assertFalse(result['trace_interpretable']);self.assertEqual(result['different_bytes'], 1)
+            self.assertEqual(len(result['traces']), 4)
+            parts[0][-1] = 0;words[0] = 0xa5a5a5a5;write()
+            self.assertFalse(trace.compare(ref, probe)['trace_interpretable'])
+            words[0] = 0x7f800000;write();self.assertFalse(trace.compare(ref, probe)['trace_interpretable'])
+            words[0] = 0x3f800000;write(0);self.assertFalse(trace.compare(ref, probe)['trace_interpretable'])
+            probe.write_bytes(probe.read_bytes()[:-1])
+            with self.assertRaises(ValueError):trace.compare(ref, probe)
+
+    def test_trace_requires_explicit_observation_and_fixed_element_map(self):
+        import subprocess
+        result = subprocess.run(['python3', str(ROOT / 'tools/native_q8_quant_trace.py')], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0);self.assertIn('--observe-unspecified-fp32-denorm', result.stderr)
+        source = (ROOT / 'src/kernels/vulkan/native_q8_quant_trace.glsl').read_text()
+        for value in (36,118,1046,4479):self.assertIn('i==' + str(value) + 'u', source)
+        self.assertEqual(source.count('hidden['), 4)
+
+
 if __name__ == '__main__':
     unittest.main()

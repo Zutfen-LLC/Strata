@@ -10,6 +10,8 @@ using namespace native_q8_fixture;
 using namespace strata::core::portable_detail;
 int main(int argc,char** argv){try {
     if(argc==3 && std::string(argv[1])=="--make-fixture"){geo::write_fixture(argv[2]);return 0;}
+    const bool rn=argc==13 && std::string(argv[1])=="--native-rn-quantization";
+    if(rn){--argc;++argv;}
     need(argc==12 && std::string(argv[1])=="--observe-unspecified-fp32-denorm",
         "compose: explicit observation selection required; strict path remains unchanged");
     ++argv; // remove the explicit observation selector for fixed-position arguments
@@ -41,7 +43,8 @@ int main(int argc,char** argv){try {
     const std::string down_spv=std::string(argv[10])+".down.effective.spv";
     // Refuse missing required observation controls before any GPU dispatch.
     std::unique_ptr<StrataVkNativeStages,decltype(&strata_vk_native_stages_destroy)> activation(
-        strata_vk_native_stages_create_observation(backend.get(),activation_spv.c_str()),strata_vk_native_stages_destroy);
+        rn?strata_vk_native_stages_create_quant_rn_observation(backend.get(),activation_spv.c_str()):
+           strata_vk_native_stages_create_observation(backend.get(),activation_spv.c_str()),strata_vk_native_stages_destroy);
     std::unique_ptr<StrataVkQ8Down,decltype(&strata_vk_q8_down_destroy)> down(
         strata_vk_q8_down_create(backend.get(),down_spv.c_str()),strata_vk_q8_down_destroy);
     std::unique_ptr<StrataVkQ8Gu,decltype(&strata_vk_q8_gu_destroy)> component(
@@ -71,6 +74,7 @@ int main(int argc,char** argv){try {
         if(slot==7){const auto original=geo::bytes(input);sentinels&=std::equal(original.begin(),original.end(),bytes.begin()+prefixes[slot]*4);}
         ++slot;}
     need(bool(views),"geometry: view receipt write failed");geo::write_result(argv[10],true,sentinels,sections);
+    if(rn)std::puts("native_rn_quantization=true activation_division_unchanged=true");
     std::printf("composed_observation_only=true qualified=false quantizer_qualified=false fp32_denorm_mode=unspecified device=%s entries=3 groups=3 h=2560 f=640 sentinels=%d\n",name,int(sentinels));
     need(sentinels,"compose: sentinel/input mutation; raw receipts retained");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"Q8 composed component: %s\n",e.what());return 1;}}
