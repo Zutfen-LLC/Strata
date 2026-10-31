@@ -114,6 +114,17 @@ check; they do not qualify FFN role identity or native GDN output arithmetic.
 Retained composed-read diagnostics cannot attribute downstream differences
 without equal upstream mixed operands. No further harness redesign is a
 prerequisite for this bounded component work.
+[Draft PR #101](https://github.com/Zutfen-LLC/Strata/pull/101), source
+`a47bcea56b0f8cd07ff4e2b57657000a47b27e16`, implements this standalone
+T1 pending sigmoid/FMA, norm/injection and down/up/mixed composition. The actual
+native reference selects `apply=true`; Vulkan retains a disjoint candidate and
+leaves the original pending tuple unchanged. Existing model flags and state
+commit behavior are untouched. Exact own-gate FMA/cancellation checks precede
+the existing own-input v1/v2 contracts; no fitted cross-backend epsilon is added.
+Host/build checks do not establish physical qualification. Actual CUDA build
+and the small synthetic component gate remain prerequisites before reviewing
+model pending lifetime or FFN role integration. See the
+[pending contract](https://github.com/Zutfen-LLC/Strata/blob/a47bcea56b0f8cd07ff4e2b57657000a47b27e16/docs/native-hc-pending-t1.md).
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
 tolerance from matching generated tokens.
