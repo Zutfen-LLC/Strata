@@ -74,6 +74,27 @@ and near-zero mixed values without a relative-error denominator. Exact local
 Vulkan checks remain mandatory even where that propagated interval is wide.
 No final-logit tolerance, full-HC, quality or full-model inference follows.
 
+## Real-role preflight checkpoint
+
+The two authorized layer-0 attention down/up roles now byte-match the original
+pinned packer's compat-BF16 conversion of their corresponding Q8 sources. An
+identical already retained native/Vulkan normalized input is available, so no
+new model capture or role extraction is needed for a component replay.
+
+That exact real-role fixture exceeds the initial [-16,16] activation domain in
+scaled down-projection values. Independent source-order integer checks confirm
+the refusal. This is the standalone component's qualification guard, not a
+native Strata model limit or a representation mismatch. The current frozen
+Vulkan component cannot accept it. Do not clip, rescale or substitute inputs to
+make it pass, and do not silently widen numerical bounds.
+
+The next bounded source slice is to derive a justified supported-domain treatment
+for the selected original SiLU/sigmoid operations, including down and up ranges,
+normal/underflow/overflow behavior and local arithmetic checks, before releasing
+the real-role Vulkan replay. Any needed source/checker correction must remain
+explicit and tested. No real-role hardware acceptance or model integration is
+claimed by this preflight.
+
 ## Next gate
 
 Build and run zero, sparse boundary and held-out dense synthetic fixtures through
