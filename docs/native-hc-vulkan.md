@@ -37,10 +37,14 @@ logical warp XOR finish from `fused_gr.cu:59–83,162–166`. No arithmetic depe
 Vulkan hardware subgroup width. FP32 additions/multiplications/division carry
 NoContraction; contracted operations use OpFmaKHR explicitly.
 
-Current normalization square lowering is one rounded multiply followed by three
-strict FMAs. The reciprocal uses GLSL InverseSqrt. These are explicit, inspectable
-choices requiring comparison with the compiled selected CUDA launcher: source
-expressions alone do not establish NVCC contraction or cross-device rsqrt bits.
+Normalization square lowering follows the compiled native sm86 norm: rounded
+`y*y`, then strict FMAs for x, z and w in order. The first pair is significant;
+rounding x first can change normalization bits. A synthetic adversarial host
+regression and compiled-SPIR-V operand tracing guard that order. The reciprocal uses GLSL InverseSqrt. These are explicit, inspectable
+choices requiring comparison with the compiled selected CUDA launcher on each
+qualified configuration: source expressions alone do not establish cross-device
+rsqrt bits. The inspected contraction does not qualify other compiler/architecture
+lowerings.
 There is no fitted constant, tolerance, device-specific correction or claim that
 GLSL InverseSqrt is equivalent to CUDA rsqrtf. Reports retain `qualified=false`
 and `cuda_rsqrt_equivalence_established=false`, including when an isolated case

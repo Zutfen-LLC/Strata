@@ -16,6 +16,18 @@ int main(){try{
  native_hc_need(native_hc_bf16_rne(native_hc_value(0x3f808000))==0x3f80&&native_hc_bf16_rne(native_hc_value(0x3f818000))==0x3f82,"native HC: even/odd BF16 ties");
  refuses([]{native_hc_normal(std::numeric_limits<float>::denorm_min());});refuses([]{native_hc_normal(INFINITY);});refuses([]{native_hc_bf16_rne(NAN);});
  uint8_t bad[34]{};refuses([&]{native_hc_q8_bf16(bad,33,32);});bad[1]=0x7c;refuses([&]{native_hc_q8_bf16(bad,34,32);});
+ // Synthetic adversarial values, independent of private model operands. Double computes
+ // the exact products/sums here before each F32 rounding: native sm86 rounds y*y,
+ // then fuses x*x; reversing that pair changes RS by one bit.
+ {Fixture f;f.t=1;f.x.assign(10240,0);f.w.assign(10240,1);f.wi.assign(40960,0);
+  const uint32_t b[4]={0x40330828,0x402e4d67,0x3eaeeb9a,0x3f3a4631};
+  for(int c=0;c<4;++c)for(int k=0;k<4;++k)f.x[c*2560+k]=value(b[k]);
+  float square=float(double(f.x[1])*double(f.x[1]));
+  for(int k:{0,2,3})square=float(double(f.x[k])*double(f.x[k])+double(square));
+  native_hc_need(bits(square)==0x417e386d,"native HC: independent contraction square oracle");
+  const float mean=square/2560.f,expected=1.f/std::sqrt(mean+1e-6f);
+  const auto got=native_hc_oracle(f.x,f.w,f.wi,1);
+  for(float rs:got.rs)native_hc_need(bits(rs)==bits(expected),"native HC: compiled-native first-square contraction order");}
  // Independent closed-form constant streams and basis-row injection expose indexing/T stride.
  for(uint32_t t:{1u,8u}){Fixture f;f.t=t;f.x.resize(t*10240);f.w.assign(10240,1);f.wi.assign(40960,0);for(size_t token=0;token<t;++token)for(int c=0;c<4;++c)std::fill(f.x.begin()+token*10240+c*2560,f.x.begin()+token*10240+(c+1)*2560,float(c+token));for(int c=0;c<4;++c)f.wi[c*10240+c*2560]=0x3f80;const auto got=native_hc_oracle(f.x,f.w,f.wi,t);for(uint32_t token=0;token<t;++token)for(int c=0;c<4;++c){float x=float(c+token),rs=1.f/std::sqrt(x*x+1e-6f);native_hc_need(got.rs[token*4+c]==rs&&got.inject[token*4+c]==x*rs,"native HC: closed-form stream/basis source oracle");}}
  auto f=synthetic();refuses([&]{auto x=f.x;x[0]=std::numeric_limits<float>::max();native_hc_oracle(x,f.w,f.wi,f.t);});refuses([&]{auto x=f.x;x[0]=1e-20f;native_hc_oracle(x,f.w,f.wi,f.t);});

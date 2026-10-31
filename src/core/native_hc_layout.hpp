@@ -38,7 +38,7 @@ inline NativeHcOracle native_hc_oracle(const std::vector<float>& x,const std::ve
  NativeHcOracle out;out.rs.resize(t*4);out.xn.resize(x.size());out.inject.resize(t*4);
  for(uint32_t token=0;token<t;++token){float partial[4][256]{};
   for(uint32_t tid=0;tid<256;++tid)for(uint32_t j=tid*4;j<10240;j+=1024){const uint32_t c=j/2560;const auto* r=x.data()+token*10240+j;
-   float sq=native_hc_normal(r[0]*r[0]);for(int k=1;k<4;++k)sq=native_hc_normal(std::fma(r[k],r[k],sq));partial[c][tid]=native_hc_normal(partial[c][tid]+sq);}
+   float sq=native_hc_normal(r[1]*r[1]);sq=native_hc_normal(std::fma(r[0],r[0],sq));for(int k=2;k<4;++k)sq=native_hc_normal(std::fma(r[k],r[k],sq));partial[c][tid]=native_hc_normal(partial[c][tid]+sq);}
   for(uint32_t offset=16;offset;offset>>=1){auto old=std::array<std::array<float,256>,4>{};for(int c=0;c<4;++c)std::memcpy(old[c].data(),partial[c],1024);for(int c=0;c<4;++c)for(int i=0;i<256;++i)partial[c][i]=native_hc_normal(old[c][i]+old[c][i^offset]);}
   for(int c=0;c<4;++c){float sum=0;for(int warp=0;warp<8;++warp)sum=native_hc_normal(sum+partial[c][warp*32]);const float mean=native_hc_normal(sum/2560.0f);out.rs[token*4+c]=native_hc_normal(1.0f/std::sqrt(native_hc_normal(mean+1e-6f)));}
   for(uint32_t j=0;j<10240;++j)out.xn[token*10240+j]=native_hc_normal(native_hc_normal(x[token*10240+j]*w[j])*out.rs[token*4+j/2560]);

@@ -17,7 +17,8 @@ float checked(float v){uint b=floatBitsToUint(v)&0x7fffffffu;if(b>=0x7f800000u)a
 void main(){uint tid=gl_LocalInvocationID.x,token=gl_WorkGroupID.y;
  if(p.mode==0u){float ss[4]=float[4](0,0,0,0);
   for(uint j=tid*4u;j<10240u;j+=1024u){uint at=p.xb+token*10240u+j;vec4 v=vec4(checked(x[at]),checked(x[at+1u]),checked(x[at+2u]),checked(x[at+3u]));
-   precise float sq=checked(v.x*v.x);sq=checked(hc_fma(v.y,v.y,sq));sq=checked(hc_fma(v.z,v.z,sq));sq=checked(hc_fma(v.w,v.w,sq));uint c=j/2560u;ss[c]=checked(ss[c]+sq);}
+   // Compiled native norm: round y*y, then fuse x*x, z*z and w*w in that order.
+   precise float sq=checked(v.y*v.y);sq=checked(hc_fma(v.x,v.x,sq));sq=checked(hc_fma(v.z,v.z,sq));sq=checked(hc_fma(v.w,v.w,sq));uint c=j/2560u;ss[c]=checked(ss[c]+sq);}
   for(uint c=0u;c<4u;++c)partial[c*256u+tid]=ss[c];barrier();
   for(uint offset=16u;offset>0u;offset>>=1u){float next[4];for(uint c=0u;c<4u;++c){precise float sum=partial[c*256u+tid]+partial[c*256u+(tid^offset)];next[c]=checked(sum);}barrier();for(uint c=0u;c<4u;++c)partial[c*256u+tid]=next[c];barrier();}
   if(tid<4u){precise float sum=0.0;for(uint warp=0u;warp<8u;++warp)sum=checked(sum+partial[tid*256u+warp*32u]);precise float mean=checked(sum/2560.0);precise float shifted=checked(mean+0.000001);float r=checked(inversesqrt(shifted));reciprocals[tid]=r;rs[p.rb+token*4u+tid]=r;}barrier();
