@@ -501,7 +501,7 @@ struct PortableGdnLayer::Impl {
         auto *c = ctx.get();
         input = ggml_new_tensor_3d(c, GGML_TYPE_F32, H, HC, 1);
 #ifdef STRATA_PORTABLE_NATIVE_HC
-        if(native_hc)input=ggml_reshape_3d(c,native_hc->residual,H,HC,1);
+        if(native_hc)input=native_hc->residual;
 #endif
         const bool keep_state = options.resident_state && options.execution.request_accelerator &&
                                 options.execution.accelerator;
@@ -560,7 +560,7 @@ struct PortableGdnLayer::Impl {
             auto *norm =
                 ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, hidden, 1e-6f), H * HC, 1), w.at("hc_attn_norm.weight"));
 #ifdef STRATA_PORTABLE_NATIVE_HC
-            if(native_hc)norm=ggml_reshape_2d(c,native_hc->normalized,H*HC,1);
+            if(native_hc)norm=native_hc->normalized;
 #endif
             auto *low = ggml_silu(c, ggml_scale(c, ggml_mul_mat(c, w.at("hc_attn_down.weight"), norm), 0.25f));
             auto *gates = ggml_sigmoid(c, ggml_mul_mat(c, w.at("hc_attn_up.weight"), low));

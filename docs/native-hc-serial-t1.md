@@ -28,7 +28,10 @@ reported once, including when graph scratch is shared. A separate conservative
 trace copies. Backend/driver workspace bounds are retained. No reserve/cap is
 relaxed and no residency or expert selection policy changes.
 
-The main graph borrows the allocated owner tensors, marked as inputs/outputs to
+Residual/normalized leaves retain the original 3D/2D geometry and direct backing.
+Their F32 type and contiguous strides preserve the existing eligibility inputs
+for the remaining Q8 down/up path. A simple contiguous reshape alone would not
+change the pinned MMVQ selector; no such arithmetic change is claimed. The main graph borrows the allocated owner tensors, marked as inputs/outputs to
 forbid liveness reuse. At runtime the actual current residual is uploaded first;
 the component then runs; only afterward does the existing GDN graph consume the
 normalized vector and injection. No kernel executes at graph construction.

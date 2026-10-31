@@ -23,8 +23,8 @@ public:
                      size_t budget,const std::string& prefix):norm_(norm),weight_(weight) {
         native_hc_environment();native_hc_need(backend&&!prefix.empty(),"native HC serial: backend/receipt prefix required");
         context_.reset(ggml_init({16384,nullptr,true}));native_hc_need(bool(context_),"native HC serial: metadata");
-        residual=ggml_new_tensor_1d(context_.get(),GGML_TYPE_F32,10240);
-        normalized=ggml_new_tensor_1d(context_.get(),GGML_TYPE_F32,10240);
+        residual=ggml_new_tensor_3d(context_.get(),GGML_TYPE_F32,2560,4,1);
+        normalized=ggml_new_tensor_2d(context_.get(),GGML_TYPE_F32,10240,1);
         rs=ggml_new_tensor_1d(context_.get(),GGML_TYPE_F32,4);
         inject=ggml_new_tensor_1d(context_.get(),GGML_TYPE_F32,4);
         for(auto* t:{residual,normalized,rs,inject}){ggml_set_input(t);ggml_set_output(t);}
