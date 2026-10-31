@@ -1872,6 +1872,10 @@ if(STRATA_NATIVE_EXPERTS)
           add_test(NAME portable_stdio_cli_test COMMAND portable_stdio_cli_driver ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/check_portable_stdio_cli.py $<TARGET_FILE:portable_model>)
           set_tests_properties(portable_stdio_cli_test PROPERTIES LABELS "large;portable-model" TIMEOUT 600 RUN_SERIAL TRUE)
+          if(STRATA_VULKAN_NATIVE_Q8_STRICT_FMA)
+            add_test(NAME portable_model_options_cli_test COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_portable_model_options_cli.py $<TARGET_FILE:portable_model>)
+          endif()
         endif()
         add_executable(portable_stdio_test tests/core/portable_stdio_test.cpp)
         target_compile_features(portable_stdio_test PRIVATE cxx_std_17)

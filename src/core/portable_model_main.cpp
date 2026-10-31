@@ -1,6 +1,7 @@
 #include "ggml-backend.h"
 #include "portable_stdio.hpp"
 #include "portable_device_budget.hpp"
+#include "portable_model_preflight.hpp"
 #include <csignal>
 #ifndef _WIN32
 #include <poll.h>
@@ -74,7 +75,7 @@ int main(int argc, char **argv) {
         Clock::time_point setup_start, prompt_start, decode_start, decode_end, last_prompt_start, last_selection;
         std::vector<int64_t> devices, caps, free_bytes, expert_tensors, expert_workspaces, expert_reserves;
         size_t max_new = 0, max_requests = 4;
-        bool resident = false;
+        bool resident = false, validate_options=false;
         auto integer = [](const std::string &s) {
             const auto v = numbers(s);
             if (v.size() != 1 || v[0] < 0)
@@ -83,6 +84,7 @@ int main(int argc, char **argv) {
         };
         for (int i = 1; i < argc; ++i) {
             const std::string key = argv[i];
+            if (key == "--validate-options") {validate_options=true;continue;}
             if (key == "--expert-timings") { opts.expert_timings = true; continue; }
             if (key == "--stdio") { resident = true; continue; }
             if (key == "--list-vulkan") {
@@ -104,6 +106,7 @@ int main(int argc, char **argv) {
             }
             if (key == "--help") {
                 std::cout << "portable_model --list-vulkan (read-only logical index/PCI/free/total/description TSV)\n"
+                             "portable_model --validate-options (argument/mode checks only; no model/backend/memory admission)\n"
                              "portable_model --model ANY_SHARD --manifest SWLOCAL1 --tokens ID,ID,...\n"
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 (or scalar) --split 32] [--host-cap-mib 32768]\n"
@@ -321,6 +324,18 @@ int main(int argc, char **argv) {
             d.tensor_cap=budget(expert_tensors,d.accelerator,d.tensor_cap);
             d.workspace_cap=budget(expert_workspaces,d.accelerator,d.workspace_cap);
             d.free_reserve=budget(expert_reserves,d.accelerator,d.free_reserve);
+        }
+        for(size_t i=0;i<devices.size();++i) {
+            if(devices[i]<0 || devices[i]>INT32_MAX)throw std::runtime_error("invalid Vulkan index");
+            (void)strata::core::portable_detail::device_mib(caps[i]);
+        }
+        strata::core::portable_detail::validate_model_modes(opts,devices.size());
+        if(validate_options) {
+            std::cout<<"{\"validated_options\":true,\"backend_initialized\":false,\"model_metadata_checked\":false,\"memory_admission_checked\":false,\"selected_accelerators\":"<<devices.size()
+                     <<",\"gdn_resident_weights\":"<<(opts.gdn_resident_weights?"true":"false")
+                     <<",\"dense_resident_weights\":"<<(opts.dense_resident_weights?"true":"false")
+                     <<",\"native_hc_norm_inject_layer0\":"<<(opts.native_hc_norm_inject_layer0?"true":"false")<<"}\n";
+            return 0;
         }
         std::vector<std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)>> backends;
         std::vector<size_t> device_totals, device_reserves;

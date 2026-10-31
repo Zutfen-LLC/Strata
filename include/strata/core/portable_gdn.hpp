@@ -63,6 +63,8 @@ class PortableGdnLayer {
     ~PortableGdnLayer();
     PortableGdnLayer(const PortableGdnLayer &) = delete;
     PortableGdnLayer &operator=(const PortableGdnLayer &) = delete;
+    // Build availability only; not a physical-device or arithmetic qualification.
+    static bool native_hc_compiled();
     bool reset(std::string &error);
     bool poisoned() const;
     PortableGdnPolicy policy() const;

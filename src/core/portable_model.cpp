@@ -3,6 +3,7 @@
 #include "portable_router_work.hpp"
 #include "portable_shared_work.hpp"
 #include "portable_memory.hpp"
+#include "portable_model_preflight.hpp"
 #include "portable_native_capacity.hpp"
 #include "strata/core/layer0_observer.hpp"
 #include "strata/core/expert_profile.hpp"
@@ -143,40 +144,15 @@ struct PortableModelSession::Impl {
             observer=std::make_unique<Layer0Observer>();
             std::clog<<"layer0_observer native_snapshot_bytes=0 host_bound_bytes="<<Layer0Observer::host_bound<<'\n';
         }
-        require(!opts.expert_native_profile.empty() || (!opts.expert_native_primary_slots && !opts.expert_native_helper_slots &&
-            opts.expert_native_plan_prefix.empty()),"native capacity options require a profile");
-        require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
-                "native Q8 observation requires explicit expert plans and strict accelerator execution");
-        require(!opts.native_hc_norm_inject_layer0 || (!opts.prompt_chunk_size && !opts.gdn_production && !opts.gdn_batch_input_projections &&
-            !opts.accelerators.empty() && !opts.allow_cpu_fallback && (opts.gdn_resident_weights || opts.dense_resident_weights) &&
-            !opts.native_hc_receipt_prefix.empty()),"native HC layer0 requires serial eager strict accelerator, resident weights and receipt prefix");
-        require(!opts.native_shared || (!opts.accelerators.empty() && !opts.allow_cpu_fallback && !opts.native_shared_receipt_prefix.empty()),
-                "native shared requires explicit accelerators, strict execution and private receipt prefix");
-        require(!opts.native_router || (!opts.accelerators.empty() && !opts.allow_cpu_fallback && !opts.native_router_receipt_prefix.empty()),
-                "native router requires explicit accelerators, strict execution and private receipt prefix");
-        require(!opts.native_moe_combine || (!opts.expert_native_q8_observation.empty() && !opts.accelerators.empty()),
-                "native MoE combine requires native Q8 observation and explicit accelerators");
-        require(opts.prompt_chunk_size==0 || (opts.prompt_chunk_size>=2&&opts.prompt_chunk_size<=8),
-                "portable model: prompt chunk size must be zero or [2,8]");
-        require(!opts.gdn_batch_input_projections || opts.prompt_chunk_size,
-                "portable model: batched GDN input projections require prompt chunks");
-        require(!opts.gdn_causal_chunk || (opts.prompt_chunk_size && opts.gdn_batch_input_projections && opts.gdn_production),
-                "portable model: causal GDN chunks require prompt chunks, batched projections and production");
+        portable_detail::validate_model_modes(opts,opts.accelerators.size());
         if(opts.prompt_chunk_size) opts.prompt_head_elision=true;
         report.chunk_memory_is_shape_envelope=opts.prompt_chunk_size!=0;
         require(shards.size() == 6 && model.size() == 6, "portable model: this fleet path requires all six shards");
-        require(opts.context >= 1 && opts.context <= 256 && opts.threads >= 1 && opts.threads <= 256,
-                "portable model: context [1,256]/thread limits");
         require(opts.accelerators.size() <= 2 && opts.device_caps.size() == opts.accelerators.size(),
                 "portable model: supply a separate cap for each of at most two accelerators");
         require((opts.device_policy_caps.empty() || opts.device_policy_caps.size()==opts.accelerators.size()) &&
                 (opts.device_free_reserves.empty() || opts.device_free_reserves.size()==opts.accelerators.size()),
                 "portable model: diagnostic budget evidence must follow accelerator slots");
-        require(!opts.qsa_production || (opts.qsa_reuse_attention && !opts.accelerators.empty() && !opts.allow_cpu_fallback),
-                "portable model: QSA production requires reuse and strict accelerators");
-        require(!opts.gdn_production || (opts.gdn_resident_state && !opts.accelerators.empty() &&
-                    !opts.allow_cpu_fallback),
-                "portable model: GDN production requires resident state and strict accelerators");
         portable_detail::validate_dense_topology(opts);
         std::set<ggml_backend_dev_t> devices;
         for (auto *a : opts.accelerators) {
@@ -186,8 +162,6 @@ struct PortableModelSession::Impl {
             require(devices.insert(device).second, "portable model: duplicate physical accelerator device");
         }
         require(check_architecture(model.meta()).empty(), "portable model: unsupported architecture");
-        require(opts.expert_workers >= 1 && opts.expert_workers <= 256,
-                "portable model: expert workers must be in [1,256]");
         const size_t expert_host_bound =
             10 * (3 * (H * FF / 32 * 34)) + (32u << 20) + size_t(opts.expert_workers + 1) * (9u << 20);
         require(expert_host_bound <= opts.host_cap, "portable model: host cap cannot admit expert staging/pool");

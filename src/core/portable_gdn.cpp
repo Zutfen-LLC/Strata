@@ -817,6 +817,13 @@ struct PortableGdnLayer::Impl {
 
 PortableGdnLayer::PortableGdnLayer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 PortableGdnLayer::~PortableGdnLayer() = default;
+bool PortableGdnLayer::native_hc_compiled() {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return true;
+#else
+    return false;
+#endif
+}
 std::unique_ptr<PortableGdnLayer> PortableGdnLayer::create(int64_t layer,
                                                            const std::vector<PortableTensorView> &tensors,
                                                            PortableGdnOptions options, std::string &error) {

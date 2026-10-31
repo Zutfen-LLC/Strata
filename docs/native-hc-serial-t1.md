@@ -81,3 +81,15 @@ snapshot is not repeated after reset. `--dump-executed-logits` also supports std
 head-elision requests, each in a fresh `request-N` directory, so a repeated request
 can check reset behavior without another model load. Neither diagnostic changes
 arithmetic, selection, state commits or the default-disabled path.
+
+
+`--validate-options` uses the real CLI parser and the same mode predicates as
+session creation, before Vulkan initialization or model access. It explicitly
+reports that physical features, metadata and memory admission were not checked.
+Preparation must validate every intended arm with the actual product, including
+its resident-weight options; a fake child cannot establish those preconditions.
+The absent flag does not imply resident GDN weights: both residency booleans
+default to false. `--gdn-resident-weights` retains attention weights across all
+36 GDN layers, including the existing PLE layer. It is not a layer-0-only switch.
+Changing that mode requires a matched off/on residency configuration and a new
+valid resource/ownership plan; prior nonresident controls do not qualify it.
