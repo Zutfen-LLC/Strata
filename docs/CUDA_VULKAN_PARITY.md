@@ -181,7 +181,16 @@ identity, exercise rollback/reset and compare an independent materialized
 control. An old-R final-consumer mutant fails; corrected source and default
 controls pass. Physical arithmetic/real FFN roles remain unqualified. There is
 no new model CLI flag, and the final FFN write/next-layer carry still uses the
-previous portable method. See the [bounded scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
+previous portable method.
+[Draft PR #104](https://github.com/Zutfen-LLC/Strata/pull/104), source
+`fcdee6895c24b9551842b16ca4c35f3d9b4fb22d`, supplies the missing native
+pre-read tuple snapshot. STRL004 copies original R, actual GDN BO and attention
+injection before the destructive half-1 read, using the existing stream and
+completion boundary inside the unchanged observer reservation. Portable/legacy
+captures keep their older schema and cannot supply missing BO by reconstruction.
+Host serialization, CUDA-mock, portable enabled/disabled and reader checks pass;
+actual native compile/capture remains a separately guarded prerequisite.
+No new arithmetic, synchronization, method selection or model flag is added. See the [bounded scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
