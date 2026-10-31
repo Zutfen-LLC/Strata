@@ -69,9 +69,14 @@ The two authorized real-role extractions are complete; original compat-BF16
 conversion matches both native roles byte-for-byte. An identical retained
 normalized operand exists, but its scaled down preactivations exceed the initial
 component domain. This is a qualification guard, not a native model limit.
-The next slice must derive justified SiLU/sigmoid domain handling before a
-real-role Vulkan replay; clipping inputs or silently widening bounds would
-change the test target. No more extraction or full-model capture is needed.
+A specification-derived normal-domain prerequisite is implemented at
+[`73aeec1f`](https://github.com/Zutfen-LLC/Strata/blob/73aeec1f953b87f14a587c2d35d920262c811c3d/docs/native-hc-mix-component.md).
+It derives exp/division limits, rejects quotient underflow/nonfinite results,
+preserves the native operation/reduction order, and retains exact local checks
+and the existing intrinsic error policies. Independent boundary/adversarial
+regressions and offline real-input domain preflight pass. Wider-domain/real-role
+hardware qualification remains pending; source proofs do not qualify intrinsic
+hardware behavior. No more extraction or full-model capture is needed.
 Pending writes, FFN HC, other shapes/native modes and model integration remain
 separate. Defaults stay disabled and PRs remain drafts.
 Do not attribute later route/head differences to down/up alone when upstream
