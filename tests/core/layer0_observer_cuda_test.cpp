@@ -21,9 +21,11 @@ int main(){try {
             need(observer.snapshot(1,Layer0Observer::Field(i),state.data(),nullptr,error));
         std::array<int32_t,10> ids{};for(int i=0;i<10;++i)ids[i]=i;
         need(observer.snapshot(1,Layer0Observer::router_ids,ids.data(),nullptr,error));
+        for(auto field:{Layer0Observer::attention_mixed,Layer0Observer::attention_inject})
+            need(observer.snapshot(1,field,state.data(),nullptr,error));
         std::array<int32_t,512> res;res.fill(-1);res[7]=42;
         need(observer.flush(248045,res.data(),error));need(observer.finished());
-        need(observer_mock_downloads==12);need(observer.flush(248045,res.data(),error));need(observer_mock_downloads==12);
+        need(observer_mock_downloads==14);need(observer.flush(248045,res.data(),error));need(observer_mock_downloads==14);
     }
     need(observer_mock_allocations==0);std::filesystem::remove(path);
     {
@@ -32,9 +34,11 @@ int main(){try {
         need(!reduced.snapshot(1,Layer0Observer::expert_rows,zeros.data(),nullptr,error));
         for(int i=0;i<12;++i)if(i!=Layer0Observer::expert_rows)
             need(reduced.snapshot(1,Layer0Observer::Field(i),zeros.data(),nullptr,error));
+        for(auto field:{Layer0Observer::attention_mixed,Layer0Observer::attention_inject})
+            need(reduced.snapshot(1,field,zeros.data(),nullptr,error));
         std::array<int32_t,512> primary;primary.fill(-1);
         need(reduced.flush(248045,primary.data(),error));
-        need(reduced.finished() && observer_mock_downloads==23);
+        need(reduced.finished() && observer_mock_downloads==27);
     }
     need(observer_mock_allocations==0);std::filesystem::remove(path);
     observer_mock_free=(512u<<20);bool failed=false;

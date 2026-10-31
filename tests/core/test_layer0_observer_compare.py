@@ -7,9 +7,10 @@ import unittest
 spec=importlib.util.spec_from_file_location('compare',Path(__file__).resolve().parents[2]/'tools/compare_layer0_observer.py')
 c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
 
-def image(change=None,missing=(),binding=b'a'*64,reduced=False,legacy=False):
-    raw=(b'STRL001\0' if legacy else b'STRL002\0')+binding
-    for i,n in enumerate(c.COUNTS[:-1] if legacy else c.COUNTS):
+def image(change=None,missing=(),binding=b'a'*64,reduced=False,legacy=False,version=3):
+    if legacy:version=1
+    raw=f'STRL00{version}\0'.encode()+binding
+    for i,n in enumerate(c.COUNTS[:{1:18,2:19,3:21}[version]]):
         if i in missing:raw+=struct.pack('<II',i,0);continue
         data=bytes(n*4)
         if i==6:data=struct.pack('<10i',*range(10))
@@ -61,6 +62,32 @@ class Test(unittest.TestCase):
                 with self.assertRaises(ValueError):c.read(a)
             a.write_bytes(image(legacy=True));b.write_bytes(image())
             self.assertTrue(c.compare(a,b)['exact_observed_boundaries'])
+    def test_attention_hc_version_scope_and_dependencies(self):
+        with tempfile.TemporaryDirectory() as t:
+            a,b=Path(t)/'a',Path(t)/'b'
+            a.write_bytes(image());b.write_bytes(image(change=(19,struct.pack('<f',1))))
+            r=c.compare(a,b);self.assertEqual(r['first_difference'],'attention_mixed')
+            self.assertTrue(r['attention_hc_inputs_observed'])
+            hc=next(s for s in r['stages'] if s['boundary']=='attention_mixed')
+            self.assertEqual(hc['attribution'],'local_boundary_candidate')
+            raw=image(change=(19,struct.pack('<f',1)))
+            offset=72+sum(8+n*4 for n in c.COUNTS[:3])+8
+            raw=raw[:offset]+struct.pack('<f',2)+raw[offset+4:];b.write_bytes(raw)
+            pending=next(s for s in c.compare(a,b)['stages'] if s['boundary']=='pending_residual')
+            self.assertEqual(pending['attribution'],'upstream_difference_present')
+            b.write_bytes(image(change=(20,struct.pack('<f',1))))
+            self.assertEqual(c.compare(a,b)['first_difference'],'attention_inject')
+            for version in (1,2):
+                a.write_bytes(image(version=version));b.write_bytes(image())
+                r=c.compare(a,b);self.assertTrue(r['exact_observed_boundaries'])
+                self.assertFalse(r['attention_hc_inputs_observed'])
+                self.assertFalse(next(s for s in r['stages'] if s['boundary']=='attention_mixed')['available'])
+                b.write_bytes(image(change=(3,struct.pack('<f',1))))
+                self.assertEqual(c.compare(a,b)['first_difference'],'pending_residual')
+            for invalid in (image(missing=(19,)),image(missing=(20,)),image(change=(19,struct.pack('<I',0x7f800000)))):
+                a.write_bytes(invalid)
+                with self.assertRaises(ValueError):c.read(a)
+
     def test_downstream_attribution(self):
         with tempfile.TemporaryDirectory() as t:
             a,b=Path(t)/'a',Path(t)/'b';a.write_bytes(image());raw=image(change=(4,struct.pack('<f',1)))

@@ -1350,6 +1350,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                 (int) (l * kProfPer + (half == 0 ? 27 : 30)));
         };
         const bool q8_attn = gr_read_group(0, pending, inj2_, inj_);   // true: xq_ holds mixed's q8_1 (STRATA_QFUSE)
+        if(l==0 && layer0_observer_) {
+            using O=Layer0Observer;
+            if(!layer0_observer_->snapshot(T,O::attention_mixed,mixed_+tb*N,cs,err) ||
+               !layer0_observer_->snapshot(T,O::attention_inject,inj_+tb*HC,cs,err))return false;
+        }
         {   // measurement only: STRATA_DUMMY_NODES=k adds k empty kernel nodes per layer (what one node costs in a window)
             static const int dummy = [] { const char* e = std::getenv("STRATA_DUMMY_NODES"); return e != nullptr ? std::atoi(e) : 0; }();
             for (int d = 0; d < dummy; ++d) gpu_noop(cs);

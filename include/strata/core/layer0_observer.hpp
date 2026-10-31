@@ -22,7 +22,7 @@ inline void layer0_native_state_view(const void* source,void* destination,size_t
 // One diagnostic image. No computed replacement for an unavailable native value.
 class Layer0Observer {
     FILE* file_=nullptr;
-    std::array<bool,19> seen_{};
+    std::array<bool,21> seen_{};
     bool active_=false,finished_=false,reduced_helper_=false;
     size_t bytes_=0;
     void write(const void* p,size_t n) {
@@ -32,10 +32,10 @@ class Layer0Observer {
 public:
     enum Field {embedding,state_before,history_before,pending_residual,moe_input,router_scores,
         router_ids,router_weights,shared_output,expert_rows,combined_output,inject,
-        state_after,history_after,primary_ownership,token,materialized_post_residual,helper_ownership,helper_reduction};
+        state_after,history_after,primary_ownership,token,materialized_post_residual,helper_ownership,helper_reduction,attention_mixed,attention_inject};
     std::array<int32_t,512> primary{},helper{}; // allocated only with this opt-in owner
     static constexpr size_t limit=8u<<20,host_bound=8u<<20;
-    static constexpr std::array<size_t,19> counts{{10240,786432,30720,10240,2560,512,10,10,2560,25600,2560,4,786432,30720,512,1,10240,512,1}};
+    static constexpr std::array<size_t,21> counts{{10240,786432,30720,10240,2560,512,10,10,2560,25600,2560,4,786432,30720,512,1,10240,512,1,2560,4}};
     static bool requested() {const char* p=std::getenv("STRATA_LAYER0_OBSERVER");return p && *p;}
     Layer0Observer() {
         if(!requested())return;
@@ -49,7 +49,7 @@ public:
 #ifndef _WIN32
         if(fchmod(fileno(file_),0600)!=0){fclose(file_);file_=nullptr;throw std::runtime_error("layer0 observer: private output failed");}
 #endif
-        const char magic[8]={'S','T','R','L','0','0','2','\0'};
+        const char magic[8]={'S','T','R','L','0','0','3','\0'};
         try {write(magic,8);write(binding,64);}catch(...){fclose(file_);file_=nullptr;throw;}
     }
     ~Layer0Observer(){if(file_)fclose(file_);}

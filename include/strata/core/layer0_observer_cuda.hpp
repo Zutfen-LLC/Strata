@@ -11,8 +11,8 @@ class NativeLayer0Observer {
     float* device_=nullptr;
     int device_id_=0;
     bool reduced_helper_=false;
-    std::array<size_t,19> offsets_{};
-    std::array<bool,19> available_{};
+    std::array<size_t,21> offsets_{};
+    std::array<bool,21> available_{};
 public:
     std::array<int32_t,512> helper{}; // actual helper membership, filled after cache admission
     NativeLayer0Observer() {

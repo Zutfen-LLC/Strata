@@ -16,8 +16,12 @@ int main(){try {
      reject([&]{o.put(Layer0Observer::embedding,f.data(),f.size());});reject([&]{o.finish();});
      std::vector<float> zeros(786432,0);
      for(size_t i=0;i<Layer0Observer::counts.size();++i)if(i!=Layer0Observer::helper_reduction && i!=Layer0Observer::token && i!=Layer0Observer::embedding &&
-        i!=Layer0Observer::state_after && i!=Layer0Observer::history_after && i!=Layer0Observer::materialized_post_residual)
+        i!=Layer0Observer::state_after && i!=Layer0Observer::history_after && i!=Layer0Observer::materialized_post_residual &&
+        i!=Layer0Observer::attention_mixed && i!=Layer0Observer::attention_inject)
         o.put(Layer0Observer::Field(i),zeros.data(),Layer0Observer::counts[i]);
+     reject([&]{o.finish();});
+     o.put(Layer0Observer::attention_mixed,zeros.data(),2560);reject([&]{o.finish();});
+     o.put(Layer0Observer::attention_inject,zeros.data(),4);
      o.finish();need(o.finished()&&!o.active());}
     reject([]{Layer0Observer overwrite;});need(std::filesystem::file_size(path)<Layer0Observer::limit);
     std::filesystem::remove(path);unsetenv("STRATA_LAYER0_OBSERVER");unsetenv("STRATA_LAYER0_BINDING");

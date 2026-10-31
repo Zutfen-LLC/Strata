@@ -39,12 +39,25 @@ The observer is never rearmed by reset. Later calls cannot append to the trace.
 
 ## Values and availability
 
-The fixed version-2 schema describes H2560, HC4, 512 experts, K10 and the existing
+The fixed version-3 schema describes H2560, HC4, 512 experts, K10 and the existing
 GDN state/history layout. It records embedding/HC residual, incoming GDN state
 and history, the FFN pending residual, normalized MoE input, router scores,
 ordered IDs/weights, gated shared output, original-order unweighted expert rows when available,
 combined output and injection coefficients. The pending residual, combined
 output and injection are separate operands of the native pending update.
+
+Version 3 additionally requires the attention HC mixed input (2560 F32 values)
+and attention HC injection (4 F32 values), before GDN projections/recurrence.
+Native snapshots the existing fused attention HC read outputs on its original
+stream. Portable retains and reads the corresponding existing graph outputs.
+Only the opt-in graph keeps these intermediate outputs alive; its scheduler
+storage remains part of the ordinary graph admission ledger. No attention output
+projection or residual is reconstructed. These fields precede the FFN pending
+residual in comparison order. A difference there locates divergence before GDN;
+equal HC fields do not establish equality of the later GDN or residual arithmetic.
+Version-1/2 traces retain their original scope: the new HC fields are reported
+unavailable, never inferred, and the pending residual remains a composite
+attention-path boundary for those comparisons.
 
 Local helper reduction is recorded explicitly in version 2. In that mode native
 helpers weight/reduce their rows before returning partials, and the main device
