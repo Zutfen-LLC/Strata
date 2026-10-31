@@ -23,3 +23,4 @@ void strata_vk_native_hc_run(StrataVkNativeHc* p,const ggml_tensor* residual,con
  ggml_backend_vk_synchronize(g.backend);uint32_t status=0;ggml_backend_tensor_get(g.status,&status,0,4);native_hc_need(status==0,"native HC: device nonfinite/subnormal arithmetic; no result accepted");
 }
 }
+#include "strata_vk_native_hc_mix.inc"
