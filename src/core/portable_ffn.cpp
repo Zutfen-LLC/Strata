@@ -690,7 +690,7 @@ PortableMemoryUsage PortableFfn::memory_usage() const {
     if(s.native_shared){m.device_graph+=s.native_shared->bytes();m.host_extra_bound+=s.native_shared->host_bound();}
 #endif
 #ifdef STRATA_PORTABLE_NATIVE_HC
-    if(s.native_hc) {m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=8u<<20;}
+    if(s.native_hc) {m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=PortableFfnOptions::native_hc_pending_host_bound;}
 #endif
     m.host_extra_bound+=s.owned_weights->shared_host_bound;
     m.host_extra_bound += 3*metadata_bytes; // three owning metadata contexts, plus token staging below

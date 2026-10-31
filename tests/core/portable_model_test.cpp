@@ -100,6 +100,13 @@ int main() {
             check(baseline->expert_work().provider_ms == 0 && baseline->expert_work().provider_calls == 0,
                   "default provider path has no new timing capture");
         }
+        {
+            auto scoped=opts;scoped.layer0_resident_weights=true;
+            check(!scoped.native_hc_ffn_read_layer0 && !opts.layer0_resident_weights,"model FFN/residency defaults changed");
+            auto control=PortableModelSession::open(fixture.paths,(fixture.root/"manifest").string(),scoped,error);check(bool(control),error);
+            for(size_t i=0;i<2;++i){std::vector<float> actual;check(control->step(int32_t(5+i),actual,error),error);check(actual==reference[i],"layer0 residency changed disabled model output");}
+            check(control->model_work().native_ffn_hc_layer0_calls==0,"disabled model reported FFN component work");
+        }
         opts.qsa_reuse_attention = true; // same-backend rows compare with default baseline above
         opts.gdn_resident_state = true; // absent accelerator preserves default logits
         opts.dense_resident_weights = true;

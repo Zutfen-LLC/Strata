@@ -3,6 +3,7 @@
 #include "strata_vk_native_hc.hpp"
 #include "native_hc_layout.hpp"
 #include "native_hc_pending.hpp"
+#include "portable_model_preflight.hpp"
 #include "strata/core/layer0_observer.hpp"
 #include "ggml-cpu.h"
 #include "ggml-backend-impl.h"
@@ -181,12 +182,22 @@ int main(){try{
  o.native_hc_norm_inject=false;o.scratch.reset();auto off=PortableGdnLayer::create(0,f.views,o,error);check(bool(off),error);check(off->reset(error),error);check(off->step(f.input(0),experts(),route,error),error);check(off->last_residual()==disabled,"default-disabled equivalence lost");
  // Real GDN projected-output -> half-1 FFN HC boundary; no synthetic BO substitution.
  o.native_hc_norm_inject=true;o.native_hc_mix=true;o.native_hc_pending=false;
- o.native_hc_ffn_read=true;o.execution.resident_dense_weights=true;
+ PortableModelOptions model;model.native_hc_norm_inject_layer0=true;model.native_hc_mix_layer0=true;
+ model.native_hc_ffn_read_layer0=true;model.layer0_resident_weights=true;model.native_hc_receipt_prefix=o.native_hc_receipt_prefix;
+ portable_detail::model_gdn_hc_options(model,0,o);
+ o.execution.resident_dense_weights=portable_detail::model_resident_dense(model,0,false);
+ check(o.native_hc_ffn_read&&o.native_hc_mix&&o.native_hc_norm_inject&&o.execution.resident_dense_weights,"actual model-to-layer FFN wiring");
+ check(!portable_detail::model_resident_dense(model,1,false)&&!portable_detail::model_resident_dense(model,0,true),"layer0 residency broadened to another layer/head");
+ PortableGdnOptions other;portable_detail::model_gdn_hc_options(model,1,other);
+ check(!other.native_hc_ffn_read&&!other.native_hc_mix&&!other.native_hc_norm_inject,"native model options broadened beyond layer0");
+ check(portable_detail::model_hc_host_bound(model,0)==(16u<<20)&&portable_detail::model_hc_host_bound(model,1)==0,"model FFN/attention host pre-admission omitted or double counted");
  std::vector<PortableTensorView> fw;for(const auto&v:f.views)if(v.name.find("hc_ffn_")!=std::string::npos||v.name.find(".ffn_")!=std::string::npos)fw.push_back(v);
  for(bool resident:{false,true}) {
   o.resident_state=resident;o.scratch=resident?PortableGdnScratch::create(o.execution,error):nullptr;
   for(int bad=0;bad<4;++bad){auto opts=o;if(bad==0)opts.native_hc_mix=false;if(bad==1)opts.native_hc_pending=true;if(bad==2)opts.execution.resident_dense_weights=false;if(bad==3)opts.execution.graph_budget=1;
    check(!PortableGdnLayer::create(0,f.views,opts,error),"invalid actual FFN boundary accepted");}
+  {auto short_room=o;short_room.execution.weight_budget=baseline->weight_bytes()+2*6182400-1;
+   check(!PortableGdnLayer::create(0,f.views,short_room,error),"model FFN converted weight budget refusal missing");}
   auto product=PortableGdnLayer::create(0,f.views,o,error);check(bool(product),error);
   check(product->weight_bytes()==baseline->weight_bytes()+2*6182400,"FFN roles duplicated or replacement ledger wrong");
   check(product->memory_usage().device_graph>0&&product->memory_usage().host_extra_bound>=(8u<<20),"FFN scratch/preflight ledger omitted");
@@ -203,11 +214,13 @@ int main(){try{
   check(pt.ffn_hc.normalized==expected_xn,"FFN norm did not consume candidate");
   const auto completed=product->last_residual(),state=product->recurrent_state(),history=product->convolution_history();const auto activation=route.activation;
   check(product->native_ffn_hc_pending_calls()==1&&product->native_hc_pending_calls()==0,"half-specific paid counters mixed");
-  check(product->reset(error),error);const auto clean_state=product->recurrent_state(),clean_history=product->convolution_history();
+  check(product->reset(error),error);check(product->native_ffn_hc_pending_calls()==1,"reset erased paid FFN component work");const auto clean_state=product->recurrent_state(),clean_history=product->convolution_history();
   PortableExpertRows refuse=[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="provider rollback";return false;};
   check(!product->step(original,refuse,route,error,&pt),"FFN provider refusal accepted");
   check(product->tokens()==0&&product->last_residual().empty()&&product->recurrent_state()==clean_state&&product->convolution_history()==clean_history&&pt.ffn_hc.residual.empty(),"FFN refusal published candidate/state/trace");
+  check(product->native_ffn_hc_pending_calls()==2,"provider rollback hid paid FFN component work");
   fail_pending_run=true;check(!product->step(original,experts(),route,error),"half-1 component refusal accepted");fail_pending_run=false;
+  check(product->native_ffn_hc_pending_calls()==2,"failed FFN component counted as completed work");
   check(product->tokens()==0&&product->recurrent_state()==clean_state,"half-1 refusal committed GDN state");
   check(product->step(original,experts(),route,error,&pt),error);check(product->last_residual()==completed&&product->recurrent_state()==state&&product->convolution_history()==history,"FFN reset/retry changed transaction");
   check(product->step(f.input(1),experts(),route,error,&pt),error);check(pt.ffn_hc.original==f.input(1)&&pt.ffn_hc.previous_output==actual_projected,"next token used stale producer");

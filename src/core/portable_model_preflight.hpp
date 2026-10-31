@@ -2,7 +2,24 @@
 #include "strata/core/portable_model.hpp"
 #include "native_hc_layout.hpp"
 #include <stdexcept>
+#include <cstdlib>
 namespace strata::core::portable_detail {
+// Shared model-to-layer policy seam. Explicit layer-0 residency never changes
+// attention-only GDN residency, another layer, the head, or dense topology.
+inline bool model_resident_dense(const PortableModelOptions& opts,size_t index,bool output) {
+    return opts.dense_resident_weights || (!output && index==0 && opts.layer0_resident_weights);
+}
+inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer) {
+    if(layer || !opts.native_hc_norm_inject_layer0)return 0;
+    return (opts.native_hc_mix_layer0 ? PortableGdnOptions::native_hc_read_host_bound : PortableGdnOptions::native_hc_host_bound)+
+        (opts.native_hc_ffn_read_layer0 ? PortableFfnOptions::native_hc_pending_host_bound : 0);
+}
+inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,PortableGdnOptions& o) {
+    o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && layer==0;
+    o.native_hc_mix=opts.native_hc_mix_layer0 && layer==0;
+    o.native_hc_ffn_read=opts.native_hc_ffn_read_layer0 && layer==0;
+    if(o.native_hc_norm_inject)o.native_hc_receipt_prefix=opts.native_hc_receipt_prefix;
+}
 // Argument/mode validation only. No backend query, model access or allocation;
 // never a physical capability, metadata or memory-admission success receipt.
 inline void validate_model_modes(const PortableModelOptions& opts,size_t selected_accelerators) {
@@ -11,9 +28,15 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
             opts.expert_native_plan_prefix.empty()),"native capacity options require a profile");
         require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
                 "native Q8 observation requires explicit expert plans and strict accelerator execution");
+        require(!opts.native_hc_ffn_read_layer0 || (opts.native_hc_mix_layer0 &&
+            (opts.layer0_resident_weights || opts.dense_resident_weights)),
+            "native FFN HC layer0 requires composed attention and explicit layer0/dense resident weights");
+        const char* observer=std::getenv("STRATA_LAYER0_OBSERVER");
+        require(!opts.native_hc_ffn_read_layer0 || !observer || !*observer,
+            "native FFN HC layer0: legacy observer lacks pending tuple; unsupported");
         require(!opts.native_hc_mix_layer0 || opts.native_hc_norm_inject_layer0,"native HC read layer0 requires native norm/injection");
         require(!opts.native_hc_norm_inject_layer0 || (!opts.prompt_chunk_size && !opts.gdn_production && !opts.gdn_batch_input_projections &&
-            selected_accelerators != 0 && !opts.allow_cpu_fallback && (opts.gdn_resident_weights || opts.dense_resident_weights) &&
+            selected_accelerators != 0 && !opts.allow_cpu_fallback && (opts.gdn_resident_weights || opts.dense_resident_weights || opts.layer0_resident_weights) &&
             !opts.native_hc_receipt_prefix.empty()),"native HC layer0 requires serial eager strict accelerator, resident weights and receipt prefix");
         require(!opts.native_shared || (selected_accelerators != 0 && !opts.allow_cpu_fallback && !opts.native_shared_receipt_prefix.empty()),
                 "native shared requires explicit accelerators, strict execution and private receipt prefix");
