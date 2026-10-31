@@ -3,8 +3,12 @@
 This component extends the native-method investigation after PR98's partial
 norm/injection seam. It is not called by `PortableModelSession`, adds no model
 flag, and does not change any existing shader, native launch selection or default.
-The existing norm/injection v1 contract remains unchanged. Hardware qualification
-of this component is pending; `qualified=false` remains explicit.
+The existing norm/injection v1 contract remains unchanged. The bounded paired zero/sparse/dense T1 synthetic component gate passed at
+`df488f25812a9a5cac94eabe6630bfa7bcae75b0`, independently checked offline
+from sealed operator receipts. Mixed outputs are exact across backends for these
+fixtures; sparse low differs within the separate intrinsic contract. This is
+limited synthetic acceptance, not real-role or full-HC/model qualification;
+`qualified=false` remains explicit.
 
 The fixed geometry is HC4/H2560/LR320/T1, no pending write, normal-or-zero F32
 normalized input and raw BF16 down/up rows. Conversion from an approved Q8 role
@@ -31,8 +35,8 @@ existing T1 up kernel. It supplies the *same already normalized input* to down
 and to up's residual path, with norm and RS exactly +1; it bypasses normalization.
 It requires the selected staged variant3 and actual fixture plain/staged/repeat
 bit equality. It does not replace any production launcher or reconstruct a
-pending residual. CUDA compilation/execution and HIP compilation remain separate
-unrun gates where that toolchain is unavailable. The probe's added entry point
+pending residual. The native CUDA probe compiled and completed this bounded synthetic gate;
+HIP compilation/execution remains untested. The probe's added entry point
 is diagnostic only; no model execution calls it.
 
 ## Bounded arithmetic acceptance
