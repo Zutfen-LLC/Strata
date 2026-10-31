@@ -21,6 +21,7 @@
 #include <cstring>
 #include <random>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 namespace strata::kernels {

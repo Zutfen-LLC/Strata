@@ -1,5 +1,5 @@
 """Independent pinned source-order controls; no runtime-generated expected captures."""
-import sys,unittest,struct,tempfile
+import sys,unittest,struct,tempfile,subprocess,re,shutil
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'tools'))
 import native_hc_mix_numeric as m
@@ -51,6 +51,20 @@ class MixTests(unittest.TestCase):
    (p/'mixed.f32le').write_bytes(bytes(2560*4))
    for backend in ['native','vulkan']:
     with self.assertRaisesRegex(ValueError,'down SiLU bound'):m.check(p/'fixture',p,backend)
+ def test_native_wrapper_headers_signature_and_host_refusals(self):
+  root=Path(__file__).resolve().parents[2];text=(root/'src/kernels/cuda/fused_gr.cu').read_text()
+  self.assertIn('#include <stdexcept>',text)
+  # Compile the actual declaration and source precondition independently of
+  # CUDA. This catches host API/header drift; it does not claim nvcc coverage.
+  begin=text.rindex('void fused_gr_normalized_probe(');end=text.index('    GrMulti m{};',begin)
+  validation=text[begin:end]+'}\n'
+  includes='\n'.join(re.findall(r'^#include <(?:atomic|type_traits|cmath|cstdio|cstdlib|cstring|random|string|vector|stdexcept)>$',text,re.M))
+  code=includes+'\n#include "strata/kernels/fused_gr.hpp"\nnamespace strata::kernels {\n'+validation+'}\n'
+  code+='\nusing Fn=void(*)(const float*,const uint16_t*,const uint16_t*,const float*,float*,float*,float*,int,void*);\nstatic_assert(std::is_same_v<decltype(&strata::kernels::fused_gr_normalized_probe),Fn>);\nint main(){float x=1;uint16_t w=0;\n for(int variant:{0,1,2,3,4})for(int missing=-1;missing<7;++missing){\n  bool refused=false;\n  try{strata::kernels::fused_gr_normalized_probe(missing==0?nullptr:&x,missing==1?nullptr:&w,missing==2?nullptr:&w,missing==3?nullptr:&x,missing==4?nullptr:&x,missing==5?nullptr:&x,missing==6?nullptr:&x,variant,nullptr);}catch(const std::invalid_argument&){refused=true;}\n  if(refused!=(missing>=0||(variant!=1&&variant!=3)))return 1;\n }return 0;}\n'
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d);(p/'control.cpp').write_text(code)
+   subprocess.run([shutil.which('c++') or 'c++','-std=c++17','-I'+str(root/'include'),str(p/'control.cpp'),'-o',str(p/'control')],check=True,capture_output=True)
+   subprocess.run([str(p/'control')],check=True)
  def test_bad_shape_version(self):
   with tempfile.TemporaryDirectory() as d:
    p=Path(d)/'fixture';p.write_bytes(b'HCMIX02\0')
