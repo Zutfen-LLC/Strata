@@ -65,9 +65,15 @@ The scope and native unobserved-intermediate limit are documented in the
 [pinned component contract](https://github.com/Zutfen-LLC/Strata/blob/df488f25812a9a5cac94eabe6630bfa7bcae75b0/docs/native-hc-mix-component.md).
 No additional synthetic campaign is required before bounded real-role validation;
 actual role identity/conversion and representative ranges remain the next gate.
-Real-role extraction permission is pending. No real weights were extracted for
-this component gate. Pending writes, FFN HC, other shapes/native modes and model
-integration remain separate. Defaults stay disabled and PRs remain drafts.
+The two authorized real-role extractions are complete; original compat-BF16
+conversion matches both native roles byte-for-byte. An identical retained
+normalized operand exists, but its scaled down preactivations exceed the initial
+component domain. This is a qualification guard, not a native model limit.
+The next slice must derive justified SiLU/sigmoid domain handling before a
+real-role Vulkan replay; clipping inputs or silently widening bounds would
+change the test target. No more extraction or full-model capture is needed.
+Pending writes, FFN HC, other shapes/native modes and model integration remain
+separate. Defaults stay disabled and PRs remain drafts.
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
 tolerance from matching generated tokens.
