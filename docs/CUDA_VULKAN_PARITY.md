@@ -179,7 +179,15 @@ The same candidate feeds FFN HC and the final residual consumer, with unchanged
 whole-layer publication. Host tests inspect actual graph producer/consumer
 identity, exercise rollback/reset and compare an independent materialized
 control. An old-R final-consumer mutant fails; corrected source and default
-controls pass. Physical arithmetic/real FFN roles remain unqualified. There is
+controls pass. A bounded physical synthetic coordinator gate now records successful
+pending/norm/mix contracts, materialized control, reset/rollback/disabled behavior
+and lifecycle cleanup. The compact evidence supports independent receipt and
+matching-module validation; omitted output arrays prevent independent numerical
+replay, whole-state arrays are not exported, and runtime library closure is not
+independently captured. No continuous monitoring claim is made. Original packer
+conversion now reproduces all four extracted real FFN role payloads byte for
+byte; this establishes role identity only. Real FFN arithmetic still requires an
+actual matched native pre-read tuple and separate component qualification. There is
 no new model CLI flag, and the final FFN write/next-layer carry still uses the
 previous portable method.
 [Draft PR #104](https://github.com/Zutfen-LLC/Strata/pull/104), source
