@@ -1,0 +1,27 @@
+#version 450
+#extension GL_EXT_spirv_intrinsics : require
+#extension GL_GOOGLE_include_directive : require
+#include "../../core/native_hc_mix_limits.h"
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427)
+float pending_fma(float a,float b,float c);
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer R {float residual[];};
+layout(binding=1,std430) readonly buffer B {float block_out[];};
+layout(binding=2,std430) readonly buffer I {float injection[];};
+layout(binding=3,std430) writeonly buffer O {float candidate[];};
+layout(binding=4,std430) writeonly buffer G {float gates[];};
+layout(binding=5,std430) writeonly buffer E {float exponentials[];};
+layout(binding=6,std430) buffer S {uint status[];};
+layout(push_constant) uniform Params {uint rb,bb,ib,ob,gb,eb,sb;} p;
+shared float gate;
+float checked(float v){uint b=floatBitsToUint(v)&0x7fffffffu;if(b>=0x7f800000u)atomicOr(status[p.sb],1u);if(b>0u&&b<0x800000u)atomicOr(status[p.sb],2u);return v;}
+void main(){uint c=gl_WorkGroupID.x,t=gl_LocalInvocationID.x;
+ if(t==0u){precise float scaled=checked(injection[p.ib+c])/4.0;
+  if((floatBitsToUint(scaled)&0x7fffffffu)>STRATA_HC_MIX_ACTIVATION_LIMIT_BITS)atomicOr(status[p.sb],4u);
+  float e=checked(exp(-scaled));precise float den=checked(1.0+e);
+  if(!(e>0.0)||den>uintBitsToFloat(STRATA_HC_MIX_MAX_DENOMINATOR_BITS))atomicOr(status[p.sb],4u);
+  precise float sigma=checked(1.0/den);if(sigma==0.0)atomicOr(status[p.sb],4u);
+  precise float gw=checked(2.0*sigma);gate=gw;gates[p.gb+c]=gate;exponentials[p.eb+c]=e;
+ }barrier();
+ for(uint d=t;d<2560u;d+=256u)candidate[p.ob+c*2560u+d]=checked(pending_fma(checked(block_out[p.bb+d]),gate,checked(residual[p.rb+c*2560u+d])));
+}

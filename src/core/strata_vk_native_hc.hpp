@@ -28,3 +28,14 @@ void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor* normali
  const ggml_tensor* down,const ggml_tensor* up,ggml_tensor* low_pre,ggml_tensor* low,ggml_tensor* low_exp,
  ggml_tensor* up_pre,ggml_tensor* gates,ggml_tensor* up_exp,ggml_tensor* mixed);
 }
+
+namespace strata::core::portable_detail {
+// Standalone T1 candidate only. Original R/bo/inject stay immutable until the
+// caller explicitly commits after all consumers succeed; no product integration.
+struct StrataVkNativeHcPending;
+StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t,const char* effective_spv,size_t budget=65536);
+size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*);
+void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*) noexcept;
+void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*,const ggml_tensor* residual,const ggml_tensor* block_out,
+ const ggml_tensor* injection,ggml_tensor* candidate,ggml_tensor* gate,ggml_tensor* exponential);
+}

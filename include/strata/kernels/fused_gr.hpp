@@ -102,3 +102,8 @@ namespace strata::kernels {
 void fused_gr_normalized_probe(const float* normalized,const uint16_t* down,const uint16_t* up,
  const float* ones,float* rs_ones,float* low,float* mixed,int variant,void* stream);
 }
+
+namespace strata::kernels {
+// Test-only observation of the unchanged native pending gate expression.
+void fused_gr_pending_gate_probe(const float* previous,float* gate,float* exponential,void* stream);
+}
