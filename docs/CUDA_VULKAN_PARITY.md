@@ -232,6 +232,12 @@ The remaining final-write seam is the GGML post multiply/add in
 `src/core/portable_ffn.cpp`; original native code materializes before layer-1 PLE
 and otherwise preserves its pending/control/head boundaries. A write-only
 candidate must preserve the selected native postops' scale/sigmoid/FMA order.
+The standalone T1 final-write component now passes bounded synthetic and
+identical-input real-operand backend-local contracts with actual native/Vulkan
+execution and effective-module validation. Cross-backend differences remain;
+no output tolerance was fitted and component evidence is not model parity.
+Default-disabled actual model final materialization before PLE remains the
+next integration slice; product transaction/state behavior is not yet qualified.
 Existing roles/operands support synthetic development; a real final-write replay
 still needs the actual post-combine FFN block output, not HC mixed or GDN BO.
 No new arithmetic, synchronization, method selection or model flag is added. See the [bounded scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
