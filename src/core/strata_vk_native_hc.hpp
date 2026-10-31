@@ -4,7 +4,8 @@
 #include <cstdint>
 namespace strata::core::portable_detail {
 struct StrataVkNativeHc;
-// Standalone observation only. Exact native rsqrt/contraction qualification is pending.
+// Standalone component and experimental serial bridge. Numerical contract v1;
+// no universal rsqrt bit identity or full-HC qualification.
 // Normal-or-zero arithmetic domain only. No Q8/REQ8/V3/pending-write fallback.
 StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t,const char* effective_spv,size_t metadata_budget=65536);
 size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*);

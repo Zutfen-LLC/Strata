@@ -3,6 +3,7 @@
 #include "portable_router_work.hpp"
 #include "portable_shared_work.hpp"
 #include "portable_memory.hpp"
+#include "portable_model_preflight.hpp"
 #include "portable_native_capacity.hpp"
 #include "strata/core/layer0_observer.hpp"
 #include "strata/core/expert_profile.hpp"
@@ -143,37 +144,15 @@ struct PortableModelSession::Impl {
             observer=std::make_unique<Layer0Observer>();
             std::clog<<"layer0_observer native_snapshot_bytes=0 host_bound_bytes="<<Layer0Observer::host_bound<<'\n';
         }
-        require(!opts.expert_native_profile.empty() || (!opts.expert_native_primary_slots && !opts.expert_native_helper_slots &&
-            opts.expert_native_plan_prefix.empty()),"native capacity options require a profile");
-        require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
-                "native Q8 observation requires explicit expert plans and strict accelerator execution");
-        require(!opts.native_shared || (!opts.accelerators.empty() && !opts.allow_cpu_fallback && !opts.native_shared_receipt_prefix.empty()),
-                "native shared requires explicit accelerators, strict execution and private receipt prefix");
-        require(!opts.native_router || (!opts.accelerators.empty() && !opts.allow_cpu_fallback && !opts.native_router_receipt_prefix.empty()),
-                "native router requires explicit accelerators, strict execution and private receipt prefix");
-        require(!opts.native_moe_combine || (!opts.expert_native_q8_observation.empty() && !opts.accelerators.empty()),
-                "native MoE combine requires native Q8 observation and explicit accelerators");
-        require(opts.prompt_chunk_size==0 || (opts.prompt_chunk_size>=2&&opts.prompt_chunk_size<=8),
-                "portable model: prompt chunk size must be zero or [2,8]");
-        require(!opts.gdn_batch_input_projections || opts.prompt_chunk_size,
-                "portable model: batched GDN input projections require prompt chunks");
-        require(!opts.gdn_causal_chunk || (opts.prompt_chunk_size && opts.gdn_batch_input_projections && opts.gdn_production),
-                "portable model: causal GDN chunks require prompt chunks, batched projections and production");
+        portable_detail::validate_model_modes(opts,opts.accelerators.size());
         if(opts.prompt_chunk_size) opts.prompt_head_elision=true;
         report.chunk_memory_is_shape_envelope=opts.prompt_chunk_size!=0;
         require(shards.size() == 6 && model.size() == 6, "portable model: this fleet path requires all six shards");
-        require(opts.context >= 1 && opts.context <= 256 && opts.threads >= 1 && opts.threads <= 256,
-                "portable model: context [1,256]/thread limits");
         require(opts.accelerators.size() <= 2 && opts.device_caps.size() == opts.accelerators.size(),
                 "portable model: supply a separate cap for each of at most two accelerators");
         require((opts.device_policy_caps.empty() || opts.device_policy_caps.size()==opts.accelerators.size()) &&
                 (opts.device_free_reserves.empty() || opts.device_free_reserves.size()==opts.accelerators.size()),
                 "portable model: diagnostic budget evidence must follow accelerator slots");
-        require(!opts.qsa_production || (opts.qsa_reuse_attention && !opts.accelerators.empty() && !opts.allow_cpu_fallback),
-                "portable model: QSA production requires reuse and strict accelerators");
-        require(!opts.gdn_production || (opts.gdn_resident_state && !opts.accelerators.empty() &&
-                    !opts.allow_cpu_fallback),
-                "portable model: GDN production requires resident state and strict accelerators");
         portable_detail::validate_dense_topology(opts);
         std::set<ggml_backend_dev_t> devices;
         for (auto *a : opts.accelerators) {
@@ -183,8 +162,6 @@ struct PortableModelSession::Impl {
             require(devices.insert(device).second, "portable model: duplicate physical accelerator device");
         }
         require(check_architecture(model.meta()).empty(), "portable model: unsupported architecture");
-        require(opts.expert_workers >= 1 && opts.expert_workers <= 256,
-                "portable model: expert workers must be in [1,256]");
         const size_t expert_host_bound =
             10 * (3 * (H * FF / 32 * 34)) + (32u << 20) + size_t(opts.expert_workers + 1) * (9u << 20);
         require(expert_host_bound <= opts.host_cap, "portable model: host cap cannot admit expert staging/pool");
@@ -298,7 +275,7 @@ struct PortableModelSession::Impl {
             // maxima may combine graph and unused-workspace high waters, so
             // reserve two graph caps plus the explicit FFN private allowance.
             preflight(device(l),l,l%4==3?"qsa":"gdn",opts.layer_weight_cap,
-                      graph_preflight+private_workspace+resident_bound+state_bound,128u<<20);
+                      graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+((l==0&&opts.native_hc_norm_inject_layer0)?PortableGdnOptions::native_hc_host_bound:0));
             Layer layer;
             if (l % 4 == 3) {
                 PortableQsaOptions o;
@@ -317,6 +294,8 @@ struct PortableModelSession::Impl {
                 o.policy = opts.gdn_production ? PortableGdnPolicy::device_production : PortableGdnPolicy::eager_diagnostic;
                 o.resident_attention_weights = opts.gdn_resident_weights;
                 o.execution = execution(l, false);
+                o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && l==0;
+                if(o.native_hc_norm_inject)o.native_hc_receipt_prefix=opts.native_hc_receipt_prefix;
                 o.scratch = gdn_scratch.at(o.execution.accelerator);
                 layer.gdn = PortableGdnLayer::from_gguf(model, int64_t(l), o, error);
                 require(bool(layer.gdn), "portable model: layer " + std::to_string(l) + ": " + error);
@@ -334,7 +313,7 @@ struct PortableModelSession::Impl {
                     // Recheck the reserved module envelope before every shape
                     // allocation; no account-after-allocation admission gate.
                     preflight(device(l),l,l%4==3?"qsa-chunk-shape":"gdn-chunk-shape",opts.layer_weight_cap,
-                              graph_preflight+private_workspace+resident_bound+state_bound,128u<<20);
+                              graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+((l==0&&opts.native_hc_norm_inject_layer0)?PortableGdnOptions::native_hc_host_bound:0));
                     const bool prepared=layer.prepare(T,error);
                     require(prepared,"portable model: chunk preflight layer "+std::to_string(l)+": "+error);
                     include(layer.memory());
@@ -403,13 +382,41 @@ struct PortableModelSession::Impl {
                       << " weight_cap_bytes=" << head_resident_bound << " aligned_weight_bytes=" << aligned_head_weights
                       << " graph_cap_bytes=" << opts.head_graph_cap
                       << " next_estimated_bytes=" << opts.head_graph_cap + aligned_head_weights << '\n';
-        // Keep the full graph/workspace cap and the previous host envelope.
-        // Only replace the device's policy weight ceiling with allocator sizing.
+        const bool guard_head=opts.gdn_production || opts.qsa_production || opts.prompt_head_elision;
+        size_t head_graph_bound=opts.head_graph_cap;
+        bool tight_head=false;
+        if(opts.head_shape_admission && !opts.accelerators.empty()) {
+            const auto estimate=PortableHead::admission(head_geometry,hw,execution(L-1,true),guard_head);
+            // Only the already guarded pinned Vulkan T1 Q8 path earns credit.
+            // Unknown backend/range/fallback preserves the full policy cap.
+            tight_head=estimate.verified_vulkan && estimate.graph_bound<=opts.head_graph_cap;
+            if(tight_head)head_graph_bound=estimate.graph_bound;
+            std::clog<<"head_shape_preflight slot="<<device(L-1)<<" verified_vulkan="<<estimate.verified_vulkan
+                <<" tight="<<tight_head<<" scheduler_bound_bytes="<<estimate.scheduler_bound
+                <<" cpu_workspace_bytes="<<estimate.cpu_workspace<<" device_workspace_bytes="<<estimate.device_workspace
+                <<" guard_bound_bytes="<<estimate.guard_bound<<" graph_estimated_bytes="<<estimate.graph_bound
+                <<" graph_policy_cap_bytes="<<opts.head_graph_cap<<" graph_admitted_bytes="<<head_graph_bound<<'\n';
+        }
+        // Host envelope and graph policy ceiling are unchanged. Device sizing
+        // excludes no driver allowance and takes no physical-reserve credit.
         preflight(device(L - 1), L, "output-head", opts.head_weight_cap,
-                  opts.head_graph_cap + head_resident_bound, 64u << 20, opts.head_graph_cap + aligned_head_weights);
-        head = PortableHead::create(head_geometry, hw, execution(L - 1, true), error, opts.gdn_production || opts.qsa_production || opts.prompt_head_elision);
+                  opts.head_graph_cap + head_resident_bound, 64u << 20, head_graph_bound + aligned_head_weights);
+        auto head_options=execution(L-1,true);
+        // Enforce the admitted envelope inside schedule before buffer allocation,
+        // not just with a post-construction bookkeeping assertion.
+        if(tight_head)head_options.graph_budget=head_graph_bound;
+        head = PortableHead::create(head_geometry, hw, head_options, error,guard_head);
         require(bool(head), error);
-        account(head->memory_usage(), device(L - 1));
+        const auto head_memory=head->memory_usage();
+        if(tight_head) {
+            size_t actual_bound=0;
+            for(size_t bytes:{head_memory.device_graph,head_memory.device_state,head_memory.device_extra_bound,
+                              head_memory.device_shared_conversion_bound,head_memory.device_token_temporary_bound}) {
+                require(bytes<=head_graph_bound-actual_bound,"portable model: head allocations exceed metadata admission");
+                actual_bound+=bytes;
+            }
+        }
+        account(head_memory, device(L - 1));
         append_placements(head->placements(), int64_t(L));
         // Explicit native mode resolves capacity and ownership only now, then
         // freezes canonical plans. Fixed-plan mode never enters this branch.
@@ -800,6 +807,7 @@ PortableExpertWork PortableModelSession::expert_work() const {
 PortableModelWork PortableModelSession::model_work() const {
     auto work=impl_->model_work;
     for(const auto& layer:impl_->layers) if(layer.gdn) {
+        work.native_hc_layer0_calls+=layer.gdn->native_hc_calls();
         work.gdn_causal_submissions+=layer.gdn->causal_chunk_calls();
         work.gdn_causal_residual_handoffs+=layer.gdn->causal_residual_handoffs();
         work.gdn_causal_state_commits+=layer.gdn->causal_state_commits();

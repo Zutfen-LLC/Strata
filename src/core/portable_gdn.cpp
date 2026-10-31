@@ -7,6 +7,9 @@
 #include "portable_graph.hpp"
 #include "portable_gdn_projection.hpp"
 #include "strata/artifact/gguf_reader.hpp"
+#ifdef STRATA_PORTABLE_NATIVE_HC
+#include "portable_native_hc.hpp"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -146,6 +149,16 @@ struct PortableGdnLayer::Impl {
     size_t device_state_size = 0;
     bool state_healthy = true;
     Buffer weights_buffer{nullptr, ggml_backend_buffer_free};
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    std::unique_ptr<portable_detail::PortableNativeHc> native_hc;
+#endif
+    size_t native_hc_bytes()const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        return native_hc?native_hc->bytes():0;
+#else
+        return 0;
+#endif
+    }
     portable_detail::Scheduler scheduler{nullptr, ggml_backend_sched_free};
     std::unique_ptr<PortableFfn> ffn, chunk_ffn;
     bool chunk_active = false;
@@ -279,6 +292,7 @@ struct PortableGdnLayer::Impl {
 
     void prepare(size_t T,std::string& error) {
         auto& s=*this;
+        require(!options.native_hc_norm_inject,"native HC serial: chunk API unsupported");
         require(T>=1&&T<=8,"portable layer: chunk size outside [1,8]");
         const size_t extra = (s.production() ? 0 : (STATES+HISTORY+(s.options.ple_table?PLE_HISTORY:0))*sizeof(float)) +
                              (3*T*RESIDUAL+RESIDUAL)*sizeof(float);
@@ -341,6 +355,12 @@ struct PortableGdnLayer::Impl {
                 }
             }
             write(s.input, residual);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            if(s.native_hc) {
+                require(!projected,"native HC serial: projected execution unsupported");
+                s.native_hc->run(); // actual uploaded residual; before any graph consumer
+            }
+#endif
             if (!s.state_buffer) {
                 write(s.state_input, cursor.state);
                 write(s.history_input, cursor.history);
@@ -352,6 +372,16 @@ struct PortableGdnLayer::Impl {
                 status = ggml_backend_sched_graph_compute(projected?s.tail_scheduler.get():s.scheduler.get(), projected?s.tail_graph:s.graph);
             }
             require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            if(s.native_hc)s.native_hc->record_first();
+            if(trace && s.native_hc) {
+                next_trace.native_hc_norm_inject=true;
+                next_trace.hc_residual=read(s.native_hc->residual);
+                next_trace.hc_normalized=read(s.native_hc->normalized);
+                next_trace.hc_rs=read(s.native_hc->rs);
+                next_trace.hc_inject=read(s.native_hc->inject);
+            }
+#endif
             if (!s.production()) {
                 read_into(s.state_output, s.candidate_state, work);
                 read_into(s.history_output, s.candidate_history, work);
@@ -430,7 +460,7 @@ struct PortableGdnLayer::Impl {
 
     bool production() const { return options.policy == PortableGdnPolicy::device_production; }
     size_t host_state_bytes() const {
-        return HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
+        return (options.native_hc_norm_inject?PortableGdnOptions::native_hc_host_bound:0)+HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
             (options.ple_table ? PLE_STATE_BYTES - (production() ? 2 * PLE_HISTORY * sizeof(float) : 0) : 0);
     }
 
@@ -440,7 +470,7 @@ struct PortableGdnLayer::Impl {
         if(!shared()) { sched=portable_detail::schedule(g,phase,options.execution,cpu,placement,bytes,credit); return; }
         auto& o=*shared();
         const size_t workspace=std::max(o.workspace[index],ggml_graph_plan(g,options.execution.threads,nullptr).work_size);
-        size_t used=ffn->graph_bytes()+(chunk_ffn?chunk_ffn->graph_bytes():0);
+        size_t used=ffn->graph_bytes()+native_hc_bytes()+(chunk_ffn?chunk_ffn->graph_bytes():0);
         const std::array<ggml_backend_sched_t,3> all{{scheduler.get(),projection_scheduler.get(),tail_scheduler.get()}};
         for(size_t i=0;i<3;++i) {
             const size_t work=i==index?workspace:o.workspace[i];
@@ -471,6 +501,9 @@ struct PortableGdnLayer::Impl {
         const auto& w=weights;
         auto *c = ctx.get();
         input = ggml_new_tensor_3d(c, GGML_TYPE_F32, H, HC, 1);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(native_hc)input=native_hc->residual;
+#endif
         const bool keep_state = options.resident_state && options.execution.request_accelerator &&
                                 options.execution.accelerator;
         if (keep_state && !state_ctx)
@@ -527,6 +560,9 @@ struct PortableGdnLayer::Impl {
         auto build = [&](bool external) {
             auto *norm =
                 ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, hidden, 1e-6f), H * HC, 1), w.at("hc_attn_norm.weight"));
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            if(native_hc)norm=native_hc->normalized;
+#endif
             auto *low = ggml_silu(c, ggml_scale(c, ggml_mul_mat(c, w.at("hc_attn_down.weight"), norm), 0.25f));
             auto *gates = ggml_sigmoid(c, ggml_mul_mat(c, w.at("hc_attn_up.weight"), low));
             auto *gated = ggml_reshape_2d(c, ggml_mul(c, norm, gates), H, HC);
@@ -534,7 +570,11 @@ struct PortableGdnLayer::Impl {
             for (int64_t s = 1; s < HC; ++s)
                 mixed = ggml_add(c, mixed, ggml_view_1d(c, gated, H, size_t(s * H) * sizeof(float)));
             mixed = ggml_scale(c, mixed, 0.25f);
-            auto *inject = ggml_mul_mat(c, w.at("hc_attn_inject.weight"), norm);
+            ggml_tensor* inject=nullptr;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            if(native_hc)inject=native_hc->inject;else
+#endif
+            inject=ggml_mul_mat(c,w.at("hc_attn_inject.weight"),norm);
             // Keep only the opt-in serial observer's actual HC outputs alive.
             // T1 attention uses this graph; chunk tail projections are separate.
             if(!external && options.execution.layer0_observer) {
@@ -641,7 +681,7 @@ struct PortableGdnLayer::Impl {
             s.ctx.reset(); s.projection_ctx.reset();
             s.graph=nullptr; s.tail_graph=nullptr; s.projection_graph=nullptr;
             s.projection_tokens=0; s.projection_bytes=0;
-            s.graphs_size=s.ffn->graph_bytes();
+            s.graphs_size=s.ffn->graph_bytes()+s.native_hc_bytes();
             if(!s.state_buffer) { s.state_input=nullptr; s.history_input=nullptr; s.ple_hist=nullptr; }
             held=false; o.borrowed.clear(std::memory_order_release);
         }
@@ -651,6 +691,19 @@ struct PortableGdnLayer::Impl {
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 != 3,
                 "portable GDN: expected a non-QSA layer in [0,47]");
+        if(options.native_hc_norm_inject) {
+            require(layer==0 && !options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk,
+                    "native HC serial: only eager non-PLE layer 0 T1 supported");
+            require(options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback &&
+                    (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_hc_receipt_prefix.empty(),
+                    "native HC serial: strict accelerator, resident attention weights and receipt prefix required");
+#ifndef STRATA_PORTABLE_NATIVE_HC
+            throw std::runtime_error("native HC serial: strict-FMA native-stage build required");
+#else
+            portable_detail::native_hc_environment();
+#endif
+        }
+
         require(!options.ple_table || layer == 1,
                 "portable GDN: this model supports PLE only at layer 1");
         require(!production() || (options.resident_state && options.execution.request_accelerator &&
@@ -694,6 +747,7 @@ struct PortableGdnLayer::Impl {
         ggml_backend_cpu_set_n_threads(cpu.get(), options.execution.threads);
         weights_ctx = context();
         std::map<std::string, ggml_tensor *> w;
+        std::vector<uint16_t> converted_inject;
         for (const auto &view : aw) {
             const auto key = view.name.substr(prefix.size());
             const auto &expected = expected_shapes.at(key);
@@ -705,11 +759,17 @@ struct PortableGdnLayer::Impl {
             const bool half_conv = key == "ple_conv1d.weight" && view.type == 1;
             require((view.type == (quantized ? 8u : 0u) || half_conv) && view.data,
                     "portable GDN: expected fleet Q8_0/F32 encoding: " + view.name);
-            auto *t = ggml_new_tensor(weights_ctx.get(), ggml_type(view.type), int(expected.size()), expected.data());
+            const bool native_inject=options.native_hc_norm_inject && key=="hc_attn_inject.weight";
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            if(native_inject)converted_inject=portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(view.data),view.bytes,40960);
+#endif
+            auto *t = native_inject?ggml_new_tensor_1d(weights_ctx.get(),GGML_TYPE_I32,20480):
+                ggml_new_tensor(weights_ctx.get(),ggml_type(view.type),int(expected.size()),expected.data());
             ggml_set_name(t, view.name.c_str());
-            require(ggml_nbytes(t) == view.bytes && view.bytes <= options.execution.weight_budget - weights_size,
+            const size_t stored=ggml_nbytes(t);
+            require((native_inject?view.bytes==43520:stored==view.bytes) && stored <= options.execution.weight_budget - weights_size,
                     "portable GDN: weight size/budget mismatch");
-            weights_size += view.bytes;
+            weights_size += stored;
             w[key] = t;
         }
         const bool resident = (options.resident_attention_weights || options.execution.resident_dense_weights) &&
@@ -723,14 +783,27 @@ struct PortableGdnLayer::Impl {
         weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), weight_backend));
         require(bool(weights_buffer), "portable GDN: weight allocation failed");
         ggml_backend_buffer_set_usage(weights_buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-        for (const auto &view : aw)
-            ggml_backend_tensor_set(w.at(view.name.substr(prefix.size())), view.data, 0, view.bytes);
+        for (const auto &view : aw) {
+            const auto key=view.name.substr(prefix.size());
+            if(options.native_hc_norm_inject && key=="hc_attn_inject.weight")
+                ggml_backend_tensor_set(w.at(key),converted_inject.data(),0,converted_inject.size()*2);
+            else ggml_backend_tensor_set(w.at(key),view.data,0,view.bytes);
+        }
         const size_t actual_weights = ggml_backend_buffer_get_size(weights_buffer.get());
         require(actual_weights <= options.execution.weight_budget - ffn->weight_bytes(),
                 "portable GDN: actual aligned weight budget exceeded");
         attention_device_weights = resident ? actual_weights : 0;
         weights_size = ffn->weight_bytes() + actual_weights;
         weights=w;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(options.native_hc_norm_inject) {
+            require(graphs_size<options.execution.graph_budget,"native HC serial: no graph budget");
+            native_hc=std::make_unique<portable_detail::PortableNativeHc>(options.execution.accelerator,w.at("hc_attn_norm.weight"),
+                w.at("hc_attn_inject.weight"),options.execution.graph_budget-graphs_size,options.native_hc_receipt_prefix);
+            graphs_size+=native_hc->bytes();
+            placement.push_back({"native-hc","NATIVE_BF16_NORM_INJECT_SERIAL_T1","layer-0 only; GGML mixed remains", "F32/BF16",ggml_backend_name(options.execution.accelerator),"",{H,HC,1}});
+        }
+#endif
         if (options.scratch) { Borrow borrow(*this); }
         else build_graphs();
         if (!production()) {
@@ -744,6 +817,13 @@ struct PortableGdnLayer::Impl {
 
 PortableGdnLayer::PortableGdnLayer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 PortableGdnLayer::~PortableGdnLayer() = default;
+bool PortableGdnLayer::native_hc_compiled() {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return true;
+#else
+    return false;
+#endif
+}
 std::unique_ptr<PortableGdnLayer> PortableGdnLayer::create(int64_t layer,
                                                            const std::vector<PortableTensorView> &tensors,
                                                            PortableGdnOptions options, std::string &error) {
@@ -931,7 +1011,7 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
 }
 bool PortableGdnLayer::prepare_chunk(size_t tokens,std::string& error) {
     error.clear();
-    try { Impl::Borrow borrow(*impl_); require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
+    try { require(!impl_->options.native_hc_norm_inject,"native HC serial: chunk API unsupported"); Impl::Borrow borrow(*impl_); require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
     catch(const std::exception& e) { error=e.what(); return false; }
 }
 bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t position0,
@@ -940,6 +1020,7 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
     routes.clear(); error.clear();
     auto& s = *impl_;
     try {
+        require(!s.options.native_hc_norm_inject,"native HC serial: chunk API unsupported");
         Impl::Borrow borrow(s);
         require(s.state_healthy && !s.chunk_active, "portable GDN: poisoned or active chunk; reset required");
         const size_t T = tokens.size();
@@ -1046,10 +1127,17 @@ const std::vector<float> &PortableGdnLayer::convolution_history() const {
 }
 const std::vector<float> &PortableGdnLayer::last_residual() const { return impl_->last; }
 uint64_t PortableGdnLayer::tokens() const { return impl_->count; }
+uint64_t PortableGdnLayer::native_hc_calls() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_hc?impl_->native_hc->calls():0;
+#else
+    return 0;
+#endif
+}
 const std::vector<PortablePlacement> &PortableGdnLayer::placements() const { return impl_->placement; }
 size_t PortableGdnLayer::weight_bytes() const { return impl_->weights_size; }
 size_t PortableGdnLayer::graph_bytes() const {
-    return impl_->shared() ? impl_->ffn->graph_bytes()+(impl_->chunk_ffn?impl_->chunk_ffn->graph_bytes():0)
+    return impl_->shared() ? impl_->native_hc_bytes()+impl_->ffn->graph_bytes()+(impl_->chunk_ffn?impl_->chunk_ffn->graph_bytes():0)
                            : impl_->graphs_size+impl_->chunk_graphs();
 }
 const PortableGdnScratch* PortableGdnLayer::scratch_owner() const { return impl_->options.scratch.get(); }
@@ -1062,6 +1150,7 @@ PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     // Extra metadata context plus the copy API's bounded host staging fallback.
     if (s.state_buffer)
         m.host_extra_bound += (4u << 20) + STATES * sizeof(float);
+    m.device_graph += s.native_hc_bytes();
     m.device_weights += s.attention_device_weights;
     m.host_weights = s.weights_size - m.device_weights;
     if(!s.shared()) {

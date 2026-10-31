@@ -67,10 +67,26 @@ int main(int argc, char **argv) {
                 {"output_hc_up.weight", {R, H * HC}, 8, data[1].data(), data[1].size()},
                 {"output.weight", {H, V}, 8, data[2].data(), data[2].size()}};
             std::string error;
+            const auto envelope=PortableHead::admission({H,HC,R,V,1e-6f},weights,options,true);
             auto head = PortableHead::create({H, HC, R, V, 1e-6f}, weights, options, error);
             check(bool(head), error);
             auto guarded_head = PortableHead::create({H, HC, R, V, 1e-6f}, weights, options, error, true);
             check(bool(guarded_head), error);
+            auto bounded_options=options;bounded_options.graph_budget=envelope.graph_bound;
+            auto bounded_head=PortableHead::create({H,HC,R,V,1e-6f},weights,bounded_options,error,true);
+            check(bool(bounded_head),"head must allocate inside metadata-sized budget: "+error);
+            const auto estimated_memory=guarded_head->memory_usage();
+            check(estimated_memory.host_graph+estimated_memory.device_graph<=envelope.scheduler_bound,
+                  "actual scheduler allocation exceeds metadata node/copy envelope");
+            check(estimated_memory.device_graph+estimated_memory.device_state+estimated_memory.device_extra_bound+
+                  estimated_memory.device_shared_conversion_bound<=envelope.graph_bound,
+                  "actual device graph/status/private bookkeeping exceeds head estimate");
+            check(!envelope.verified_vulkan,"small/unproven head cannot earn full-vocabulary direct credit");
+            auto invalid=weights;invalid[3].bytes--;
+            bool refused=false;
+            try{PortableHead::admission({H,HC,R,V,1e-6f},invalid,options,true);}
+            catch(const std::exception&){refused=true;}
+            check(refused,"metadata estimator must reject payload mismatch before allocations");
             auto mm = [&](size_t w, const std::vector<float> &x) {
                 std::vector<float> result(outputs[w]);
                 for (size_t r = 0; r < result.size(); ++r) {
@@ -106,6 +122,9 @@ int main(int argc, char **argv) {
                 const auto expected = mm(2, mixed);
                 check(head->run(input, logits, error), error);
                 std::vector<float> guarded_logits;
+                std::vector<float> bounded_logits;
+                check(bounded_head->run(input,bounded_logits,error) && bounded_logits==logits,
+                      "head metadata admission must preserve exact same-backend outputs");
                 check(guarded_head->run(input, guarded_logits, error) && guarded_logits == logits,
                       "guard must not change successful logits bytes");
                 for (size_t i = 0; i < V; ++i)
