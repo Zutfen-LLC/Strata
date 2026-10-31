@@ -135,12 +135,40 @@ success. The source preserves original operands and separates paid counters,
 charges the extra stable storage/host envelope and refuses the legacy observer
 schema that lacks this tuple. Host/resident state, private/shared scratch,
 rollback/reset/retry and materialized-candidate controls are tested; a deliberate
-old-R graph mutant fails. Its physical coordinator gate remains separate.
+old-R graph mutant fails. The bounded physical coordinator gate now passes
+pending arithmetic, own-input norm/mix contracts and exact available
+materialized-candidate component arrays. Whole residual/state/history equality
+is enforced by probe source assertions; whole state arrays are not exported.
+The compact evidence binds omitted binaries/fixtures by hash and does not
+independently establish complete shared-library closure or inherited loader
+mapping. This is a synthetic coordinator gate, not an actual model pending write.
 No model CLI flag or inferred prior write is added. Ordinary layer 0 attention
 has no previous native write; real producer/half identity and FFN roles must be
 bound before model carry. Existing approved attention operands plus synthetic
 block output suffice for this diagnostic gate; no new extraction is needed.
 See the [coordinator scope](https://github.com/Zutfen-LLC/Strata/blob/ae72f3943a0c2013e49d2b5f07c80d1ba90c7559/docs/native-hc-pending-serial-t1.md).
+
+The next essential product seam is the actual layer-0 GDN→FFN HC read. Native
+[`verify.cpp`](https://github.com/Zutfen-LLC/Strata/blob/ae72f3943a0c2013e49d2b5f07c80d1ba90c7559/src/core/verify.cpp#L1907)
+calls `gr_read_group(1, true, inj_, inj2_)` after producing the real block output.
+It consumes the original residual, actual projected block output and attention
+injection with **FFN** HC roles. Portable
+[`portable_gdn.cpp`](https://github.com/Zutfen-LLC/Strata/blob/ae72f3943a0c2013e49d2b5f07c80d1ba90c7559/src/core/portable_gdn.cpp#L214)
+currently materializes that residual before the GGML FFN HC read in
+[`portable_ffn.cpp`](https://github.com/Zutfen-LLC/Strata/blob/ae72f3943a0c2013e49d2b5f07c80d1ba90c7559/src/core/portable_ffn.cpp#L297).
+The bounded next change should connect that real producer tuple to the FFN read,
+preserving FMA-before-normalization, ownership, admission and whole-layer commit.
+A new diagnostic flag is not a substitute for that connection.
+
+Synthetic FFN fixtures and the existing loader support implementation without
+new extraction. Real same-input numerical qualification additionally needs
+validated `blk.0.hc_ffn_{norm,down,up,inject}.weight` roles and a matched native
+position-0/layer-0 FFN input tuple. Attention-role approval and model provenance
+alone do not establish those bytes or operands. Obtain the scoped provenance
+and any necessary extraction authorization before publishing new raw FFN data;
+reuse existing dump seams where suitable. Recompute actual residency/scheduler
+costs through the existing post-dense planner rather than reusing historical
+expert counts or treating the component replacement delta as the full GPU cost.
 
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
