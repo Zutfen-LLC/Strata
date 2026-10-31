@@ -121,10 +121,27 @@ native reference selects `apply=true`; Vulkan retains a disjoint candidate and
 leaves the original pending tuple unchanged. Existing model flags and state
 commit behavior are untouched. Exact own-gate FMA/cancellation checks precede
 the existing own-input v1/v2 contracts; no fitted cross-backend epsilon is added.
-Host/build checks do not establish physical qualification. Actual CUDA build
-and the small synthetic component gate remain prerequisites before reviewing
-model pending lifetime or FFN role integration. See the
+Host/build checks remain separate from physical qualification. Actual CUDA
+compilation and the bounded synthetic native/Vulkan component gate have now
+completed both own-input contracts. Cross-backend raw differences remain
+diagnostics, not a reason to relabel the component as full-HC/model parity.
+Model pending lifetime and FFN role integration remain separate. See the
 [pending contract](https://github.com/Zutfen-LLC/Strata/blob/a47bcea56b0f8cd07ff4e2b57657000a47b27e16/docs/native-hc-pending-t1.md).
+[Draft PR #102](https://github.com/Zutfen-LLC/Strata/pull/102), source
+`ae72f3943a0c2013e49d2b5f07c80d1ba90c7559`, adds only an explicit diagnostic
+pending tuple at the serial attention coordinator. R-prime feeds BOTH the HC
+read and graph hidden consumers; public state still commits after FFN/provider
+success. The source preserves original operands and separates paid counters,
+charges the extra stable storage/host envelope and refuses the legacy observer
+schema that lacks this tuple. Host/resident state, private/shared scratch,
+rollback/reset/retry and materialized-candidate controls are tested; a deliberate
+old-R graph mutant fails. Its physical coordinator gate remains separate.
+No model CLI flag or inferred prior write is added. Ordinary layer 0 attention
+has no previous native write; real producer/half identity and FFN roles must be
+bound before model carry. Existing approved attention operands plus synthetic
+block output suffice for this diagnostic gate; no new extraction is needed.
+See the [coordinator scope](https://github.com/Zutfen-LLC/Strata/blob/ae72f3943a0c2013e49d2b5f07c80d1ba90c7559/docs/native-hc-pending-serial-t1.md).
+
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
 tolerance from matching generated tokens.
