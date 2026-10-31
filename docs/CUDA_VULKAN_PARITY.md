@@ -29,10 +29,12 @@ production modes refuse. The bounded physical coordinator gate passed at
 repeat/reset/disabled/rollback and replacement accounting passed. This is an
 operator-produced result independently checked from sealed receipts. Only two
 guard samples and the timeout-wrapper PID were retained; no continuous
-observation or separate executable-PID proof is claimed. Real-model behavior
-remains a separate pending gate. Bounded per-request head and initial HC
-diagnostics at the current source support that next gate without changing
-numerical methods.
+observation or separate executable-PID proof is claimed. The bounded matched resident off/on diagnostic has now completed; initial HC
+contract checks and within-arm reset/replay checks pass. Generated tokens agree
+for the retained short request, while routes and final heads differ. This is
+limited partial-seam evidence, not full-model numerical or quality acceptance.
+Bounded per-request head and initial HC diagnostics preserve those distinctions
+without changing numerical methods.
 Source now shares actual CLI/session mode checks through `--validate-options`,
 which does not imply backend or memory admission. Enabled layer-0 HC requires
 resident input roles; the existing minimum model option retains attention
@@ -46,9 +48,18 @@ existing proven Vulkan T1 direct-Q8 contract can replace the broad head graph
 preflight; unknown contracts keep the full cap. Construction enforces the admitted
 envelope before allocation, then checks actual bookkeeping. Caps, physical
 reserve, native quota/rank/helper exclusion and arithmetic stay unchanged.
-Small physical head bookkeeping and full-shape metadata remain a separate gate
-before a new resident-model comparison. No resident-model result is implied.
+Small physical head bookkeeping/full-shape metadata and matched resident
+admission have passed their bounded gates. Both resident arms use the same
+head/admission and weight policy; native post-dense sizing freezes common
+ownership before GEN. These gates do not qualify other shapes/backends.
 HC down/up, activation, mixed/gating and pending-write work remain separate.
+The next component slice should isolate down/up and mixed with identical
+normalized inputs, BF16 role conversion and native lane/reduction order, before
+any full-model integration. Deterministic synthetic inputs can establish that
+contract; real-role qualification requires explicitly approved role bytes.
+Do not attribute later route/head differences to down/up alone when upstream
+injection and internal state already differ, and do not invent a final-logit
+tolerance from matching generated tokens.
 See the [contract](https://github.com/Zutfen-LLC/Strata/blob/1c3e835f4ce832ba7017ffb549c25facf6f3b9f2/docs/native-hc-numerical-contract.md)
 and [serial implementation scope](https://github.com/Zutfen-LLC/Strata/blob/3d7eb782241cd45e202c87c152c2554eeb55dc27/docs/native-hc-serial-t1.md).
 
