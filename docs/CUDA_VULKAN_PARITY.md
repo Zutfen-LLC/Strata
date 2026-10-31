@@ -19,16 +19,23 @@ separate from full-model behavior. It does not establish universal intrinsic
 bit identity, subnormal behavior, HC down/up/mixed or model parity.
 
 [Draft PR #98](https://github.com/Zutfen-LLC/Strata/pull/98), source
-`357dafbb505147ea5548f19c1808f1965d3b120e`, adds only an experimental layer-0
+`da5c34a1c1fa40974a890dba233c666667d5bf32`, adds only an experimental layer-0
 serial eager integration. It uploads the actual residual before native
 norm/injection and lets the original graph borrow retained outputs. The BF16
 injection allocation replaces Q8 storage; graph/state admission, leases and
 commit rules stay explicit. The default is disabled, and chunks/PLE/GDN
-production modes refuse. Host/coordinator tests do not qualify its physical
-seam; guarded integration and then end-to-end behavior remain pending gates.
+production modes refuse. The bounded physical coordinator gate passed at
+`3669d38323d817d7d7c3736570e47bea0b4ffc48`: retained initial HC boundaries,
+repeat/reset/disabled/rollback and replacement accounting passed. This is an
+operator-produced result independently checked from sealed receipts. Only two
+guard samples and the timeout-wrapper PID were retained; no continuous
+observation or separate executable-PID proof is claimed. Real-model behavior
+remains a separate pending gate. Bounded per-request head and initial HC
+diagnostics at the current source support that next gate without changing
+numerical methods.
 HC down/up, activation, mixed/gating and pending-write work remain separate.
 See the [contract](https://github.com/Zutfen-LLC/Strata/blob/1c3e835f4ce832ba7017ffb549c25facf6f3b9f2/docs/native-hc-numerical-contract.md)
-and [serial implementation scope](https://github.com/Zutfen-LLC/Strata/blob/357dafbb505147ea5548f19c1808f1965d3b120e/docs/native-hc-serial-t1.md).
+and [serial implementation scope](https://github.com/Zutfen-LLC/Strata/blob/da5c34a1c1fa40974a890dba233c666667d5bf32/docs/native-hc-serial-t1.md).
 
 ## Contract and inspected versions
 
