@@ -44,9 +44,9 @@ Result run(const Fixture&f,ggml_backend_t backend,bool enabled,bool composed,con
  check(step(experts(),&b),error);
  check(first==layer->last_residual()&&state==layer->recurrent_state()&&history==layer->convolution_history(),"reset/replay state/residual differs");
  if(enabled)check(a.hc_normalized==b.hc_normalized&&a.hc_rs==b.hc_rs&&a.hc_inject==b.hc_inject&&a.hc_mixed==b.hc_mixed&&a.hc_low==b.hc_low,"repeat HC differs");
- check(layer->reset(error),error);const auto before=layer->recurrent_state();
+ check(layer->reset(error),error);const auto before=layer->recurrent_state(),before_history=layer->convolution_history();const auto before_tokens=layer->token_history();
  PortableExpertRows refusal=[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="intentional fixture provider refusal";return false;};
- check(!step(refusal),"provider failure accepted");check(layer->tokens()==0&&layer->last_residual().empty()&&layer->recurrent_state()==before,"provider failure committed state");
+ check(!step(refusal),"provider failure accepted");check(layer->tokens()==0&&layer->last_residual().empty()&&layer->recurrent_state()==before&&layer->convolution_history()==before_history&&layer->token_history()==before_tokens,"provider failure committed state/history/token metadata");
  check(layer->reset(error),error);
  check(layer->native_hc_mix_calls()==(enabled&&composed?3u:0u),"actual mixed work counter");
  check(layer->native_hc_pending_calls()==(enabled&&pending?3u:0u),"actual pending work counter");

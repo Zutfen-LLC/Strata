@@ -152,9 +152,9 @@ int main(){try{
  check(pt.native_hc_pending&&pt.hc_residual==expected_pending&&pt.hc_pending_input==original&&pt.hc_previous_output==bo&&pt.hc_previous_inject==inj,"pending tuple/candidate trace binding");
  check(original==f.input(0)&&bo==saved_bo&&inj==saved_inj,"caller pending tuple changed");
  const auto pending_first=pending->last_residual(),first_state=pending->recurrent_state(),first_history=pending->convolution_history();
- check(pending->reset(error),error);const auto before_refusal=pending->recurrent_state();
+ check(pending->reset(error),error);const auto before_refusal=pending->recurrent_state(),before_refusal_history=pending->convolution_history();const auto before_refusal_tokens=pending->token_history();
  check(!pending->step_pending(original,bo,inj,no,route,error),"pending provider refusal accepted");
- check(pending->tokens()==0&&pending->last_residual().empty()&&pending->recurrent_state()==before_refusal,"pending provider refusal committed public state");
+ check(pending->tokens()==0&&pending->last_residual().empty()&&pending->recurrent_state()==before_refusal&&pending->convolution_history()==before_refusal_history&&pending->token_history()==before_refusal_tokens,"pending provider refusal committed public state/history/token metadata");
  check(pending->native_hc_pending_calls()==4&&pending->native_hc_calls()==3&&pending->native_hc_mix_calls()==2,"pending paid work lost after provider refusal");
  check(pending->step_pending(original,bo,inj,experts(),route,error),error);
  check(pending->last_residual()==pending_first&&pending->recurrent_state()==first_state&&pending->convolution_history()==first_history,"pending retry/reset state differs");
