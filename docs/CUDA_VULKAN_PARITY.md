@@ -186,8 +186,13 @@ matching-module validation; omitted output arrays prevent independent numerical
 replay, whole-state arrays are not exported, and runtime library closure is not
 independently captured. No continuous monitoring claim is made. Original packer
 conversion now reproduces all four extracted real FFN role payloads byte for
-byte; this establishes role identity only. Real FFN arithmetic still requires an
-actual matched native pre-read tuple and separate component qualification. There is
+byte; this establishes role identity only. A standalone real FFN pending-read
+gate now uses an actual matched native tuple
+and all four conversion-verified roles. Both unchanged own-input numerical
+contracts and actual effective modules independently replay successfully. The
+backends retain different pending gates/residuals and downstream operands; this
+is bounded component acceptance, not cross-backend bit identity or model parity.
+There is
 no new model CLI flag, and the final FFN write/next-layer carry still uses the
 previous portable method.
 [Draft PR #104](https://github.com/Zutfen-LLC/Strata/pull/104), source
@@ -200,8 +205,11 @@ Host serialization, CUDA-mock, portable enabled/disabled and reader checks pass;
 actual native compilation and one guarded capture now supply the original tuple.
 The compact tuple/provenance and lifecycle receipts are verified, but the full
 sealed trace is not exported in that packet for independent decoder replay.
-Tuple availability and exact role conversion enable a standalone same-input
-real FFN component gate; they do not qualify its numerical outputs.
+Tuple and exact role conversion now support the independently replayed standalone
+real FFN component gate described above. The actual model option/wiring remains
+missing: explicit matched layer-0 FFN residency, complete admission and native
+planner ownership must accompany the existing C++ producer/consumer seam.
+Final FFN write/next-layer carry remains separate unfinished work.
 No new arithmetic, synchronization, method selection or model flag is added. See the [bounded scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
