@@ -210,6 +210,17 @@ real FFN component gate described above. The actual model option/wiring remains
 missing: explicit matched layer-0 FFN residency, complete admission and native
 planner ownership must accompany the existing C++ producer/consumer seam.
 Final FFN write/next-layer carry remains separate unfinished work.
+[Draft PR #105](https://github.com/Zutfen-LLC/Strata/pull/105), source
+`6f08323d35a1e2040866631ad0cafca656386ca9`, now wires the default-disabled
+actual FFN-read model option. Explicit layer-0 residency includes FFN weights
+without changing attention-only GDN residency, other layers, the head or expert
+placement. Complete actual allocation accounting and conservative host bounds
+remain admitted; actual FFN paid-work counters survive reset/provider rollback.
+Focused parser, actual producer/consumer, accounting/refusal, rollback and CPU
+model disabled-output regressions pass. The corrected deployment continuation
+passes planning-only entrypoints with the actual product parser and real
+process policy against synthetic providers. Physical model admission/freeze and
+matched model execution remain unrun; pair is blocked until plan review.
 No new arithmetic, synchronization, method selection or model flag is added. See the [bounded scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
