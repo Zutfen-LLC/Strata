@@ -19,7 +19,7 @@ separate from full-model behavior. It does not establish universal intrinsic
 bit identity, subnormal behavior, HC down/up/mixed or model parity.
 
 [Draft PR #98](https://github.com/Zutfen-LLC/Strata/pull/98), source
-`da5c34a1c1fa40974a890dba233c666667d5bf32`, adds only an experimental layer-0
+`3d7eb782241cd45e202c87c152c2554eeb55dc27`, adds only an experimental layer-0
 serial eager integration. It uploads the actual residual before native
 norm/injection and lets the original graph borrow retained outputs. The BF16
 injection allocation replaces Q8 storage; graph/state admission, leases and
@@ -33,9 +33,24 @@ observation or separate executable-PID proof is claimed. Real-model behavior
 remains a separate pending gate. Bounded per-request head and initial HC
 diagnostics at the current source support that next gate without changing
 numerical methods.
+Source now shares actual CLI/session mode checks through `--validate-options`,
+which does not imply backend or memory admission. Enabled layer-0 HC requires
+resident input roles; the existing minimum model option retains attention
+weights across all GDN layers. Both arms of a resident comparison must use that
+same ownership policy and fresh post-dense native capacity sizing.
+
+`--head-shape-admission` is a separate default-off accounting experiment. It
+bounds the unchanged head graph from metadata, allocator padding and node/source
+copies without liveness savings, retaining workspace/guard allowances. Only the
+existing proven Vulkan T1 direct-Q8 contract can replace the broad head graph
+preflight; unknown contracts keep the full cap. Construction enforces the admitted
+envelope before allocation, then checks actual bookkeeping. Caps, physical
+reserve, native quota/rank/helper exclusion and arithmetic stay unchanged.
+Small physical head bookkeeping and full-shape metadata remain a separate gate
+before a new resident-model comparison. No resident-model result is implied.
 HC down/up, activation, mixed/gating and pending-write work remain separate.
 See the [contract](https://github.com/Zutfen-LLC/Strata/blob/1c3e835f4ce832ba7017ffb549c25facf6f3b9f2/docs/native-hc-numerical-contract.md)
-and [serial implementation scope](https://github.com/Zutfen-LLC/Strata/blob/da5c34a1c1fa40974a890dba233c666667d5bf32/docs/native-hc-serial-t1.md).
+and [serial implementation scope](https://github.com/Zutfen-LLC/Strata/blob/3d7eb782241cd45e202c87c152c2554eeb55dc27/docs/native-hc-serial-t1.md).
 
 ## Contract and inspected versions
 
