@@ -219,8 +219,21 @@ remain admitted; actual FFN paid-work counters survive reset/provider rollback.
 Focused parser, actual producer/consumer, accounting/refusal, rollback and CPU
 model disabled-output regressions pass. The corrected deployment continuation
 passes planning-only entrypoints with the actual product parser and real
-process policy against synthetic providers. Physical model admission/freeze and
-matched model execution remain unrun; pair is blocked until plan review.
+process policy against synthetic providers. A bounded matched resident model
+gate now passes complete planner admission,
+actual FFN participation, own-input initial numerical contracts and exact
+within-arm head/route/receipt replay. Independent offline replay reproduces the
+sealed checker and validates actual modules. Initial attention receipts match
+across arms; generated IDs match while routes and heads differ. These are partial
+integration diagnostics, not full state/quality/performance or full-HC parity.
+Executable/library payloads remain host-bound; whole-state arrays and earlier
+full native capture originals are not independently replayed here.
+The remaining final-write seam is the GGML post multiply/add in
+`src/core/portable_ffn.cpp`; original native code materializes before layer-1 PLE
+and otherwise preserves its pending/control/head boundaries. A write-only
+candidate must preserve the selected native postops' scale/sigmoid/FMA order.
+Existing roles/operands support synthetic development; a real final-write replay
+still needs the actual post-combine FFN block output, not HC mixed or GDN BO.
 No new arithmetic, synchronization, method selection or model flag is added. See the [bounded scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
