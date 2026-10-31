@@ -82,6 +82,22 @@ with tempfile.TemporaryDirectory() as d:
             model_phase_fields(m,len(result['rows']),'eager_diagnostic','prompt_head_elision')
         r.finish()
     finally: r.close()
+    # Resident head diagnostics preserve numerical execution and isolate reset
+    # requests. Compare raw words, not merely their greedy selections.
+    resident_dump=root/'resident-executed';resident_dump.mkdir()
+    command+=['--dump-executed-logits',str(resident_dump)]
+    r=start('resident-heads')
+    try:
+        a=r.request([5,7],2,1);b=r.request([5,7],2,2)
+        assert a['rows']==b['rows'] and a['stop']==b['stop']
+        a_files={p.name:p.read_bytes() for p in (resident_dump/'request-1').iterdir()}
+        b_files={p.name:p.read_bytes() for p in (resident_dump/'request-2').iterdir()}
+        assert a_files==b_files and 'manifest.json' in a_files
+        for name in a_files:
+            if name.endswith('.f32'):assert len(a_files[name])>0
+        r.finish()
+    finally:r.close()
+    command=command[:-2]
     command.remove('--prompt-head-elision')
     serial_dump=root/'serial-executed';serial_dump.mkdir()
     subprocess.run([binary,'--model',model,'--manifest',manifest,'--tokens','5,6,7','--max-new','1',
@@ -134,7 +150,7 @@ with tempfile.TemporaryDirectory() as d:
                    capture_output=True,text=True,check=True,timeout=90)
     only,_=E.load(final_only,0)
     assert only['output_count']==0 and only['frames'][0]['position']==0 and only['frames'][0]['role']=='final_prompt'
-    for flags in ([],['--stdio','--prompt-head-elision'],['--prompt-head-elision','--dump-logits',str(root)]):
+    for flags in ([],['--prompt-head-elision','--dump-logits',str(root)]):
         rejected=subprocess.run([binary,*flags,'--dump-executed-logits',str(root)],capture_output=True,text=True,timeout=5)
         assert rejected.returncode!=0 and 'requires fresh head elision' in rejected.stderr
     rejected=subprocess.run([binary,'--prompt-chunk-size','2','--dump-logits',str(root)],

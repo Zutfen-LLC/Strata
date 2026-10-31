@@ -66,5 +66,18 @@ scratch, tests native reset/repeat and provider-failure rollback, and runs two
 disabled controls. It exports the live post-graph HC fields and exact fixture for
 comparison with an already sealed component/native reference. No model loads or
 new raw-role extraction are necessary. Device-specific execution, admission and
-cleanup must use the reviewed operator harness. Physical seam qualification is
-pending; unit tests or prior standalone acceptance do not substitute for it.
+cleanup must use the reviewed operator harness. The bounded physical coordinator gate passed on Vulkan0/V340: initial HC
+values matched the sealed same-backend component, the native numerical contract
+passed, repeat/reset/disabled/rollback checks passed and replacement accounting
+matched. These operator-produced results were independently checked from sealed
+receipts; only two guard samples were retained and the executable PID was not
+separately retained. This is not model or full-HC qualification.
+
+For the next model diagnostic, each enabled owner writes only its first successful
+attention graph's input, RS, normalized and injection values inside its private
+receipt directory. No weights are exported. The bounded copies fit the existing
+host allowance; failure refuses rather than publishing a partial forward. The
+snapshot is not repeated after reset. `--dump-executed-logits` also supports stdio
+head-elision requests, each in a fresh `request-N` directory, so a repeated request
+can check reset behavior without another model load. Neither diagnostic changes
+arithmetic, selection, state commits or the default-disabled path.

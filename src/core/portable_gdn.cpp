@@ -373,6 +373,7 @@ struct PortableGdnLayer::Impl {
             }
             require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
 #ifdef STRATA_PORTABLE_NATIVE_HC
+            if(s.native_hc)s.native_hc->record_first();
             if(trace && s.native_hc) {
                 next_trace.native_hc_norm_inject=true;
                 next_trace.hc_residual=read(s.native_hc->residual);

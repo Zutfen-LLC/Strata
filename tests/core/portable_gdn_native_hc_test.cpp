@@ -57,11 +57,20 @@ int main(){try{
  check(!layer->prepare_chunk(1,error),"chunk planning silently accepted");
  PortableGdnTrace a;check(layer->step(f.input(0),experts(),route,error,&a),error);
  check(uploaded==f.input(0),"native HC missed current residual upload");check(a.native_hc_norm_inject&&a.hc_residual==uploaded&&a.hc_normalized==expected_xn&&a.hc_rs==expected_rs&&a.hc_inject==expected_inject,"native buffers did not survive graph consumers");
+ std::filesystem::path receipt;
+ for(const auto& entry:std::filesystem::directory_iterator(root))
+  if(std::filesystem::exists(entry.path()/"first-input.f32le")){check(receipt.empty(),"duplicate initial receipt");receipt=entry.path();}
+ check(!receipt.empty(),"initial graph receipt missing");
+ auto receipt_bytes=[&](const char* name){std::ifstream f(receipt/name,std::ios::binary);return std::vector<char>(std::istreambuf_iterator<char>(f),{});};
+ const auto recorded=receipt_bytes("first-normalized.f32le");
+ check(recorded.size()==a.hc_normalized.size()*4&&!std::memcmp(recorded.data(),a.hc_normalized.data(),recorded.size()),"initial receipt differs from live post-graph value");
+ check(receipt_bytes("first-rs.f32le").size()==16&&receipt_bytes("first-inject.f32le").size()==16,"initial receipt shape");
  check(layer->native_hc_calls()==1&&layer->tokens()==1,"successful native counter");const auto first=layer->last_residual();
  check(layer->reset(error),error);PortableGdnTrace repeat;check(layer->step(f.input(0),experts(),route,error,&repeat),error);check(first==layer->last_residual()&&a.hc_inject==repeat.hc_inject,"reset/replay changed result");
  check(layer->reset(error),error);inject_bias=1;check(layer->step(f.input(0),experts(),route,error),error);check(layer->last_residual()!=first,"graph ignored native injection leaf");inject_bias=0;
  check(layer->reset(error),error);norm_scale=2;PortableGdnTrace changed;check(layer->step(f.input(0),experts(),route,error,&changed),error);check(changed.qkv!=a.qkv,"graph ignored native normalized leaf");norm_scale=1;
  check(layer->reset(error),error);check(layer->step(f.input(1),experts(),route,error),error);check(uploaded==f.input(1),"subsequent residual stale");
+ check(receipt_bytes("first-normalized.f32le")==recorded,"later/reset forward overwrote initial receipt");
  check(direct_consumers>=calls,"native normalized direct consumer missing");layer.reset();check(!owners,"owner not released");
  o.resident_state=true;layer=PortableGdnLayer::create(0,f.views,o,error);check(bool(layer),error);check(layer->reset(error),error);
  check(layer->step(f.input(0),experts(),route,error),error);const auto resident=layer->last_residual();const auto state=layer->recurrent_state();

@@ -3,6 +3,7 @@
 #include "native_hc_layout.hpp"
 #include "ggml-alloc.h"
 #include <atomic>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 namespace strata::core::portable_detail {
@@ -17,6 +18,8 @@ class PortableNativeHc {
     const ggml_tensor *norm_,*weight_;
     size_t bytes_=0;
     uint64_t calls_=0;
+    std::string receipt_dir_;
+    bool first_recorded_=false;
 public:
     ggml_tensor *residual=nullptr,*normalized=nullptr,*rs=nullptr,*inject=nullptr;
     PortableNativeHc(ggml_backend_t backend,const ggml_tensor* norm,const ggml_tensor* weight,
@@ -33,6 +36,7 @@ public:
         static std::atomic<uint64_t> next{0};std::string dir;
         for(int i=0;i<1024;++i){auto candidate=prefix+".owner-"+std::to_string(next.fetch_add(1));if(std::filesystem::create_directory(candidate)){dir=candidate;break;}}
         native_hc_need(!dir.empty(),"native HC serial: fresh receipt namespace");
+        receipt_dir_=dir;
         component_.reset(strata_vk_native_hc_create(backend,(dir+"/effective.spv").c_str(),budget-bound));
         native_hc_need(bool(component_),"native HC serial: component unavailable");
         const auto metadata=strata_vk_native_hc_bytes(component_.get());
@@ -43,6 +47,22 @@ public:
     }
     size_t bytes()const{return bytes_;}
     uint64_t calls()const{return calls_;}
+    // Only the first successful attention graph is observed. This is a bounded
+    // diagnostic readback, not a weight extraction or numerical fallback.
+    void record_first() {
+        if(first_recorded_ || calls_!=1)return;
+        for(auto pair:{std::pair{"input.f32le",residual},std::pair{"normalized.f32le",normalized},
+                       std::pair{"rs.f32le",rs},std::pair{"inject.f32le",inject}}) {
+            std::vector<float> values(size_t(ggml_nelements(pair.second)));
+            ggml_backend_tensor_get(pair.second,values.data(),0,values.size()*sizeof(float));
+            auto* f=std::fopen((receipt_dir_+"/first-"+pair.first).c_str(),"wbx");
+            native_hc_need(f,"native HC serial: exclusive initial receipt");
+            const bool written=std::fwrite(values.data(),sizeof(float),values.size(),f)==values.size();
+            const bool closed=std::fclose(f)==0;
+            native_hc_need(written&&closed,"native HC serial: initial receipt write failed");
+        }
+        first_recorded_=true;
+    }
     void run(){native_hc_need(calls_!=UINT64_MAX,"native HC serial: call counter exhausted");strata_vk_native_hc_run(component_.get(),residual,norm_,weight_,normalized,rs,inject,1);++calls_;}
 };
 }

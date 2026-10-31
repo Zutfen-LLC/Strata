@@ -266,8 +266,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("--gdn-causal-chunk requires --prompt-chunk-size, --gdn-batch-input-projections and --gdn-production");
         if(opts.gdn_batch_input_projections && !opts.prompt_chunk_size)
             throw std::runtime_error("--gdn-batch-input-projections requires --prompt-chunk-size");
-        if (!executed_dump.empty() && (!dump.empty() || !opts.prompt_head_elision || resident))
-            throw std::runtime_error("--dump-executed-logits requires fresh head elision and excludes --dump-logits/--stdio");
+        if (!executed_dump.empty() && (!dump.empty() || !opts.prompt_head_elision))
+            throw std::runtime_error("--dump-executed-logits requires fresh head elision and excludes --dump-logits");
         if (opts.prompt_head_elision && !dump.empty())
             throw std::runtime_error("--prompt-head-elision cannot dump skipped logits; omit it for exhaustive --dump-logits");
         if (opts.expert_timings && !resident) throw std::runtime_error("--expert-timings requires --stdio");
@@ -482,6 +482,14 @@ int main(int argc, char **argv) {
             if(!session->reset(error)) throw std::runtime_error(error);
             tokens=std::move(request.tokens); max_new=request.max_new; ++request_id;
         }
+        // Each resident request gets an exclusive namespace. Reset/replay never
+        // overwrites the previous request's diagnostic heads.
+        std::string request_dump=executed_dump;
+        if(resident && !executed_dump.empty()) {
+            request_dump=executed_dump+"/request-"+std::to_string(request_id);
+            if(!std::filesystem::create_directory(request_dump))
+                throw std::runtime_error("executed logits request directory must be fresh");
+        }
         std::vector<float> logits;
         std::vector<int32_t> executed_tokens;
         const auto heads_before = session->model_work();
@@ -566,7 +574,7 @@ int main(int argc, char **argv) {
                 const uint16_t one = 1;
                 if (*reinterpret_cast<const uint8_t *>(&one) != 1)
                     throw std::runtime_error("logit dump requires little-endian host");
-                std::ofstream file((executed_dump.empty()?dump:executed_dump) + "/pos-" + std::to_string(pos) + ".f32", std::ios::binary);
+                std::ofstream file((request_dump.empty()?dump:request_dump) + "/pos-" + std::to_string(pos) + ".f32", std::ios::binary);
                 file.write(reinterpret_cast<const char *>(logits.data()),
                            std::streamsize(logits.size() * sizeof(float)));
                 if (!file)
@@ -620,7 +628,7 @@ int main(int argc, char **argv) {
         if(!executed_dump.empty()) {
             // A manifest is published only after the complete forward sequence.
             // Missing prompt positions are absent, never zero-filled logit rows.
-            std::ofstream file(executed_dump+"/manifest.json");
+            std::ofstream file(request_dump+"/manifest.json");
             file << "{\"schema\":1,\"format\":\"executed_heads_f32le_v1\",\"head_policy\":\"prompt_head_elision\","
                  << "\"chunk_policy\":\"" << (opts.prompt_chunk_size?"layer_major_v1":"serial_t1")
                  << "\",\"prompt_chunk_size\":" << opts.prompt_chunk_size
