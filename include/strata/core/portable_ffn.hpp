@@ -33,6 +33,8 @@ struct PortableTensorView {
 };
 
 struct PortableFfnOptions {
+    bool native_hc_pending_read = false; // experimental serial layer-0 FFN read of actual producer tuple
+    std::string native_hc_receipt_prefix;
     int threads = 1;
     // Borrowed backend, e.g. ggml_backend_vk_init(die). Caller retains lifetime.
     ggml_backend* accelerator = nullptr;
@@ -104,6 +106,11 @@ struct PortableLayerChunkWork {
     uint64_t ffn_pre_calls = 0, provider_calls = 0, ffn_post_calls = 0;
 };
 
+struct PortableFfnHcTrace {
+    std::vector<float> original, previous_output, previous_injection, residual, gate, exponential;
+    std::vector<float> normalized, rs, inject, low_pre, low, low_exp, up_pre, gates, up_exp, mixed;
+};
+
 class PortableFfn {
 public:
     static std::unique_ptr<PortableFfn> create(PortableFfnGeometry geometry, int64_t layer,
@@ -131,6 +138,13 @@ public:
     bool reset(const std::vector<float>& residual, std::string& error);
     // Transactional residual: dispatch/validation failure leaves it unchanged.
     bool step(const PortableExpertRows& dispatch, PortableRoute& route, std::string& error);
+    // reset supplies immutable original R; this call supplies the actual prior
+    // block output/injection. Candidate R-prime feeds HC and final residual.
+    // Failure leaves public residual unchanged. No implicit/stale tuple carry.
+    bool step_pending(const std::vector<float>& previous_output, const std::vector<float>& previous_injection,
+                      const PortableExpertRows& dispatch, PortableRoute& route, std::string& error,
+                      PortableFfnHcTrace* trace = nullptr);
+    uint64_t native_hc_pending_calls() const;
     // reset takes [hidden,streams,tokens], with dimension zero fastest.
     // Transactional publication; a failed batch clears routes and keeps residual.
     // This FFN has no recurrent state. Its enclosing model must poison on failure.
@@ -144,6 +158,8 @@ public:
     PortableMemoryUsage memory_usage() const;
 
 private:
+    bool step_impl(const std::vector<float>* previous_output, const std::vector<float>* previous_injection,
+                   const PortableExpertRows& dispatch, PortableRoute& route, std::string& error, PortableFfnHcTrace* trace);
     struct Impl;
     explicit PortableFfn(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;

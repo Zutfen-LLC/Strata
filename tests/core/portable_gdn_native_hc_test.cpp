@@ -9,10 +9,12 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <limits>
 using namespace strata::core;
 using namespace strata::core::portable_detail;
 using namespace gdn_fixture;
 namespace {
+bool inspect_producer=false;std::vector<float> actual_projected,actual_attention_inject;size_t ffn_mixed_consumers=0;
 size_t pending_owners=0,pending_calls=0;bool fail_pending_create=false,fail_pending_run=false;
 size_t owners=0,calls=0,mix_owners=0,mix_calls=0;bool fail_mix=false,fail_mix_create=false;float mixed_scale=1;const ggml_tensor* live_mixed=nullptr;size_t mixed_consumers=0;
 std::vector<uint16_t> expected_down,expected_up;bool fail_run=false,fail_create=false;float inject_bias=0,norm_scale=1;
@@ -20,7 +22,12 @@ std::vector<float> uploaded,expected_xn,expected_rs,expected_inject;
 std::vector<uint16_t> expected_weights;
 const ggml_tensor* bound_weight=nullptr;const ggml_tensor* live_normalized=nullptr;size_t direct_consumers=0;
 decltype(ggml_backend_i::graph_compute) original_compute=nullptr;
-ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.attn_qkv.weight"&&live_mixed){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"composed mixed backing ignored/reused");++mixed_consumers;}}return original_compute(b,g);}
+ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.attn_qkv.weight"&&live_mixed){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"composed mixed backing ignored/reused");++mixed_consumers;}}if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ffn_gate_inp.weight"){
+ auto* root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"FFN router ignored native mixed leaf");++ffn_mixed_consumers;}}
+ const auto status=original_compute(b,g);
+ if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ssm_out.weight"){
+ check(t->flags&GGML_TENSOR_FLAG_OUTPUT,"actual producer was not retained as output");actual_projected.resize(size_t(ggml_nelements(t)));ggml_backend_tensor_get(t,actual_projected.data(),0,actual_projected.size()*4);}}
+ return status;}
 std::vector<float> get(const ggml_tensor* t){std::vector<float>x(size_t(ggml_nelements(t)));ggml_backend_tensor_get(t,x.data(),0,x.size()*4);return x;}
 void put(ggml_tensor*t,const std::vector<float>&x){ggml_backend_tensor_set(t,x.data(),0,x.size()*4);}
 }
@@ -53,10 +60,10 @@ void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*x,const ggml_te
  check(t==1&&wi->type==GGML_TYPE_I32&&ggml_nbytes(wi)==81920,"native weight/T binding");
  check(!fail_run,"injected HC failure");
  std::vector<uint16_t>weight(40960);ggml_backend_tensor_get(wi,weight.data(),0,81920);check(weight==expected_weights,"BF16 replacement differs from original pack conversion");
- if(bound_weight)check(wi==bound_weight,"weight tensor identity changed");else bound_weight=wi;
+ if(std::string(ggml_get_name(wi))=="blk.0.hc_attn_inject.weight") {if(bound_weight)check(wi==bound_weight,"weight tensor identity changed");else bound_weight=wi;}
  uploaded=get(x);auto out=native_hc_oracle(uploaded,get(w),weight,1);for(float&v:out.inject)v+=inject_bias;for(float&v:out.xn)v*=norm_scale;
  expected_xn=out.xn;expected_rs=out.rs;expected_inject=out.inject;
- put(xn,out.xn);put(rs,out.rs);put(inject,out.inject);++calls;
+ put(xn,out.xn);put(rs,out.rs);put(inject,out.inject);if(inspect_producer&&std::string(ggml_get_name(wi))=="blk.0.hc_attn_inject.weight")actual_attention_inject=out.inject;++calls;
 }
 }
 int main(){try{
@@ -172,6 +179,53 @@ int main(){try{
  o.resident_state=false;
  o.native_hc_mix=false;
  o.native_hc_norm_inject=false;o.scratch.reset();auto off=PortableGdnLayer::create(0,f.views,o,error);check(bool(off),error);check(off->reset(error),error);check(off->step(f.input(0),experts(),route,error),error);check(off->last_residual()==disabled,"default-disabled equivalence lost");
+ // Real GDN projected-output -> half-1 FFN HC boundary; no synthetic BO substitution.
+ o.native_hc_norm_inject=true;o.native_hc_mix=true;o.native_hc_pending=false;
+ o.native_hc_ffn_read=true;o.execution.resident_dense_weights=true;
+ std::vector<PortableTensorView> fw;for(const auto&v:f.views)if(v.name.find("hc_ffn_")!=std::string::npos||v.name.find(".ffn_")!=std::string::npos)fw.push_back(v);
+ for(bool resident:{false,true}) {
+  o.resident_state=resident;o.scratch=resident?PortableGdnScratch::create(o.execution,error):nullptr;
+  for(int bad=0;bad<4;++bad){auto opts=o;if(bad==0)opts.native_hc_mix=false;if(bad==1)opts.native_hc_pending=true;if(bad==2)opts.execution.resident_dense_weights=false;if(bad==3)opts.execution.graph_budget=1;
+   check(!PortableGdnLayer::create(0,f.views,opts,error),"invalid actual FFN boundary accepted");}
+  auto product=PortableGdnLayer::create(0,f.views,o,error);check(bool(product),error);
+  check(product->weight_bytes()==baseline->weight_bytes()+2*6182400,"FFN roles duplicated or replacement ledger wrong");
+  check(product->memory_usage().device_graph>0&&product->memory_usage().host_extra_bound>=(8u<<20),"FFN scratch/preflight ledger omitted");
+  check(!product->prepare_chunk(1,error),"actual FFN pending accepted chunk");check(product->reset(error),error);
+  inspect_producer=true;actual_projected.clear();actual_attention_inject.clear();PortableGdnTrace pt;
+  const auto original=f.input(0);check(product->step(original,experts(),route,error,&pt),error);
+  check(actual_projected.size()==2560&&actual_attention_inject.size()==4,"actual producer was not executed/captured");
+  check(pt.ffn_hc.original==original&&pt.ffn_hc.previous_output==actual_projected&&pt.ffn_hc.previous_injection==actual_attention_inject,"FFN consumed a substituted/stale tuple");
+  // Independent scalar native source order: quarter, negate, exp, add, divide,
+  // then FMA into original R BEFORE the half-1 norm. Not the shared helper.
+  std::vector<float> expected(10240);for(size_t c=0;c<4;++c){const float a=actual_attention_inject[c]*0.25f;const float e=std::exp(-a);const float den=1.0f+e;const float gate=2.0f/den;
+   for(size_t h=0;h<2560;++h)expected[c*2560+h]=std::fma(actual_projected[h],gate,original[c*2560+h]);}
+  check(pt.ffn_hc.residual==expected,"FFN did not use native FMA-before-normalization order");
+  check(pt.ffn_hc.normalized==expected_xn,"FFN norm did not consume candidate");
+  const auto completed=product->last_residual(),state=product->recurrent_state(),history=product->convolution_history();const auto activation=route.activation;
+  check(product->native_ffn_hc_pending_calls()==1&&product->native_hc_pending_calls()==0,"half-specific paid counters mixed");
+  check(product->reset(error),error);const auto clean_state=product->recurrent_state(),clean_history=product->convolution_history();
+  PortableExpertRows refuse=[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="provider rollback";return false;};
+  check(!product->step(original,refuse,route,error,&pt),"FFN provider refusal accepted");
+  check(product->tokens()==0&&product->last_residual().empty()&&product->recurrent_state()==clean_state&&product->convolution_history()==clean_history&&pt.ffn_hc.residual.empty(),"FFN refusal published candidate/state/trace");
+  fail_pending_run=true;check(!product->step(original,experts(),route,error),"half-1 component refusal accepted");fail_pending_run=false;
+  check(product->tokens()==0&&product->recurrent_state()==clean_state,"half-1 refusal committed GDN state");
+  check(product->step(original,experts(),route,error,&pt),error);check(product->last_residual()==completed&&product->recurrent_state()==state&&product->convolution_history()==history,"FFN reset/retry changed transaction");
+  check(product->step(f.input(1),experts(),route,error,&pt),error);check(pt.ffn_hc.original==f.input(1)&&pt.ffn_hc.previous_output==actual_projected,"next token used stale producer");
+  inspect_producer=false;product.reset();
+  // Materialize the independently computed candidate, then run the same FFN
+  // read with zero BO. This independently catches old-R post-consumer bugs.
+  auto opts=o.execution;opts.native_hc_pending_read=true;opts.native_hc_receipt_prefix=(root/"ffn-control").string();
+  auto control=PortableFfn::create({2560,4,320,640,512,10,1e-6f},0,fw,opts,error);check(bool(control),error);
+  check(control->reset(expected,error),error);check(!control->step(experts(),route,error),"pending FFN accepted implicit tuple");
+  check(!control->create_chunk_execution(2,error),"pending FFN accepted chunk owner");
+  {auto bo=std::vector<float>(2560,0);auto inj=std::vector<float>(4,0);bo.pop_back();check(!control->step_pending(bo,inj,experts(),route,error),"short FFN producer accepted");bo.resize(2560);bo[0]=std::numeric_limits<float>::quiet_NaN();check(!control->step_pending(bo,inj,experts(),route,error),"nonfinite FFN producer accepted");check(control->residual()==expected,"invalid producer changed public residual");}
+  {std::vector<PortableRoute> routes;check(!control->step_batch([](int64_t,const std::vector<PortableRoute>&,std::vector<float>&,std::string&){return true;},routes,error),"pending FFN accepted batch bypass");}
+  check(control->step_pending(std::vector<float>(2560,0),std::vector<float>(4,0),experts(),route,error),error);
+  check(control->residual()==completed&&route.activation==activation,"FFN downstream used original R instead of candidate");control.reset();
+ }
+ check(ffn_mixed_consumers>=6,"actual FFN router consumer checks missing");
+ o.native_hc_ffn_read=false;o.native_hc_mix=false;o.native_hc_norm_inject=false;o.execution.resident_dense_weights=false;o.resident_state=false;o.scratch.reset();
+ auto disabled_again=PortableGdnLayer::create(0,f.views,o,error);check(bool(disabled_again),error);check(disabled_again->reset(error),error);check(disabled_again->step(f.input(0),experts(),route,error),error);check(disabled_again->last_residual()==disabled,"new boundary changed default-disabled output");
  cpu->iface.graph_compute=original_compute;std::filesystem::remove_all(root);
  puts("serial layer0 HC seam upload/consumption/liveness/reset/accounting/refusal pass; mocked component, no GPU qualification");return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}
