@@ -197,7 +197,11 @@ injection before the destructive half-1 read, using the existing stream and
 completion boundary inside the unchanged observer reservation. Portable/legacy
 captures keep their older schema and cannot supply missing BO by reconstruction.
 Host serialization, CUDA-mock, portable enabled/disabled and reader checks pass;
-actual native compile/capture remains a separately guarded prerequisite.
+actual native compilation and one guarded capture now supply the original tuple.
+The compact tuple/provenance and lifecycle receipts are verified, but the full
+sealed trace is not exported in that packet for independent decoder replay.
+Tuple availability and exact role conversion enable a standalone same-input
+real FFN component gate; they do not qualify its numerical outputs.
 No new arithmetic, synchronization, method selection or model flag is added. See the [bounded scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
