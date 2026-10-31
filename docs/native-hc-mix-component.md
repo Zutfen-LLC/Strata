@@ -10,8 +10,9 @@ staged kernels; they do not implement another numerical method.
 The old bounded synthetic gate passed at `df488f25812a9a5cac94eabe6630bfa7bcae75b0`.
 Both authorized real roles then matched original packer conversion exactly, but
 the identical retained real operand exceeded the first qualification domain.
-This version defines `native-hc-mix-normal-v2`; its wider-domain hardware gate is
-pending. It does not relabel old results or qualify full HC/model behavior.
+This version defines `native-hc-mix-normal-v2`; its bounded wider-domain zero/boundary/real-role hardware gate has passed
+the separate own-input arithmetic/intrinsic contract. This does not relabel
+cross-backend differences exact or qualify full HC/model behavior.
 
 ## Primary precision contract
 
@@ -99,3 +100,18 @@ feature receipts, canaries, repeats and lifecycle cleanup still decide the tiny
 hardware gate. No real-role hardware acceptance, model integration, quality,
 performance, pending-write, FFN HC, T8 or HIP qualification follows from source
 proofs. Defaults remain disabled and PRs stay draft.
+
+## Bounded component acceptance
+
+The native and Vulkan standalone T1 gate passed the v2 own-input contract for
+zero, derived-boundary and authorized real-role fixtures. Actual effective
+modules validate and match the strict helper transformation. Cross-backend low
+and mixed differences remain diagnostics; differing low inputs do not establish
+up-only attribution. Neither universal intrinsic equivalence nor model behavior
+follows. Native sampling included case-loop observations; Vulkan children
+completed before the loop sampled them, leaving baseline observations only.
+Lifecycle/cleanup receipts do not substitute for unsampled workload coverage.
+The next gate composes this component with qualified norm/injection at the
+existing serial layer0 upload seam. It must preserve default-off behavior,
+charge converted resident banks/scratch/host bounds and validate actual graph
+consumption, reset, rollback and bounded refusal before a model diagnostic.
