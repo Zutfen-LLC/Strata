@@ -105,3 +105,10 @@ fixtures, unsupported arithmetic refusals, actual dispatch validation with
 mocked submission, strict arithmetic disassembly and exact pinned-helper
 transformations/mutation refusals. None substitutes for the independent CUDA and
 Vulkan comparison.
+
+Numerical acceptance is now specified separately in
+[native-hc-numerical-contract.md](native-hc-numerical-contract.md). The original
+exact comparator remains diagnostic and unchanged. The numerical validator
+bounds only division/rsqrt differences and requires exact local normalized/dot
+operations from each backend's actual RS; it does not integrate the component
+or turn component results into full-model acceptance.
