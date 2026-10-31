@@ -382,13 +382,41 @@ struct PortableModelSession::Impl {
                       << " weight_cap_bytes=" << head_resident_bound << " aligned_weight_bytes=" << aligned_head_weights
                       << " graph_cap_bytes=" << opts.head_graph_cap
                       << " next_estimated_bytes=" << opts.head_graph_cap + aligned_head_weights << '\n';
-        // Keep the full graph/workspace cap and the previous host envelope.
-        // Only replace the device's policy weight ceiling with allocator sizing.
+        const bool guard_head=opts.gdn_production || opts.qsa_production || opts.prompt_head_elision;
+        size_t head_graph_bound=opts.head_graph_cap;
+        bool tight_head=false;
+        if(opts.head_shape_admission && !opts.accelerators.empty()) {
+            const auto estimate=PortableHead::admission(head_geometry,hw,execution(L-1,true),guard_head);
+            // Only the already guarded pinned Vulkan T1 Q8 path earns credit.
+            // Unknown backend/range/fallback preserves the full policy cap.
+            tight_head=estimate.verified_vulkan && estimate.graph_bound<=opts.head_graph_cap;
+            if(tight_head)head_graph_bound=estimate.graph_bound;
+            std::clog<<"head_shape_preflight slot="<<device(L-1)<<" verified_vulkan="<<estimate.verified_vulkan
+                <<" tight="<<tight_head<<" scheduler_bound_bytes="<<estimate.scheduler_bound
+                <<" cpu_workspace_bytes="<<estimate.cpu_workspace<<" device_workspace_bytes="<<estimate.device_workspace
+                <<" guard_bound_bytes="<<estimate.guard_bound<<" graph_estimated_bytes="<<estimate.graph_bound
+                <<" graph_policy_cap_bytes="<<opts.head_graph_cap<<" graph_admitted_bytes="<<head_graph_bound<<'\n';
+        }
+        // Host envelope and graph policy ceiling are unchanged. Device sizing
+        // excludes no driver allowance and takes no physical-reserve credit.
         preflight(device(L - 1), L, "output-head", opts.head_weight_cap,
-                  opts.head_graph_cap + head_resident_bound, 64u << 20, opts.head_graph_cap + aligned_head_weights);
-        head = PortableHead::create(head_geometry, hw, execution(L - 1, true), error, opts.gdn_production || opts.qsa_production || opts.prompt_head_elision);
+                  opts.head_graph_cap + head_resident_bound, 64u << 20, head_graph_bound + aligned_head_weights);
+        auto head_options=execution(L-1,true);
+        // Enforce the admitted envelope inside schedule before buffer allocation,
+        // not just with a post-construction bookkeeping assertion.
+        if(tight_head)head_options.graph_budget=head_graph_bound;
+        head = PortableHead::create(head_geometry, hw, head_options, error,guard_head);
         require(bool(head), error);
-        account(head->memory_usage(), device(L - 1));
+        const auto head_memory=head->memory_usage();
+        if(tight_head) {
+            size_t actual_bound=0;
+            for(size_t bytes:{head_memory.device_graph,head_memory.device_state,head_memory.device_extra_bound,
+                              head_memory.device_shared_conversion_bound,head_memory.device_token_temporary_bound}) {
+                require(bytes<=head_graph_bound-actual_bound,"portable model: head allocations exceed metadata admission");
+                actual_bound+=bytes;
+            }
+        }
+        account(head_memory, device(L - 1));
         append_placements(head->placements(), int64_t(L));
         // Explicit native mode resolves capacity and ownership only now, then
         // freezes canonical plans. Fixed-plan mode never enters this branch.

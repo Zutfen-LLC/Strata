@@ -84,6 +84,7 @@ int main(int argc, char **argv) {
         };
         for (int i = 1; i < argc; ++i) {
             const std::string key = argv[i];
+            if (key == "--head-shape-admission") { opts.head_shape_admission=true;continue;}
             if (key == "--validate-options") {validate_options=true;continue;}
             if (key == "--expert-timings") { opts.expert_timings = true; continue; }
             if (key == "--stdio") { resident = true; continue; }
@@ -117,6 +118,7 @@ int main(int argc, char **argv) {
                              " [--qsa-reuse-attention (compatibility flag; session scratch is shared)]\n"
                              " [--gdn-resident-state (trial, default off)]\n"
                              " [--native-hc-norm-inject-layer0 RECEIPT_PREFIX (experimental serial T1; partial HC)]\n"
+                             " [--head-shape-admission (experimental metadata-only head preflight)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
                              " [--expert-native-profile STRP --expert-native-primary-slots N --expert-native-helper-slots N --expert-native-plan-prefix NEW_PREFIX (native sizing, excludes fixed plans)]\n"
@@ -332,6 +334,7 @@ int main(int argc, char **argv) {
         strata::core::portable_detail::validate_model_modes(opts,devices.size());
         if(validate_options) {
             std::cout<<"{\"validated_options\":true,\"backend_initialized\":false,\"model_metadata_checked\":false,\"memory_admission_checked\":false,\"selected_accelerators\":"<<devices.size()
+                     <<",\"head_shape_admission\":"<<(opts.head_shape_admission?"true":"false")
                      <<",\"gdn_resident_weights\":"<<(opts.gdn_resident_weights?"true":"false")
                      <<",\"dense_resident_weights\":"<<(opts.dense_resident_weights?"true":"false")
                      <<",\"native_hc_norm_inject_layer0\":"<<(opts.native_hc_norm_inject_layer0?"true":"false")<<"}\n";

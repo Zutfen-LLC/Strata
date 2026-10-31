@@ -15,7 +15,9 @@ def run(extra,ok,error=None,env=None):
  assert p.returncode!=0 and (error is None or error in p.stderr),p.stderr
 # Both nonresident controls remain valid. The historically attempted on config
 # is rejected by the actual same predicate used by session creation.
-run([],True);run(['--dump-executed-logits','/absent/heads'],True)
+assert run(["--head-shape-admission"],True)["head_shape_admission"]
+assert not run([],True)["head_shape_admission"]
+run(['--dump-executed-logits','/absent/heads'],True)
 run(hc,False,'native HC layer0 requires')
 a=run(['--gdn-resident-weights'],True);b=run([*hc,'--gdn-resident-weights'],True)
 assert a['gdn_resident_weights'] and b['gdn_resident_weights'] and not a['dense_resident_weights'] and not b['dense_resident_weights']

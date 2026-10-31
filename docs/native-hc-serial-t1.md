@@ -93,3 +93,41 @@ default to false. `--gdn-resident-weights` retains attention weights across all
 36 GDN layers, including the existing PLE layer. It is not a layer-0-only switch.
 Changing that mode requires a matched off/on residency configuration and a new
 valid resource/ownership plan; prior nonresident controls do not qualify it.
+
+
+`--head-shape-admission` is a separate default-off admission experiment. The
+head's original 4 GiB graph cap was introduced with the bounded model assembly;
+it is a policy ceiling, not an allocator measurement. This option builds the
+same graph metadata without reading weight payloads or allocating scheduler
+buffers. It sums every node and source-copy allocation with the larger of the
+CPU/device default-buffer padding, charges original input storage on both
+backends and takes no liveness or resident-copy reuse credit. Original immutable
+weights remain separately charged. CPU workspace, the existing conversion and
+other-workspace allowances, and aligned integer-guard storage plus its existing
+1 MiB resource allowance are also retained.
+
+Only the existing pinned Vulkan contiguous Q8/F32 T1 output-head contract with
+unambiguous physical PCI/storage-range proof and no CPU fallback earns the
+smaller bound. Unknown backends, geometry/range contracts or fallback retain the
+full graph cap. Malformed tensor metadata refuses. The estimator never raises
+the graph cap or device limit and never subtracts the physical free reserve.
+Construction passes the admitted budget into the existing scheduler before
+allocation and checks actual allocation bookkeeping against it afterwards.
+Driver/pipeline private costs remain conservative allowances, not portable exact
+measurements. Physical reserve and the existing process admission remain separate.
+
+A valid mode or a metadata head estimate does not freeze expert ownership.
+Residency changes require the native post-dense capacity calculation and helper
+reselection from remaining ranked experts. Old nonresident controls remain valid
+only for their original configuration. A new matched resident off/on pair must
+share the residency/admission flags and compare actual ownership before GEN.
+The layer-0 HC component borrows only its own resident norm/injection roles;
+all-GDN residency is the currently available model ownership option. Narrowing
+that option would be a separate policy change, not part of head accounting.
+
+`portable_head_admission_test --vulkan INDEX` checks full-vocabulary metadata,
+physical direct-Q8 proof and exact/short-room refusal without uploading weights.
+`portable_head_test --vulkan INDEX` checks actual small-head scheduler/guard
+allocation bookkeeping, resident and host weights, metadata-sized budgets and
+exact same-backend outputs. These are component gates, not real-model resident
+admission, native full-HC, quality or performance qualification.

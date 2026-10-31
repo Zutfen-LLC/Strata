@@ -7,6 +7,11 @@ struct PortableHeadGeometry {
     int64_t hidden = 2560, streams = 4, rank = 320, vocabulary = 0;
     float epsilon = 1e-6f;
 };
+struct PortableHeadAdmission {
+    size_t scheduler_bound = 0, cpu_workspace = 0, device_workspace = 0, guard_bound = 0;
+    size_t graph_bound = 0; // sum; no allocation or liveness reuse credit
+    bool direct_q8 = false, verified_vulkan = false;
+};
 // Portable global HC/output projection; owns copied small/head weights and
 // scheduler allocations. No NativeHead/NativeEmbed or CUDA allocation dependency.
 class PortableHead {
@@ -20,6 +25,10 @@ class PortableHead {
     // Uses the same four tensors and allocator sizing as create; no weight upload.
     static size_t weight_allocation_size(ggml_backend* backend, PortableHeadGeometry geometry,
                                         const std::vector<PortableTensorView>& weights);
+    // Builds the same graph metadata as create. No weight bytes read, scheduler
+    // allocation or execution. Unknown physical/backend contracts keep the cap.
+    static PortableHeadAdmission admission(PortableHeadGeometry geometry,
+        const std::vector<PortableTensorView>& weights, PortableFfnOptions options, bool guard_logits);
     ~PortableHead();
     bool run(const std::vector<float> &streams, std::vector<float> &logits, std::string &error);
     size_t weight_bytes() const;
@@ -69,6 +78,7 @@ struct PortableModelOptions {
     size_t host_cap = 32ull << 30;
     size_t layer_weight_cap = 256ull << 20, layer_graph_cap = 256ull << 20;
     size_t head_weight_cap = 1ull << 30, head_graph_cap = 4ull << 30;
+    bool head_shape_admission = false; // experimental metadata bound; default keeps full graph cap
     // Comparison oracle only: preserve the former copy/digest on every dispatch.
     bool expert_dispatch_oracle = false;
     size_t expert_staging_cap = 64ull << 20;
