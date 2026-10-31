@@ -1,4 +1,4 @@
-import pathlib,sys,unittest,struct,tempfile,hashlib
+import pathlib,sys,unittest,struct,tempfile,hashlib,os
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[2]/'tools'))
 import extract_native_hc_write as e
 from compare_layer0_observer import COUNTS
@@ -13,7 +13,7 @@ class Extract(unittest.TestCase):
   p=root/'trace';p.write_bytes(raw);return p,hashlib.sha256(raw).hexdigest()
  def test_actual_fields_and_exclusive_output(self):
   with tempfile.TemporaryDirectory() as tmp:
-   r=pathlib.Path(tmp);p,h=self.trace(r);before=p.read_bytes();out=r/'out';receipt=e.extract(p,h,'a'*64,out)
+   r=pathlib.Path(tmp);p,h=self.trace(r);os.utime(p,(1,1));before=p.read_bytes();out=r/'out';receipt=e.extract(p,h,'a'*64,out)
    raw=(out/'fixture.bin').read_bytes();self.assertEqual(len(raw),51224);self.assertEqual(struct.unpack_from('<f',raw,8+40960)[0],.25);self.assertEqual(receipt['fields']['block']['field'],10);self.assertEqual(p.read_bytes(),before)
    with self.assertRaises(FileExistsError):e.extract(p,h,'a'*64,out)
  def test_bad_binding_digest_and_missing_boundary(self):
