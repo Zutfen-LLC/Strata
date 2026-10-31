@@ -8,6 +8,28 @@ Tracking: [umbrella #65](https://github.com/Zutfen-LLC/Strata/issues/65), with
 [product breadth #70](https://github.com/Zutfen-LLC/Strata/issues/70).
 This updates the existing roadmap rather than introducing a parallel plan.
 
+## HC norm/injection checkpoint (2026-10-31)
+
+[PR #97](https://github.com/Zutfen-LLC/Strata/pull/97) defines the standalone
+BF16 HC norm/injection method and versioned `native-hc-normal-v1` acceptance.
+Limited component acceptance applies only to its fixed geometry, selected
+method and normal-or-zero domain. Exact comparisons remain diagnostics;
+independent local operation checks and derived division/rsqrt bounds are
+separate from full-model behavior. It does not establish universal intrinsic
+bit identity, subnormal behavior, HC down/up/mixed or model parity.
+
+[Draft PR #98](https://github.com/Zutfen-LLC/Strata/pull/98), source
+`357dafbb505147ea5548f19c1808f1965d3b120e`, adds only an experimental layer-0
+serial eager integration. It uploads the actual residual before native
+norm/injection and lets the original graph borrow retained outputs. The BF16
+injection allocation replaces Q8 storage; graph/state admission, leases and
+commit rules stay explicit. The default is disabled, and chunks/PLE/GDN
+production modes refuse. Host/coordinator tests do not qualify its physical
+seam; guarded integration and then end-to-end behavior remain pending gates.
+HC down/up, activation, mixed/gating and pending-write work remain separate.
+See the [contract](https://github.com/Zutfen-LLC/Strata/blob/1c3e835f4ce832ba7017ffb549c25facf6f3b9f2/docs/native-hc-numerical-contract.md)
+and [serial implementation scope](https://github.com/Zutfen-LLC/Strata/blob/357dafbb505147ea5548f19c1808f1965d3b120e/docs/native-hc-serial-t1.md).
+
 ## Contract and inspected versions
 
 The target is Strata's existing model-specific native engine: preserve its
