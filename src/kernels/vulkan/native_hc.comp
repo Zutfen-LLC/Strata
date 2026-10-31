@@ -1,0 +1,29 @@
+#version 450
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427)
+float hc_fma(float a,float b,float c);
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer X {float x[];};
+layout(binding=1,std430) readonly buffer WN {float wn[];};
+layout(binding=2,std430) readonly buffer WI {uint wi[];};
+layout(binding=3,std430) buffer N {float xn[];};
+layout(binding=4,std430) buffer R {float rs[];};
+layout(binding=5,std430) writeonly buffer O {float output_values[];};
+layout(binding=6,std430) buffer S {uint status[];};
+layout(push_constant) uniform P {uint mode,tokens,xb,wb,ib,nb,rb,ob,sb;} p;
+shared float partial[1024];
+shared float reciprocals[4];
+float checked(float v){uint b=floatBitsToUint(v)&0x7fffffffu;if(b>=0x7f800000u)atomicOr(status[p.sb],1u);if(b>0u&&b<0x800000u)atomicOr(status[p.sb],2u);return v;}
+void main(){uint tid=gl_LocalInvocationID.x,token=gl_WorkGroupID.y;
+ if(p.mode==0u){float ss[4]=float[4](0,0,0,0);
+  for(uint j=tid*4u;j<10240u;j+=1024u){uint at=p.xb+token*10240u+j;vec4 v=vec4(checked(x[at]),checked(x[at+1u]),checked(x[at+2u]),checked(x[at+3u]));
+   precise float sq=checked(v.x*v.x);sq=checked(hc_fma(v.y,v.y,sq));sq=checked(hc_fma(v.z,v.z,sq));sq=checked(hc_fma(v.w,v.w,sq));uint c=j/2560u;ss[c]=checked(ss[c]+sq);}
+  for(uint c=0u;c<4u;++c)partial[c*256u+tid]=ss[c];barrier();
+  for(uint offset=16u;offset>0u;offset>>=1u){float next[4];for(uint c=0u;c<4u;++c){precise float sum=partial[c*256u+tid]+partial[c*256u+(tid^offset)];next[c]=checked(sum);}barrier();for(uint c=0u;c<4u;++c)partial[c*256u+tid]=next[c];barrier();}
+  if(tid<4u){precise float sum=0.0;for(uint warp=0u;warp<8u;++warp)sum=checked(sum+partial[tid*256u+warp*32u]);precise float mean=checked(sum/2560.0);precise float shifted=checked(mean+0.000001);float r=checked(inversesqrt(shifted));reciprocals[tid]=r;rs[p.rb+token*4u+tid]=r;}barrier();
+  for(uint j=tid;j<10240u;j+=256u){precise float weighted=checked(checked(x[p.xb+token*10240u+j])*checked(wn[p.wb+j]));precise float result=checked(weighted*reciprocals[j/2560u]);xn[p.nb+token*10240u+j]=result;}
+ }else{uint row=gl_WorkGroupID.x;precise float acc=0.0;
+  if(tid<32u)for(uint chunk=tid;chunk<1280u;chunk+=32u){precise float d=0.0;for(uint k=0u;k<8u;++k){uint j=chunk*8u+k,word=wi[p.ib+(row*10240u+j)/2u];float weight=uintBitsToFloat((j%2u==0u?word<<16:word&0xffff0000u));d=checked(hc_fma(checked(weight),checked(xn[p.nb+token*10240u+j]),d));}acc=checked(acc+d);}
+  partial[tid]=acc;barrier();for(uint offset=16u;offset>0u;offset>>=1u){precise float next=partial[tid]+partial[tid^offset];barrier();partial[tid]=checked(next);barrier();}if(tid==0u)output_values[p.ob+token*4u+row]=partial[0];
+ }
+}
