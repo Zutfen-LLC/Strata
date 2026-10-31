@@ -74,9 +74,17 @@ A specification-derived normal-domain prerequisite is implemented at
 It derives exp/division limits, rejects quotient underflow/nonfinite results,
 preserves the native operation/reduction order, and retains exact local checks
 and the existing intrinsic error policies. Independent boundary/adversarial
-regressions and offline real-input domain preflight pass. Wider-domain/real-role
-hardware qualification remains pending; source proofs do not qualify intrinsic
-hardware behavior. No more extraction or full-model capture is needed.
+regressions and offline real-input domain preflight pass. The bounded wider-domain/real-role
+component gate passed both backends' separate own-input arithmetic/intrinsic
+contracts. Cross-backend differences remain diagnostics; differing low operands
+prevent up-only attribution. Native sampling included case-loop observations;
+Vulkan sampling was baseline-only, so neither continuous nor per-child workload
+coverage follows. No more extraction or full-model capture is needed.
+A separately opt-in [serial layer0 composed attention read](https://github.com/Zutfen-LLC/Strata/pull/100)
+is implemented with existing components at the actual residual upload seam.
+Its coordinator and later matched-model gates are still pending. Conversion
+replaces resident banks, and aligned scratch/host bounds remain charged to
+existing admission. The old partial flag and defaults retain their behavior.
 Pending writes, FFN HC, other shapes/native modes and model integration remain
 separate. Defaults stay disabled and PRs remain drafts.
 Do not attribute later route/head differences to down/up alone when upstream
