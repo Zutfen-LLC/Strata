@@ -22,9 +22,11 @@ struct PortableGdnOptions {
     // Largest streamed BF16 conversion/readback is 6,553,600 B, plus the
     // existing 1 MiB metadata/trace bound; no simultaneous down/up host banks.
     static constexpr size_t native_hc_read_host_bound = 8u << 20;
+    static constexpr size_t native_hc_pending_host_bound = native_hc_read_host_bound + (128u << 10);
     PortableFfnOptions execution;
     bool native_hc_norm_inject = false; // experimental layer-0 serial T1 only; mixed remains GGML
     bool native_hc_mix = false; // experimental attention read; requires native norm/injection
+    bool native_hc_pending = false; // diagnostic explicit tuple only; no model CLI or FFN role binding
     std::string native_hc_receipt_prefix;
     bool causal_chunk = false; // production/non-PLE T2..8; requires batched projections
     bool batch_input_projections = false; // opt-in chunk T>1, non-PLE only; T1 stays serial
@@ -51,6 +53,8 @@ struct PortableGdnWork {
 struct PortableGdnTrace {
     bool native_hc_norm_inject = false;
     bool native_hc_mix = false;
+    bool native_hc_pending = false;
+    std::vector<float> hc_pending_input, hc_previous_output, hc_previous_inject, hc_pending_gate, hc_pending_exp;
     std::vector<float> hc_residual, hc_normalized, hc_rs, hc_inject;
     std::vector<float> hc_low_pre, hc_low, hc_low_exp, hc_up_pre, hc_gates, hc_up_exp, hc_mixed;
     std::vector<float> qkv, convolution, query, key, value, decay, beta, attention;
@@ -79,6 +83,14 @@ class PortableGdnLayer {
     // Production failure may leave changed device state; reset/replay is required.
     bool step(const std::vector<float> &residual, const PortableExpertRows &dispatch, PortableRoute &route,
               std::string &error, PortableGdnTrace *trace = nullptr, PortableGdnWork *work = nullptr);
+    // Diagnostic T1 pending tuple. Original caller R/bo/inject are immutable;
+    // R-prime is used by BOTH HC and graph residual consumers. Public state and
+    // last_residual commit only after the existing complete layer transaction.
+    // Requires native_hc_pending + composed layer0 attention roles, not FFN roles.
+    bool step_pending(const std::vector<float>& residual,const std::vector<float>& previous_output,
+                      const std::vector<float>& previous_injection,const PortableExpertRows& dispatch,
+                      PortableRoute& route,std::string& error,PortableGdnTrace* trace=nullptr,
+                      PortableGdnWork* work=nullptr);
     // Token-aware entry for configured PLE. Supply the configured image token ID for
     // image positions. EOS cuts hash predecessors on subsequent tokens; it
     // does not clear recurrent/convolution state. reset() starts a new sequence.
@@ -97,6 +109,7 @@ class PortableGdnLayer {
     // Actual projection graph submissions/columns, including work before a failed
     // chunk; reset preserves these cumulative execution receipts.
     uint64_t input_projection_calls() const;
+    uint64_t native_hc_pending_calls() const; // paid successful work, including later graph/provider refusal
     uint64_t native_hc_mix_calls() const;
     uint64_t native_hc_calls() const; // actual successful component calls; cumulative across reset
     uint64_t causal_chunk_calls() const;
@@ -121,6 +134,10 @@ class PortableGdnLayer {
 
   private:
     struct Impl;
+    bool step_impl(int32_t token,const std::vector<float>& residual,
+                   const std::vector<float>* previous_output,const std::vector<float>* previous_injection,
+                   const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,
+                   PortableGdnTrace* trace,PortableGdnWork* work);
     explicit PortableGdnLayer(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;
 };

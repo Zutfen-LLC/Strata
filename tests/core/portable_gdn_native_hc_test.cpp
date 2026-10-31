@@ -2,6 +2,8 @@
 #include "portable_gdn_fixture.hpp"
 #include "strata_vk_native_hc.hpp"
 #include "native_hc_layout.hpp"
+#include "native_hc_pending.hpp"
+#include "strata/core/layer0_observer.hpp"
 #include "ggml-cpu.h"
 #include "ggml-backend-impl.h"
 #include <filesystem>
@@ -11,6 +13,7 @@ using namespace strata::core;
 using namespace strata::core::portable_detail;
 using namespace gdn_fixture;
 namespace {
+size_t pending_owners=0,pending_calls=0;bool fail_pending_create=false,fail_pending_run=false;
 size_t owners=0,calls=0,mix_owners=0,mix_calls=0;bool fail_mix=false,fail_mix_create=false;float mixed_scale=1;const ggml_tensor* live_mixed=nullptr;size_t mixed_consumers=0;
 std::vector<uint16_t> expected_down,expected_up;bool fail_run=false,fail_create=false;float inject_bias=0,norm_scale=1;
 std::vector<float> uploaded,expected_xn,expected_rs,expected_inject;
@@ -22,6 +25,14 @@ std::vector<float> get(const ggml_tensor* t){std::vector<float>x(size_t(ggml_nel
 void put(ggml_tensor*t,const std::vector<float>&x){ggml_backend_tensor_set(t,x.data(),0,x.size()*4);}
 }
 namespace strata::core::portable_detail {
+struct StrataVkNativeHcPending{};
+StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t,const char* path,size_t budget){check(!fail_pending_create,"injected pending create refusal");check(budget>=512,"pending metadata budget");std::ofstream(path)<<"mock; not shader evidence\n";++pending_owners;return new StrataVkNativeHcPending;}
+size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*){return 512;}
+void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p)noexcept{if(p)--pending_owners;delete p;}
+void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*,const ggml_tensor*r,const ggml_tensor*b,const ggml_tensor*i,ggml_tensor*rp,ggml_tensor*g,ggml_tensor*e){
+ check(!fail_pending_run,"injected pending component refusal");check(r!=rp&&b!=rp&&i!=rp,"pending input/candidate alias");
+ auto out=native_hc_pending_control(get(r),get(b),get(i));put(rp,out.residual);put(g,out.gate);put(e,out.exponential);++pending_calls;
+}
 struct StrataVkNativeHcMix{};
 StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char* path,size_t budget){check(!fail_mix_create,"injected mix create refusal");check(budget>=512,"mix metadata budget");std::ofstream(path)<<"mock; not shader evidence\n";++mix_owners;return new StrataVkNativeHcMix;}
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*){return 512;}
@@ -112,6 +123,53 @@ int main(){try{
  check(mixed_consumers>=mix_calls,"missing composed graph consumer");composed.reset();check(!mix_owners&&!owners,"composed owner leak");
  {auto bad=o;bad.native_hc_norm_inject=false;check(!PortableGdnLayer::create(0,f.views,bad,error),"mix without norm accepted");}
  {auto bad=o;bad.execution.weight_budget=baseline->weight_bytes()+38400+6143999;check(!PortableGdnLayer::create(0,f.views,bad,error),"composed weight cap ignored");check(!mix_owners&&!owners,"composed refusal leak");}
+ // Explicit diagnostic pending tuple: no model flag or FFN role substitution.
+ for(bool resident_pending:{false,true}) {
+ o.resident_state=resident_pending;
+ o.scratch=resident_pending?PortableGdnScratch::create(o.execution,error):nullptr;if(resident_pending)check(bool(o.scratch),error);
+ o.native_hc_pending=true;fail_pending_create=true;
+ check(!PortableGdnLayer::create(0,f.views,o,error),"pending create refusal accepted");check(!owners&&!mix_owners&&!pending_owners,"pending create refusal leaked components");fail_pending_create=false;
+ {auto bad=o;bad.native_hc_mix=false;check(!PortableGdnLayer::create(0,f.views,bad,error),"pending without composed read accepted");}
+#ifndef _WIN32
+ {const char* prior=std::getenv("STRATA_LAYER0_OBSERVER");const bool had=prior!=nullptr;const std::string saved=prior?prior:"";unsetenv("STRATA_LAYER0_OBSERVER");Layer0Observer observer;if(had)setenv("STRATA_LAYER0_OBSERVER",saved.c_str(),1);auto bad=o;bad.execution.layer0_observer=&observer;check(!PortableGdnLayer::create(0,f.views,bad,error),"legacy observer silently omitted pending tuple");}
+#endif
+ {auto bad=o;bad.state_budget=baseline->state_bytes()+PortableGdnOptions::native_hc_pending_host_bound-1;check(!PortableGdnLayer::create(0,f.views,bad,error),"pending host admission short room accepted");}
+ auto pending=PortableGdnLayer::create(0,f.views,o,error);check(bool(pending),error);check(pending_owners==1,"pending owner count");
+ check(pending->weight_bytes()==baseline->weight_bytes()+6182400,"pending duplicated weight banks");
+ check(pending->state_bytes()==baseline->state_bytes()+PortableGdnOptions::native_hc_pending_host_bound,"pending host bound not charged");
+ const auto original=f.input(0);std::vector<float> bo(2560),inj(4,0.f);for(size_t d=0;d<bo.size();++d)bo[d]=float(int(d%11)-5)*0.001953125f;
+ const auto saved_bo=bo,saved_inj=inj;const auto expected_pending=native_hc_pending_control(original,bo,inj).residual;
+ check(pending->reset(error),error);const auto pending_state=pending->recurrent_state();
+ check(!pending->step(original,experts(),route,error),"implicit missing tuple accepted");
+ {auto bad=bo;bad.pop_back();check(!pending->step_pending(original,bad,inj,experts(),route,error),"bad pending shape accepted");}
+ fail_pending_run=true;check(!pending->step_pending(original,bo,inj,experts(),route,error),"pending component refusal accepted");fail_pending_run=false;
+ check(pending->native_hc_pending_calls()==0&&pending->tokens()==0&&pending->recurrent_state()==pending_state,"pending failure committed work/state");
+ fail_run=true;check(!pending->step_pending(original,bo,inj,experts(),route,error),"norm refusal after pending accepted");fail_run=false;
+ check(pending->native_hc_pending_calls()==1&&pending->native_hc_calls()==0&&pending->native_hc_mix_calls()==0&&pending->tokens()==0,"partial pending work accounting");
+ fail_mix=true;check(!pending->step_pending(original,bo,inj,experts(),route,error),"mix refusal after pending accepted");fail_mix=false;
+ check(pending->native_hc_pending_calls()==2&&pending->native_hc_calls()==1&&pending->native_hc_mix_calls()==0&&pending->recurrent_state()==pending_state,"partial pending norm/state accounting");
+ PortableGdnTrace pt;check(pending->step_pending(original,bo,inj,experts(),route,error,&pt),error);
+ check(pt.native_hc_pending&&pt.hc_residual==expected_pending&&pt.hc_pending_input==original&&pt.hc_previous_output==bo&&pt.hc_previous_inject==inj,"pending tuple/candidate trace binding");
+ check(original==f.input(0)&&bo==saved_bo&&inj==saved_inj,"caller pending tuple changed");
+ const auto pending_first=pending->last_residual(),first_state=pending->recurrent_state(),first_history=pending->convolution_history();
+ check(pending->reset(error),error);const auto before_refusal=pending->recurrent_state();
+ check(!pending->step_pending(original,bo,inj,no,route,error),"pending provider refusal accepted");
+ check(pending->tokens()==0&&pending->last_residual().empty()&&pending->recurrent_state()==before_refusal,"pending provider refusal committed public state");
+ check(pending->native_hc_pending_calls()==4&&pending->native_hc_calls()==3&&pending->native_hc_mix_calls()==2,"pending paid work lost after provider refusal");
+ check(pending->step_pending(original,bo,inj,experts(),route,error),error);
+ check(pending->last_residual()==pending_first&&pending->recurrent_state()==first_state&&pending->convolution_history()==first_history,"pending retry/reset state differs");
+ check(pending->native_hc_pending_calls()==5,"pending cumulative counter changed");
+ bool tuple_receipt=false;for(const auto&e:std::filesystem::directory_iterator(root))if(std::filesystem::exists(e.path()/"first-previous-output.f32le"))tuple_receipt=true;check(tuple_receipt,"pending first tuple receipt missing");
+ check(pending->reset(error),error);auto next_bo=bo;for(float&v:next_bo)v=-v;std::vector<float>next_inj{-8.f,-1.f,0.f,4.f};PortableGdnTrace next_pending;check(pending->step_pending(f.input(1),next_bo,next_inj,experts(),route,error,&next_pending),error);check(next_pending.hc_pending_input==f.input(1)&&next_pending.hc_previous_output==next_bo&&next_pending.hc_previous_inject==next_inj,"stale pending tuple upload");
+ pending.reset();check(!pending_owners&&!owners&&!mix_owners,"pending owner release failed");
+ // Sequential same-backend control avoids duplicate resident banks/scratch.
+ o.native_hc_pending=false;auto materialized=PortableGdnLayer::create(0,f.views,o,error);check(bool(materialized),error);check(materialized->reset(error),error);
+ check(materialized->step(expected_pending,experts(),route,error),error);
+ check(materialized->last_residual()==pending_first&&materialized->recurrent_state()==first_state&&materialized->convolution_history()==first_history,"graph hidden consumed old R rather than R-prime");
+ check(!materialized->native_hc_pending_calls(),"disabled pending path invoked component");
+ check(!materialized->step_pending(original,bo,inj,experts(),route,error),"pending tuple accepted without opt-in");materialized.reset();
+ }
+ o.resident_state=false;
  o.native_hc_mix=false;
  o.native_hc_norm_inject=false;o.scratch.reset();auto off=PortableGdnLayer::create(0,f.views,o,error);check(bool(off),error);check(off->reset(error),error);check(off->step(f.input(0),experts(),route,error),error);check(off->last_residual()==disabled,"default-disabled equivalence lost");
  cpu->iface.graph_compute=original_compute;std::filesystem::remove_all(root);
