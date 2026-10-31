@@ -71,6 +71,12 @@ int main() {
                       error.find("native HC layer0 requires")!=std::string::npos,"native HC model preflight refusal");
             }
         }
+        {
+            auto invalid=opts;invalid.native_hc_ffn_read_layer0=true;
+            check(!PortableModelSession::open({"/absent/model.gguf"},"/absent/manifest",invalid,error) &&
+                  error.find("explicit layer0/dense resident weights")!=std::string::npos,
+                  "FFN model API touched metadata before mode refusal");
+        }
         std::vector<std::vector<float>> reference;
         opts.expert_dispatch_oracle = true;
         size_t baseline_state_bound=0;

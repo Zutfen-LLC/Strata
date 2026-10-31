@@ -759,6 +759,8 @@ std::unique_ptr<PortableModelSession> PortableModelSession::open(const std::vect
                                                                  std::string &error) {
     error.clear();
     try {
+        // Match the CLI's mode refusal before model mapping or observer creation.
+        portable_detail::validate_model_modes(opts,opts.accelerators.size());
         return std::unique_ptr<PortableModelSession>(
             new PortableModelSession(std::make_unique<Impl>(shards, manifest, std::move(opts))));
     } catch (const std::exception &e) {
