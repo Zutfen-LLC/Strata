@@ -37,6 +37,7 @@
 #include "strata/worker/setup_keepalive.hpp"
 #endif
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/layer0_observer_cuda.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
@@ -4349,6 +4350,23 @@ int main(int argc, char** argv) {
                              (double) fb / 1073741824.0, (double) held_back / 1073741824.0);
             }
         }
+    }
+    std::unique_ptr<strata::core::NativeLayer0Observer> layer0_observer;
+    if(strata::core::Layer0Observer::requested()) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_GPU_METAL)
+        std::fprintf(stderr,"layer0 observer currently requires CUDA native reference\n");return 2;
+#else
+        if(!native_pack || multi_gpu || o.pipeline_windows>0 || o.batch ||
+           o.remote_cpu_experts || o.expert_cache_remote[1]>0 || o.expert_cache_remote[2]>0 || !o.serve) {
+            std::fprintf(stderr,"layer0 observer requires native serial first-T1 serve without split/pipeline/remote CPU\n");return 2;
+        }
+        const auto& observer_layout=strata::kernels::cpu::expert_layout();
+        if(observer_layout.fmt.empty() || observer_layout.fmt[0].gu_type!=8 || observer_layout.fmt[0].d_type!=8) {
+            std::fprintf(stderr,"layer0 observer requires the matching Q8_0 expert artifact\n");return 2;
+        }
+        try {layer0_observer=std::make_unique<strata::core::NativeLayer0Observer>();}
+        catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 2;}
+#endif
     }
     strata::core::Verifier::set_commit_async(!multi_gpu);   // see Verifier::set_commit_async
     // --pipeline-windows (opt-in): one conversation's windows with the two stages of a layer split overlapped.  Decided
@@ -9406,6 +9424,9 @@ int main(int argc, char** argv) {
             // the setters reach the later stages; the pipeline never chains run/commit
             for (int st = 0; st + 1 < n_stages; ++st) stage_ver_p(st, 1).set_next(&stage_ver_p(st + 1, 1), &split_drive_b);
         }
+        if(layer0_observer)for(size_t expert=0;expert<512;++expert)
+            layer0_observer->helper[expert]=o.expert_cache_remote[0]>0 && remote_experts[0].holds(0,int32_t(expert))?1:0;
+        ver.set_layer0_observer(layer0_observer.get());
         ver.set_remote_expert_opt(remote_opt.get());
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all

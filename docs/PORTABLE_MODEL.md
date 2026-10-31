@@ -1079,3 +1079,6 @@ No existing coarse counters covered these model totals. This patch neither
 removes nor attributes those candidate costs. Non-provider time can include other
 CPU/preparation, GPU/transfer and reporting work; it is not all dense/GPU compute.
 Operator receipts and machine-specific run instructions are retained privately.
+
+The opt-in [first-token layer-0 observer](LAYER0_OBSERVER.md) diagnoses existing
+operands through combine without changing the selected runtime methods.

@@ -1,4 +1,5 @@
 #include "strata/core/portable_gdn.hpp"
+#include "strata/core/layer0_observer.hpp"
 #include "portable_expert_timer.hpp"
 #include "portable_gdn_finite.hpp"
 #include "ggml-alloc.h"
@@ -356,6 +357,12 @@ struct PortableGdnLayer::Impl {
                 read_into(s.history_output, s.candidate_history, work);
             }
             next_residual = read(s.attn_residual, work);
+            auto* observer=s.options.execution.layer0_observer;
+            if(observer && observer->active()) {
+                const auto mixed=read(s.observed_mixed),inject=read(s.observed_inject);
+                observer->put(Layer0Observer::attention_mixed,mixed.data(),mixed.size());
+                observer->put(Layer0Observer::attention_inject,inject.data(),inject.size());
+            }
             if (s.options.ple_table && !s.production())
                 read_into(s.ple_hist_out, s.candidate_ple_history, work);
             if (trace) {
@@ -404,6 +411,7 @@ struct PortableGdnLayer::Impl {
     }
 
     ggml_cgraph *graph = nullptr;
+    ggml_tensor *observed_mixed = nullptr, *observed_inject = nullptr;
     ggml_tensor *input = nullptr, *state_input = nullptr, *history_input = nullptr, *attn_residual = nullptr;
     ggml_tensor *state_output = nullptr, *history_output = nullptr, *qkv = nullptr, *conv = nullptr, *q = nullptr,
                 *k = nullptr, *v = nullptr, *g = nullptr, *beta = nullptr, *attention = nullptr;
@@ -453,6 +461,12 @@ struct PortableGdnLayer::Impl {
         bytes+=used-before+workspace;
     }
     void build_graphs() {
+        // The pinned allocator reuses same-shaped plans without comparing
+        // OUTPUT flags. An ordinary layer's plan does not retain HC snapshots.
+        // Replan only this opt-in serial observation, before assigning backends;
+        // reserve_size would discard those assignments at this GGML pin.
+        if(options.execution.layer0_observer && !options.execution.layer0_observer->finished())
+            scheduler.reset();
         ctx=context();
         const auto& w=weights;
         auto *c = ctx.get();
@@ -521,6 +535,12 @@ struct PortableGdnLayer::Impl {
                 mixed = ggml_add(c, mixed, ggml_view_1d(c, gated, H, size_t(s * H) * sizeof(float)));
             mixed = ggml_scale(c, mixed, 0.25f);
             auto *inject = ggml_mul_mat(c, w.at("hc_attn_inject.weight"), norm);
+            // Keep only the opt-in serial observer's actual HC outputs alive.
+            // T1 attention uses this graph; chunk tail projections are separate.
+            if(!external && options.execution.layer0_observer) {
+                observed_mixed=mixed;observed_inject=inject;
+                ggml_set_output(mixed);ggml_set_output(inject);
+            }
             auto leaf=[&](int64_t n) {auto* t=ggml_new_tensor_1d(c,GGML_TYPE_F32,n);ggml_set_input(t);return t;};
             if(external) for(size_t i=0;i<5;++i) projection_inputs[i]=leaf(std::array<int64_t,5>{HC,CHANNELS,INNER,HV,HV}[i]);
             if(external) inject=projection_inputs[0];

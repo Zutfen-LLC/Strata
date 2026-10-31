@@ -5,6 +5,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/first_request_trace.hpp"
+#include "strata/core/layer0_observer_cuda.hpp"
 #include "strata/core/first_request_trace_cuda.hpp"
 #include "strata/core/pin_budget.hpp"
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
@@ -666,6 +667,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     }
     release_gpu_fn().store(&release_live_verifiers);
     cudaGetDevice(&device_);   // a layer split's stage on another GPU: its streams, graphs and buffers live there
+    if(layer0_observer_ && (lb_!=0 || next_ || !hits.h_res ||
+        strata::kernels::pdl_supported() ||
+        g.n_layers!=48 || g.n_expert!=512 || ss.k!=10 || ss.gdn_ord0!=0 || !ss.gdn_state ||
+        g.n_embd!=2560 || g.hc!=4 || g.ssm_state_size!=128 || g.ssm_v_heads!=48 ||
+        g.ssm_conv_channels!=10240 || g.ssm_d_conv!=4)) {
+        err="layer0 observer: requires unsplit native geometry and primary residency";return false;
+    }
+    if(layer0_observer_)layer0_observer_->set_helper_reduction(remote_opt_!=nullptr);
     rr_stats_ = route_resident_cfg().stats_on(device_);   // STRATA_ROUTE_RESIDENT: this GPU's counters, outside graph capture
     strata::kernels::fused_gr_check();   // once per card: which bitwise-equal hyper-connection read runs there
     strata::kernels::fused_gr_persist_init();   // opt-in STRATA_HC_PERSIST=1 (HIP)
@@ -1186,6 +1195,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         broadcast_streams(emb_, R_, N, (int) HC, T, cs);
     }
 
+    if(layer0_observer_) {
+        using O=Layer0Observer;
+        if(!layer0_observer_->snapshot(T,O::embedding,R_,cs,err) ||
+           !layer0_observer_->snapshot(T,O::state_before,ss.gdn_state,cs,err) ||
+           !layer0_observer_->snapshot(T,O::history_before,ss.gdn_state+786432,cs,err))return false;
+    }
     // per-layer state indices (GDN and QSA layers are numbered separately)
     std::vector<int64_t> gdn_idx((size_t) g.n_layers, -1), qsa_idx((size_t) g.n_layers, -1);
     {
@@ -1335,6 +1350,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                 (int) (l * kProfPer + (half == 0 ? 27 : 30)));
         };
         const bool q8_attn = gr_read_group(0, pending, inj2_, inj_);   // true: xq_ holds mixed's q8_1 (STRATA_QFUSE)
+        if(l==0 && layer0_observer_) {
+            using O=Layer0Observer;
+            if(!layer0_observer_->snapshot(T,O::attention_mixed,mixed_+tb*N,cs,err) ||
+               !layer0_observer_->snapshot(T,O::attention_inject,inj_+tb*HC,cs,err))return false;
+        }
         {   // measurement only: STRATA_DUMMY_NODES=k adds k empty kernel nodes per layer (what one node costs in a window)
             static const int dummy = [] { const char* e = std::getenv("STRATA_DUMMY_NODES"); return e != nullptr ? std::atoi(e) : 0; }();
             for (int d = 0; d < dummy; ++d) gpu_noop(cs);
@@ -1886,6 +1906,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 16, grp);
         const bool q8_ffn = gr_read_group(1, true, inj_, inj2_);   // true: nat_xq_ holds the MoE input's q8_1 (STRATA_QFUSE)
         if (!first_trace_copy(l, 0, tb, n, mixed_ + tb*N, cs, err)) return false;
+        if(l==0 && layer0_observer_) {
+            using O=Layer0Observer;
+            if(!layer0_observer_->snapshot(T,O::pending_residual,Rt(tb),cs,err) ||
+               !layer0_observer_->snapshot(T,O::inject,inj2_+tb*HC,cs,err) ||
+               !layer0_observer_->snapshot(T,O::moe_input,mixed_+tb*N,cs,err))return false;
+        }
         // R and inj2 are the residual BEFORE the pending MoE write (the next
         // layer applies it). Copy here before the reusable buffers are overwritten.
         if (!first_trace_copy(l, 5, tb, n, Rt(tb), cs, err) ||
@@ -1983,6 +2009,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 cudaEventRecord(ev_fork_, cs);
                 cudaStreamWaitEvent(sh_cs_, ev_fork_, 0);
             }
+        }
+        if(l==0 && layer0_observer_) {
+            using O=Layer0Observer;
+            if(!layer0_observer_->snapshot(T,O::router_scores,logits_+tb*NE,cs,err) ||
+               !layer0_observer_->snapshot(T,O::router_ids,ids_+tb*K,cs,err) ||
+               !layer0_observer_->snapshot(T,O::router_weights,w_+tb*K,cs,err))return false;
         }
         stamp(l, 17, grp);
         bool qdedup = false;   // STRATA_VERIFY_QDEDUP took effect: the experts' q8_1 image of xm is already made
@@ -2148,6 +2180,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (sh_stream_on() && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
         }
+        if(l==0 && layer0_observer_) {
+            using O=Layer0Observer;
+            if(!layer0_observer_->snapshot(T,O::shared_output,shared_+tb*N,cs,err))return false;
+            // Local helper reduction returns weighted partials; parts_out is not
+            // the complete unweighted matrix in that existing execution mode.
+            if(!remote_opt_ && !layer0_observer_->snapshot(T,O::expert_rows,parts_out,cs,err))return false;
+        }
         if (sg_gated_[grp]) {   // STRATA_LFUSE: the shared expert's gate was not applied: the combine applies it (all rows are hits)
             try {
                 native_moe_combine_multi_hits_gated(parts_out, w_ + tb * K, shared_ + tb * N, sh_g_ + tb, bo_ + tb * N, N, K, n, cs);
@@ -2172,6 +2211,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
         if (!first_trace_copy(l, 4, tb, n, bo_ + tb*N, cs, err)) return false;
+        if(l==0 && layer0_observer_) {
+            using O=Layer0Observer;
+            if(!layer0_observer_->snapshot(T,O::combined_output,bo_+tb*N,cs,err))return false;
+            if(self_commit && (!layer0_observer_->snapshot(T,O::state_after,ss.gdn_state,cs,err) ||
+                !layer0_observer_->snapshot(T,O::history_after,ss.gdn_state+786432,cs,err)))return false;
+        }
         stamp(l, 24, grp);
         if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
@@ -2756,6 +2801,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
 #endif
     using namespace strata::kernels;
     const OnDevice on_device(device_);
+    if(layer0_observer_ && !layer0_observer_->finished() && (pos0!=0 || T!=1)) {
+        err="layer0 observer: first window must be position0/T1";return false;
+    }
     last_batch_ = false;
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
@@ -3027,6 +3075,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (h_bal_ != nullptr && !all_resident_ && !bal_paused_) pcie_balance_window(steps, G);
     if (prof_on_ && G == 1) collect_profile();   // the window's GPU stage stamps
     if (!first_trace_flush(T, err)) return false;
+    if(layer0_observer_ && !layer0_observer_->finished()) {
+        if(pos0!=0 || T!=1){err="layer0 observer: first observed window must be position0/T1";return false;}
+        if(!layer0_observer_->flush(tokens[0],hits_.h_res,err))return false;
+    }
     // ---- a sampled or penalized request: the head's sampling again, host-side so its parameters are this call's
     // own (a captured kernel would replay the same draws forever).  Row t's draw is Philox(seed, pos0 + t): tied to
     // the POSITION it samples, not to how the text was cut into windows, so a seed replays the same text whatever
