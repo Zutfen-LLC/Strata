@@ -1,0 +1,26 @@
+#version 450
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427)
+float hc_fma(float a,float b,float c);
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer X {float x[];};
+layout(binding=1,std430) readonly buffer G {float gates[];};
+layout(binding=2,std430) readonly buffer W {uint weights[];};
+layout(binding=3,std430) writeonly buffer P {float pre[];};
+layout(binding=4,std430) writeonly buffer A {float activation[];};
+layout(binding=5,std430) writeonly buffer O {float output_values[];};
+layout(binding=6,std430) buffer S {uint status[];};
+layout(push_constant) uniform Params {uint mode,tokens,xb,gb,wb,pb,ab,ob,sb;} p;
+shared float sums[256];
+float checked(float v){uint b=floatBitsToUint(v)&0x7fffffffu;if(b>=0x7f800000u)atomicOr(status[p.sb],1u);if(b>0u&&b<0x800000u)atomicOr(status[p.sb],2u);return v;}
+void main(){uint tid=gl_LocalInvocationID.x,row=gl_WorkGroupID.x;
+ if(p.mode<2u){uint width=p.mode==0u?10240u:320u;precise float acc=0.0;
+  // Native eight-FMA chunks, then chunk addition, then logical warp XOR.
+  if(tid<32u)for(uint chunk=tid;chunk<width/8u;chunk+=32u){precise float d=0.0;for(uint k=0u;k<8u;++k){uint j=chunk*8u+k,at=row*width+j,word=weights[p.wb+at/2u];float w=uintBitsToFloat(at%2u==0u?word<<16:word&0xffff0000u);d=checked(hc_fma(checked(w),checked(x[p.xb+j]),d));}if(p.mode==1u&&chunk==tid)acc=d;else acc=checked(acc+d);}
+  sums[tid]=acc;barrier();for(uint offset=16u;offset>0u;offset>>=1u){precise float next=sums[tid]+sums[tid^offset];barrier();sums[tid]=checked(next);barrier();}
+  if(tid==0u){precise float v=sums[0];if(p.mode==0u)v=checked(v*0.25);pre[p.pb+row]=v;
+   if(abs(v)>16.0)atomicOr(status[p.sb],4u);
+   float e=checked(exp(-v));output_values[p.ob+row]=e;precise float den=checked(1.0+e);
+   precise float a=p.mode==0u?v/den:1.0/den;activation[p.ab+row]=checked(a);}
+ }else{uint d=row*256u+tid;if(d>=2560u)return;precise float s=0.0;for(uint c=0u;c<4u;++c){precise float term=checked(checked(x[p.xb+c*2560u+d])*checked(gates[p.gb+c*2560u+d]));s=checked(s+term);}precise float mean=s*0.25;output_values[p.ob+d]=checked(mean);}
+}

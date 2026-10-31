@@ -94,3 +94,11 @@ void fused_gr_persist_init();
 bool fused_gr_read_persist(const FusedGrArgs* a, int n_tok, void* stream);
 
 }  // namespace strata::kernels
+
+namespace strata::kernels {
+// Standalone observation only: bypass normalization with an already normalized
+// T1 operand. Uses existing down/up kernels, no pending write or model path.
+// ones[10240] and rs_ones[4] must contain +1. Caller owns all spans.
+void fused_gr_normalized_probe(const float* normalized,const uint16_t* down,const uint16_t* up,
+ const float* ones,float* rs_ones,float* low,float* mixed,int variant,void* stream);
+}
