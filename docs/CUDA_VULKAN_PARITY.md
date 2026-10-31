@@ -52,11 +52,22 @@ Small physical head bookkeeping/full-shape metadata and matched resident
 admission have passed their bounded gates. Both resident arms use the same
 head/admission and weight policy; native post-dense sizing freezes common
 ownership before GEN. These gates do not qualify other shapes/backends.
-HC down/up, activation, mixed/gating and pending-write work remain separate.
-The next component slice should isolate down/up and mixed with identical
-normalized inputs, BF16 role conversion and native lane/reduction order, before
-any full-model integration. Deterministic synthetic inputs can establish that
-contract; real-role qualification requires explicitly approved role bytes.
+[Draft PR #99](https://github.com/Zutfen-LLC/Strata/pull/99), source
+`df488f25812a9a5cac94eabe6630bfa7bcae75b0`, adds a standalone T1 BF16
+HC down/up/activation/mixed component with identical normalized operands and
+native lane/reduction/stream order. Its bounded zero/sparse/dense synthetic
+component gate passed: mixed outputs are exact across the two backends, while
+one fixture's low projection/activation output differs within the deliberate
+intrinsic contract. Exact local source-order checks remain separate from those
+bounds. Operator-produced receipts were independently checked offline. This is
+synthetic component acceptance only, not real-role or full-HC/model acceptance.
+The scope and native unobserved-intermediate limit are documented in the
+[pinned component contract](https://github.com/Zutfen-LLC/Strata/blob/df488f25812a9a5cac94eabe6630bfa7bcae75b0/docs/native-hc-mix-component.md).
+No additional synthetic campaign is required before bounded real-role validation;
+actual role identity/conversion and representative ranges remain the next gate.
+Real-role extraction permission is pending. No real weights were extracted for
+this component gate. Pending writes, FFN HC, other shapes/native modes and model
+integration remain separate. Defaults stay disabled and PRs remain drafts.
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
 tolerance from matching generated tokens.
