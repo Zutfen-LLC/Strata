@@ -275,7 +275,7 @@ struct PortableModelSession::Impl {
             // maxima may combine graph and unused-workspace high waters, so
             // reserve two graph caps plus the explicit FFN private allowance.
             preflight(device(l),l,l%4==3?"qsa":"gdn",opts.layer_weight_cap,
-                      graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+((l==0&&opts.native_hc_norm_inject_layer0)?PortableGdnOptions::native_hc_host_bound:0));
+                      graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+((l==0&&opts.native_hc_norm_inject_layer0)?(opts.native_hc_mix_layer0?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound):0));
             Layer layer;
             if (l % 4 == 3) {
                 PortableQsaOptions o;
@@ -294,6 +294,7 @@ struct PortableModelSession::Impl {
                 o.policy = opts.gdn_production ? PortableGdnPolicy::device_production : PortableGdnPolicy::eager_diagnostic;
                 o.resident_attention_weights = opts.gdn_resident_weights;
                 o.execution = execution(l, false);
+                o.native_hc_mix=opts.native_hc_mix_layer0 && l==0;
                 o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && l==0;
                 if(o.native_hc_norm_inject)o.native_hc_receipt_prefix=opts.native_hc_receipt_prefix;
                 o.scratch = gdn_scratch.at(o.execution.accelerator);
@@ -313,7 +314,7 @@ struct PortableModelSession::Impl {
                     // Recheck the reserved module envelope before every shape
                     // allocation; no account-after-allocation admission gate.
                     preflight(device(l),l,l%4==3?"qsa-chunk-shape":"gdn-chunk-shape",opts.layer_weight_cap,
-                              graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+((l==0&&opts.native_hc_norm_inject_layer0)?PortableGdnOptions::native_hc_host_bound:0));
+                              graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+((l==0&&opts.native_hc_norm_inject_layer0)?(opts.native_hc_mix_layer0?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound):0));
                     const bool prepared=layer.prepare(T,error);
                     require(prepared,"portable model: chunk preflight layer "+std::to_string(l)+": "+error);
                     include(layer.memory());
@@ -807,6 +808,7 @@ PortableExpertWork PortableModelSession::expert_work() const {
 PortableModelWork PortableModelSession::model_work() const {
     auto work=impl_->model_work;
     for(const auto& layer:impl_->layers) if(layer.gdn) {
+        work.native_hc_mix_layer0_calls+=layer.gdn->native_hc_mix_calls();
         work.native_hc_layer0_calls+=layer.gdn->native_hc_calls();
         work.gdn_causal_submissions+=layer.gdn->causal_chunk_calls();
         work.gdn_causal_residual_handoffs+=layer.gdn->causal_residual_handoffs();

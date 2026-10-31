@@ -19,8 +19,12 @@ class PortableGdnScratch {
 enum class PortableGdnPolicy { eager_diagnostic, device_production };
 struct PortableGdnOptions {
     static constexpr size_t native_hc_host_bound = 1u << 20; // explicit metadata/preflight/trace envelope
+    // Largest streamed BF16 conversion/readback is 6,553,600 B, plus the
+    // existing 1 MiB metadata/trace bound; no simultaneous down/up host banks.
+    static constexpr size_t native_hc_read_host_bound = 8u << 20;
     PortableFfnOptions execution;
     bool native_hc_norm_inject = false; // experimental layer-0 serial T1 only; mixed remains GGML
+    bool native_hc_mix = false; // experimental attention read; requires native norm/injection
     std::string native_hc_receipt_prefix;
     bool causal_chunk = false; // production/non-PLE T2..8; requires batched projections
     bool batch_input_projections = false; // opt-in chunk T>1, non-PLE only; T1 stays serial
@@ -46,7 +50,9 @@ struct PortableGdnWork {
 };
 struct PortableGdnTrace {
     bool native_hc_norm_inject = false;
+    bool native_hc_mix = false;
     std::vector<float> hc_residual, hc_normalized, hc_rs, hc_inject;
+    std::vector<float> hc_low_pre, hc_low, hc_low_exp, hc_up_pre, hc_gates, hc_up_exp, hc_mixed;
     std::vector<float> qkv, convolution, query, key, value, decay, beta, attention;
     std::array<uint32_t, 16> ple_rows{};
     std::vector<float> ple_embedding, ple_key, ple_value, ple_gate, ple_normalized, ple_convolution, ple_residual;
@@ -91,6 +97,7 @@ class PortableGdnLayer {
     // Actual projection graph submissions/columns, including work before a failed
     // chunk; reset preserves these cumulative execution receipts.
     uint64_t input_projection_calls() const;
+    uint64_t native_hc_mix_calls() const;
     uint64_t native_hc_calls() const; // actual successful component calls; cumulative across reset
     uint64_t causal_chunk_calls() const;
     uint64_t causal_residual_handoffs() const;

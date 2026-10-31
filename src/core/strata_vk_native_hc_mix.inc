@@ -4,6 +4,7 @@ struct StrataVkNativeHcMix {std::unique_ptr<StrataVkLogitsGuard> owner;};
 StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t backend,const char* path,size_t budget){
  native_hc_environment();auto p=std::make_unique<StrataVkNativeHcMix>();p->owner=strata_vk_q8_component_owner(backend,strata_native_hc_mix_spv,sizeof(strata_native_hc_mix_spv)/4,NativeComponentAddressing::descriptor,"strata_native_hc_mix_observation",7,9,path,budget);return p.release();
 }
+size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix* p){return p?p->owner->bytes:0;}
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix* p) noexcept {delete p;}
 void strata_vk_native_hc_mix_run(StrataVkNativeHcMix* p,const ggml_tensor* input,const ggml_tensor* down,const ggml_tensor* up,ggml_tensor* lp,ggml_tensor* low,ggml_tensor* le,ggml_tensor* upre,ggml_tensor* gates,ggml_tensor* ue,ggml_tensor* mixed){
  native_hc_environment();native_hc_shape(2560,4,1);native_hc_need(p&&std::fegetround()==FE_TONEAREST,"native HC mix: component/RNE");auto& g=*p->owner;auto* ctx=static_cast<ggml_backend_vk_context*>(g.backend->context);

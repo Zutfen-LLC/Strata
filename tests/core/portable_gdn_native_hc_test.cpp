@@ -11,16 +11,28 @@ using namespace strata::core;
 using namespace strata::core::portable_detail;
 using namespace gdn_fixture;
 namespace {
-size_t owners=0,calls=0;bool fail_run=false,fail_create=false;float inject_bias=0,norm_scale=1;
+size_t owners=0,calls=0,mix_owners=0,mix_calls=0;bool fail_mix=false,fail_mix_create=false;float mixed_scale=1;const ggml_tensor* live_mixed=nullptr;size_t mixed_consumers=0;
+std::vector<uint16_t> expected_down,expected_up;bool fail_run=false,fail_create=false;float inject_bias=0,norm_scale=1;
 std::vector<float> uploaded,expected_xn,expected_rs,expected_inject;
 std::vector<uint16_t> expected_weights;
 const ggml_tensor* bound_weight=nullptr;const ggml_tensor* live_normalized=nullptr;size_t direct_consumers=0;
 decltype(ggml_backend_i::graph_compute) original_compute=nullptr;
-ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}return original_compute(b,g);}
+ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.attn_qkv.weight"&&live_mixed){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"composed mixed backing ignored/reused");++mixed_consumers;}}return original_compute(b,g);}
 std::vector<float> get(const ggml_tensor* t){std::vector<float>x(size_t(ggml_nelements(t)));ggml_backend_tensor_get(t,x.data(),0,x.size()*4);return x;}
 void put(ggml_tensor*t,const std::vector<float>&x){ggml_backend_tensor_set(t,x.data(),0,x.size()*4);}
 }
 namespace strata::core::portable_detail {
+struct StrataVkNativeHcMix{};
+StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char* path,size_t budget){check(!fail_mix_create,"injected mix create refusal");check(budget>=512,"mix metadata budget");std::ofstream(path)<<"mock; not shader evidence\n";++mix_owners;return new StrataVkNativeHcMix;}
+size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*){return 512;}
+void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix*p)noexcept{if(p)--mix_owners;if(!mix_owners)live_mixed=nullptr;delete p;}
+void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*x,const ggml_tensor*down,const ggml_tensor*up,ggml_tensor*lp,ggml_tensor*low,ggml_tensor*le,ggml_tensor*upre,ggml_tensor*gates,ggml_tensor*ue,ggml_tensor*mixed){
+ check(!fail_mix,"injected mix refusal");check(x==live_normalized,"composition normalized operand differs");
+ size_t wi=0;for(auto*w:{down,up}){check(w->type==GGML_TYPE_I32&&ggml_nbytes(w)==6553600,"converted down/up span");std::vector<uint16_t> b(3276800);ggml_backend_tensor_get(w,b.data(),0,b.size()*2);check(b==(wi++?expected_up:expected_down),"original BF16 role conversion");}
+ for(auto*t:{lp,low,le,upre,gates,ue})put(t,std::vector<float>(size_t(ggml_nelements(t)),0));
+ auto normalized=get(x);std::vector<float>values(2560);for(size_t i=0;i<values.size();++i)values[i]=normalized[i]*mixed_scale;
+ put(mixed,values);live_mixed=mixed;++mix_calls;
+}
 struct StrataVkNativeHc{};
 StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t,const char* path,size_t budget){check(!fail_create,"injected create refusal");check(budget>=512,"component budget");std::ofstream(path)<<"mock; not shader evidence\n";++owners;return new StrataVkNativeHc;}
 size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*){return 512;}
@@ -39,6 +51,10 @@ void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*x,const ggml_te
 int main(){try{
  Fixture f;std::string error;auto root=std::filesystem::temp_directory_path()/("hc-serial-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));check(std::filesystem::create_directory(root),"fresh root");
  for(const auto&v:f.views)if(v.name=="blk.0.hc_attn_inject.weight")expected_weights=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,40960);
+ for(const auto&v:f.views) {
+  if(v.name=="blk.0.hc_attn_down.weight")expected_down=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);
+  if(v.name=="blk.0.hc_attn_up.weight")expected_up=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);
+ }
  std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> cpu(ggml_backend_cpu_init(),ggml_backend_free);
  original_compute=cpu->iface.graph_compute;cpu->iface.graph_compute=check_compute;
  PortableGdnOptions o;o.execution.threads=1;o.execution.accelerator=cpu.get();o.execution.request_accelerator=true;o.execution.allow_cpu_fallback=false;o.resident_attention_weights=true;
@@ -76,6 +92,27 @@ int main(){try{
  check(layer->step(f.input(0),experts(),route,error),error);const auto resident=layer->last_residual();const auto state=layer->recurrent_state();
  check(layer->reset(error),error);check(layer->step(f.input(0),experts(),route,error),error);check(layer->last_residual()==resident&&layer->recurrent_state()==state,"resident state reset/replay changed");layer.reset();check(!owners,"resident owner not released");o.resident_state=false;
 
+ // Composed coordinator test: device arithmetic is deliberately mocked;
+ // exact shader/source arithmetic is qualified independently by component tests.
+ o.native_hc_mix=true;fail_mix_create=true;check(!PortableGdnLayer::create(0,f.views,o,error),"mix create refusal accepted");check(!owners&&!mix_owners,"mix create failure leaked owner");fail_mix_create=false;
+ auto composed=PortableGdnLayer::create(0,f.views,o,error);check(bool(composed),error);
+ check(composed->state_bytes()==baseline->state_bytes()+PortableGdnOptions::native_hc_read_host_bound,"composed host bound not charged");
+ check(mix_owners==1&&composed->weight_bytes()==baseline->weight_bytes()+38400+6144000,"composed replacement accounting");
+ check(composed->reset(error),error);fail_mix=true;const auto old_calls=calls;
+ check(!composed->step(f.input(0),experts(),route,error),"mix refusal accepted");
+ check(composed->tokens()==0&&composed->native_hc_calls()==1&&composed->native_hc_mix_calls()==0&&calls==old_calls+1,"partial component work/state accounting");fail_mix=false;
+ check(composed->reset(error),error);PortableGdnTrace composed_trace;check(composed->step(f.input(0),experts(),route,error,&composed_trace),error);
+ check(composed_trace.native_hc_mix&&composed_trace.hc_mixed.size()==2560&&composed_trace.hc_low.size()==320,"composed trace/liveness");
+ bool initial_mix=false;for(const auto&e:std::filesystem::directory_iterator(root))if(std::filesystem::exists(e.path()/"first-mixed.f32le"))initial_mix=true;
+ check(initial_mix,"first successful composed graph receipt missing after prior refusal");
+ const auto composed_first=composed->last_residual();check(composed->reset(error),error);check(composed->step(f.input(0),experts(),route,error),error);check(composed_first==composed->last_residual(),"composed reset differs");
+ check(composed->reset(error),error);mixed_scale=2;check(composed->step(f.input(0),experts(),route,error),error);check(composed_first!=composed->last_residual(),"graph ignored mixed leaf");mixed_scale=1;
+ check(composed->reset(error),error);const auto before_provider=composed->recurrent_state();PortableExpertRows no=[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="intentional provider refusal";return false;};
+ check(!composed->step(f.input(0),no,route,error)&&composed->tokens()==0&&composed->recurrent_state()==before_provider,"composed provider refusal committed state");
+ check(mixed_consumers>=mix_calls,"missing composed graph consumer");composed.reset();check(!mix_owners&&!owners,"composed owner leak");
+ {auto bad=o;bad.native_hc_norm_inject=false;check(!PortableGdnLayer::create(0,f.views,bad,error),"mix without norm accepted");}
+ {auto bad=o;bad.execution.weight_budget=baseline->weight_bytes()+38400+6143999;check(!PortableGdnLayer::create(0,f.views,bad,error),"composed weight cap ignored");check(!mix_owners&&!owners,"composed refusal leak");}
+ o.native_hc_mix=false;
  o.native_hc_norm_inject=false;o.scratch.reset();auto off=PortableGdnLayer::create(0,f.views,o,error);check(bool(off),error);check(off->reset(error),error);check(off->step(f.input(0),experts(),route,error),error);check(off->last_residual()==disabled,"default-disabled equivalence lost");
  cpu->iface.graph_compute=original_compute;std::filesystem::remove_all(root);
  puts("serial layer0 HC seam upload/consumption/liveness/reset/accounting/refusal pass; mocked component, no GPU qualification");return 0;

@@ -27,4 +27,10 @@ for flags in [['--allow-cpu-fallback'],['--gdn-production','--gdn-resident-state
 run(['--native-hc-norm-inject-layer0','','--gdn-resident-weights'],False,'receipt prefix')
 run([*hc,'--gdn-resident-weights','--qsa-production'],False,'QSA production requires')
 run([*hc,'--gdn-resident-weights'],False,'recorded-unset HC mode',dict(os.environ,STRATA_HC_Q8='1'))
+read=['--native-hc-read-layer0','/absent/hc-read']
+r=run([*read,'--gdn-resident-weights'],True);assert r['native_hc_norm_inject_layer0'] and r['native_hc_mix_layer0']
+assert not a['native_hc_mix_layer0'] and not b['native_hc_mix_layer0']
+run(read,False,'native HC layer0 requires')
+for flags in [['--allow-cpu-fallback'],['--gdn-production','--gdn-resident-state'],['--prompt-chunk-size','2']]:run([*read,'--gdn-resident-weights',*flags],False)
+run(['--native-hc-read-layer0','','--gdn-resident-weights'],False,'receipt prefix')
 print(str(count)+' actual product mode/parser preflights passed; no model/backend/memory admission performed')
