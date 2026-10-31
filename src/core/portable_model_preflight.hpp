@@ -12,12 +12,14 @@ inline bool model_resident_dense(const PortableModelOptions& opts,size_t index,b
 inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer) {
     if(layer || !opts.native_hc_norm_inject_layer0)return 0;
     return (opts.native_hc_mix_layer0 ? PortableGdnOptions::native_hc_read_host_bound : PortableGdnOptions::native_hc_host_bound)+
-        (opts.native_hc_ffn_read_layer0 ? PortableFfnOptions::native_hc_pending_host_bound : 0);
+        (opts.native_hc_ffn_read_layer0 ? PortableFfnOptions::native_hc_pending_host_bound : 0)+
+        (opts.native_hc_ffn_write_layer0 ? PortableFfnOptions::native_hc_write_host_bound : 0);
 }
 inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,PortableGdnOptions& o) {
     o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && layer==0;
     o.native_hc_mix=opts.native_hc_mix_layer0 && layer==0;
     o.native_hc_ffn_read=opts.native_hc_ffn_read_layer0 && layer==0;
+    o.native_hc_ffn_write=opts.native_hc_ffn_write_layer0 && layer==0;
     if(o.native_hc_norm_inject)o.native_hc_receipt_prefix=opts.native_hc_receipt_prefix;
 }
 // Argument/mode validation only. No backend query, model access or allocation;
@@ -28,6 +30,7 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
             opts.expert_native_plan_prefix.empty()),"native capacity options require a profile");
         require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
                 "native Q8 observation requires explicit expert plans and strict accelerator execution");
+        require(!opts.native_hc_ffn_write_layer0||opts.native_hc_ffn_read_layer0,"native FFN final write requires pending FFN read");
         require(!opts.native_hc_ffn_read_layer0 || (opts.native_hc_mix_layer0 &&
             (opts.layer0_resident_weights || opts.dense_resident_weights)),
             "native FFN HC layer0 requires composed attention and explicit layer0/dense resident weights");

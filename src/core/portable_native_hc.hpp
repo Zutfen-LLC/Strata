@@ -17,20 +17,23 @@ class PortableNativeHc {
     std::unique_ptr<StrataVkNativeHc,decltype(&strata_vk_native_hc_destroy)> component_{nullptr,strata_vk_native_hc_destroy};
     std::unique_ptr<StrataVkNativeHcMix,decltype(&strata_vk_native_hc_mix_destroy)> mix_{nullptr,strata_vk_native_hc_mix_destroy};
     std::unique_ptr<StrataVkNativeHcPending,decltype(&strata_vk_native_hc_pending_destroy)> pending_{nullptr,strata_vk_native_hc_pending_destroy};
+    std::unique_ptr<StrataVkNativeHcPending,decltype(&strata_vk_native_hc_pending_destroy)> write_{nullptr,strata_vk_native_hc_pending_destroy};
     const ggml_tensor *norm_,*weight_,*down_,*up_;
     size_t bytes_=0;
-    uint64_t calls_=0,mix_calls_=0,pending_calls_=0;
+    uint64_t calls_=0,mix_calls_=0,pending_calls_=0,write_calls_=0;
     std::string receipt_dir_;
-    bool first_recorded_=false;
+    bool first_recorded_=false,write_recorded_=false;
 public:
     ggml_tensor *pending_input=nullptr,*previous_output=nullptr,*previous_inject=nullptr,*pending_gate=nullptr,*pending_exp=nullptr;
+    ggml_tensor *write_block=nullptr,*write_candidate=nullptr,*write_gate=nullptr,*write_exp=nullptr;
     ggml_tensor *residual=nullptr,*normalized=nullptr,*rs=nullptr,*inject=nullptr;
     ggml_tensor *low_pre=nullptr,*low=nullptr,*low_exp=nullptr,*up_pre=nullptr,*gates=nullptr,*up_exp=nullptr,*mixed=nullptr;
     PortableNativeHc(ggml_backend_t backend,const ggml_tensor* norm,const ggml_tensor* weight,
-                     size_t budget,const std::string& prefix,const ggml_tensor* down=nullptr,const ggml_tensor* up=nullptr,bool pending=false):norm_(norm),weight_(weight),down_(down),up_(up) {
+                     size_t budget,const std::string& prefix,const ggml_tensor* down=nullptr,const ggml_tensor* up=nullptr,bool pending=false,bool final_write=false):norm_(norm),weight_(weight),down_(down),up_(up) {
         native_hc_environment();native_hc_need(backend&&!prefix.empty(),"native HC serial: backend/receipt prefix required");
         native_hc_need(bool(down)==bool(up),"native HC serial: paired down/up roles required");
         native_hc_need(!pending||down,"native HC pending: composed read required");
+        native_hc_need(!final_write||pending,"native HC final write: pending FFN read required");
         context_.reset(ggml_init({16384,nullptr,true}));native_hc_need(bool(context_),"native HC serial: metadata");
         residual=ggml_new_tensor_3d(context_.get(),GGML_TYPE_F32,2560,4,1);
         normalized=ggml_new_tensor_2d(context_.get(),GGML_TYPE_F32,10240,1);
@@ -55,6 +58,13 @@ public:
             pending_exp=ggml_new_tensor_1d(context_.get(),GGML_TYPE_F32,4);
             for(auto* t:{pending_input,previous_output,previous_inject,pending_gate,pending_exp}){ggml_set_input(t);ggml_set_output(t);}
         }
+        if(final_write) {
+            write_block=ggml_new_tensor_1d(context_.get(),GGML_TYPE_F32,2560);
+            write_candidate=ggml_new_tensor_3d(context_.get(),GGML_TYPE_F32,2560,4,1);
+            write_gate=ggml_new_tensor_1d(context_.get(),GGML_TYPE_F32,4);
+            write_exp=ggml_new_tensor_1d(context_.get(),GGML_TYPE_F32,4);
+            for(auto* t:{write_block,write_candidate,write_gate,write_exp}){ggml_set_input(t);ggml_set_output(t);}
+        }
         auto bound=ggml_backend_alloc_ctx_tensors_from_buft_size(context_.get(),ggml_backend_get_default_buffer_type(backend));
         native_hc_need(bound<=budget,"native HC serial: scratch graph budget");
         static std::atomic<uint64_t> next{0};std::string dir;
@@ -76,6 +86,11 @@ public:
             const size_t extra=strata_vk_native_hc_pending_bytes(pending_.get());
             native_hc_need(extra<=budget-bound-metadata,"native HC pending: metadata graph budget");metadata+=extra;
         }
+        if(final_write) {
+            write_.reset(strata_vk_native_hc_write_create(backend,(dir+"/write-effective.spv").c_str(),budget-bound-metadata));
+            const size_t extra=strata_vk_native_hc_pending_bytes(write_.get());
+            native_hc_need(extra<=budget-bound-metadata,"native HC final write: metadata budget");metadata+=extra;
+        }
         native_hc_need(metadata<=budget-bound,"native HC serial: component graph budget");
         buffer_.reset(ggml_backend_alloc_ctx_tensors(context_.get(),backend));native_hc_need(bool(buffer_),"native HC serial: scratch allocation");
         const auto actual=ggml_backend_buffer_get_size(buffer_.get());native_hc_need(actual<=budget-metadata,"native HC serial: actual graph budget");
@@ -85,6 +100,19 @@ public:
     uint64_t calls()const{return calls_;}
     uint64_t mix_calls()const{return mix_calls_;}
     uint64_t pending_calls()const{return pending_calls_;}
+    uint64_t write_calls()const{return write_calls_;}
+    void run_write(){
+        native_hc_need(write_&&write_calls_!=UINT64_MAX,"native HC final write: owner/counter required");
+        strata_vk_native_hc_pending_run(write_.get(),residual,write_block,inject,write_candidate,write_gate,write_exp);++write_calls_;
+    }
+    void record_write_first(){
+        if(write_recorded_||!write_calls_)return;
+        for(auto pair:{std::pair{"input",residual},std::pair{"block",write_block},std::pair{"inject",inject},std::pair{"gate",write_gate},std::pair{"exp",write_exp},std::pair{"candidate",write_candidate}}){
+            std::vector<float> v(size_t(ggml_nelements(pair.second)));ggml_backend_tensor_get(pair.second,v.data(),0,v.size()*4);
+            auto* f=std::fopen((receipt_dir_+"/first-write-"+pair.first+".f32le").c_str(),"wbx");native_hc_need(f,"native HC final write: exclusive first receipt");
+            const bool written=std::fwrite(v.data(),4,v.size(),f)==v.size();const bool closed=std::fclose(f)==0;native_hc_need(written&&closed,"native HC final write: receipt failed");
+        }write_recorded_=true;
+    }
     // Only the first successful attention graph is observed. This is a bounded
     // diagnostic readback, not a weight extraction or numerical fallback.
     void record_first() {

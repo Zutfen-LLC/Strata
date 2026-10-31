@@ -730,6 +730,8 @@ struct PortableGdnLayer::Impl {
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 != 3,
                 "portable GDN: expected a non-QSA layer in [0,47]");
+        require(!options.execution.native_hc_final_write,"portable GDN: configure FFN write through layer option");
+        require(!options.native_hc_ffn_write||options.native_hc_ffn_read,"native FFN final write requires pending FFN read");
         require(!options.execution.native_hc_pending_read,"portable GDN: configure FFN read through layer option, not raw execution option");
         require(!options.native_hc_ffn_read || (options.native_hc_mix && !options.native_hc_pending &&
                 options.execution.resident_dense_weights && !options.execution.layer0_observer),
@@ -779,6 +781,7 @@ struct PortableGdnLayer::Impl {
         std::string error;
         auto ffn_options=options.execution;
         ffn_options.native_hc_pending_read=options.native_hc_ffn_read;
+        ffn_options.native_hc_final_write=options.native_hc_ffn_write;
         ffn_options.native_hc_receipt_prefix=options.native_hc_receipt_prefix+".ffn";
         if(options.scratch) {
             const size_t retained=options.scratch->graph_bytes();
@@ -1198,6 +1201,7 @@ const std::vector<float> &PortableGdnLayer::convolution_history() const {
 }
 const std::vector<float> &PortableGdnLayer::last_residual() const { return impl_->last; }
 uint64_t PortableGdnLayer::tokens() const { return impl_->count; }
+uint64_t PortableGdnLayer::native_ffn_hc_write_calls() const {return impl_->ffn->native_hc_write_calls();}
 uint64_t PortableGdnLayer::native_ffn_hc_pending_calls() const {return impl_->ffn->native_hc_pending_calls();}
 uint64_t PortableGdnLayer::native_hc_pending_calls() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC

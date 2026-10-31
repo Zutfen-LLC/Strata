@@ -16,6 +16,8 @@ using namespace strata::core::portable_detail;
 using namespace gdn_fixture;
 namespace {
 bool inspect_producer=false;std::vector<float> actual_projected,actual_attention_inject;size_t ffn_mixed_consumers=0;
+size_t write_owners=0,write_calls=0;bool fail_write_create=false,fail_write_run=false;
+const ggml_tensor* live_ffn_residual=nullptr;const ggml_tensor* live_ffn_inject=nullptr;std::vector<float> write_seen_block;
 size_t pending_owners=0,pending_calls=0;bool fail_pending_create=false,fail_pending_run=false;
 size_t owners=0,calls=0,mix_owners=0,mix_calls=0;bool fail_mix=false,fail_mix_create=false;float mixed_scale=1;const ggml_tensor* live_mixed=nullptr;size_t mixed_consumers=0;
 std::vector<uint16_t> expected_down,expected_up;bool fail_run=false,fail_create=false;float inject_bias=0,norm_scale=1;
@@ -33,11 +35,17 @@ std::vector<float> get(const ggml_tensor* t){std::vector<float>x(size_t(ggml_nel
 void put(ggml_tensor*t,const std::vector<float>&x){ggml_backend_tensor_set(t,x.data(),0,x.size()*4);}
 }
 namespace strata::core::portable_detail {
-struct StrataVkNativeHcPending{};
+struct StrataVkNativeHcPending{bool final_write=false;};
 StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t,const char* path,size_t budget){check(!fail_pending_create,"injected pending create refusal");check(budget>=512,"pending metadata budget");std::ofstream(path)<<"mock; not shader evidence\n";++pending_owners;return new StrataVkNativeHcPending;}
 size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*){return 512;}
-void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p)noexcept{if(p)--pending_owners;delete p;}
-void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*,const ggml_tensor*r,const ggml_tensor*b,const ggml_tensor*i,ggml_tensor*rp,ggml_tensor*g,ggml_tensor*e){
+StrataVkNativeHcPending* strata_vk_native_hc_write_create(ggml_backend_t,const char*path,size_t budget){check(!fail_write_create&&budget>=512,"injected write create/budget refusal");std::ofstream(path)<<"mock; not shader evidence\n";++write_owners;return new StrataVkNativeHcPending{true};}
+void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p)noexcept{if(p){if(p->final_write)--write_owners;else --pending_owners;}delete p;}
+void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*owner,const ggml_tensor*r,const ggml_tensor*b,const ggml_tensor*i,ggml_tensor*rp,ggml_tensor*g,ggml_tensor*e){
+ if(owner->final_write){
+ check(!fail_write_run,"injected final write refusal");check(r==live_ffn_residual&&i==live_ffn_inject,"final write did not consume retained actual FFN operands");check(r!=rp&&b!=rp&&i!=rp,"final write producer/candidate alias");
+ auto x=get(r),bo=get(b),inj=get(i);write_seen_block=bo;std::vector<float> result(10240),gate(4),exp(4);
+ for(size_t c=0;c<4;++c){const float scaled=std::fma(.25f,inj[c],0.f);exp[c]=std::exp(-scaled);gate[c]=std::fma(2.f,1.f/(1.f+exp[c]),0.f);for(size_t d=0;d<2560;++d)result[c*2560+d]=std::fma(bo[d],gate[c],x[c*2560+d]);}
+ put(rp,result);put(g,gate);put(e,exp);++write_calls;return;}
  check(!fail_pending_run,"injected pending component refusal");check(r!=rp&&b!=rp&&i!=rp,"pending input/candidate alias");
  auto out=native_hc_pending_control(get(r),get(b),get(i));put(rp,out.residual);put(g,out.gate);put(e,out.exponential);++pending_calls;
 }
@@ -64,7 +72,7 @@ void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*x,const ggml_te
  if(std::string(ggml_get_name(wi))=="blk.0.hc_attn_inject.weight") {if(bound_weight)check(wi==bound_weight,"weight tensor identity changed");else bound_weight=wi;}
  uploaded=get(x);auto out=native_hc_oracle(uploaded,get(w),weight,1);for(float&v:out.inject)v+=inject_bias;for(float&v:out.xn)v*=norm_scale;
  expected_xn=out.xn;expected_rs=out.rs;expected_inject=out.inject;
- put(xn,out.xn);put(rs,out.rs);put(inject,out.inject);if(inspect_producer&&std::string(ggml_get_name(wi))=="blk.0.hc_attn_inject.weight")actual_attention_inject=out.inject;++calls;
+ put(xn,out.xn);put(rs,out.rs);put(inject,out.inject);if(std::string(ggml_get_name(wi))=="blk.0.hc_ffn_inject.weight"){live_ffn_residual=x;live_ffn_inject=inject;}if(inspect_producer&&std::string(ggml_get_name(wi))=="blk.0.hc_attn_inject.weight")actual_attention_inject=out.inject;++calls;
 }
 }
 int main(){try{
@@ -186,7 +194,7 @@ int main(){try{
  model.native_hc_ffn_read_layer0=true;model.layer0_resident_weights=true;model.native_hc_receipt_prefix=o.native_hc_receipt_prefix;
  portable_detail::model_gdn_hc_options(model,0,o);
  o.execution.resident_dense_weights=portable_detail::model_resident_dense(model,0,false);
- check(o.native_hc_ffn_read&&o.native_hc_mix&&o.native_hc_norm_inject&&o.execution.resident_dense_weights,"actual model-to-layer FFN wiring");
+ check(!o.native_hc_ffn_write&&o.native_hc_ffn_read&&o.native_hc_mix&&o.native_hc_norm_inject&&o.execution.resident_dense_weights,"actual model-to-layer FFN wiring");
  check(!portable_detail::model_resident_dense(model,1,false)&&!portable_detail::model_resident_dense(model,0,true),"layer0 residency broadened to another layer/head");
  PortableGdnOptions other;portable_detail::model_gdn_hc_options(model,1,other);
  check(!other.native_hc_ffn_read&&!other.native_hc_mix&&!other.native_hc_norm_inject,"native model options broadened beyond layer0");
@@ -237,6 +245,30 @@ int main(){try{
   check(control->residual()==completed&&route.activation==activation,"FFN downstream used original R instead of candidate");control.reset();
  }
  check(ffn_mixed_consumers>=6,"actual FFN router consumer checks missing");
+ // Actual final FFN producer -> retained FFN R/injection -> disjoint native write.
+ o.native_hc_ffn_write=true;
+ fail_write_create=true;check(!PortableGdnLayer::create(0,f.views,o,error),"write creation refusal ignored");fail_write_create=false;check(!write_owners,"write owner leaked on refusal");
+ {auto final=PortableGdnLayer::create(0,f.views,o,error);check(bool(final),error);check(final->reset(error),error);PortableGdnTrace trace;
+ check(final->step(f.input(0),experts(),route,error,&trace),error);const auto& w=trace.ffn_hc;
+ check(w.write_block==write_seen_block&&w.write_block.size()==2560&&w.write_candidate==final->last_residual(),"actual combined block/materialized consumer mismatch");
+ for(size_t c=0;c<4;++c)for(size_t d=0;d<2560;++d)check(w.write_candidate[c*2560+d]==std::fma(w.write_block[d],w.write_gate[c],w.residual[c*2560+d]),"independent final FMA/source stream order");
+ const auto first=final->last_residual(),state=final->recurrent_state(),history=final->convolution_history();check(final->native_ffn_hc_write_calls()==1,"write work not credited");
+ check(final->reset(error),error);check(final->native_ffn_hc_write_calls()==1,"reset erased paid write");
+ fail_write_run=true;const auto clean_state=final->recurrent_state(),clean_history=final->convolution_history();const auto clean_tokens=final->token_history();check(!final->step(f.input(0),experts(),route,error),"write refusal accepted");fail_write_run=false;
+ check(route.ids.empty()&&final->recurrent_state()==clean_state&&final->convolution_history()==clean_history&&final->token_history()==clean_tokens&&final->tokens()==0&&final->last_residual().empty(),"write refusal committed layer state/route");check(final->native_ffn_hc_write_calls()==1,"failed write credited");
+ check(final->step(f.input(0),experts(),route,error),error);check(final->last_residual()==first&&final->recurrent_state()==state&&final->convolution_history()==history,"write reset/retry changed result/state");
+ check(final->native_ffn_hc_write_calls()==2,"write successful work count");}
+ check(!write_owners,"write owner leaked");
+ {std::vector<PortableTensorView> fw;for(const auto&v:f.views)if(v.name.find(".hc_ffn_")!=std::string::npos||v.name.find(".ffn_")!=std::string::npos)fw.push_back(v);
+  auto wo=o.execution;wo.native_hc_pending_read=true;wo.native_hc_final_write=true;wo.native_hc_receipt_prefix=o.native_hc_receipt_prefix+".write-budget";
+  auto final=PortableFfn::create({2560,4,320,640,512,10,1e-6f},0,fw,wo,error);check(bool(final),error);const auto bytes=final->graph_bytes(),weights=final->weight_bytes();
+  check(final->reset(f.input(0),error),error);check(final->step_pending(std::vector<float>(2560,0),std::vector<float>(4,0),experts(),route,error),error);
+  check(final->work().post_graph_calls==0&&final->native_hc_write_calls()==1,"native write credited/ran GGML post graph");
+  auto short_room=wo;short_room.graph_budget=bytes-1;check(!PortableFfn::create({2560,4,320,640,512,10,1e-6f},0,fw,short_room,error),"one-byte-short write graph admitted");
+  wo.native_hc_final_write=false;auto read=PortableFfn::create({2560,4,320,640,512,10,1e-6f},0,fw,wo,error);check(bool(read),error);check(read->weight_bytes()==weights,"final write duplicated/replaced weight banks");}
+ {auto write_model=model;write_model.native_hc_ffn_write_layer0=true;PortableGdnOptions w0,w1;model_gdn_hc_options(write_model,0,w0);model_gdn_hc_options(write_model,1,w1);
+ check(w0.native_hc_ffn_write&&!w1.native_hc_ffn_write,"write escaped layer0");check(model_hc_host_bound(write_model,0)==model_hc_host_bound(model,0)+PortableFfnOptions::native_hc_write_host_bound&&model_hc_host_bound(write_model,1)==0,"write host preadmission not conservative/scoped");}
+ o.native_hc_ffn_write=false;
  o.native_hc_ffn_read=false;o.native_hc_mix=false;o.native_hc_norm_inject=false;o.execution.resident_dense_weights=false;o.resident_state=false;o.scratch.reset();
  auto disabled_again=PortableGdnLayer::create(0,f.views,o,error);check(bool(disabled_again),error);check(disabled_again->reset(error),error);check(disabled_again->step(f.input(0),experts(),route,error),error);check(disabled_again->last_residual()==disabled,"new boundary changed default-disabled output");
  cpu->iface.graph_compute=original_compute;std::filesystem::remove_all(root);
