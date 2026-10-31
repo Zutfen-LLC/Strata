@@ -82,7 +82,15 @@ Vulkan sampling was baseline-only, so neither continuous nor per-child workload
 coverage follows. No more extraction or full-model capture is needed.
 A separately opt-in [serial layer0 composed attention read](https://github.com/Zutfen-LLC/Strata/pull/100)
 is implemented with existing components at the actual residual upload seam.
-Its coordinator and later matched-model gates are still pending. Conversion
+The bounded coordinator gate has passed both component contracts and
+consumer-liveness/reset/rollback checks with approved HC operands and synthetic
+remaining GDN/FFN data. It does not qualify full real-weight GDN or the model;
+its discrete samples do not establish continuous workload coverage. The next
+matched-model gate uses fresh post-dense native planning and preserves the
+retained eager host-state policy (resident GDN weights do not imply resident
+GDN state). Historical controls are reused only with compatible frozen
+input/state/ownership/method/runtime bindings, and never relabeled new-image
+default-off equivalence. Conversion
 replaces resident banks, and aligned scratch/host bounds remain charged to
 existing admission. The old partial flag and defaults retain their behavior.
 Pending writes, FFN HC, other shapes/native modes and model integration remain
