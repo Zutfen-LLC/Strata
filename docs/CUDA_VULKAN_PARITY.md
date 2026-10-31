@@ -85,16 +85,35 @@ is implemented with existing components at the actual residual upload seam.
 The bounded coordinator gate has passed both component contracts and
 consumer-liveness/reset/rollback checks with approved HC operands and synthetic
 remaining GDN/FFN data. It does not qualify full real-weight GDN or the model;
-its discrete samples do not establish continuous workload coverage. The next
-matched-model gate uses fresh post-dense native planning and preserves the
+its discrete samples do not establish continuous workload coverage. The bounded
+matched-model diagnostic has completed the initial component contracts, finite
+head checks and exact within-arm reset/replay checks. Its comparator retains
+route/head differences as diagnostics, without a final-logit tolerance or a
+quality/performance claim. The comparison uses an authenticated historical
+norm/injection-only control, not a freshly executed default-off control or proof
+of new-image bit equivalence. Fresh post-dense native planning preserves the
 retained eager host-state policy (resident GDN weights do not imply resident
 GDN state). Historical controls are reused only with compatible frozen
 input/state/ownership/method/runtime bindings, and never relabeled new-image
 default-off equivalence. Conversion
 replaces resident banks, and aligned scratch/host bounds remain charged to
 existing admission. The old partial flag and defaults retain their behavior.
-Pending writes, FFN HC, other shapes/native modes and model integration remain
+Pending writes, FFN HC, other shapes/native modes and full-model acceptance remain
 separate. Defaults stay disabled and PRs remain drafts.
+
+The next bounded HC method gap is the native pending-write/read transition.
+At [`f1561f31`](https://github.com/Zutfen-LLC/Strata/blob/f1561f313963746d172cebff11cc043947d814a9/include/strata/kernels/fused_gr.hpp),
+`FusedGrArgs::apply` folds the previous block output and injection into the
+residual with FMA before normalization, then materializes that same residual
+in the up pass. The selected multi-read implementation preserves this order;
+the current Vulkan component explicitly refuses pending writes. A standalone
+T1 same-input component using deterministic residual/block-output/injection
+operands is the next implementation gate, before changing graph/state lifetime
+or adding FFN roles. Existing approved attention roles suffice for that mechanical
+check; they do not qualify FFN role identity or native GDN output arithmetic.
+Retained composed-read diagnostics cannot attribute downstream differences
+without equal upstream mixed operands. No further harness redesign is a
+prerequisite for this bounded component work.
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
 tolerance from matching generated tokens.
