@@ -20,7 +20,7 @@ namespace strata::core::portable_detail {
 struct StrataVkNativeHcMix;
 // Standalone T1 only, no model bridge. Inputs normalized[10240], BF16 down/up
 // [320,10240]/[10240,320]. Outputs scaled-down pre/low/exp[320], up pre/gate/exp
-// [10240], mixed[2560]. All spans disjoint; zero/normal domain, |pre|<=16.
+// [10240], mixed[2560]. All spans disjoint; zero/normal domain; derived exp/div guards in native_hc_mix_limits.h.
 StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char* effective_spv,size_t budget=65536);
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix*) noexcept;
 void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor* normalized,

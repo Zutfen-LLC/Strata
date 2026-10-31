@@ -16,7 +16,7 @@ function(strata_native_hc_enable out)
     COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_hc_mix.spv"
     COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_hc_mix.spv" "-DOUTPUT=${out}/strata_native_hc_mix_spv.hpp"
       -DARRAY_NAME=strata_native_hc_mix_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
-    DEPENDS src/kernels/vulkan/native_hc_mix.comp cmake/strata_native_stages_embed.cmake VERBATIM)
+    DEPENDS src/kernels/vulkan/native_hc_mix.comp src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
   add_custom_target(strata_native_hc_mix_shader DEPENDS "${out}/strata_native_hc_mix_spv.hpp")
   add_dependencies(ggml-vulkan strata_native_hc_mix_shader)
   add_executable(native_hc_mix_component tests/kernels/native_hc_mix_component.cpp)

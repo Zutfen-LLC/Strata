@@ -1,108 +1,101 @@
 # Standalone T1 native HC down/up and mixing
 
-This component extends the native-method investigation after PR98's partial
-norm/injection seam. It is not called by `PortableModelSession`, adds no model
-flag, and does not change any existing shader, native launch selection or default.
-The existing norm/injection v1 contract remains unchanged. The bounded paired zero/sparse/dense T1 synthetic component gate passed at
-`df488f25812a9a5cac94eabe6630bfa7bcae75b0`, independently checked offline
-from sealed operator receipts. Mixed outputs are exact across backends for these
-fixtures; sparse low differs within the separate intrinsic contract. This is
-limited synthetic acceptance, not real-role or full-HC/model qualification;
-`qualified=false` remains explicit.
+This component is not called by PortableModelSession and adds no model flag or
+default. It consumes an identical already normalized F32 operand and raw BF16
+down/up rows, H2560/HC4/LR320/T1, with no pending write. Original compat-BF16
+conversion, eight-FMA chunks, per-lane chunk addition, XOR offsets 16..1 and
+ordered stream summation stay unchanged. Native probes call existing plain and
+staged kernels; they do not implement another numerical method.
 
-The fixed geometry is HC4/H2560/LR320/T1, no pending write, normal-or-zero F32
-normalized input and raw BF16 down/up rows. Conversion from an approved Q8 role
-must use the original `iq_pack.py --compat-bf16` dequantize/RNE contract already
-used by norm/injection. The synthetic fixture is versioned `HCMIX01` and contains
-no model data. Other shapes, nonfinite/subnormal arithmetic, foreign/overlapping
-spans, unsupported strict-FMA features and HC Q8/REQ8/V3 mode substitutions refuse.
-Activation preinputs outside [-16,16] refuse; that is a bounded component domain,
-not a proposed change to the native engine's supported model values.
+The old bounded synthetic gate passed at `df488f25812a9a5cac94eabe6630bfa7bcae75b0`.
+Both authorized real roles then matched original packer conversion exactly, but
+the identical retained real operand exceeded the first qualification domain.
+This version defines `native-hc-mix-normal-v2`; its wider-domain hardware gate is
+pending. It does not relabel old results or qualify full HC/model behavior.
 
-## Original method and isolated operands
+## Primary precision contract
 
-`verify.cpp:1329` binds BF16 down/up/injection and calls `fused_gr_read_multi`.
-`cuda/fused_gr.cu` computes eight ordered FMAs per weight chunk, adds chunks in
-each logical lane, then XOR-reduces offsets 16,8,4,2,1. Down divides its result
-by four and applies `x/(1+__expf(-x))`. Up starts with its first chunk, adds a
-second only in lanes 0..7, uses the same XOR, and gates the normalized residual
-by `1/(1+__expf(-x))`. Mixing starts at +0, adds streams 0..3 and divides by four.
-The Vulkan shader preserves those associations, using strict OpFmaKHR and
-explicit shared-memory logical lanes rather than the physical subgroup width.
+The [Vulkan SPIR-V environment](https://github.khronos.org/Vulkan-Site/spec/latest/appendices/spirvenv.html#precision-and-operation-of-spir-v-instructions)
+defines correctly rounded basic add/multiply and OpFmaKHR, a 2.5-ULP division
+allowance for normal denominators through 2^126, and the GLSL.std.450 exp
+allowance `(3+2*abs(z))` ULP. Strict FMA and RTE32 must actually be enabled;
+NoContraction protects explicit basic operations. Ordinary GLSL.std.450 Fma is
+not substituted for OpFmaKHR.
 
-The standalone CUDA probe calls existing plain and staged down kernels plus the
-existing T1 up kernel. It supplies the *same already normalized input* to down
-and to up's residual path, with norm and RS exactly +1; it bypasses normalization.
-It requires the selected staged variant3 and actual fixture plain/staged/repeat
-bit equality. It does not replace any production launcher or reconstruct a
-pending residual. The native CUDA probe compiled and completed this bounded synthetic gate;
-HIP compilation/execution remains untested. The probe's added entry point
-is diagnostic only; no model execution calls it.
+The [CUDA intrinsic table](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/mathematical-functions.html)
+reports `2+floor(abs(1.173*z))` ULP for native `__expf`, against correctly rounded
+RNE. NVIDIA explicitly describes observed maxima, not exhaustive guarantees.
+Every captured result must pass the policy; there is no universal cross-vendor
+intrinsic identity claim. These allowances are unchanged, not fitted to data.
+Vulkan exp is checked against the mathematical result; native exp uncertainty
+is centered on RNE as documented. Division uses the existing conservative
+2.5-ULP policy for both backends.
 
-## Bounded arithmetic acceptance
+## Derived common normal domain
 
-`native_hc_mix_numeric.py` reuses independent integer-dyadic FP32 primitives,
-not host float GEMM. Vulkan scaled down preactivation must match source-order
-RNE dots exactly. Up must match source-order dots against that backend's actual
-low output. Vulkan mixed must match exact ordered operations against its actual
-gates, including zero signs. Thus an intrinsic allowance cannot hide a wrong
-projection or summation association. Pinned controls cover dense/sparse lane,
-chunk, row and stream boundaries and reject identical erroneous captures.
+Let `u=2^-23`, `m=2^-126`, and `q0=m+4*2^-149`. For a proposed symmetric argument
+limit A, `r=3+2*A` bounds both exp policies. Local ULP, possible candidate/reference
+binade differences, and the native RNE reference's half-ULP displacement give
 
-Exp and division are separate admitted operations. For input z in [-16,16], the
-Vulkan exp interval uses `(3+2*abs(z))` local ULP against 100-digit mathematical
-exp, following [GLSL precision](https://registry.khronos.org/OpenGL/specs/gl/GLSLangSpec.4.60.html#precision-and-precision-qualifiers).
-Native `__expf` uses `2+floor(abs(1.173*z))` ULP against correctly rounded RNE,
-following the [CUDA intrinsic table](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/mathematical-functions.html).
-NVIDIA calls these maximum observed errors, not guarantees. These policies must
-be checked on actual outputs; they are not universal hardware equivalence.
-The 100-digit evaluation is an offline reference, not a software-exp runtime.
+```
+alpha = (r*u*(1+u/2)+u/2)/(1-r*u)
+exp_lower = exp(-A)*(1-alpha)
+den_upper = (exp(A)*(1+alpha)+1)*(1+u/2)
+```
 
-The denominator is one correctly rounded addition of actual exp and +1. Each
-division must lie within 2.5 times the larger local ULP around its exact rational
-quotient; all denominators here are normal. This uses GLSL's division allowance
-conservatively for both backends, and does not assert NVIDIA needs that slack.
-Vulkan records exp explicitly, so its activation is checked both against the
-intrinsic interval and its *own actual exp*. Native kernels expose low/mixed;
-their low is checked by interval propagation, and up/gate/mixed bounds use that
-actual native low. Missing native preactivation/gate instrumentation is explicit:
-those local native intermediates are source-derived bounds, not captured exact
-checks. Cross-backend subtraction is a diagnostic, never a fitted epsilon.
+For an admitted finite exp result y and exact t, use
+`|y-t|/t <= r*u*(1+|y-t|/t+u/2)+u/2`. Subnormal candidate ULPs are bounded by
+`m*u` while t>=m, so the argument also excludes them rather than assuming them
+away. The extra half ULP here is conservative domain-proof headroom; it does not
+increase the pointwise acceptance radii.
 
-Signed endpoint propagation through each stream product/add handles cancellation
-and near-zero mixed values without a relative-error denominator. Exact local
-Vulkan checks remain mandatory even where that propagated interval is wide.
-No final-logit tolerance, full-HC, quality or full-model inference follows.
+Choose the largest positive F32 A for which `exp_lower>=m` and
+`den_upper*q0<=1`. The latter also keeps the denominator below 2^126 and the
+smallest sigmoid above normal underflow with division headroom. The independent
+100-digit derivation yields **87.33651733398438**, bits **0x42aeac4c**; its next
+F32 fails the inequalities. The shader/header constant is tested against that
+derivation. No measured fixture extrema enter it. This proves properties of
+admitted error intervals, not that every native device obeys an empirical table.
 
-## Real-role preflight checkpoint
+Exp must be positive normal, the rounded denominator must stay in [1,2^126], and
+for nonzero numerator a the runtime/checker require
+`abs(a)>=RN(q0*den)`. Four minimum-normal ULPs cover threshold multiplication
+rounding plus the 2.5-ULP division allowance with strict margin. This is a
+sufficient safe quotient predicate, not a maximal classification of all native
+inputs. It refuses tiny SiLU results instead of accepting a possible FTZ zero.
+Zero numerators preserve their exact sign. Division by rounded denominator one
+must preserve its numerator exactly as a local identity.
 
-The two authorized layer-0 attention down/up roles now byte-match the original
-pinned packer's compat-BF16 conversion of their corresponding Q8 sources. An
-identical already retained native/Vulkan normalized input is available, so no
-new model capture or role extraction is needed for a component replay.
+Positive sigmoid/SiLU saturation occurs only when the original rounded
+`1+exp(-v)` becomes one. The algorithm still executes exp/add/divide; there is no
+clamp, exp shortcut, input rescaling or forced negative-side zero. Arguments
+outside the derived normal domain, overflow, underflow/subnormal cases and
+nonfinite inputs/results refuse. Native behavior beyond this subset is not
+redefined. Supporting those cases would be a separate semantic qualification.
 
-That exact real-role fixture exceeds the initial [-16,16] activation domain in
-scaled down-projection values. Independent source-order integer checks confirm
-the refusal. This is the standalone component's qualification guard, not a
-native Strata model limit or a representation mismatch. The current frozen
-Vulkan component cannot accept it. Do not clip, rescale or substitute inputs to
-make it pass, and do not silently widen numerical bounds.
+## Exact checks, cancellation and provenance
 
-The next bounded source slice is to derive a justified supported-domain treatment
-for the selected original SiLU/sigmoid operations, including down and up ranges,
-normal/underflow/overflow behavior and local arithmetic checks, before releasing
-the real-role Vulkan replay. Any needed source/checker correction must remain
-explicit and tested. No real-role hardware acceptance or model integration is
-claimed by this preflight.
+The integer-dyadic validator independently requires exact source-order scaled
+down preactivations, up dots against each backend's actual low, and Vulkan mixed
+output against its actual gates. It checks each captured exp and the activation
+computed from that *same* exp, within the separate division policy. Exp interval
+enumeration is radius-derived and complete across binades; the old fixed search
+window could truncate otherwise valid candidates and is not reused.
 
-## Next gate
+Basic projection/product/addition underflow remains unsupported. Exact zeros
+and cancellation are preserved; subnormal arithmetic cannot be silently replaced
+by zero to satisfy the checker. Shader status checks are not a proof against all
+unobserved FTZ intermediates: independent exact local checks remain mandatory.
+Propagation uses signed endpoint products and ordered additions, not a relative
+final-output epsilon. Native unobserved gates remain interval attribution from
+actual native low; they are not claimed as captured exact intermediates.
 
-Build and run zero, sparse boundary and held-out dense synthetic fixtures through
-both tiny probes sequentially, preserving exact fixture/source/binary/feature
-bindings and existing resource/lifecycle guards. Independently check each backend
-against its own intermediate arithmetic; retain exact cross-backend differences.
-Do not integrate until those gates pass and remaining intrinsic discrepancies
-are explained under this contract. Real layer-0 down/up role extraction remains
-separately pending authorization; existing norm/injection operands do not cover
-those bytes. Pending writes, FFN HC, T8, production integration and performance
-remain separate work.
+Synthetic goldens cover lane/chunk/row/stream order, binades, next-domain values,
+normal/subnormal quotient edges, signed zero, saturation and common erroneous
+outputs. Approved retained-input preflight checks all down rows and bounds up
+projections from both backends' admitted low intervals before dispatch. Its
+private operands never enter public tests. Actual own-input/own-gate checks,
+feature receipts, canaries, repeats and lifecycle cleanup still decide the tiny
+hardware gate. No real-role hardware acceptance, model integration, quality,
+performance, pending-write, FFN HC, T8 or HIP qualification follows from source
+proofs. Defaults remain disabled and PRs stay draft.

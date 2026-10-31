@@ -35,7 +35,7 @@ class MixTests(unittest.TestCase):
     self.assertTrue(m.inside(n.bits(float(m.decimal_exp(v))),bounds))
     self.assertFalse(m.inside(n.bits(2*float(m.decimal_exp(v))),bounds))
  def test_range_nonfinite_underflow(self):
-  for v in [n.bits(16.01),0x7f800000,0x7fc00000,1]:
+  for v in [m.ACTIVATION_LIMIT_BITS+1,0x7f800000,0x7fc00000,1]:
    with self.assertRaises(ValueError):m.exp_bounds(v,'vulkan')
  def test_material_division_error_rejected(self):
   b=m.quotient_bounds(0x3f800000,0x40000000)
@@ -65,6 +65,51 @@ class MixTests(unittest.TestCase):
    p=Path(d);(p/'control.cpp').write_text(code)
    subprocess.run([shutil.which('c++') or 'c++','-std=c++17','-I'+str(root/'include'),str(p/'control.cpp'),'-o',str(p/'control')],check=True,capture_output=True)
    subprocess.run([str(p/'control')],check=True)
+ def test_derived_domain_not_fixture_fit(self):
+  self.assertEqual(m.derive_activation_limit_bits(),0x42aeac4c)
+  self.assertTrue(m.in_activation_domain(0x42aeac4c));self.assertFalse(m.in_activation_domain(0x42aeac4d))
+  header=(Path(__file__).resolve().parents[2]/'src/core/native_hc_mix_limits.h').read_text()
+  self.assertIn('0x42aeac4cu',header);self.assertIn('0x00800004u',header)
+ def test_exp_binade_expected_vectors(self):
+  # exp(0)=1 exactly. Local ULP is twice as large above this binade.
+  self.assertEqual(m.exp_bounds(0,'vulkan'),(0x3f7ffffa,0x3f800003))
+  self.assertEqual(m.exp_bounds(0,'native'),(0x3f7ffffc,0x3f800002))
+ def test_large_exp_neighborhood_complete(self):
+  from decimal import Decimal,localcontext
+  from fractions import Fraction
+  import math
+  for backend in ['native','vulkan']:
+   for v in [m.ACTIVATION_LIMIT_BITS,m.ACTIVATION_LIMIT_BITS|0x80000000]:
+    with localcontext() as ctx:
+     ctx.prec=100;q=Decimal.from_float(n.value(v)).exp()
+    c=n.bits(float(q));r=Fraction(3)+2*abs(n.rational(v)) if backend=='vulkan' else Fraction(2+math.floor(Fraction(1173,1000)*abs(n.rational(v))))
+    admitted=[]
+    for b in range(c-1024,c+1025):
+     exact=m.positive_rational(b);reference=Fraction(q) if backend=='vulkan' else n.rational(c)
+     if abs(exact-reference)<=r*max(m.positive_ulp(b),n.ulp(c)):admitted.append(b)
+    self.assertEqual(m.exp_bounds(v,backend),(min(admitted),max(admitted)))
+    self.assertGreaterEqual(min(admitted),m.MIN_NORMAL_BITS)
+ def test_saturation_is_original_rounded_identity(self):
+  for backend in ['native','vulkan']:
+   self.assertEqual(m.activation_bounds(m.ACTIVATION_LIMIT_BITS,backend,False),(0x3f800000,0x3f800000))
+   self.assertEqual(m.activation_bounds(m.ACTIVATION_LIMIT_BITS,backend,True),(m.ACTIVATION_LIMIT_BITS,m.ACTIVATION_LIMIT_BITS))
+   negative=m.activation_bounds(m.ACTIVATION_LIMIT_BITS|0x80000000,backend,False)
+   self.assertGreaterEqual(negative[0],m.MIN_NORMAL_BITS)
+   self.assertFalse(m.inside(0,negative))
+ def test_denominator_and_quotient_underflow_refuse(self):
+  for top,den in [(0x00800000,0x40000000),(0x01000003,0x40000000),(0x3f800000,0x7e800000),(0x3f800000,0x7e800001)]:
+   with self.assertRaises(ValueError):m.quotient_bounds(top,den)
+  self.assertTrue(m.inside(0x00800004,m.quotient_bounds(0x01000004,0x40000000)))
+ def test_signed_zero_and_exact_divide_one(self):
+  for top in [0,0x80000000,0x3f800001,0xbf800001]:self.assertEqual(m.quotient_bounds(top,0x3f800000),(top,top))
+  self.assertEqual(m.quotient_bounds(0x80000000,0x40000000),(0x80000000,)*2)
+ def test_mixed_underflow_is_unsupported_not_zero_filled(self):
+  x=[0]*10240;g=[0x3e800000]*10240;x[0]=0x00800000
+  with self.assertRaises(ValueError):m.mixed_exact(x,g)
+ def test_beyond_old_domain_is_admitted_without_new_epsilon(self):
+  for backend in ['native','vulkan']:
+   for v in [n.bits(-32.),n.bits(64.),n.bits(-80.)]:
+    lo,hi=m.activation_bounds(v,backend,False);self.assertTrue(lo and hi)
  def test_bad_shape_version(self):
   with tempfile.TemporaryDirectory() as d:
    p=Path(d)/'fixture';p.write_bytes(b'HCMIX02\0')
