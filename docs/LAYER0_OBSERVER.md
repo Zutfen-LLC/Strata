@@ -106,11 +106,17 @@ window's existing completion, one field at a time, with an 8 MiB host envelope.
 No new stream/event synchronization or numerical kernel is inserted.
 
 Portable charges an additional 8 MiB host bound to its existing admission ledger.
-It uses existing host operands plus explicit diagnostic reads, with no observer
-GPU buffer or new GPU allocation. The disabled path allocates no observer,
+It uses existing host operands plus explicit diagnostic reads. Retained
+intermediates use the admitted graph allocation; there is no separate observer
+GPU buffer. The disabled path allocates no observer,
 performs no observer downloads, creates no files and adds no graph nodes. Only
-optional-owner checks remain in the host coordinator. Native kernels and Vulkan
-shader sources are unchanged.
+optional-owner checks remain in the host coordinator. Before the unfinished
+serial GDN observation, its scheduler is recreated: the pinned allocator's
+same-shaped allocation cache does not compare changed OUTPUT flags. An ordinary
+shared-layer plan could otherwise overwrite newly observed HC intermediates.
+This opt-in replan uses the existing graph admission and backend assignment;
+it adds no synchronization or arithmetic and does not reset any model state.
+Native kernels and Vulkan shader sources are unchanged.
 
 ## Exact comparison
 

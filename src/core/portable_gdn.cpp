@@ -461,6 +461,12 @@ struct PortableGdnLayer::Impl {
         bytes+=used-before+workspace;
     }
     void build_graphs() {
+        // The pinned allocator reuses same-shaped plans without comparing
+        // OUTPUT flags. An ordinary layer's plan does not retain HC snapshots.
+        // Replan only this opt-in serial observation, before assigning backends;
+        // reserve_size would discard those assignments at this GGML pin.
+        if(options.execution.layer0_observer && !options.execution.layer0_observer->finished())
+            scheduler.reset();
         ctx=context();
         const auto& w=weights;
         auto *c = ctx.get();
