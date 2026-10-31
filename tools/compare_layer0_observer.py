@@ -66,7 +66,7 @@ def compare(native,portable):
         # Legacy captures cannot assert the new HC boundary. Preserve their
         # original composite attention attribution rather than invent values.
         hc_observed=all(x[j] is not None and y[j] is not None for j in (19,20))
-        prerequisites=DEPENDENCIES[i]+((19,20) if i==3 and hc_observed else ())
+        prerequisites=DEPENDENCIES[i]+((19,20) if i==3 and hc_observed else (19,) if i in (12,13) and hc_observed else ())
         missing_inputs=[NAMES[j] for j in prerequisites if x[j] is None or y[j] is None]
         matched_state=i in (0,1,2) or all(equal[j] for j in (0,1,2))
         matched_inputs=matched_state and all(equal[j] for j in prerequisites)

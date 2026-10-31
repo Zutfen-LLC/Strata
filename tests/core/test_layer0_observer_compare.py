@@ -75,6 +75,12 @@ class Test(unittest.TestCase):
             raw=raw[:offset]+struct.pack('<f',2)+raw[offset+4:];b.write_bytes(raw)
             pending=next(s for s in c.compare(a,b)['stages'] if s['boundary']=='pending_residual')
             self.assertEqual(pending['attribution'],'upstream_difference_present')
+            # Candidate recurrent/history outputs also consume the HC mixed input.
+            for field in (12,13):
+                offset=72+sum(8+n*4 for n in c.COUNTS[:field])+8
+                changed=raw[:offset]+struct.pack('<f',2)+raw[offset+4:];b.write_bytes(changed)
+                state=next(s for s in c.compare(a,b)['stages'] if s['boundary']==c.NAMES[field])
+                self.assertEqual(state['attribution'],'upstream_difference_present')
             b.write_bytes(image(change=(20,struct.pack('<f',1))))
             self.assertEqual(c.compare(a,b)['first_difference'],'attention_inject')
             for version in (1,2):
