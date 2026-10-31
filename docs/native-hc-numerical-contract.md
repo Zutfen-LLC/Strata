@@ -31,9 +31,12 @@ For every admitted denominator d, compute a correctly rounded direct `1/sqrt(d)`
 reference. The validator uses 100-digit Decimal and exact distances to neighboring
 F32 values, not the differently rounded expression `1/float(sqrt(d))`.
 An actual RS must be within 2.5 times the larger local ULP of that rounded center
-and actual value. This conservative radius is derived from the documented
-2-ULP intrinsic accuracy plus at most half an ULP to express the bound around a
-rounded reference center. It applies independently to both backends; Vulkan can
+and actual value. GLSL's 2-ULP error against the mathematical result may require
+at most half an additional ULP when expressed around a rounded reference center.
+NVIDIA already defines its quoted 2 ULP against correctly rounded RNE output;
+the extra 0.5 ULP is conservative v1 policy slack for NVIDIA, not required
+recentering of its quoted accuracy. The existing v1 radius is unchanged.
+It applies independently to both backends; Vulkan can
 match any denominator admitted by its division interval. There is no fitted
 per-fixture or per-device offset and no broad relative epsilon.
 
@@ -100,8 +103,13 @@ Exit 0 accepts these captured component boundaries, 1 records a numerical check
 failure, and 2 rejects invalid/missing/out-of-domain evidence. `qualified=false`
 is always retained: the tool validates a capture; it does not certify every
 input, device, execution mode or full model. Exact diagnostic failures stay
-visible. Independent tests cover RNE ties/fused cancellation, signed zeros,
-held-out deterministic operands, accepted intrinsic variation and rejection of
+visible. Independently pinned vectors from a standalone C++ std::fma oracle
+check dense three-token indexing, square/reduction and dot order; that oracle
+does not call the Python helpers. Algebraically pinned interval/binade edges
+and RNE/fused-cancellation primitives are separate controls. Helper-generated
+mock captures test acceptance/rejection predicates; those captures alone do not
+independently verify their generating helpers. Predicate tests cover signed zeros,
+deterministic operands, accepted intrinsic variation and rejection of
 material RS errors, one-bit local changes, malformed bindings and near-zero
 escape attempts.
 

@@ -129,7 +129,8 @@ def rs_allowed(actual, total, backend):
     for mean in means:
         denominator = add(mean, EPS)
         rn = rsqrt_nearest(denominator)
-        # 2 vendor ULP + at most 0.5 ULP for the rounded reference center.
+        # GLSL exact-result accuracy gets 0.5 ULP recentering slack in v1.
+        # NVIDIA quotes RNE-relative accuracy already; its extra 0.5 is policy slack.
         if abs(rational(actual) - rational(rn)) <= Fraction(5, 2) * max(ulp(actual), ulp(rn)):
             return True
     return False
