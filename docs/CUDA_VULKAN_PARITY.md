@@ -170,6 +170,19 @@ reuse existing dump seams where suitable. Recompute actual residency/scheduler
 costs through the existing post-dense planner rather than reusing historical
 expert counts or treating the component replacement delta as the full GPU cost.
 
+[Draft PR #103](https://github.com/Zutfen-LLC/Strata/pull/103), source
+`f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562`, implements that actual producer
+connection as an opt-in layer-0 T1 C++ path. The projected graph output and
+attention injection are retained through readback before shared-arena reuse;
+FFN roles use the original BF16 conversion and existing pending/norm/mix owners.
+The same candidate feeds FFN HC and the final residual consumer, with unchanged
+whole-layer publication. Host tests inspect actual graph producer/consumer
+identity, exercise rollback/reset and compare an independent materialized
+control. An old-R final-consumer mutant fails; corrected source and default
+controls pass. Physical arithmetic/real FFN roles remain unqualified. There is
+no new model CLI flag, and the final FFN write/next-layer carry still uses the
+previous portable method. See the [bounded scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
+
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
 tolerance from matching generated tokens.
