@@ -147,6 +147,9 @@ struct PortableModelSession::Impl {
             opts.expert_native_plan_prefix.empty()),"native capacity options require a profile");
         require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
                 "native Q8 observation requires explicit expert plans and strict accelerator execution");
+        require(!opts.native_hc_norm_inject_layer0 || (!opts.prompt_chunk_size && !opts.gdn_production && !opts.gdn_batch_input_projections &&
+            !opts.accelerators.empty() && !opts.allow_cpu_fallback && (opts.gdn_resident_weights || opts.dense_resident_weights) &&
+            !opts.native_hc_receipt_prefix.empty()),"native HC layer0 requires serial eager strict accelerator, resident weights and receipt prefix");
         require(!opts.native_shared || (!opts.accelerators.empty() && !opts.allow_cpu_fallback && !opts.native_shared_receipt_prefix.empty()),
                 "native shared requires explicit accelerators, strict execution and private receipt prefix");
         require(!opts.native_router || (!opts.accelerators.empty() && !opts.allow_cpu_fallback && !opts.native_router_receipt_prefix.empty()),
@@ -298,7 +301,7 @@ struct PortableModelSession::Impl {
             // maxima may combine graph and unused-workspace high waters, so
             // reserve two graph caps plus the explicit FFN private allowance.
             preflight(device(l),l,l%4==3?"qsa":"gdn",opts.layer_weight_cap,
-                      graph_preflight+private_workspace+resident_bound+state_bound,128u<<20);
+                      graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+((l==0&&opts.native_hc_norm_inject_layer0)?PortableGdnOptions::native_hc_host_bound:0));
             Layer layer;
             if (l % 4 == 3) {
                 PortableQsaOptions o;
@@ -317,6 +320,8 @@ struct PortableModelSession::Impl {
                 o.policy = opts.gdn_production ? PortableGdnPolicy::device_production : PortableGdnPolicy::eager_diagnostic;
                 o.resident_attention_weights = opts.gdn_resident_weights;
                 o.execution = execution(l, false);
+                o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && l==0;
+                if(o.native_hc_norm_inject)o.native_hc_receipt_prefix=opts.native_hc_receipt_prefix;
                 o.scratch = gdn_scratch.at(o.execution.accelerator);
                 layer.gdn = PortableGdnLayer::from_gguf(model, int64_t(l), o, error);
                 require(bool(layer.gdn), "portable model: layer " + std::to_string(l) + ": " + error);
@@ -334,7 +339,7 @@ struct PortableModelSession::Impl {
                     // Recheck the reserved module envelope before every shape
                     // allocation; no account-after-allocation admission gate.
                     preflight(device(l),l,l%4==3?"qsa-chunk-shape":"gdn-chunk-shape",opts.layer_weight_cap,
-                              graph_preflight+private_workspace+resident_bound+state_bound,128u<<20);
+                              graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+((l==0&&opts.native_hc_norm_inject_layer0)?PortableGdnOptions::native_hc_host_bound:0));
                     const bool prepared=layer.prepare(T,error);
                     require(prepared,"portable model: chunk preflight layer "+std::to_string(l)+": "+error);
                     include(layer.memory());
@@ -800,6 +805,7 @@ PortableExpertWork PortableModelSession::expert_work() const {
 PortableModelWork PortableModelSession::model_work() const {
     auto work=impl_->model_work;
     for(const auto& layer:impl_->layers) if(layer.gdn) {
+        work.native_hc_layer0_calls+=layer.gdn->native_hc_calls();
         work.gdn_causal_submissions+=layer.gdn->causal_chunk_calls();
         work.gdn_causal_residual_handoffs+=layer.gdn->causal_residual_handoffs();
         work.gdn_causal_state_commits+=layer.gdn->causal_state_commits();

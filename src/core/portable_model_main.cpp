@@ -113,6 +113,7 @@ int main(int argc, char **argv) {
                              " [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
                              " [--qsa-reuse-attention (compatibility flag; session scratch is shared)]\n"
                              " [--gdn-resident-state (trial, default off)]\n"
+                             " [--native-hc-norm-inject-layer0 RECEIPT_PREFIX (experimental serial T1; partial HC)]\n"
                              " [--gdn-resident-weights | --dense-resident-weights (trials, default off)]\n"
                              " [--expert-dispatch-oracle] [--allow-cpu-fallback] [--expert-timings (stdio only)]\n"
                              " [--expert-native-profile STRP --expert-native-primary-slots N --expert-native-helper-slots N --expert-native-plan-prefix NEW_PREFIX (native sizing, excludes fixed plans)]\n"
@@ -185,7 +186,8 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if(key=="--native-shared") {
+            if(key=="--native-hc-norm-inject-layer0") {opts.native_hc_norm_inject_layer0=true;opts.native_hc_receipt_prefix=value;}
+            else if(key=="--native-shared") {
                 opts.native_shared=true;opts.native_shared_receipt_prefix=value;
             }
             else if (key == "--native-router") {
@@ -428,6 +430,7 @@ int main(int argc, char **argv) {
                          "native_moe_combine_observation=true qualified=false quantizer_qualified=false fp32_denorm_mode=unspecified\n";
         else
             std::cerr << "resident Vulkan/CPU expert rows; host PLE; original-order host merge. Vulkan hybrid Q8 is not CPU bit parity.\n";
+        if(opts.native_hc_norm_inject_layer0)std::cerr<<"native_hc_norm_inject_layer0=true full_hc_parity=false qualified=false numerical_contract=native-hc-normal-v1\n";
         if(opts.native_shared)std::cerr<<"native_shared_method=true numerical_parity=false qualified=false fp32_denorm_mode=unspecified\n";
         if(opts.native_router)std::cerr<<"native_router_method=true numerical_parity=false qualified=false fp32_denorm_mode=unspecified\n";
         const auto expert_report=[&](const char* stage,uint64_t position) {
@@ -483,6 +486,8 @@ int main(int argc, char **argv) {
         std::vector<int32_t> executed_tokens;
         const auto heads_before = session->model_work();
         const auto router_fields = [&](std::ostream& out) {
+            if(opts.native_hc_norm_inject_layer0)out<<",\"native_hc_norm_inject_layer0\":true,\"full_hc_parity\":false,\"native_hc_layer0_calls_delta\":"
+                <<session->model_work().native_hc_layer0_calls-heads_before.native_hc_layer0_calls;
             if(opts.native_shared) {
                 const auto after=session->model_work();
                 out<<",\"native_shared_method\":true,\"shared_numerical_parity\":false"
