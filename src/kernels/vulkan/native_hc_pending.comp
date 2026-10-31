@@ -16,12 +16,22 @@ layout(push_constant) uniform Params {uint rb,bb,ib,ob,gb,eb,sb;} p;
 shared float gate;
 float checked(float v){uint b=floatBitsToUint(v)&0x7fffffffu;if(b>=0x7f800000u)atomicOr(status[p.sb],1u);if(b>0u&&b<0x800000u)atomicOr(status[p.sb],2u);return v;}
 void main(){uint c=gl_WorkGroupID.x,t=gl_LocalInvocationID.x;
- if(t==0u){precise float scaled=checked(injection[p.ib+c])/4.0;
+ if(t==0u){
+#ifdef STRATA_HC_FINAL_WRITE
+  precise float scaled=checked(pending_fma(0.25,checked(injection[p.ib+c]),0.0));
+#else
+  precise float scaled=checked(injection[p.ib+c])/4.0;
+#endif
   if((floatBitsToUint(scaled)&0x7fffffffu)>STRATA_HC_MIX_ACTIVATION_LIMIT_BITS)atomicOr(status[p.sb],4u);
   float e=checked(exp(-scaled));precise float den=checked(1.0+e);
   if(!(e>0.0)||den>uintBitsToFloat(STRATA_HC_MIX_MAX_DENOMINATOR_BITS))atomicOr(status[p.sb],4u);
   precise float sigma=checked(1.0/den);if(sigma==0.0)atomicOr(status[p.sb],4u);
-  precise float gw=checked(2.0*sigma);gate=gw;gates[p.gb+c]=gate;exponentials[p.eb+c]=e;
+  #ifdef STRATA_HC_FINAL_WRITE
+  precise float gw=checked(pending_fma(2.0,sigma,0.0));
+#else
+  precise float gw=checked(2.0*sigma);
+#endif
+  gate=gw;gates[p.gb+c]=gate;exponentials[p.eb+c]=e;
  }barrier();
  for(uint d=t;d<2560u;d+=256u)candidate[p.ob+c*2560u+d]=checked(pending_fma(checked(block_out[p.bb+d]),gate,checked(residual[p.rb+c*2560u+d])));
 }
