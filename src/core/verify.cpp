@@ -1904,6 +1904,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             return false;
         }
         stamp(l, 16, grp);
+        if(l==0 && layer0_observer_ &&
+           !layer0_observer_->snapshot_pending(T,Rt(tb),bo_+tb*N,inj_+tb*HC,cs,err))return false;
         const bool q8_ffn = gr_read_group(1, true, inj_, inj2_);   // true: nat_xq_ holds the MoE input's q8_1 (STRATA_QFUSE)
         if (!first_trace_copy(l, 0, tb, n, mixed_ + tb*N, cs, err)) return false;
         if(l==0 && layer0_observer_) {

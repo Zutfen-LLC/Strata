@@ -7,15 +7,16 @@ namespace strata::core {
 // Allocated before native expert sizing, so cudaMemGetInfo prices these bytes.
 // Copies are graph nodes; host reads occur only after run's existing completion.
 class NativeLayer0Observer {
-    Layer0Observer writer_;
+    Layer0Observer writer_{true};
     float* device_=nullptr;
     int device_id_=0;
     bool reduced_helper_=false;
-    std::array<size_t,21> offsets_{};
-    std::array<bool,21> available_{};
+    std::array<size_t,24> offsets_{};
+    std::array<bool,24> available_{};
 public:
     std::array<int32_t,512> helper{}; // actual helper membership, filled after cache admission
     NativeLayer0Observer() {
+        if(!writer_.enabled())return;
         size_t at=0;
         for(size_t i=0;i<offsets_.size();++i){offsets_[i]=at;at+=Layer0Observer::counts[i];}
         if(at>Layer0Observer::limit/4)throw std::runtime_error("layer0 observer: device layout exceeds bound");
@@ -32,7 +33,7 @@ public:
     void set_helper_reduction(bool reduced) {reduced_helper_=reduced;}
     bool snapshot(int tokens,Layer0Observer::Field field,const void* source,cudaStream_t stream,std::string& error) {
         // Configured window capacity is independent of this captured graph.
-        if(tokens!=1)return true;
+        if(!device_ || tokens!=1)return true;
         const size_t id=size_t(field);
         if(id>=offsets_.size() || (reduced_helper_ && field==Layer0Observer::expert_rows) || !source || cudaMemcpyAsync(device_+offsets_[id],source,
             Layer0Observer::counts[id]*4,cudaMemcpyDeviceToDevice,stream)!=cudaSuccess) {
@@ -40,9 +41,17 @@ public:
         }
         available_[id]=true;return true;
     }
+    // The actual half-1 producer tuple, copied on its existing stream BEFORE
+    // fused_gr_read_multi may overwrite R. No recomputation or new synchronization.
+    bool snapshot_pending(int tokens,const float* residual,const float* block,const float* inject,
+                          cudaStream_t stream,std::string& error) {
+        return snapshot(tokens,Layer0Observer::ffn_original_residual,residual,stream,error) &&
+               snapshot(tokens,Layer0Observer::ffn_previous_output,block,stream,error) &&
+               snapshot(tokens,Layer0Observer::ffn_previous_injection,inject,stream,error);
+    }
     // Caller has already synchronized the successful original window. No new wait.
     bool flush(int32_t token,const int32_t* primary,std::string& error) {
-        if(finished())return true;
+        if(!device_ || finished())return true;
         try {
             writer_.begin(token,reduced_helper_);
             writer_.put(Layer0Observer::helper_ownership,helper.data(),helper.size());

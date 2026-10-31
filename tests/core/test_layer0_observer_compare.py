@@ -10,7 +10,7 @@ c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
 def image(change=None,missing=(),binding=b'a'*64,reduced=False,legacy=False,version=3):
     if legacy:version=1
     raw=f'STRL00{version}\0'.encode()+binding
-    for i,n in enumerate(c.COUNTS[:{1:18,2:19,3:21}[version]]):
+    for i,n in enumerate(c.COUNTS[:{1:18,2:19,3:21,4:24}[version]]):
         if i in missing:raw+=struct.pack('<II',i,0);continue
         data=bytes(n*4)
         if i==6:data=struct.pack('<10i',*range(10))
@@ -93,6 +93,31 @@ class Test(unittest.TestCase):
             for invalid in (image(missing=(19,)),image(missing=(20,)),image(change=(19,struct.pack('<I',0x7f800000)))):
                 a.write_bytes(invalid)
                 with self.assertRaises(ValueError):c.read(a)
+
+    def test_native_pending_tuple_v4_and_legacy_scope(self):
+        with tempfile.TemporaryDirectory() as t:
+            a,b=Path(t)/'a',Path(t)/'b';a.write_bytes(image(version=4));b.write_bytes(image(version=3))
+            binding,fields,digest=c.read(a)
+            self.assertEqual([len(fields[i]) for i in (21,22,23)],[40960,10240,16])
+            result=c.compare(a,b);self.assertTrue(result['native_ffn_tuple_available']);self.assertFalse(result['portable_ffn_tuple_available'])
+            self.assertTrue(result['exact_observed_boundaries'])
+            # Unlike timing is not silently compared with the old composite tap.
+            a.write_bytes(image(version=4,change=(22,struct.pack('<f',2))))
+            self.assertEqual(c.read(a)[1][22][:4],struct.pack('<f',2))
+            b.write_bytes(image(version=4));self.assertEqual(c.compare(a,b)['first_difference'],'ffn_previous_output')
+            b.write_bytes(image(version=3))
+            for field in (21,22,23):
+                for bad in [image(version=4,missing=(field,)),image(version=4,change=(field,struct.pack('<I',0x7fc00000)))]:
+                    a.write_bytes(bad)
+                    with self.assertRaises(ValueError):c.read(a)
+            self.assertIsNone(c.read(b)[1][22])
+    def test_native_snapshot_tap_precedes_destructive_ffn_read(self):
+        source=(Path(__file__).resolve().parents[2]/'src/core/verify.cpp').read_text()
+        tap='snapshot_pending(T,Rt(tb),bo_+tb*N,inj_+tb*HC,cs,err)'
+        read='const bool q8_ffn = gr_read_group(1, true, inj_, inj2_)'
+        self.assertEqual(source.count(tap),1)
+        self.assertLess(source.index(tap),source.index(read))
+        self.assertIn('if(l==0 && layer0_observer_',source[source.index(tap)-70:source.index(tap)])
 
     def test_downstream_attribution(self):
         with tempfile.TemporaryDirectory() as t:
