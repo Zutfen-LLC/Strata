@@ -732,8 +732,8 @@ struct PortableGdnLayer::Impl {
         require(layer >= 0 && layer < 48 && layer % 4 != 3,
                 "portable GDN: expected a non-QSA layer in [0,47]");
         require(!options.execution.defer_hc_write,"portable GDN: configure deferred write through layer option");
-        require(!options.defer_ffn_hc_write || (layer==1 && !options.native_hc_ffn_write && !production() &&
-            !options.batch_input_projections && !options.causal_chunk),"deferred HC write: eager layer1 only");
+        require(!options.defer_ffn_hc_write || ((layer==1 || layer==2) && !options.native_hc_ffn_write && !production() &&
+            !options.batch_input_projections && !options.causal_chunk),"deferred HC write: eager layer1/2 only");
         require(!options.execution.native_hc_final_write,"portable GDN: configure FFN write through layer option");
         require(!options.native_hc_ffn_write||options.native_hc_ffn_read,"native FFN final write requires pending FFN read");
         require(!options.execution.native_hc_pending_read,"portable GDN: configure FFN read through layer option, not raw execution option");

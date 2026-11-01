@@ -18,6 +18,11 @@ class PortableQsaAttention {
     friend class PortableQsaLayer;
 };
 struct PortableQsaOptions {
+    static constexpr size_t native_hc_host_bound = PortableFfnOptions::native_hc_pending_host_bound + (128u<<10);
+    bool native_hc_read = false; // experimental layer3 T1; native pending/norm/mix method
+    bool native_hc_pending = false; // require explicit incoming R/BO/injection tuple
+    std::string native_hc_receipt_prefix;
+
     // graph_budget covers scheduler buffers/copies, CPU plans and a conservative
     // pinned-Vulkan tensor-workspace allowance. Larger active histories may
     // need a higher limit because the scheduler prices each view consumer.
@@ -41,6 +46,7 @@ struct PortableQsaState {
 struct PortableQsaTrace {
     std::vector<float> query, key, value, gate, index_query, index_raw_key;
     std::vector<float> pooled_key, cell_scores, selected, attention, gated_attention, attention_residual;
+    PortableFfnHcTrace hc; // existing HC tuple/own-input field representation
 };
 // Opt-in complete qwen4exp QSA layers 3/7/.../47, one text sequence, T1 or causal T1..8 chunks.
 // Positions must be contiguous starting at zero. K/V retain the CUDA FP16
@@ -59,6 +65,9 @@ class PortableQsaLayer {
     PortableQsaLayer &operator=(const PortableQsaLayer &) = delete;
     bool step(uint64_t position, const std::vector<float> &residual, const PortableExpertRows &dispatch,
               PortableRoute &route, std::string &error, PortableQsaTrace *trace = nullptr);
+    bool step_pending(uint64_t position,const PortableHcPendingWrite& pending,const PortableExpertRows& dispatch,
+                      PortableRoute& route,std::string& error,PortableQsaTrace* trace=nullptr);
+    uint64_t native_hc_pending_calls() const;
     // Opt-in T1..8 causal layer chunk. Token IDs bind the single-sequence
     // interface (QSA uses contiguous positions); rows are [H,HC,T]. Failure
     // preserves public receipts and poisons either policy until reset/replay.
@@ -95,6 +104,8 @@ class PortableQsaLayer {
     size_t state_bytes() const;
 
   private:
+    bool step_impl(uint64_t position,const std::vector<float>& residual,const PortableHcPendingWrite* pending,
+                   const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableQsaTrace* trace);
     struct Impl;
     explicit PortableQsaLayer(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;

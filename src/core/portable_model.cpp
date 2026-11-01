@@ -60,11 +60,10 @@ struct Layer {
             residual = gdn ? gdn->last_residual() : qsa->last_residual();
         return ok;
     }
-    bool pending_step(const PortableHcPendingWrite& pending,std::vector<float>& residual,const PortableExpertRows& experts,std::string& error,PortableGdnWork* work) {
+    bool pending_step(uint64_t position,const PortableHcPendingWrite& pending,std::vector<float>& residual,const PortableExpertRows& experts,std::string& error,PortableGdnWork* work) {
         PortableRoute route;
-        if(!gdn){error="pending HC consumer must be GDN";return false;}
-        if(!gdn->step_pending(pending.residual,pending.block,pending.injection,experts,route,error,nullptr,work))return false;
-        residual=gdn->last_residual();return true;
+        const bool ok=gdn?gdn->step_pending(pending.residual,pending.block,pending.injection,experts,route,error,nullptr,work):qsa->step_pending(position,pending,experts,route,error);
+        if(ok)residual=gdn?gdn->last_residual():qsa->last_residual();return ok;
     }
     bool prepare(size_t T,std::string& error) { return gdn?gdn->prepare_chunk(T,error):qsa->prepare_chunk(T,error); }
     bool chunk(const std::vector<int32_t>& tokens,uint64_t pos,std::vector<float>& rows,
@@ -268,7 +267,7 @@ struct PortableModelSession::Impl {
             const size_t graph_preflight=opts.layer_graph_cap*(opts.prompt_chunk_size?2:1);
             require(graph_preflight <= SIZE_MAX - private_workspace, "portable model: graph cap overflow");
             const bool resident = !opts.accelerators.empty() &&
-                                  (portable_detail::model_resident_dense(opts,l,false) || (opts.gdn_resident_weights && l % 4 != 3));
+                                  (portable_detail::model_resident_dense(opts,l,false) || (opts.gdn_resident_weights && l % 4 != 3) || (opts.native_hc_pending_layer2_3 && l==3));
             const size_t state_bound = portable_detail::layer_state_preflight_bytes(
                 opts, l, opts.accelerators.empty() ? nullptr : opts.accelerators[device(l)]);
             require(state_bound <= SIZE_MAX - graph_preflight - private_workspace,
@@ -289,6 +288,7 @@ struct PortableModelSession::Impl {
                 o.capacity = opts.context;
                 o.reuse_attention = true; // session ownership; standalone legacy API is unchanged
                 o.production = opts.qsa_production;
+                portable_detail::model_qsa_hc_options(opts,l,o);
                 o.attention = qsa_attention.at(o.execution.accelerator);
                 layer.qsa = PortableQsaLayer::from_gguf(model, int64_t(l), o, error);
                 require(bool(layer.qsa), "portable model: layer " + std::to_string(l) + ": " + error);
@@ -714,17 +714,19 @@ struct PortableModelSession::Impl {
                     portable_detail::ScopedExpertTimer<> layer_timer(opts.expert_timings,
                         gdn ? model_work.gdn_ms : model_work.qsa_ms,
                         gdn ? model_work.gdn_calls : model_work.qsa_calls);
-                    const bool consume=opts.native_hc_pending_layer1_2 && l==2;
-                    require(consume ? !carry.empty() : carry.empty(),"portable model: stale/missing layer1-2 carry");
-                    const bool ok = consume ? layers[l].pending_step(carry,residual,dispatch,error,
+                    const bool consume=(opts.native_hc_pending_layer1_2 && l==2)||(opts.native_hc_pending_layer2_3 && l==3);
+                    require(consume ? !carry.empty() : carry.empty(),"portable model: stale/missing native HC carry");
+                    const bool ok = consume ? layers[l].pending_step(pos,carry,residual,dispatch,error,
                         opts.expert_timings ? &model_work.gdn_phases : nullptr) : layers[l].step(token, pos, residual, dispatch, error,
                         opts.expert_timings ? &model_work.gdn_phases : nullptr);
                     require(ok, "portable model: token position " + std::to_string(pos) + " layer " + std::to_string(l) +
                                     ": " + error);
                 }
-                if(opts.native_hc_pending_layer1_2) {
-                    if(l==1) {carry=layers[l].gdn->pending_write();require(!carry.empty(),"portable model: missing actual FFN producer tuple");}
-                    else if(l==2)carry={};
+                if(opts.native_hc_pending_layer1_2 || opts.native_hc_pending_layer2_3) {
+                    if((l==2 && opts.native_hc_pending_layer1_2)||(l==3 && opts.native_hc_pending_layer2_3))carry={};
+                    if((l==1 && opts.native_hc_pending_layer1_2)||(l==2 && opts.native_hc_pending_layer2_3)) {
+                        carry=layers[l].gdn->pending_write();require(!carry.empty(),"portable model: missing actual FFN producer tuple");
+                    }
                 }
                 if(l==0 && observer && observer->active()) {
                     const auto& state=layers[0].gdn->recurrent_state();
@@ -821,7 +823,8 @@ PortableExpertWork PortableModelSession::expert_work() const {
 }
 PortableModelWork PortableModelSession::model_work() const {
     auto work=impl_->model_work;
-    for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(!layer.gdn)continue;
+    for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(l==3&&layer.qsa)work.native_hc_pending_layer3_calls+=layer.qsa->native_hc_pending_calls();if(!layer.gdn)continue;
+        if(l==2)work.deferred_ffn_layer2_outputs+=layer.gdn->deferred_hc_outputs();
         if(l==1)work.deferred_ffn_layer1_outputs+=layer.gdn->deferred_hc_outputs();
         if(l==2)work.native_hc_pending_layer2_calls+=layer.gdn->native_hc_pending_calls();
         if(l==0) {
