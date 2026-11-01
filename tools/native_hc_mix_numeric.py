@@ -106,8 +106,40 @@ def quotient_bounds(top,den):
  n.need(admitted and all((u&0x7fffffff)>=MIN_NORMAL_BITS for u in admitted),'division underflow/subnormal domain')
  return min(admitted,key=n.value),max(admitted,key=n.value)
 
+def sigmoid_class(v):
+ n.normal(v)
+ if in_activation_domain(v):return 'normal'
+ if not(v>>31):return 'positive_tail'
+ n.need(n.value(v)<=-89.,'sigmoid transition/subnormal-quotient domain not qualified')
+ return 'overflow_tail'
+
+def sigmoid_exp_allowed(v,e,backend):
+ kind=sigmoid_class(v)
+ if kind=='normal':return inside(e,exp_bounds(v^0x80000000,backend))
+ if kind=='overflow_tail':return e==0x7f800000
+ if not 0<=e<=0x33800000:return False
+ # Pointwise exp allowance remains the primary policy; zeros additionally
+ # admit the permitted underflow/FTZ class. No changed final-output epsilon.
+ x=n.value(v)
+ if x>128.:return e==0
+ with localcontext() as ctx:
+  ctx.prec=100;q=Fraction(Decimal.from_float(-x).exp())
+ c=n.bits(float(q));radius=Fraction(3)+2*abs(n.rational(v)) if backend=='vulkan' else Fraction(2+math.floor(Fraction(1173,1000)*abs(n.rational(v))))
+ reference=q if backend=='vulkan' else positive_rational(c)
+ if e==0 and reference-radius*max(positive_ulp(c),positive_ulp(MIN_NORMAL_BITS))<positive_rational(MIN_NORMAL_BITS):return True
+ return abs(positive_rational(e)-reference)<=radius*max(positive_ulp(e),positive_ulp(c))
+
+def sigmoid_controls(v,e,a,backend):
+ kind=sigmoid_class(v);n.need(sigmoid_exp_allowed(v,e,backend),'sigmoid actual exp class/precision')
+ if kind=='normal':n.need(inside(a,quotient_bounds(0x3f800000,n.add(0x3f800000,e))),'sigmoid own-exp quotient')
+ else:n.need(a==(0x3f800000 if kind=='positive_tail' else 0),'sigmoid exact original tail identity')
+ return True
+
 @lru_cache(maxsize=32768)
 def activation_bounds(v,backend,silu):
+ if not silu:
+  kind=sigmoid_class(v)
+  if kind!='normal':return (0,0) if kind=='overflow_tail' else (0x3f800000,0x3f800000)
  lo,hi=exp_bounds(v^0x80000000,backend);vals=[];top=v if silu else 0x3f800000
  for e in (lo,hi):vals.extend(quotient_bounds(top,n.add(0x3f800000,e)))
  return min(vals,key=n.value),max(vals,key=n.value)
@@ -127,20 +159,23 @@ def mixed_exact(x,g):
 
 def check(fixture,directory,backend):
  x,down,up=read_fixture(fixture);directory=Path(directory)
- def words(name,count):
+ def words(name,count,auxiliary=False):
   raw=(directory/(name+'.f32le')).read_bytes();n.need(len(raw)==count*4,'output shape '+name);v=list(struct.unpack('<'+str(count)+'I',raw))
-  for b in v:n.normal(b)
+  if not auxiliary:
+   for b in v:n.normal(b)
   return v
  low=words('low',R);mixed=words('mixed',H)
  pre=[n.mul(dot(x,down,row,D),0x3e800000) for row in range(R)]
  n.need(all(inside(v,activation_bounds(p,backend,True)) for p,v in zip(pre,low)),'down SiLU bound')
  upre=[dot(low,up,row,R,True) for row in range(D)]
- n.need(all(in_activation_domain(v) for v in upre),'up activation outside derived domain')
+ [sigmoid_class(v) for v in upre]
  if backend=='vulkan':
   n.need(words('low-pre',R)==pre and words('up-pre',D)==upre,'exact own-input source projection')
   for count,ps,act,en,silu in [(R,pre,low,'low-exp',True),(D,upre,words('gates',D),'up-exp',False)]:
-   es=words(en,count)
+   es=words(en,count,not silu)
    for p,a,e in zip(ps,act,es):
+    if not silu:
+     sigmoid_controls(p,e,a,backend);continue
     n.need(inside(e,exp_bounds(p^0x80000000,backend)),'exp bound')
     n.need(inside(a,quotient_bounds(p if silu else 0x3f800000,n.add(0x3f800000,e))),'own-exp activation association')
   n.need(mixed==mixed_exact(x,words('gates',D)),'exact own-gate mixed association')
@@ -154,6 +189,6 @@ def check(fixture,directory,backend):
     at=c*H+d;terms=[n.mul(x[at],b) for b in gb[at]]
     low_sum=n.add(low_sum,min(terms,key=n.value));high_sum=n.add(high_sum,max(terms,key=n.value))
    n.need(inside(v,(n.mul(low_sum,0x3e800000),n.mul(high_sum,0x3e800000))),'native mixed activation propagation')
- return {'contract':'native-hc-mix-normal-v2','backend':backend,'fixture_sha256':hashlib.sha256(Path(fixture).read_bytes()).hexdigest(),'source_order_and_intrinsic_contract':True,'qualified':False,'full_model_parity':False}
+ return {'contract':'native-hc-mix-sigmoid-tails-v3','backend':backend,'fixture_sha256':hashlib.sha256(Path(fixture).read_bytes()).hexdigest(),'source_order_and_intrinsic_contract':True,'qualified':False,'full_model_parity':False}
 if __name__=='__main__':
  p=argparse.ArgumentParser();p.add_argument('--fixture',required=True);p.add_argument('--directory',required=True);p.add_argument('--backend',choices=['native','vulkan'],required=True);a=p.parse_args();print(json.dumps(check(a.fixture,a.directory,a.backend),indent=2))

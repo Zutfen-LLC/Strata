@@ -41,3 +41,11 @@ The PR112 position 2/layer 38 stop remains a stop. A single on-arm reproduction 
 the original input/profile, retained frozen plan and fresh actual admission is
 needed because no rejected input survived that run. No control repetition, domain
 correction, clipping, tolerance change or broad comparison is part of this slice.
+
+For other HC failures, `OWNER/input-refusal/` saves only immutable current inputs:
+R for norm, normalized input for a pre-dispatch mix failure, or R/block/injection
+for pending and final write. Its metadata identifies component/role/position,
+marks outputs uncaptured and the result unaccepted. At most 51,216 bytes are saved,
+with the same 40,960-byte readback peak. It does not imply dispatch completion or
+read possibly stale outputs. This failure-only extension changes no qualified
+shader, native arithmetic, admission, transaction or normal-path execution.

@@ -105,7 +105,9 @@ public:
     uint64_t write_calls()const{return write_calls_;}
     void run_write(){
         native_hc_need(write_&&write_calls_!=UINT64_MAX,"native HC final write: owner/counter required");
-        strata_vk_native_hc_pending_run(write_.get(),residual,write_block,inject,write_candidate,write_gate,write_exp);++write_calls_;
+        try{strata_vk_native_hc_pending_run(write_.get(),residual,write_block,inject,write_candidate,write_gate,write_exp);}
+        catch(...){record_input_refusal("write",{{"input",residual},{"block",write_block},{"inject",inject}});throw;}
+        ++write_calls_;
     }
     void record_write_first(){
         if(write_recorded_||!write_calls_)return;
@@ -142,6 +144,29 @@ public:
         first_recorded_=true;
     }
 private:
+    void record_input_refusal(const char* component,std::initializer_list<std::pair<const char*,const ggml_tensor*>> fields) noexcept {
+        // Inputs are immutable for these kernels. Never expose outputs when
+        // dispatch completion is unknown. Existing T1 host bounds cover this.
+        try {
+            const auto dir=receipt_dir_+"/input-refusal";
+            native_hc_need(std::filesystem::create_directory(dir),"native HC: fresh input refusal namespace");
+            size_t total=0;
+            for(auto field:fields){
+                const auto bytes=ggml_nbytes(field.second);native_hc_need(field.second->type==GGML_TYPE_F32&&bytes<=40960&&total+bytes<=51216,"native HC: bounded input refusal");total+=bytes;
+                std::vector<uint32_t> data(bytes/4);ggml_backend_tensor_get(field.second,data.data(),0,bytes);
+                auto*f=std::fopen((dir+"/"+field.first+".f32le").c_str(),"wbx");native_hc_need(f,"native HC: exclusive input refusal");
+                const bool written=std::fwrite(data.data(),1,bytes,f)==bytes;const bool closed=std::fclose(f)==0;native_hc_need(written&&closed,"native HC: input refusal write");
+            }
+            const std::string role=ggml_get_name(norm_),owner=std::filesystem::path(receipt_dir_).filename().string();
+            native_hc_need((role+owner).find_first_of("\"\\\n\r")==std::string::npos,"native HC: input refusal identity");
+            unsigned layer=0;native_hc_need(std::sscanf(role.c_str(),"blk.%u.",&layer)==1&&layer<48,"native HC: input refusal layer");
+            const auto position=position_==UINT64_MAX?std::string("null"):std::to_string(position_);
+            auto*f=std::fopen((dir+"/metadata.json").c_str(),"wx");native_hc_need(f,"native HC: exclusive input refusal metadata");
+            const bool written=std::fprintf(f,"{\"schema\":1,\"component\":\"%s\",\"role\":\"%s\",\"owner\":\"%s\",\"layer\":%u,\"position\":%s,\"outputs_captured\":false,\"accepted\":false,\"payload_bytes\":%zu}\n",component,role.c_str(),owner.c_str(),layer,position.c_str(),total)>0;
+            const bool closed=std::fclose(f)==0;native_hc_need(written&&closed,"native HC: input refusal metadata");
+        }catch(const std::exception&e){std::fprintf(stderr,"native HC input diagnostic incomplete: %s\n",e.what());}
+         catch(...){std::fprintf(stderr,"native HC input diagnostic incomplete\n");}
+    }
     void record_refusal(uint32_t status) {
         // Failure-only, current completed call. One tensor readback at a time
         // uses <=40960 bytes within the existing conservative HC host envelope.
@@ -167,13 +192,16 @@ private:
     }
     void read(){
         native_hc_need(calls_!=UINT64_MAX&&mix_calls_!=UINT64_MAX,"native HC serial: call counter exhausted");
-        strata_vk_native_hc_run(component_.get(),residual,norm_,weight_,normalized,rs,inject,1);++calls_;
+        try{strata_vk_native_hc_run(component_.get(),residual,norm_,weight_,normalized,rs,inject,1);}
+        catch(...){record_input_refusal("norm",{{"input",residual}});throw;}
+        ++calls_;
         if(mix_){
             try {strata_vk_native_hc_mix_run(mix_.get(),normalized,down_,up_,low_pre,low,low_exp,up_pre,gates,up_exp,mixed);}
             catch(const NativeHcMixDomainRefusal& e){
                 try{record_refusal(e.status);}catch(const std::exception& diagnostic){std::fprintf(stderr,"native HC refusal diagnostic incomplete: %s\n",diagnostic.what());}
                 throw;
             }
+            catch(...){record_input_refusal("mix",{{"normalized",normalized}});throw;}
             ++mix_calls_;
         }
     }
@@ -181,7 +209,9 @@ public:
     void run(){native_hc_need(!pending_,"native HC pending: explicit tuple upload required");read();}
     void run_pending(){
         native_hc_need(pending_&&pending_calls_!=UINT64_MAX&&calls_!=UINT64_MAX&&mix_calls_!=UINT64_MAX,"native HC pending: owner/counter required");
-        strata_vk_native_hc_pending_run(pending_.get(),pending_input,previous_output,previous_inject,residual,pending_gate,pending_exp);++pending_calls_;
+        try{strata_vk_native_hc_pending_run(pending_.get(),pending_input,previous_output,previous_inject,residual,pending_gate,pending_exp);}
+        catch(...){record_input_refusal("pending",{{"input",pending_input},{"block",previous_output},{"inject",previous_inject}});throw;}
+        ++pending_calls_;
         read();
     }
 };
