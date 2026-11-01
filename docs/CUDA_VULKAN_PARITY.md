@@ -345,9 +345,20 @@ QSA weights retain their prior placement. The initial GDN2→QSA3→GDN4 scope u
 actual projected output and native boundary predicates, preserves PLE/head and
 the unchanged remainder, and charges actual resident banks/buffers plus host
 bounds before original native-policy planning. Local family/residency/carry,
-allocation, parser and default-off model tests pass; combined fresh planning/
-same-image model validation is prepared, not yet physical evidence. This does
-not port native QSA kernels, accepted-prefix commits or captured scheduling.
+allocation, parser and default-off model tests pass. The bounded model cycle
+now also passes fresh native-policy planning, same frozen 384/1490 ownership,
+independent arm admission and matched FFN2/3 residency. Each reset request in on
+reports FFN calls `[28,28]`, 28 outgoing tuples and 28 next-attention reads;
+control has no new cycle work. Actual-owner own-input contracts, 33 module uses
+and within-arm reset/replay pass. Both arms repeat `[18,24,16]`, but first
+cross-arm rank/set divergences occur at position 1/layer 9 and position 2/layer 12;
+matching-history logits differ (maximum about 1.76163), which is diagnostic only.
+All three model children exit/reap and restore three baseline observations with
+empty owner lists. The initial stale-source harness STOP remains preserved;
+its corrected continuation reused build/image/roles/sentinels rather than
+rebuilding or spending additional model loads. No whole-state arrays or live
+model failure injection are claimed. This does not port native QSA kernels,
+accepted-prefix commits, captured scheduling, quality or performance parity.
 
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
@@ -461,25 +472,58 @@ ledger, measured allocations, byte ceilings/reserve and fixed-plan refusal
 semantics. This is a shared prerequisite, not a new sizing policy to redesign
 for each capability below.
 
-1. **Complete one reusable serial HC lifecycle across GDN and QSA.** This is
-   the next highest-value bounded step. `Verifier::record_window()` uses the
-   same `pre`/`gr_read_group` rules across layers, not separate algorithms per
-   index. Reuse the existing pending/norm/injection/down/up/mix components and
-   value-owned producer tuple; replace development-only index guards with the
-   native geometry, mode and boundary predicates. First cover one complete
-   GDN/QSA cycle, including QSA attention→FFN and QSA FFN→next attention, through
-   one family-generic path rather than another switch/PR for each layer.
-   The concrete missing QSA attention producer is `projected` after
-   `attn_output.weight` in `portable_qsa.cpp`; its existing `gated` output is
-   earlier and must not be substituted. Native `verify.cpp:1909` consumes the
-   post-projection `bo_` via `gr_read_group(1,true,inj_,inj2_)`. `PortableQsaLayer`
-   currently creates an ordinary FFN and materializes that write; FFN native HC
-   is still guarded to layer0, and deferred FFN production to layers1/2.
-   Preserve actual producer lifetime, shared-scratch liveness, transactional
-   commit/rollback/reset and complete per-role/device/host admission. Test the
-   full family cycle against materialized same-backend controls, then use one
-   fresh-planning/same-image model comparison. Allow further layer coverage only
-   through the same admitted implementation and parameterized tests.
+1. **Generalize the tested serial HC policy to ordinary boundaries once.**
+   The reusable GDN/QSA cycle is implemented and has bounded real-model evidence
+   in PR110/111. The remaining restriction is primarily the product scope in
+   `model_cycle_ffn`, `model_pending_consumer` and `model_deferred_producer`
+   (`portable_model_preflight.hpp`), not an unimplemented algorithm for every
+   layer. Replace that experimental scope with a geometry/role-validated sweep
+   driven by native `pre`/`post` predicates. Reuse actual post-projection tuples,
+   existing components, session state transactions and original capacity policy;
+   do not add another flag or implementation per layer.
+
+   The next bounded implementation should first price all selected banks and
+   existing buffer/host envelopes before enabling a supported ordinary T1 scope.
+   Keep the cycle profile as a matched control. For this 48-layer geometry,
+   attention layers 2–47 and FFN layers 2–47 add, relative to the current on profile,
+   32 GDN attention conversions, 11 resident QSA HC banks and 44 resident generic
+   native FFN banks. Before alignment, these add 197,836,800 + 145,530,880
+   + 812,810,240 = 1,156,177,920 persistent bank bytes. Shared expert banks are already
+   resident and are not added again. Current conservative additional host bounds
+   are about 781,582,336 bytes, including deferred tuples and a materialized final
+   write. Raw additional component tensor payload is about 23.6 MB; alignment,
+   pipeline metadata/private workspaces and changes in replaced GGML schedulers
+   still require the real ledger. These are estimates, not VRAM observations,
+   fit guarantees or permission to lower bounds. The native planner must derive
+   expert capacity after the actual new dense ledger; do not preserve a quota by
+   inventing streaming, compression or rebalancing. If dense admission itself
+   cannot fit, stop scope expansion and work on numerical-family ports within
+   the already admitted cycle instead.
+
+   Exceptions remain precise: first-layer attention has no prior write; layer 1
+   PLE materializes and applies its operation before HC (`verify.cpp:1230–1310`),
+   and the current GDN native-HC implementation still refuses a PLE graph.
+   Preserve that separate branch rather than enabling HC before PLE. Prior
+   control-vector coverage clears pending and current coverage materializes as
+   part of `cvec_apply` (`post`, 2223–2231); unsupported control modes must refuse,
+   not be approximated by the predicate alone. At layer 47, the native non-fused
+   variant uses `gr_write` before global-head HC; `STRATA_FUSE_HEAD_GR=1` selects
+   a different pending-to-head path (`verify.cpp:2075–2081,2223–2287`). Preserve the
+   selected variant and refuse unsupported fusion; the existing write component
+   can express the non-fused endpoint but does not port head arithmetic. Split
+   handoffs must follow native transport boundaries; none is inferred from the
+   current primary-dense layout. PLE, control, global head/fusion and split work
+   are distinct source-defined capabilities, not ordinary-layer exceptions to
+   silently bypass.
+
+   Acceptance is a parameterized full-boundary/geometry/admission test, existing
+   family cycle controls, and one combined fresh-planning/same-image diagnostic
+   with actual role/tuple provenance and reset. Reuse numerical contracts and
+   bounded relevant receipts, not a new capture or per-layer audit campaign.
+   This closes structural ordinary serial-HC coverage; it does not establish
+   native GDN/QSA arithmetic, full model quality or window/state parity. Native
+   numerical-family work follows; window scheduling should not capture an
+   unqualified numerical method merely to produce a speed result.
 2. **Port the remaining native numerical primitives by algorithm family.**
    HC method selection does not port dense projection, GDN recurrent math,
    QSA norm/RoPE/indexer/pooling/selection/attention/output, head math or every
