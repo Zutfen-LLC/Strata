@@ -84,3 +84,17 @@ numerics. The actual standalone native/Vulkan component gate must pass before
 the bounded same-image fresh-planning/model comparison. Neither gate establishes
 native QSA projection, pooled indexer, attention/selection, accepted-prefix/window,
 quality or performance parity.
+
+## Bounded model result
+
+The comparison at `eab5f489c7bf8f72ae95899c547190f9aabe6e64` passes fresh
+admission and matched ownership, two reset-separated requests per arm, initial
+layer3 own-input controls, accepted FP16 KV-key linkage and 24 new module uses.
+On runs 1,008 paid component calls per request; control runs none. Within-arm
+state/head/routes reset exactly; both arms generate the same three IDs. Routes
+and logits differ (maximum retained matching-history absolute difference
+1.3833283185958862), which remains diagnostic. All owned processes exit/reap and
+restore the measured baseline across three cleanup observations. Guard samples
+are discrete, not continuous coverage. This is bounded integration evidence,
+not full native QSA, accepted-prefix/window, quality or performance parity;
+qualified=false and defaults remain unchanged.
