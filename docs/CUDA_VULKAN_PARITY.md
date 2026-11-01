@@ -633,8 +633,11 @@ for each capability below.
    PR119 now implements a separate standalone adapter of pinned LLVM libc's
    accurate non-FMA/RNE configuration, preserving original coefficients/tables
    and in-domain hard cases. It requires actual logical FP64 and 64-bit RTE/signed
-   controls; CPU/source-oracle and SPIR-V checks pass, hardware qualification is
-   pending. It does not change the frozen gate, native outer softplus method or
+   controls. Its bounded four-fixture native/Vulkan hardware comparison now
+   passes: Vulkan matches the original LLVM oracle/FP64 controls and RNE exactly;
+   native CUDA log1pf stays within the unchanged gate. Cleanup passes; sampling
+   is discrete with no Vulkan in-loop sample. This is primitive evidence only.
+   It does not change the frozen gate, native outer softplus method or
    PR118's failed result. No a/b integration or default enablement follows.
    The current model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
    projections also remain separate upstream work; do not attribute unequal model
