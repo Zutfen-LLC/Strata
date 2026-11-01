@@ -21,6 +21,7 @@
 #include <cstring>
 #include <random>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 namespace strata::kernels {
@@ -3042,3 +3043,21 @@ bool fused_gr_read_persist(const FusedGrArgs*, int, void*) { return false; }
 #endif
 
 }  // namespace strata::kernels
+
+namespace strata::kernels {
+void fused_gr_normalized_probe(const float* normalized,const uint16_t* down,const uint16_t* up,
+ const float* ones,float* rs_ones,float* low,float* mixed,int variant,void* stream) {
+    // Test-only entry point. Existing production launchers are unchanged.
+    if(!normalized||!down||!up||!ones||!rs_ones||!low||!mixed||(variant!=1&&variant!=3))
+        throw std::invalid_argument("HC normalized probe: nonnull T1 spans / plain or staged variant required");
+    GrMulti m{};m.T=1;m.xn=const_cast<float*>(normalized);
+    auto& a=m.a[0];a.R=normalized;a.w_norm=ones;a.w_down=down;a.w_up=up;
+    a.rs=rs_ones;a.lo=low;a.mixed=mixed;a.apply=false;
+    auto st=static_cast<cudaStream_t>(stream);
+    if(variant==3) {
+        int tile=0;(void)down_chunk(true,&tile);
+        gr_down_staged_kernel<1,true><<<DOWN_BLOCKS+1,THREADS,2*H_TILE*sizeof(float),st>>>(m);
+    } else gr_down_multi_kernel<2560><<<DOWN_BLOCKS+1,THREADS,2560*sizeof(float),st>>>(m);
+    gr_up_multi_kernel<1,true><<<UPM_BLOCKS,THREADS,0,st>>>(m);
+}
+}
