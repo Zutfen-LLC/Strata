@@ -502,14 +502,14 @@ bool PortableFfn::reset(const std::vector<float>& residual, std::string& error) 
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route, std::string& error) {
-    return step_impl(nullptr,nullptr,dispatch,route,error,nullptr);
+    return step_impl(nullptr,nullptr,dispatch,route,error,nullptr,UINT64_MAX);
 }
 bool PortableFfn::step_pending(const std::vector<float>& b,const std::vector<float>& i,
-    const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableFfnHcTrace* trace) {
-    return step_impl(&b,&i,dispatch,route,error,trace);
+    const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableFfnHcTrace* trace,uint64_t diagnostic_position) {
+    return step_impl(&b,&i,dispatch,route,error,trace,diagnostic_position);
 }
 bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>* i,
-    const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableFfnHcTrace* trace) {
+    const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableFfnHcTrace* trace,uint64_t diagnostic_position) {
     error.clear(); route = {};if(trace)*trace={};
     try {
         auto& s = *impl_;
@@ -522,6 +522,7 @@ bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>
         if(s.native_hc) {
             require(b->size()==2560 && i->size()==4,"native FFN HC: producer tuple shape");finite(*b);finite(*i);
             write(s.native_hc->pending_input,s.state);write(s.native_hc->previous_output,*b);write(s.native_hc->previous_inject,*i);
+            s.native_hc->diagnostic_position(diagnostic_position);
             s.native_hc->run_pending();
             if(trace) {
                 observed.original=s.state;observed.previous_output=*b;observed.previous_injection=*i;

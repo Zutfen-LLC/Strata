@@ -2,6 +2,8 @@
 #include "ggml-backend.h"
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 namespace strata::core::portable_detail {
 struct StrataVkNativeHc;
 // Standalone component and experimental serial bridge. Numerical contract v1;
@@ -18,6 +20,13 @@ void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor* residual,const
 }
 namespace strata::core::portable_detail {
 struct StrataVkNativeHcMix;
+// Thrown only after all three dispatches completed and current outputs were
+// synchronized. Other failures must never expose possibly stale scratch.
+struct NativeHcMixDomainRefusal : std::invalid_argument {
+    uint32_t status;
+    explicit NativeHcMixDomainRefusal(uint32_t value):std::invalid_argument(
+        "native HC mix: domain refusal status="+std::to_string(value)+"; no result accepted"),status(value) {}
+};
 // Standalone T1 only, no model bridge. Inputs normalized[10240], BF16 down/up
 // [320,10240]/[10240,320]. Outputs scaled-down pre/low/exp[320], up pre/gate/exp
 // [10240], mixed[2560]. All spans disjoint; zero/normal domain; derived exp/div guards in native_hc_mix_limits.h.

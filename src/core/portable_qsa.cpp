@@ -295,8 +295,8 @@ struct PortableQsaLayer::Impl {
                 require(pending && pending->block.size()==H && pending->injection.size()==HC,"native QSA HC: complete tuple required");
                 finite(pending->block);finite(pending->injection);
                 write(s.native_hc->pending_input,residual);write(s.native_hc->previous_output,pending->block);write(s.native_hc->previous_inject,pending->injection);
-                s.native_hc->run_pending();
-            } else {write(s.native_hc->residual,residual);s.native_hc->run();}
+                s.native_hc->diagnostic_position(position);s.native_hc->run_pending();
+            } else {write(s.native_hc->residual,residual);s.native_hc->diagnostic_position(position);s.native_hc->run();}
             applied=read(s.native_hc->residual);
         } else
 #endif
@@ -960,7 +960,7 @@ bool PortableQsaLayer::step_impl(uint64_t position,const std::vector<float>& res
         auto next_trace = std::move(attended.trace);
         require(s.ffn->reset(next_residual, error), error);
         PortableRoute candidate;
-        require(s.options.native_hc_ffn_read ? s.ffn->step_pending(attended.block,attended.inject,dispatch,candidate,error,trace?&next_trace.ffn_hc:nullptr) : s.ffn->step(dispatch,candidate,error),error);
+        require(s.options.native_hc_ffn_read ? s.ffn->step_pending(attended.block,attended.inject,dispatch,candidate,error,trace?&next_trace.ffn_hc:nullptr,position) : s.ffn->step(dispatch,candidate,error),error);
         next_residual = s.ffn->residual();
         finite(next_residual);
         auto next_pending=s.ffn->pending_write();
