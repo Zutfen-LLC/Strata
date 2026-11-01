@@ -131,3 +131,47 @@ physical direct-Q8 proof and exact/short-room refusal without uploading weights.
 allocation bookkeeping, resident and host weights, metadata-sized budgets and
 exact same-backend outputs. These are component gates, not real-model resident
 admission, native full-HC, quality or performance qualification.
+
+## Experimental composed attention read
+
+`--native-hc-read-layer0 PREFIX` separately opts into the composed serial T1
+attention read. It includes the existing native norm/injection seam and adds
+BF16 down/up, SiLU/sigmoid and ordered mixed output. The old
+`--native-hc-norm-inject-layer0` flag retains its norm/injection-only behavior.
+Both defaults are disabled. Pending residual writes, attention/GDN, FFN HC,
+other layers and other execution modes remain unchanged and unqualified by
+this feature. There is no claim of full HC/model parity.
+
+Actual residual upload precedes both component calls; consumers borrow stable
+allocated mixed/injection leaves afterward. No arithmetic executes at graph
+construction. Original compat-BF16 conversion replaces the resident down/up
+banks, with 6,144,000 additional payload bytes over the norm/injection-only
+mode before aligned accounting. Conversion is streamed one bank at a time;
+there are no duplicate resident Q8 banks or retained host down/up copies.
+The largest streamed conversion/readback is 6,553,600 bytes. An 8 MiB host
+envelope covers it plus existing metadata/trace/preflight bounds and is charged
+to state/host admission; the old flag keeps its 1 MiB envelope. Both owners and
+aligned stable scratch are charged inside the existing graph cap. Actual
+resident weights, graph buffers, runtime bounds, reserves and planner selection
+remain subject to the unchanged admission guards. Plans must be derived after
+actual dense allocation; historical fixed quotas are not silently reused.
+
+Normalization/injection uses native-hc-normal-v1; down/up/mixed uses
+[native-hc-mix-normal-v2](native-hc-mix-component.md). Neither contract is
+relaxed for integration. Unsupported domains refuse before a consumer result
+is accepted. Successful normalization and mixing calls have separate cumulative
+work counters, including work before a later refusal. Reset preserves work
+counters and resets model state. A component/provider refusal does not publish
+candidate GDN state. The first successful attention graph records bounded
+initial operands/outputs; prior component refusal cannot suppress that receipt.
+
+Host coordinator tests exercise exact converted-byte binding and replacement
+accounting, graph consumption, scheduler reuse, output lifetime, reset/replay,
+partial-work counters, failure rollback and mode/budget refusals. They mock
+device arithmetic and are not physical integration evidence. The extended
+`portable_gdn_native_hc_probe ... read` uses only approved HC operands and the
+existing synthetic GDN/FFN fixture, with explicit synthetic scope. Its pending
+physical gate must validate the two component contracts on actual composed
+operands, module identities, state/liveness/rollback, disabled controls and
+lifecycle before a separate matched-placement model diagnostic. No model
+acceptance threshold follows from component acceptance or matching token IDs.

@@ -56,16 +56,17 @@ int main() {
         }
         {
             std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> cpu(ggml_backend_cpu_init(),ggml_backend_free);
-            for(int refusal=0;refusal<6;++refusal) {
-                auto invalid=opts;invalid.native_hc_norm_inject_layer0=true;
+            for(int refusal=0;refusal<12;++refusal) {
+                auto invalid=opts;invalid.native_hc_norm_inject_layer0=true;invalid.native_hc_mix_layer0=refusal>=6;
+                const int mode=refusal%6;
                 invalid.native_hc_receipt_prefix=(fixture.root/"hc").string();invalid.gdn_resident_weights=true;
                 invalid.accelerators={cpu.get()};invalid.allow_cpu_fallback=false;
-                if(refusal==0)invalid.accelerators.clear();
-                if(refusal==1)invalid.prompt_chunk_size=2;
-                if(refusal==2)invalid.gdn_production=true;
-                if(refusal==3)invalid.native_hc_receipt_prefix.clear();
-                if(refusal==4)invalid.allow_cpu_fallback=true;
-                if(refusal==5)invalid.gdn_resident_weights=false;
+                if(mode==0)invalid.accelerators.clear();
+                if(mode==1)invalid.prompt_chunk_size=2;
+                if(mode==2)invalid.gdn_production=true;
+                if(mode==3)invalid.native_hc_receipt_prefix.clear();
+                if(mode==4)invalid.allow_cpu_fallback=true;
+                if(mode==5)invalid.gdn_resident_weights=false;
                 check(!PortableModelSession::open(fixture.paths,(fixture.root/"manifest").string(),invalid,error) &&
                       error.find("native HC layer0 requires")!=std::string::npos,"native HC model preflight refusal");
             }
