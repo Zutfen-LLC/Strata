@@ -56,9 +56,10 @@ int main() {
         }
         std::vector<std::vector<float>> reference;
         opts.expert_dispatch_oracle = true;
+        size_t baseline_state_bound=0;
         {
             auto baseline = PortableModelSession::open(fixture.paths, (fixture.root / "manifest").string(), opts, error);
-            check(bool(baseline), error);
+            check(bool(baseline), error);baseline_state_bound=baseline->report().host_state_bound;
             for (int32_t token : {5, 6}) {
                 std::vector<float> logits;
                 check(baseline->step(token, logits, error), error);
@@ -88,8 +89,19 @@ int main() {
         opts.gdn_resident_weights = true; // CPU execution must preserve the default reference
         opts.expert_dispatch_oracle = false;
         opts.expert_timings = true;
+#ifndef _WIN32
+        const auto observed_path=fixture.root/"layer0-observed.bin";
+        setenv("STRATA_LAYER0_OBSERVER",observed_path.c_str(),1);
+        setenv("STRATA_LAYER0_BINDING",std::string(64,'a').c_str(),1);
+#endif
         auto session = PortableModelSession::open(fixture.paths, (fixture.root / "manifest").string(), opts, error);
+#ifndef _WIN32
+        unsetenv("STRATA_LAYER0_OBSERVER");unsetenv("STRATA_LAYER0_BINDING");
+#endif
         check(bool(session), error);
+#ifndef _WIN32
+        check(session->report().host_state_bound==baseline_state_bound+(8u<<20),"observer host charge");
+#endif
         check(session->report().qsa_attention_resources == 1 && session->report().qsa_attention_host_scheduler > 0,
               "whole-model session owns one actual shared attention scheduler");
         check(session->report().gdn_scratch_resources == 1 && session->report().gdn_scratch_host_scheduler > 0,
@@ -105,9 +117,16 @@ int main() {
         logits_reference(logits, 5);
         check(std::memcmp(logits.data(), reference[0].data(), logits.size() * sizeof(float)) == 0,
               "cold model logits byte identical to former staging provider");
+#ifndef _WIN32
+        const auto observed_size=std::filesystem::file_size(observed_path);
+        check(observed_size>0 && observed_size<=(8u<<20),"observer output bound");
+#endif
         check(session->step(6, logits, error), error);
         check(std::memcmp(logits.data(), reference[1].data(), logits.size() * sizeof(float)) == 0,
               "repeated expert model logits byte identical to former staging provider");
+#ifndef _WIN32
+        check(std::filesystem::file_size(observed_path)==observed_size,"observer repeated later token");
+#endif
         check(session->expert_work().hits == 480, "all-layer second token hits");
         check(session->reset(error) && session->step(5, logits, error), error);
         check(session->position() == 1, "successful position commit");

@@ -11,6 +11,7 @@ struct ggml_backend;
 namespace strata { class GgufModel; }
 
 namespace strata::core {
+class Layer0Observer;
 
 // Opt-in fixed-shape T=1..8 qwen4exp FFN coordinator. This is the after-attention sublayer,
 // not a complete layer/model/session. No CUDA runtime or graph capture is used.
@@ -46,6 +47,7 @@ struct PortableFfnOptions {
     std::string native_router_receipt_prefix; // private unique per-owner shader receipts
     bool native_moe_combine = false; // strict Vulkan K10 observation; shared is already gated
     std::string native_moe_combine_receipt_prefix; // private path prefix; unique per-owner directories
+    Layer0Observer* layer0_observer = nullptr; // borrowed, opt-in diagnostic only
 };
 
 struct PortablePlacement {

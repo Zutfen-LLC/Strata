@@ -1,3 +1,4 @@
+#include "strata/core/layer0_observer.hpp"
 #include "strata/core/portable_ffn.hpp"
 #include "portable_graph.hpp"
 #include "strata/artifact/gguf_reader.hpp"
@@ -456,6 +457,12 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         ++s.work.pre_graph_calls;
         require(ggml_backend_sched_graph_compute(s.pre_sched.get(), s.pre) == GGML_STATUS_SUCCESS, "portable FFN: pre graph failed");
         PortableRoute candidate;
+        auto* observer=s.options.layer0_observer;
+        if(observer && observer->active()) {
+            observer->put(Layer0Observer::pending_residual,s.state.data(),s.state.size());
+            const auto inject=read(s.inject);observer->put(Layer0Observer::inject,inject.data(),inject.size());
+            const auto scores=read(s.logits);observer->put(Layer0Observer::router_scores,scores.data(),scores.size());
+        }
         candidate.activation = read(s.mixed);
 #ifdef STRATA_PORTABLE_NATIVE_ROUTER
         if(s.native_router) {
@@ -464,6 +471,11 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         } else
 #endif
         route_logits(read(s.logits), s.g.selected, candidate);
+        if(observer && observer->active()) {
+            observer->put(Layer0Observer::moe_input,candidate.activation.data(),candidate.activation.size());
+            observer->put(Layer0Observer::router_ids,candidate.ids.data(),candidate.ids.size());
+            observer->put(Layer0Observer::router_weights,candidate.weights.data(),candidate.weights.size());
+        }
         std::vector<float> block;
 #ifdef STRATA_PORTABLE_NATIVE_SHARED
         if(s.native_shared) {block=s.native_shared->run(s.mixed);candidate.native_shared=true;}
@@ -475,6 +487,10 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         require(rows.size() == size_t(s.g.hidden * s.g.selected), "portable FFN: indexed expert row count mismatch");
         finite(rows);
         if(!s.options.native_shared)block=read(s.shared);
+        if(observer && observer->active()) {
+            observer->put(Layer0Observer::shared_output,block.data(),block.size());
+            observer->put(Layer0Observer::expert_rows,rows.data(),rows.size());
+        }
 #ifdef STRATA_PORTABLE_NATIVE_MOE_COMBINE
         if(s.native_combine) block = s.native_combine->run(rows, candidate.weights, block);
         else
@@ -485,6 +501,7 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
             block[size_t(h)] += routed;
         }
         finite(block);
+        if(observer && observer->active())observer->put(Layer0Observer::combined_output,block.data(),block.size());
         write(s.post_input, s.state); write(s.post_inject, read(s.inject)); write(s.post_block, block);
         ++s.work.post_graph_calls;
         require(ggml_backend_sched_graph_compute(s.post_sched.get(), s.post) == GGML_STATUS_SUCCESS, "portable FFN: post graph failed");

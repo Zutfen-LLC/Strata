@@ -61,6 +61,7 @@ struct AdaptGate {
 };
 
 class NativeHead;
+class NativeLayer0Observer;
 class RemoteExpertOpt;
 
 /// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd), hit rows zeroed.
@@ -82,6 +83,7 @@ public:
     ~Verifier();
     Verifier(const Verifier&) = delete;
     Verifier& operator=(const Verifier&) = delete;
+    void set_layer0_observer(NativeLayer0Observer* observer) { layer0_observer_=observer; }
     void set_remote_expert_opt(RemoteExpertOpt* opt) { remote_opt_ = opt; } // before init/capture
 
     /// The watchdog's view of the window in flight (issue #31): the layer, the GPU's sequence, the flags.
@@ -360,6 +362,7 @@ public:
 
 private:
     // Allocated only for STRATA_FIRST_REQUEST_TRACE. Graph snapshots use fixed device addresses.
+    NativeLayer0Observer* layer0_observer_ = nullptr; // borrowed; reserved before cache sizing
     float* first_trace_device_ = nullptr;
     size_t first_trace_stride_ = 0;
     bool first_trace_copy(int64_t layer, int field, int tb, int rows, const void* src,
