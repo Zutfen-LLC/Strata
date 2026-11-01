@@ -648,8 +648,21 @@ for each capability below.
    now adds the explicit default-disabled ordinary T1 model seam: matched
    compat-BF16 alpha/beta replacement, completed QKV/mixed borrowing, reused
    recurrence candidate leaves, aligned reservation and existing commit/rollback.
-   Eleven local tests and the isolated generated workflow pass; fresh native-plan
-   matched control/on model validation is pending. Layer1 PLE stays unchanged.
+   Fourteen local tests and the isolated generated workflow pass. Hermes now
+   reports a successful bounded same-image model comparison with fresh native
+   planning and two reset-separated requests per arm. The on arm runs actual
+   convolution, a/b and recurrence on all 35 ordinary layers; PLE/QSA remain
+   excluded. First-layer source-order/intrinsic controls, exact H/gate/beta
+   producer links, accepted history/state commit, protected modules and within-arm
+   head/route/state-digest reset replay pass. The initial harness STOP rejected a
+   valid LLVM capability receipt before READY; an exact-schema classifier repair
+   reused the successful build/control/plans and ran only the new on arm. The
+   original STOP is preserved. Cross-arm generated IDs match, but routes and
+   matching-history logits differ; these are diagnostics, not numerical parity.
+   Owned exit/reap and three baseline cleanup observations pass. This establishes
+   bounded ordinary T1 integration only: qualified=false, full native numerical,
+   accepted-prefix/window, quality and performance parity remain unproven.
+   Layer1 PLE stays unchanged.
    The default model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
    projections also remain separate upstream work; do not attribute unequal model
    outputs to recurrence without equal inputs. Accepted-prefix commit and window
