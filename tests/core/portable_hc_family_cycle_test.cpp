@@ -78,5 +78,32 @@ int main(){try{
  check(final->step_pending(0,last,dispatch,route,error),error);auto finalres=final->last_residual();check(final->pending_write().empty()&&final->native_ffn_hc_write_calls()==1,"head materialization/counter");
  check(!final->step_pending(1,last,fail,route,error)&&final->last_residual()==finalres&&final->tokens()==1,"final endpoint rollback");
  check(final->reset(error)&&final->step_pending(0,last,dispatch,route,error)&&final->last_residual()==finalres,"final endpoint reset");
+
+ // Failure-only diagnostics read the completed failing call, not initial success.
+ auto diagnostic=go;diagnostic.native_hc_ffn_read=false;diagnostic.defer_ffn_hc_write=false;diagnostic.native_hc_receipt_prefix=(root/"diagnostic38").string();
+ auto d38=PortableGdnLayer::create(38,renamed(38),diagnostic,error);check(bool(d38)&&d38->reset(error),error);
+ check(d38->step(f.input(0),dispatch,route,error)&&d38->step(f.input(1),dispatch,route,error),error);
+ auto committed_state=d38->recurrent_state(),committed_history=d38->convolution_history(),committed_residual=d38->last_residual();
+ fail_mix_domain=true;check(!d38->step(f.input(2),dispatch,route,error)&&error.find("status=2048")!=std::string::npos,"domain failure accepted/lost status");fail_mix_domain=false;
+ check(d38->tokens()==2&&d38->recurrent_state()==committed_state&&d38->convolution_history()==committed_history&&d38->last_residual()==committed_residual,"diagnostic refusal committed state");
+ std::filesystem::path diagnostic_owner;for(const auto&e:std::filesystem::directory_iterator(root))if(e.path().filename().string().starts_with("diagnostic38.owner-"))diagnostic_owner=e.path();
+ auto read_words=[](const std::filesystem::path&p){std::ifstream f(p,std::ios::binary);check(bool(f),"diagnostic file absent");std::vector<float> v(std::filesystem::file_size(p)/4);f.read((char*)v.data(),v.size()*4);check(bool(f),"diagnostic short read");return v;};
+ check(read_words(diagnostic_owner/"refusal/normalized.f32le")==expected_xn,"refusal captured stale normalized input");
+ check(read_words(diagnostic_owner/"first-normalized.f32le")!=expected_xn,"diagnostic test did not distinguish first successful input");
+ std::ifstream metadata(diagnostic_owner/"refusal/metadata.json");std::string text((std::istreambuf_iterator<char>(metadata)),{});
+ check(text.find("\"norm_call\":3")!=std::string::npos&&text.find("\"position\":2")!=std::string::npos&&text.find("\"layer\":38")!=std::string::npos&&text.find("\"mix_successes\":2")!=std::string::npos&&text.find("[0,8,0]")!=std::string::npos,"exact refusal identity/stage/current-call metadata");
+ size_t diagnostic_bytes=0;for(const auto&e:std::filesystem::directory_iterator(diagnostic_owner/"refusal"))if(e.path().extension()==".f32le")diagnostic_bytes+=e.file_size();check(diagnostic_bytes==177920,"bounded diagnostic payload");
+ check(d38->step(f.input(2),dispatch,route,error)&&d38->tokens()==3,"diagnostic rollback retry");
+ diagnostic.native_hc_receipt_prefix=(root/"generic37").string();auto d37=PortableGdnLayer::create(37,renamed(37),diagnostic,error);check(bool(d37)&&d37->reset(error),error);fail_mix=true;check(!d37->step(f.input(0),dispatch,route,error),"generic failure accepted");fail_mix=false;
+ for(const auto&e:std::filesystem::directory_iterator(root))if(e.path().filename().string().starts_with("generic37.owner-"))check(!std::filesystem::exists(e.path()/"refusal"),"pre-dispatch failure exposed stale/uninitialized outputs");
+
+ // The actual GDN->FFN call forwards logical position independently of FFN reset.
+ auto fd=diagnostic;fd.native_hc_ffn_read=true;fd.native_hc_receipt_prefix=(root/"diagnostic-ffn38").string();auto f38=PortableGdnLayer::create(38,renamed(38),fd,error);check(bool(f38)&&f38->reset(error),error);
+ check(f38->step(f.input(0),dispatch,route,error)&&f38->step(f.input(1),dispatch,route,error),error);auto fs=f38->recurrent_state(),fr=f38->last_residual();fail_mix_domain_ffn=true;check(!f38->step(f.input(2),dispatch,route,error),"FFN domain refusal accepted");fail_mix_domain_ffn=false;
+ check(f38->tokens()==2&&f38->recurrent_state()==fs&&f38->last_residual()==fr,"FFN diagnostic refusal committed GDN state");
+ for(const auto&e:std::filesystem::directory_iterator(root))if(e.path().filename().string().starts_with("diagnostic-ffn38.ffn.owner-")){
+  std::ifstream stream(e.path()/"refusal/metadata.json");std::string m((std::istreambuf_iterator<char>(stream)),{});check(m.find("blk.38.hc_ffn_norm.weight")!=std::string::npos&&m.find("\"position\":2")!=std::string::npos,"actual FFN logical position/role lost");check(read_words(e.path()/"refusal/normalized.f32le")==expected_xn,"FFN failure captured previous call");
+ }
+ check(f38->step(f.input(2),dispatch,route,error),error);
  check(projections>=6&&g2->native_ffn_hc_pending_calls()==5&&q3->native_ffn_hc_pending_calls()==7&&q3->deferred_hc_outputs()==6,"paid family work counters");cpu->iface.graph_compute=original_compute;std::filesystem::remove_all(root);puts("reusable GDN/QSA HC family cycle / post-projection tuple / independent FMA / shared scratch / admission / rollback reset / native boundary predicates pass; mocked HC only");return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}

@@ -159,7 +159,7 @@ public:
     // Failure leaves public residual unchanged. No implicit/stale tuple carry.
     bool step_pending(const std::vector<float>& previous_output, const std::vector<float>& previous_injection,
                       const PortableExpertRows& dispatch, PortableRoute& route, std::string& error,
-                      PortableFfnHcTrace* trace = nullptr);
+                      PortableFfnHcTrace* trace = nullptr, uint64_t diagnostic_position = UINT64_MAX);
     const PortableHcPendingWrite& pending_write() const;
     uint64_t native_hc_pending_calls() const;
     uint64_t native_hc_write_calls() const;
@@ -177,7 +177,7 @@ public:
 
 private:
     bool step_impl(const std::vector<float>* previous_output, const std::vector<float>* previous_injection,
-                   const PortableExpertRows& dispatch, PortableRoute& route, std::string& error, PortableFfnHcTrace* trace);
+                   const PortableExpertRows& dispatch, PortableRoute& route, std::string& error, PortableFfnHcTrace* trace, uint64_t diagnostic_position);
     struct Impl;
     explicit PortableFfn(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;

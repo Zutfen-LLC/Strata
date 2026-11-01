@@ -20,7 +20,7 @@ bool inspect_producer=false;std::vector<float> actual_projected,actual_attention
 size_t write_owners=0,write_calls=0;bool fail_write_create=false,fail_write_run=false;
 const ggml_tensor* live_ffn_residual=nullptr;const ggml_tensor* live_ffn_inject=nullptr;std::vector<float> write_seen_block;
 size_t pending_owners=0,pending_calls=0;bool fail_pending_create=false,fail_pending_run=false;
-size_t owners=0,calls=0,mix_owners=0,mix_calls=0;bool fail_mix=false,fail_mix_create=false;float mixed_scale=1;const ggml_tensor* live_mixed=nullptr;size_t mixed_consumers=0;
+size_t owners=0,calls=0,mix_owners=0,mix_calls=0;bool fail_mix_domain=false,fail_mix_domain_ffn=false,last_norm_ffn=false;bool fail_mix=false,fail_mix_create=false;float mixed_scale=1;const ggml_tensor* live_mixed=nullptr;size_t mixed_consumers=0;
 std::vector<uint16_t> expected_down,expected_up;bool fail_run=false,fail_create=false;float inject_bias=0,norm_scale=1;
 std::vector<float> uploaded,expected_xn,expected_rs,expected_inject;
 std::vector<uint16_t> expected_weights;
@@ -59,14 +59,14 @@ void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*x,const 
  size_t wi=0;for(auto*w:{down,up}){check(w->type==GGML_TYPE_I32&&ggml_nbytes(w)==6553600,"converted down/up span");std::vector<uint16_t> b(3276800);ggml_backend_tensor_get(w,b.data(),0,b.size()*2);check(b==(wi++?expected_up:expected_down),"original BF16 role conversion");}
  for(auto*t:{lp,low,le,upre,gates,ue})put(t,std::vector<float>(size_t(ggml_nelements(t)),0));
  auto normalized=get(x);std::vector<float>values(2560);for(size_t i=0;i<values.size();++i)values[i]=normalized[i]*mixed_scale;
- put(mixed,values);live_mixed=mixed;++mix_calls;
+ put(mixed,values);live_mixed=mixed;if(fail_mix_domain||(fail_mix_domain_ffn&&last_norm_ffn))throw NativeHcMixDomainRefusal(8u<<8);++mix_calls;
 }
 struct StrataVkNativeHc{};
 StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t,const char* path,size_t budget){check(!fail_create,"injected create refusal");check(budget>=512,"component budget");std::ofstream(path)<<"mock; not shader evidence\n";++owners;return new StrataVkNativeHc;}
 size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*){return 512;}
 void strata_vk_native_hc_destroy(StrataVkNativeHc*p)noexcept{if(p)--owners;if(!owners){bound_weight=nullptr;live_normalized=nullptr;}delete p;}
 void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*x,const ggml_tensor*w,const ggml_tensor*wi,ggml_tensor*xn,ggml_tensor*rs,ggml_tensor*inject,uint32_t t){
- native_hc_environment();check(x->ne[0]==2560&&x->ne[1]==4&&!x->view_src&&xn->ne[0]==10240&&xn->ne[1]==1&&!xn->view_src,"original input/normalized geometry");live_normalized=xn;
+ native_hc_environment();last_norm_ffn=std::string(ggml_get_name(wi)).ends_with(".hc_ffn_inject.weight");check(x->ne[0]==2560&&x->ne[1]==4&&!x->view_src&&xn->ne[0]==10240&&xn->ne[1]==1&&!xn->view_src,"original input/normalized geometry");live_normalized=xn;
  check(t==1&&wi->type==GGML_TYPE_I32&&ggml_nbytes(wi)==81920,"native weight/T binding");
  check(!fail_run,"injected HC failure");
  std::vector<uint16_t>weight(40960);ggml_backend_tensor_get(wi,weight.data(),0,81920);check(weight==expected_weights,"BF16 replacement differs from original pack conversion");

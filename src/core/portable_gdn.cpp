@@ -369,13 +369,13 @@ struct PortableGdnLayer::Impl {
             if(s.native_hc && s.native_hc->pending_input) {
                 require(!projected && previous_output && previous_injection,"native HC pending: explicit T1 tuple required");
                 write(s.native_hc->pending_input,residual);write(s.native_hc->previous_output,*previous_output);write(s.native_hc->previous_inject,*previous_injection);
-                s.native_hc->run_pending(); // candidate R-prime is BOTH graph hidden and HC input
+                s.native_hc->diagnostic_position(s.count);s.native_hc->run_pending(); // candidate R-prime is BOTH graph hidden and HC input
             } else
 #endif
             {
                 write(s.input, residual);
 #ifdef STRATA_PORTABLE_NATIVE_HC
-                if(s.native_hc) {require(!projected,"native HC serial: projected execution unsupported");s.native_hc->run();}
+                if(s.native_hc) {require(!projected,"native HC serial: projected execution unsupported");s.native_hc->diagnostic_position(s.count);s.native_hc->run();}
 #endif
             }
             if (!s.state_buffer) {
@@ -1052,7 +1052,7 @@ bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residua
             portable_detail::ScopedExpertTimer<> ffn_timer(work != nullptr, timing.ffn_ms, timing.ffn_calls);
             require(s.ffn->reset(next_residual, error), error);
             const bool ok = s.options.native_hc_ffn_read ?
-                s.ffn->step_pending(attended.block,attended.inject,dispatch,candidate,error,trace?&next_trace.ffn_hc:nullptr):
+                s.ffn->step_pending(attended.block,attended.inject,dispatch,candidate,error,trace?&next_trace.ffn_hc:nullptr,s.count):
                 s.ffn->step(dispatch, candidate, error);
             require(ok, error);
             next_residual = s.ffn->residual(); // allocate before the no-throw public commit

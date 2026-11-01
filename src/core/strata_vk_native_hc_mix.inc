@@ -19,6 +19,6 @@ void strata_vk_native_hc_mix_run(StrataVkNativeHcMix* p,const ggml_tensor* input
  const size_t map[3][6]={{0,0,1,3,4,5},{4,4,2,6,7,8},{0,7,1,3,4,9}};
  for(uint32_t mode=0;mode<3;++mode){const auto* m=map[mode];std::array<uint32_t,9> params{mode,1,offsets[m[0]],offsets[m[1]],offsets[m[2]],offsets[m[3]],offsets[m[4]],offsets[m[5]],uint32_t(get_misalign_bytes(ctx,g.status)/4)};ggml_pipeline_request_descriptor_sets(ctx,g.pipeline,1);auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
   ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,tensors[m[0]],true),ggml_vk_tensor_subbuffer(ctx,tensors[m[1]],true),ggml_vk_tensor_subbuffer(ctx,tensors[m[2]],true),ggml_vk_tensor_subbuffer(ctx,tensors[m[3]],true),ggml_vk_tensor_subbuffer(ctx,tensors[m[4]],true),ggml_vk_tensor_subbuffer(ctx,tensors[m[5]],true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},params,{mode==0?320u:mode==1?10240u:10u,1,1});ggml_vk_sync_buffers(ctx,compute);compute.reset();}
- ggml_backend_vk_synchronize(g.backend);uint32_t status=0;ggml_backend_tensor_get(g.status,&status,0,4);native_hc_need(status==0,"native HC mix: nonfinite/subnormal or derived normal exp/div domain refusal; no result accepted");
+ ggml_backend_vk_synchronize(g.backend);uint32_t status=0;ggml_backend_tensor_get(g.status,&status,0,4);if(status)throw NativeHcMixDomainRefusal(status);
 }
 }
