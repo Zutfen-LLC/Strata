@@ -620,9 +620,17 @@ for each capability below.
    further step below its RNE quotient. Both primitive bounds pass while the
    composed native-accuracy target fails. Existing native_f32_div_rn.glsl would
    remove that division step for this element, but is not log1pf or evidence of
-   general compensated accuracy. Offline checking of all retained intermediates
-   must precede any candidate change; no approximation, relaxed target or a/b
-   integration is selected.
+   general compensated accuracy. Complete retained counterfactuals now show
+   RNE division alone still fails boundary/ordinary inputs; ideal-log/RNE-division
+   controls pass, and CUDA's compensated diagnostic also retains a failure.
+   No qualified log1p implementation exists in current Vulkan dependencies.
+   LLVM libc's [existing correctly rounded log1pf](https://github.com/llvm/llvm-project/blob/main/libc/src/__support/math/log1pf.h)
+   is an external candidate with Apache-2.0/LLVM-exception licensing and FP64
+   arithmetic/support requirements. ROCm OCML's [FP32 expansion implementation](https://github.com/ROCm/ROCm-Device-Libs/blob/amd-stg-open/ocml/src/log1pF.cl)
+   uses NCSA-licensed AMD builtin/expansion helpers; the required Vulkan accuracy
+   is not established. Selecting either is a separate backend primitive port,
+   preserving native's outer softplus method, not an already-qualified shader.
+   No new approximation, relaxed target or a/b integration is selected.
    The current model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
    projections also remain separate upstream work; do not attribute unequal model
    outputs to recurrence without equal inputs. Accepted-prefix commit and window
