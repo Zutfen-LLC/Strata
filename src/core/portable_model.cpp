@@ -820,7 +820,7 @@ PortableExpertWork PortableModelSession::expert_work() const {
 #endif
     return work;
 }
-PortableModelWork PortableModelSession::model_work() const {
+PortableModelWork PortableModelSession::model_work(bool state_digests) const {
     auto work=impl_->model_work;
     if(impl_->opts.native_hc_serial) for(size_t l=0;l<impl_->layers.size();++l) {
         const auto& a=impl_->layers[l];
@@ -835,6 +835,8 @@ PortableModelWork PortableModelSession::model_work() const {
         work.native_hc_cycle_reads=impl_->layers[4].gdn->native_hc_pending_calls();
     }
     for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(l==3&&layer.qsa)work.native_hc_pending_layer3_calls+=layer.qsa->native_hc_pending_calls();if(!layer.gdn)continue;
+        work.native_gdn_t1_calls[l]=layer.gdn->native_recurrence_calls();
+        if(state_digests && !impl_->opts.gdn_production){const auto&state=layer.gdn->recurrent_state();const auto digest=worker::blob_digest(state.data(),state.size()*sizeof(float));work.gdn_state_a[l]=digest.a;work.gdn_state_b[l]=digest.b;}
         if(l==2)work.deferred_ffn_layer2_outputs+=layer.gdn->deferred_hc_outputs();
         if(l==1)work.deferred_ffn_layer1_outputs+=layer.gdn->deferred_hc_outputs();
         if(l==2)work.native_hc_pending_layer2_calls+=layer.gdn->native_hc_pending_calls();

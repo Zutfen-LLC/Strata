@@ -13,13 +13,13 @@ def rsqrt_ok(actual,arg):
  N.normal(actual);N.need(0<actual<0x7f800000,'GDN positive rsqrt')
  rn=N.rsqrt_nearest(arg)
  return abs(N.rational(actual)-N.rational(rn))<=Fraction(5,2)*max(N.ulp(actual),N.ulp(rn))
-def check(fixture,result,backend):
+def check(fixture,result,backend,norm_argument="norm-arg.f32le"):
  N.need(backend in ('native','vulkan'),'GDN backend');data=Path(fixture).read_bytes();N.need(data[:8]==struct.pack('<II',0x314e4447,1) and len(data)==8+4*sum(COUNTS),'GDN fixed T1 fixture')
  a=[];at=8
  for n in COUNTS:a.append(list(struct.unpack_from('<'+'I'*n,data,at)));at+=n*4
  for row in a:
   for x in row:N.normal(x)
- root=Path(result);ex=words(root/'decay-exp.f32le',48);se=words(root/'sigmoid-exp.f32le',6144);sig=words(root/'sigmoid.f32le',6144);rs=words(root/'rs.f32le',49);args=words(root/'norm-arg.f32le',48)
+ root=Path(result);ex=words(root/'decay-exp.f32le',48);se=words(root/'sigmoid-exp.f32le',6144);sig=words(root/'sigmoid.f32le',6144);rs=words(root/'rs.f32le',49);args=words(root/norm_argument,48)
  for v,e in zip(a[2],ex):N.need(-87.33651733398438<=N.value(v)<=0,'GDN decay normal domain');N.need(M.inside(e,M.exp_bounds(v,backend)),'GDN exp(gate) intrinsic')
  for v,e,g in zip(a[4],se,sig):
   N.need(abs(N.value(v))<=87.33651733398438,'GDN output sigmoid normal domain');N.need(M.inside(e,M.exp_bounds(v^0x80000000,backend)),'GDN output exp intrinsic');N.need(M.inside(g,M.quotient_bounds(0x3f800000,N.add(0x3f800000,e))),'GDN output own-exp division')

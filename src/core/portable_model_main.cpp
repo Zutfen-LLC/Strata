@@ -116,7 +116,7 @@ int main(int argc, char **argv) {
                              " [--gdn-production (requires --gdn-resident-state and strict Vulkan)]\n"
                              " [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
                              " [--qsa-reuse-attention (compatibility flag; session scratch is shared)]\n"
-                             " [--gdn-resident-state (trial, default off)]\n"
+                             " [--gdn-resident-state (trial, default off)] [--native-gdn-t1 PREFIX (ordinary non-PLE T1 only)]\n"
                              " [--native-hc-pending-layer2-3 RECEIPT_PREFIX (experimental ordinary QSA HC carry)]\n"
                              " [--native-hc-pending-layer1-2 RECEIPT_PREFIX (experimental ordinary inter-layer carry)]\n"
                              " [--native-hc-ffn-write-layer0 RECEIPT_PREFIX (experimental final materialization before PLE)]\n"
@@ -202,7 +202,8 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if(key=="--native-hc-serial") {opts.native_hc_serial=true;opts.native_hc_serial_receipt_prefix=value;}
+            if(key=="--native-gdn-t1") {opts.native_gdn_t1=true;opts.native_gdn_receipt_prefix=value;}
+            else if(key=="--native-hc-serial") {opts.native_hc_serial=true;opts.native_hc_serial_receipt_prefix=value;}
             else if(key=="--native-hc-serial-cycle") {
                 opts.native_hc_serial_cycle=true;opts.native_hc_cycle_receipt_prefix=value;
                 opts.native_hc_pending_layer1_2=opts.native_hc_pending_layer2_3=true;
@@ -362,6 +363,8 @@ int main(int argc, char **argv) {
                      <<",\"dense_resident_weights\":"<<(opts.dense_resident_weights?"true":"false")
                      <<",\"layer0_resident_weights\":"<<(opts.layer0_resident_weights?"true":"false")
                      <<",\"native_hc_serial_cycle\":"<<(opts.native_hc_serial_cycle?"true":"false")
+                     <<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false")
+                     <<",\"gdn_resident_state\":"<<(opts.gdn_resident_state?"true":"false")
                      <<",\"native_hc_serial\":"<<(opts.native_hc_serial?"true":"false")
                      <<",\"hc_serial_resident_weights\":"<<(opts.hc_serial_resident_weights?"true":"false")
                      <<",\"hc_cycle_resident_weights\":"<<(opts.hc_cycle_resident_weights?"true":"false")
@@ -549,11 +552,18 @@ int main(int argc, char **argv) {
         }
         std::vector<float> logits;
         std::vector<int32_t> executed_tokens;
-        const auto heads_before = session->model_work();
+        const auto heads_before = session->model_work(opts.gdn_resident_state&&!opts.gdn_production);
         const auto router_fields = [&](std::ostream& out) {
             if((opts.native_hc_pending_layer1_2 || opts.native_hc_pending_layer2_3) && !opts.native_hc_norm_inject_layer0)out<<",\"full_hc_parity\":false";
             if(opts.native_hc_norm_inject_layer0)out<<",\"native_hc_norm_inject_layer0\":true,\"full_hc_parity\":false,\"native_hc_layer0_calls_delta\":"
                 <<session->model_work().native_hc_layer0_calls-heads_before.native_hc_layer0_calls;
+            if(opts.gdn_resident_state&&!opts.gdn_production) {
+                const auto w=session->model_work(true);
+                auto array=[&](const char*name,const auto&a){out<<",\""<<name<<"\":[";for(size_t l=0;l<48;++l){if(l)out<<",";out<<a[l];}out<<"]";};
+                array("gdn_state_before_a",heads_before.gdn_state_a);array("gdn_state_before_b",heads_before.gdn_state_b);array("gdn_state_after_a",w.gdn_state_a);array("gdn_state_after_b",w.gdn_state_b);
+                std::array<uint64_t,48>delta{};for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_t1_calls[l]-heads_before.native_gdn_t1_calls[l];array("native_gdn_t1_calls_delta",delta);
+                out<<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false");
+            }
             if(opts.hc_cycle_resident_weights)out<<",\"hc_cycle_resident_weights\":true";
             if(opts.hc_serial_resident_weights)out<<",\"hc_serial_resident_weights\":true";
             if(opts.native_hc_serial) {

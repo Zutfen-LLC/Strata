@@ -1,10 +1,16 @@
 # Experimental native T1 GDN recurrence
 
 This ports `Verifier::record_window()` → `gdn_step_norm_multi()` in
-`src/kernels/cuda/verify_kernels.cu`, not a replacement recurrence. It is an
-unqualified component and a default-disabled `PortableGdnOptions` seam, with no
-model CLI switch. Physical comparison against the unchanged CUDA launcher is
-required before extending its use.
+`src/kernels/cuda/verify_kernels.cu`, not a replacement recurrence. The bounded zero/sparse/dense component comparison passed the actual unchanged
+CUDA launcher and Vulkan own-primitive state/output controls, reset/repeat and
+module checks. The selected native delta contraction matched. Dense cross-backend
+bits differ; this is not universal intrinsic or full-model parity.
+
+`--native-gdn-t1 PREFIX` adds a default-disabled model path for the 35 ordinary
+GDN layers; layer1's PLE branch stays explicitly unchanged. It requires eager T1,
+primary dense topology, strict accelerator execution and explicit resident state
+and attention weights. Earlier HC choices remain independent and must be matched
+between comparison arms. No default or native placement policy changes.
 
 The initial supported shape is S128/HK16/HV48, one token, keep one, no fused Q8
 output. State is native `[row,head,column]`, address `(row*48+head)*128+column`.
@@ -31,10 +37,10 @@ the component, then runs the existing output projection/HC/FFN consumer. Only th
 existing successful layer transaction copies candidate state/history into committed
 storage. Reset, failed component and failed FFN retain their existing semantics.
 Prefix trace tensors are graph outputs, and component leaves survive both graphs.
-Private eager T1, resident state and attention weights, strict accelerator/no CPU
-fallback and a receipt path are required. Shared scratch, PLE, chunk/batch,
+Eager T1, resident state and attention weights, strict accelerator/no CPU
+fallback and a receipt path are required. PLE, chunk/batch,
 production-policy and speculative accepted-prefix modes explicitly refuse. This
-bounded private seam is not native window scheduling or accepted-prefix commit.
+bounded serial seam is not native window scheduling or accepted-prefix commit.
 
 The bank has one candidate state plus small h/g/b/z/y/diagnostic/history leaves;
 immutable state and gamma reuse existing owners. Aligned actual allocation and
@@ -82,3 +88,33 @@ pinned dyadic dense indexing vectors across row-group/head/column boundaries and
 rejects the same wrong output on both backends. Device probes repeat from the
 same initial state. Vulkan also checks input/canary preservation and invalid-input
 noncommit. No new weights, model capture or full-model execution is needed.
+
+## Shared model integration
+
+The model reuses the existing shared scheduler slot1 for the prefix and slot0 for
+the suffix. No fourth scheduler or state authority is introduced. Persistent
+component leaves and native `[row,head,column]` committed state survive leases;
+all graph pointers are cleared when the lease releases its metadata. The prefix
+and suffix allocations/workspace, aligned banks and actual resident state are
+admitted through the original ledger and planner. Raw bank payload over 35 layers
+is 120,162,700 bytes before alignment/metadata, without copying existing state or
+gamma weights. Both comparison arms explicitly use the same state residency;
+previous expert quotas are not a fit promise.
+
+Only layer0's first actual call retains a bounded own-input fixture and candidate
+outputs. Its committed-state receipt is read after the existing successful commit;
+diagnostic I/O cannot retroactively reject that committed transaction. Other
+layers retain modules/counters, not bulk inputs. Any component refusal preserves
+its current immutable inputs, position and an explicit unavailable-output marker.
+Request-boundary hashes of the eager host mirrors diagnose state progression and
+reset replay, not cross-backend state equivalence. The offline checker replays the
+first actual component against its own primitives and compares candidate/actual
+committed bytes. No separate native capture or new raw weight extraction is needed.
+
+The next model comparison keeps HC fixed, uses one fresh native-planner load and
+same-image control/on arms with identical ownership. Admission must succeed under
+unchanged caps/reserve; otherwise stop with its actual reason. Own-input component
+contracts, exact within-arm reset/replay, finite head/routes and actual paid work
+are distinct from cross-arm logit/token diagnostics. Accepted-prefix commit,
+production state/window scheduling and full-model numerical/quality/performance
+parity remain unclaimed.

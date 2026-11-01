@@ -157,7 +157,6 @@ struct PortableGdnLayer::Impl {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     std::unique_ptr<portable_detail::PortableNativeGdn> native_gdn;
 #endif
-    portable_detail::Scheduler native_prefix_scheduler{nullptr,ggml_backend_sched_free};
     ggml_cgraph* native_prefix_graph=nullptr;
     size_t native_gdn_bytes()const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
@@ -418,8 +417,8 @@ struct PortableGdnLayer::Impl {
                     timing.attention_compute_ms, timing.attention_compute_calls);
 #ifdef STRATA_PORTABLE_NATIVE_HC
                 if(s.native_gdn) {
-                    require(ggml_backend_sched_graph_compute(s.native_prefix_scheduler.get(),s.native_prefix_graph)==GGML_STATUS_SUCCESS,"native GDN: prefix graph failed");
-                    s.native_gdn->run(s.state_input,s.weights.at("ssm_norm.weight"));
+                    require(ggml_backend_sched_graph_compute(s.projection_scheduler.get(),s.native_prefix_graph)==GGML_STATUS_SUCCESS,"native GDN: prefix graph failed");
+                    s.native_gdn->run(s.state_input,s.weights.at("ssm_norm.weight"),s.count);
                 }
 #endif
                 status = ggml_backend_sched_graph_compute(projected?s.tail_scheduler.get():s.scheduler.get(), projected?s.tail_graph:s.graph);
@@ -528,7 +527,7 @@ struct PortableGdnLayer::Impl {
 
     bool production() const { return options.policy == PortableGdnPolicy::device_production; }
     size_t host_state_bytes() const {
-        return (options.native_recurrence_t1?(4u<<20):0)+(options.native_hc_norm_inject?(options.native_hc_pending?PortableGdnOptions::native_hc_pending_host_bound:(options.native_hc_mix?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound)):0)+HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
+        return (options.native_recurrence_t1?PortableGdnOptions::native_recurrence_host_bound:0)+(options.native_hc_norm_inject?(options.native_hc_pending?PortableGdnOptions::native_hc_pending_host_bound:(options.native_hc_mix?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound)):0)+HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
             (options.ple_table ? PLE_STATE_BYTES - (production() ? 2 * PLE_HISTORY * sizeof(float) : 0) : 0);
     }
 
@@ -538,7 +537,7 @@ struct PortableGdnLayer::Impl {
         if(!shared()) { sched=portable_detail::schedule(g,phase,options.execution,cpu,placement,bytes,credit); return; }
         auto& o=*shared();
         const size_t workspace=std::max(o.workspace[index],ggml_graph_plan(g,options.execution.threads,nullptr).work_size);
-        size_t used=ffn->graph_bytes()+native_hc_bytes()+(chunk_ffn?chunk_ffn->graph_bytes():0);
+        size_t used=ffn->graph_bytes()+native_hc_bytes()+native_gdn_bytes()+(chunk_ffn?chunk_ffn->graph_bytes():0);
         const std::array<ggml_backend_sched_t,3> all{{scheduler.get(),projection_scheduler.get(),tail_scheduler.get()}};
         for(size_t i=0;i<3;++i) {
             const size_t work=i==index?workspace:o.workspace[i];
@@ -714,7 +713,7 @@ struct PortableGdnLayer::Impl {
             }
             if(options.native_recurrence_t1) {
                 require(!external,"native GDN: external/chunk graph unsupported");
-                native_prefix_scheduler=portable_detail::schedule(native_prefix_graph,"native-gdn-prefix",options.execution,cpu,placement,graphs_size);
+                schedule_graph(native_prefix_graph,"native-gdn-prefix",1,graphs_size,projection_scheduler);
             }
             auto& sched=external?tail_scheduler:scheduler;
             schedule_graph(graph,external?"gdn-chunk-recurrence":"gdn-attention",external?2:0,graphs_size,sched);
@@ -761,9 +760,9 @@ struct PortableGdnLayer::Impl {
             o.schedulers[2]=std::move(s.tail_scheduler);
             o.active={};
             s.ctx.reset(); s.projection_ctx.reset();
-            s.graph=nullptr; s.tail_graph=nullptr; s.projection_graph=nullptr;
+            s.graph=nullptr; s.tail_graph=nullptr; s.projection_graph=nullptr; s.native_prefix_graph=nullptr;
             s.projection_tokens=0; s.projection_bytes=0;
-            s.graphs_size=s.ffn->graph_bytes()+s.native_hc_bytes();
+            s.graphs_size=s.ffn->graph_bytes()+s.native_hc_bytes()+s.native_gdn_bytes();
             if(!s.state_buffer) { s.state_input=nullptr; s.history_input=nullptr; s.ple_hist=nullptr; }
             held=false; o.borrowed.clear(std::memory_order_release);
         }
@@ -779,7 +778,7 @@ struct PortableGdnLayer::Impl {
         require(!options.execution.native_hc_final_write,"portable GDN: configure FFN write through layer option");
         require(!options.native_hc_ffn_write||options.native_hc_ffn_read,"native FFN final write requires pending FFN read");
         if(options.native_recurrence_t1) {
-            require(!options.scratch&&!options.ple_table&&!options.batch_input_projections&&!options.causal_chunk&&!production(),"native GDN T1: private eager ordinary graph only");
+            require(!options.ple_table&&!options.batch_input_projections&&!options.causal_chunk&&!production(),"native GDN T1: eager ordinary graph only");
             require(options.resident_state && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback &&
                     (options.resident_attention_weights||options.execution.resident_dense_weights)&&!options.native_recurrence_receipt.empty(),"native GDN T1: strict accelerator, resident state/attention and receipt required");
 #ifndef STRATA_PORTABLE_NATIVE_HC
@@ -914,7 +913,7 @@ struct PortableGdnLayer::Impl {
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(options.native_recurrence_t1) {
             require(graphs_size<options.execution.graph_budget,"native GDN: no graph room");
-            native_gdn=std::make_unique<portable_detail::PortableNativeGdn>(options.execution.accelerator,options.execution.graph_budget-graphs_size,options.native_recurrence_receipt);
+            native_gdn=std::make_unique<portable_detail::PortableNativeGdn>(options.execution.accelerator,options.execution.graph_budget-graphs_size,options.native_recurrence_receipt,options.native_recurrence_record_first);
             graphs_size+=native_gdn->bytes();
         }
         if(options.native_hc_norm_inject) {
@@ -1121,6 +1120,9 @@ bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residua
             next_placement.insert(next_placement.begin(),s.ffn->placements().begin(),s.ffn->placements().end());
         }
         s.commit_device(work);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.native_gdn)s.native_gdn->record_commit(s.state_input,s.count);
+#endif
         if (!s.production()) {
             s.ple_history.swap(s.candidate_ple_history);
             s.state.swap(s.candidate_state);
@@ -1148,7 +1150,7 @@ bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residua
 }
 bool PortableGdnLayer::prepare_chunk(size_t tokens,std::string& error) {
     error.clear();
-    try { require(!impl_->options.native_hc_norm_inject && !impl_->options.defer_ffn_hc_write,"native HC serial: chunk API unsupported"); Impl::Borrow borrow(*impl_); require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
+    try { require(!impl_->options.native_hc_norm_inject && !impl_->options.native_recurrence_t1 && !impl_->options.defer_ffn_hc_write,"native HC serial: chunk API unsupported"); Impl::Borrow borrow(*impl_); require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
     catch(const std::exception& e) { error=e.what(); return false; }
 }
 bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t position0,
@@ -1292,7 +1294,7 @@ uint64_t PortableGdnLayer::native_hc_calls() const {
 const std::vector<PortablePlacement> &PortableGdnLayer::placements() const { return impl_->placement; }
 size_t PortableGdnLayer::weight_bytes() const { return impl_->weights_size; }
 size_t PortableGdnLayer::graph_bytes() const {
-    return impl_->shared() ? impl_->native_hc_bytes()+impl_->ffn->graph_bytes()+(impl_->chunk_ffn?impl_->chunk_ffn->graph_bytes():0)
+    return impl_->shared() ? impl_->native_hc_bytes()+impl_->native_gdn_bytes()+impl_->ffn->graph_bytes()+(impl_->chunk_ffn?impl_->chunk_ffn->graph_bytes():0)
                            : impl_->graphs_size+impl_->chunk_graphs();
 }
 const PortableGdnScratch* PortableGdnLayer::scratch_owner() const { return impl_->options.scratch.get(); }
@@ -1312,7 +1314,7 @@ PortableMemoryUsage PortableGdnLayer::memory_usage() const {
         m.host_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
         if (s.options.execution.accelerator && s.options.execution.request_accelerator)
             m.device_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.options.execution.accelerator);
-        for(auto* sched:{s.tail_scheduler.get(),s.projection_scheduler.get(),s.native_prefix_scheduler.get()}) if(sched) {
+        for(auto* sched:{s.tail_scheduler.get(),s.projection_scheduler.get()}) if(sched) {
             m.host_graph+=ggml_backend_sched_get_buffer_size(sched,s.cpu.get());
             if(s.options.execution.accelerator && s.options.execution.request_accelerator)
                 m.device_graph+=ggml_backend_sched_get_buffer_size(sched,s.options.execution.accelerator);

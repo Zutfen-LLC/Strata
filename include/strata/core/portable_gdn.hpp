@@ -18,15 +18,17 @@ class PortableGdnScratch {
 };
 enum class PortableGdnPolicy { eager_diagnostic, device_production };
 struct PortableGdnOptions {
+    static constexpr size_t native_recurrence_host_bound=4u<<20;
     static constexpr size_t native_hc_host_bound = 1u << 20; // explicit metadata/preflight/trace envelope
     // Largest streamed BF16 conversion/readback is 6,553,600 B, plus the
     // existing 1 MiB metadata/trace bound; no simultaneous down/up host banks.
     static constexpr size_t native_hc_read_host_bound = 8u << 20;
     static constexpr size_t native_hc_pending_host_bound = native_hc_read_host_bound + (128u << 10);
     PortableFfnOptions execution;
-    // Experimental fixed T1 eager/private/resident-state path; no CLI/default integration.
+    // Experimental fixed T1 eager/resident-state path; private or shared serial scratch.
     bool native_recurrence_t1 = false;
     std::string native_recurrence_receipt;
+    bool native_recurrence_record_first=false; // bounded model layer0 own-input/commit receipt
     bool resident_ffn_weights = false; // selected FFN bank only; attention placement unchanged
     bool defer_ffn_hc_write = false; // layer1 outgoing ordinary boundary; PLE remains unchanged
     bool native_hc_norm_inject = false; // experimental layer-0 serial T1 only; mixed remains GGML

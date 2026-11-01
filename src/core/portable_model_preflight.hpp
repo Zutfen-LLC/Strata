@@ -7,6 +7,7 @@
 namespace strata::core::portable_detail {
 // Shared model-to-layer policy seam. Explicit layer-0 residency never changes
 // attention-only GDN residency, another layer, the head, or dense topology.
+inline bool model_gdn_t1_layer(size_t l){return l<48 && l%4!=3 && l!=1;}
 inline bool model_resident_dense(const PortableModelOptions& opts,size_t index,bool output) {
     return opts.dense_resident_weights || (!output && index==0 && opts.layer0_resident_weights);
 }
@@ -30,6 +31,7 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         size_t b=0;
         if(layer>=2) b+=(layer%4==3 ? PortableQsaOptions::native_hc_host_bound : PortableGdnOptions::native_hc_pending_host_bound)+PortableFfnOptions::native_hc_pending_host_bound;
         b+=layer==47 ? PortableFfnOptions::native_hc_write_host_bound : PortableFfnOptions::deferred_hc_host_bound;
+        if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_recurrence_host_bound;
         return b;
     }
     size_t bound=0;
@@ -43,9 +45,12 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
     if(layer==0 && opts.native_hc_norm_inject_layer0)bound+=(opts.native_hc_mix_layer0 ? PortableGdnOptions::native_hc_read_host_bound : PortableGdnOptions::native_hc_host_bound)+
         (opts.native_hc_ffn_read_layer0 ? PortableFfnOptions::native_hc_pending_host_bound : 0)+
         (opts.native_hc_ffn_write_layer0 ? PortableFfnOptions::native_hc_write_host_bound : 0);
+    if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_recurrence_host_bound;
     return bound;
 }
 inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,PortableGdnOptions& o) {
+    o.native_recurrence_t1=opts.native_gdn_t1 && model_gdn_t1_layer(layer);
+    if(o.native_recurrence_t1){o.state_budget+=PortableGdnOptions::native_recurrence_host_bound;o.native_recurrence_receipt=opts.native_gdn_receipt_prefix+".layer-"+std::to_string(layer)+"/effective.spv";o.native_recurrence_record_first=layer==0;}
     o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && layer==0;
     o.native_hc_mix=opts.native_hc_mix_layer0 && layer==0;
     o.native_hc_ffn_read=opts.native_hc_ffn_read_layer0 && layer==0;
@@ -142,6 +147,11 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
     require(opts.expert_workers>=1 && opts.expert_workers<=256,"portable model: expert workers must be in [1,256]");
     require(!opts.qsa_production || (opts.qsa_reuse_attention && selected_accelerators && !opts.allow_cpu_fallback),
             "portable model: QSA production requires reuse and strict accelerators");
+    require(!opts.native_gdn_t1 || (opts.gdn_resident_state && (opts.gdn_resident_weights||opts.dense_resident_weights) &&
+            selected_accelerators && !opts.allow_cpu_fallback && !opts.gdn_production && !opts.gdn_batch_input_projections &&
+            !opts.gdn_causal_chunk && !opts.prompt_chunk_size && !opts.native_gdn_receipt_prefix.empty() && opts.dense_topology==PortableDenseTopology::primary),
+            "native GDN T1 requires serial eager primary dense, resident state/attention, strict accelerator and receipt prefix");
+    if(opts.native_gdn_t1)require(PortableGdnLayer::native_hc_compiled(),"native GDN T1: strict-FMA native stage build required");
     require(!opts.gdn_production || (opts.gdn_resident_state && selected_accelerators && !opts.allow_cpu_fallback),
             "portable model: GDN production requires resident state and strict accelerators");
     if(opts.native_hc_serial || opts.native_hc_norm_inject_layer0 || opts.native_hc_pending_layer1_2 || opts.native_hc_pending_layer2_3) {
