@@ -271,12 +271,30 @@ The operator-reported small synthetic Vulkan probe now passes shared-scratch
 tuple consumption, materialized control, reset/refusal/retry, own-input numerical
 contracts, effective-module checks and baseline cleanup. Actual layer1 PLE
 and real layer2 roles were not exercised by that synthetic fixture. Existing layer-0 roles
-suffice for its clearly labelled development fixtures. The integrated model owner already records its actual pending tuple and HC
-outputs. A bounded actual-model own-input check can read the four layer2 roles
-from the same GGUF shards and use existing contracts; it does not need a new
-native capture. Native-versus-Vulkan end-to-end comparison remains a separate
-question. Keep layer-0 materialization before PLE and
-control/head rules separate. See the [earlier producer/read scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
+suffice for its clearly labelled development fixtures. The integrated model owner records its actual pending tuple and HC outputs.
+The fresh same-image actual-model own-input check now passes pending FMA,
+normalization/mix, paid-work and exact within-arm reset/replay checks, using
+actual layer2 roles from the same GGUF. Generated IDs agree across arms while
+routes and retained heads differ. The retained-data checker completed offline
+after correcting a blanket rejection of lifecycle events; the live monitor,
+numerical criteria and original STOP remain unchanged. Existing validated module
+receipts were reused, with no model/GPU rerun. Future model recipes must reuse
+the recognized tracked-pidfd verified-exit receipt policy and continue refusing
+live/unverified/unknown events. This is bounded own-input integration, with no
+independent native capture, whole-state export or full-model numerical/quality
+qualification.
+
+The next bounded capability is the ordinary layer2 FFN to layer3 QSA attention
+pending read. Native `verify.cpp` folds the previous FFN tuple into the first
+HC read for both layer families; `PortableQsaLayer` still takes a materialized
+residual and builds its HC normalization/mix in `src/core/portable_qsa.cpp`.
+Reuse the existing pending/norm/mix arithmetic with explicitly admitted HC-role
+storage; preserve QSA KV/indexer candidate/commit, provider rollback and reset.
+Start with a small synthetic T1 sequence and materialized same-backend control,
+then reuse the current fresh-planning/same-image model workflow and direct
+GGUF-role/own-input receipts. That question needs no new native capture.
+Native-versus-Vulkan end-to-end comparison remains separate. Keep layer0's
+materialization before PLE and control/head rules unchanged. See the [earlier producer/read scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
