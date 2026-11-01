@@ -27,8 +27,8 @@ layout(local_size_x=256) in;
 layout(binding=0,std430) readonly buffer X{float raw[];};
 layout(binding=1,std430) readonly buffer W{float gamma[];};
 layout(binding=2,std430) readonly buffer B{uint before[];};
-layout(binding=3,std430) writeonly buffer O{uint candidate[];};
-layout(binding=4,std430) writeonly buffer D{float diag[];};
+layout(binding=3,std430) coherent writeonly buffer O{uint candidate[];};
+layout(binding=4,std430) coherent writeonly buffer D{float diag[];};
 layout(binding=5,std430) buffer S{uint status[];};
 layout(push_constant) uniform Params{uint off[6];uint cells;uint pos;uint base;uint theta;}p;
 shared float values[128],partial[256],sums[8];
@@ -51,7 +51,7 @@ float expand_half(uint h){uint sign=(h&0x8000u)<<16,e=(h>>10)&31u,m=h&1023u;if(e
 void main(){uint tid=gl_LocalInvocationID.x,lane=tid&31u,block=512u+(p.cells/4u+1u)*128u,words=block+1u;
  for(uint i=tid;i<words;i+=256u)candidate[p.off[3]+i]=before[p.off[2]+i];
  for(uint i=tid;i<386u;i+=256u)diag[p.off[4]+i]=0.0;
- barrier();
+ memoryBarrierBuffer();barrier();
  float incoming=0.0,mean=0.0;
  if(tid<128u){incoming=expand_half(half_rne(raw[p.off[0]+tid]));ck(incoming);diag[p.off[4]+tid]=incoming;if(p.pos%4u<3u)candidate[p.off[3]+(p.pos%4u)*128u+tid]=floatBitsToUint(incoming);}
  bool completes=p.pos==0u||p.pos%4u==3u;
