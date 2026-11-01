@@ -328,6 +328,27 @@ remain unported or unqualified. The new boundary changes HC method as well as
 materialization, so downstream changes cannot be attributed to materialization
 alone. See the [implemented scope](https://github.com/Zutfen-LLC/Strata/blob/9a6d41029797304fbe1de79d5fb2bc311bae6c97/docs/native-hc-pending-layer2-3-qsa.md).
 
+[PR110](https://github.com/Zutfen-LLC/Strata/pull/110), source
+`a7d87b40941a62bae74242a1791afc510ef4293e`, implements the reusable library
+family cycle. Its bounded Vulkan coordinator gate passes ten focused CTests,
+actual post-projection QSA attention→FFN and QSA FFN→GDN tuple/control checks,
+three own-input pending reads/control write and 22 effective module uses.
+Provider rollback/retry/reset and complete state/control equality are asserted
+by probe source; state arrays are omitted and guards are discrete samples.
+Rebound development roles are synthetic, not actual model role provenance.
+
+[PR111](https://github.com/Zutfen-LLC/Strata/pull/111), source
+`3333e00cdae8cb56f9733512f9e822ae536f7222`, wires one default-disabled bounded
+serial-HC product capability through that same family implementation. Explicit
+FFN2/3 residency can be matched independently in control/on, while unrelated
+QSA weights retain their prior placement. The initial GDN2→QSA3→GDN4 scope uses
+actual projected output and native boundary predicates, preserves PLE/head and
+the unchanged remainder, and charges actual resident banks/buffers plus host
+bounds before original native-policy planning. Local family/residency/carry,
+allocation, parser and default-off model tests pass; combined fresh planning/
+same-image model validation is prepared, not yet physical evidence. This does
+not port native QSA kernels, accepted-prefix commits or captured scheduling.
+
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
 tolerance from matching generated tokens.
