@@ -172,6 +172,27 @@ int main(){
             std::filesystem::last_write_time(f.paths[0],old);
         }
         check(state.releases==2,"both executors released");
+        {
+            auto planned=opts;planned.expert_native_profile="already-validated-native-profile";
+            for(auto& d:planned.expert_devices) {
+                strata::worker::GpuPlan frozen;
+                check(strata::worker::read_gpu_plan(d.plan_path,frozen,error),error);
+                check(strata::worker::encode_gpu_plan(frozen,d.native_frozen_plan,error),error);
+                d.plan_path="unused-output-receipt"; // executor consumes immutable encoded binding
+            }
+            State frozen_state;
+            auto frozen_factory=[&](ggml_backend_t,size_t){return std::make_unique<Fake>(frozen_state);};
+            {
+                portable_detail::LocalExperts local(model,cpu,planned,frozen_factory,memory);
+                check(local.run(0,route,rows,error),error);
+                check(local.gpu_entries()==3 && local.cpu_entries()==7,"native frozen plans retain original rows/CPU misses");
+            }
+            check(frozen_state.releases==2,"native frozen plan executors released");
+            planned.expert_native_profile.clear();
+            bool rejected=false;try{portable_detail::LocalExperts local(model,cpu,planned,frozen_factory,memory);}catch(...){rejected=true;}
+            check(rejected,"fixed mode accepted native in-memory override");
+        }
+
         opts.expert_timings=false;
         {
             portable_detail::LocalExperts untimed(model,cpu,opts,factory,memory);

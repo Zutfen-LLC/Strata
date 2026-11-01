@@ -11,7 +11,7 @@ size_t strata_vk_q8_resident_block_limit(ggml_backend_t backend) {
     logits_guard_need(backend && ggml_backend_is_vk(backend),"native Q8: Vulkan required");
     auto* ctx=static_cast<ggml_backend_vk_context*>(backend->context);
     q8_require_address_features(ctx->device->buffer_device_address,ctx->device->shader_int64);
-    std::printf("native_q8_addressing logical_bufferDeviceAddress=%d logical_shaderInt64=%d shader64BitIndexing_required=false\n",
+    std::fprintf(stderr,"native_q8_addressing logical_bufferDeviceAddress=%d logical_shaderInt64=%d shader64BitIndexing_required=false\n",
         int(ctx->device->buffer_device_address),int(ctx->device->shader_int64));
     return q8_resident_limit(ggml_backend_buft_get_max_size(ggml_backend_get_default_buffer_type(backend)),
         ctx->device->max_buffer_size,ctx->device->max_memory_allocation_size);
