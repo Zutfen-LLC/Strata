@@ -53,3 +53,11 @@ assert w['native_hc_ffn_write_layer0'] and w['native_hc_ffn_read_layer0'] and w[
 run(write,False,'explicit layer0/dense resident weights')
 for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--gdn-production','--gdn-resident-state']]:run([*write,'--layer0-resident-weights',*flags],False)
 print('final-write actual CLI preconditions/defaults passed')
+
+carry=['--native-hc-pending-layer1-2','/absent/hc-boundary']
+b=run([*carry,'--gdn-resident-weights'],True)
+assert b['native_hc_pending_layer1_2'] and not a['native_hc_pending_layer1_2'] and not b['native_hc_ffn_write_layer0'] and not b['native_hc_norm_inject_layer0']
+run(carry,False,'resident attention')
+for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--gdn-production','--gdn-resident-state']]:run([*carry,'--gdn-resident-weights',*flags],False)
+run([*carry,'--gdn-resident-weights'],False,'legacy observer',dict(os.environ,STRATA_LAYER0_OBSERVER='/absent/observer.bin'))
+print('ordinary layer1-2 pending boundary actual CLI preconditions/defaults passed')

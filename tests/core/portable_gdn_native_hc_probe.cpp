@@ -85,15 +85,51 @@ Result run(const Fixture&f,ggml_backend_t backend,bool enabled,bool composed,con
  if(ffn)printf("{\"actual_ffn_pending_calls\":%llu,\"actual_ffn_write_calls\":%llu}\n",(unsigned long long)layer->native_ffn_hc_pending_calls(),(unsigned long long)layer->native_ffn_hc_write_calls());
  return {first,state,history,layer->weight_bytes(),a.hc_residual,std::move(a.ffn_hc)};
 }
+void boundary(const Fixture&f,ggml_backend_t backend,const std::vector<float>&input,const std::filesystem::path&out){
+ auto renamed=[&](int l){auto v=f.views;for(auto&t:v)t.name.replace(0,6,"blk."+std::to_string(l)+".");return v;};
+ auto dispatch=[](int64_t l,const PortableRoute&r,std::vector<float>&rows,std::string&e){check(l==0||l==1||l==2,"boundary source layer");return experts()(0,r,rows,e);};
+ PortableGdnOptions a;a.execution.threads=1;a.execution.accelerator=backend;a.execution.request_accelerator=true;a.defer_ffn_hc_write=true;
+ std::string error;auto producer=PortableGdnLayer::create(1,renamed(1),a,error);check(bool(producer),error);check(producer->reset(error),error);
+ PortableGdnOptions b;b.execution=a.execution;b.resident_attention_weights=true;b.native_hc_norm_inject=true;b.native_hc_mix=true;b.native_hc_pending=true;b.native_hc_receipt_prefix=(out/"consumer").string();
+ auto consumer=PortableGdnLayer::create(2,renamed(2),b,error);check(bool(consumer),error);check(consumer->reset(error),error);PortableRoute route;PortableGdnTrace t;
+ check(producer->step(input,dispatch,route,error),error);const auto tuple=producer->pending_write();
+ check(consumer->step_pending(tuple.residual,tuple.block,tuple.injection,dispatch,route,error,&t),error);
+ check(t.hc_pending_input==tuple.residual&&t.hc_previous_output==tuple.block&&t.hc_previous_inject==tuple.injection,"actual two-layer tuple binding");
+ const auto result=consumer->last_residual(),state=consumer->recurrent_state(),history=consumer->convolution_history();
+ native_hc_pending_fixture::Pending fixture;fixture.norm.t=1;fixture.norm.x=tuple.residual;fixture.bo=tuple.block;fixture.inj=tuple.injection;
+ for(const auto&v:f.views){if(v.name=="blk.0.hc_attn_norm.weight"){fixture.norm.w.resize(10240);memcpy(fixture.norm.w.data(),v.data,40960);}
+ if(v.name=="blk.0.hc_attn_inject.weight")fixture.norm.wi=strata::core::portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,40960);
+ if(v.name=="blk.0.hc_attn_down.weight")fixture.down=strata::core::portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);
+ if(v.name=="blk.0.hc_attn_up.weight")fixture.up=strata::core::portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);}
+ native_hc_pending_fixture::write((out/"fixture.bin").string(),fixture);
+ for(auto pair:{std::pair{"residual",&t.hc_residual},std::pair{"pending-gate",&t.hc_pending_gate},std::pair{"pending-exp",&t.hc_pending_exp},std::pair{"rs",&t.hc_rs},std::pair{"normalized",&t.hc_normalized},std::pair{"inject",&t.hc_inject},std::pair{"low-pre",&t.hc_low_pre},std::pair{"low",&t.hc_low},std::pair{"low-exp",&t.hc_low_exp},std::pair{"up-pre",&t.hc_up_pre},std::pair{"gates",&t.hc_gates},std::pair{"up-exp",&t.hc_up_exp},std::pair{"mixed",&t.hc_mixed}})save(out/(std::string(pair.first)+".f32le"),*pair.second);
+ // Layer number is a test binding, not arithmetic: independent materialized
+ // candidate feeds the unchanged ordinary layer0 native read control.
+ auto c=b;c.native_hc_pending=false;c.native_hc_receipt_prefix=(out/"control").string();auto control=PortableGdnLayer::create(0,f.views,c,error);check(bool(control),error);check(control->reset(error),error);
+ check(control->step(t.hc_residual,dispatch,route,error),error);check(control->last_residual()==result&&control->recurrent_state()==state&&control->convolution_history()==history,"same-backend materialized candidate differs");
+ check(producer->reset(error)&&consumer->reset(error),error);check(producer->pending_write().empty(),"reset retained prior token tuple");
+ check(producer->step(input,dispatch,route,error),error);check(producer->pending_write().residual==tuple.residual&&producer->pending_write().block==tuple.block&&producer->pending_write().injection==tuple.injection,"producer repeat differs");
+ check(consumer->step_pending(tuple.residual,tuple.block,tuple.injection,dispatch,route,error),error);check(consumer->last_residual()==result&&consumer->recurrent_state()==state&&consumer->convolution_history()==history,"consumer reset/replay differs");
+ auto fail=[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="intentional boundary refusal";return false;};
+ check(!producer->step(input,fail,route,error),"producer refusal accepted");check(producer->tokens()==1&&producer->pending_write().block==tuple.block,"producer refusal changed committed tuple");
+ check(consumer->reset(error),error);auto clean=consumer->recurrent_state();check(!consumer->step_pending(tuple.residual,tuple.block,tuple.injection,fail,route,error),"consumer refusal accepted");check(consumer->tokens()==0&&consumer->last_residual().empty()&&consumer->recurrent_state()==clean,"consumer refusal committed state");
+ check(consumer->step_pending(tuple.residual,tuple.block,tuple.injection,dispatch,route,error),error);check(consumer->last_residual()==result,"consumer retry differs");
+ check(producer->deferred_hc_outputs()==2&&consumer->native_hc_pending_calls()==4,"actual producer/consumer paid work");
+ // A disabled producer still takes the original materialized FFN path.
+ a.defer_ffn_hc_write=false;auto disabled=PortableGdnLayer::create(1,renamed(1),a,error);check(bool(disabled),error);check(disabled->reset(error)&&disabled->step(input,dispatch,route,error),error);auto d=disabled->last_residual();check(disabled->reset(error)&&disabled->step(input,dispatch,route,error),error);check(disabled->last_residual()==d&&disabled->pending_write().empty()&&disabled->deferred_hc_outputs()==0,"disabled replay/carry regression");check(disabled->weight_bytes()==producer->weight_bytes(),"deferred producer duplicated weights");
+ std::ofstream(out/"report.json")<<"{\"ordinary_layer1_to_layer2\":true,\"actual_producer_tuple\":true,\"deferred_productions\":2,\"pending_consumer_calls\":4,\"materialized_control_exact\":true,\"reset_rollback_retry\":true,\"disabled_repeat_exact\":true,\"synthetic_two_layer_fixture\":true,\"actual_layer1_PLE_executed\":false,\"qualified\":false,\"full_hc_parity\":false}\n";
+}
+
 }
 int main(int argc,char**argv){try{
- check(argc==4||(argc==5&&(std::string(argv[4])=="read"||std::string(argv[4])=="pending"||std::string(argv[4])=="ffn"||std::string(argv[4])=="write")),"usage: portable_gdn_native_hc_probe OPERANDS FRESH_OUTPUT EXPECT_DEVICE [read|pending|ffn|write]");const bool composed=argc==5;const bool pending=composed&&std::string(argv[4])=="pending";const bool final_write=composed&&std::string(argv[4])=="write";const bool ffn=composed&&(std::string(argv[4])=="ffn"||final_write);const std::filesystem::path d=argv[1],out=argv[2];check(std::filesystem::create_directory(out),"fresh output directory");
+ check(argc==4||(argc==5&&(std::string(argv[4])=="read"||std::string(argv[4])=="pending"||std::string(argv[4])=="ffn"||std::string(argv[4])=="write"||std::string(argv[4])=="boundary")),"usage: portable_gdn_native_hc_probe OPERANDS FRESH_OUTPUT EXPECT_DEVICE [read|pending|ffn|write|boundary]");const bool composed=argc==5;const bool pending=composed&&std::string(argv[4])=="pending";const bool final_write=composed&&std::string(argv[4])=="write";const bool ffn=composed&&(std::string(argv[4])=="ffn"||final_write);const std::filesystem::path d=argv[1],out=argv[2];check(std::filesystem::create_directory(out),"fresh output directory");
  auto norm=load(d/"portable-hc_attn_norm.weight.bin",40960),inj=load(d/"portable-hc_attn_inject.weight.bin",43520),raw=load(d/"portable-embedding.f32le",40960);
  std::vector<uint8_t>down,up;if(composed){down=load(d/"portable-hc_attn_down.weight.bin",3481600);up=load(d/"portable-hc_attn_up.weight.bin",3481600);}
  std::vector<float>input(10240);memcpy(input.data(),raw.data(),40960);Fixture f;
  for(auto&v:f.views){if(v.name=="blk.0.hc_attn_norm.weight")v.data=norm.data();if(v.name=="blk.0.hc_attn_inject.weight")v.data=inj.data();if(composed&&v.name=="blk.0.hc_attn_down.weight")v.data=down.data();if(composed&&v.name=="blk.0.hc_attn_up.weight")v.data=up.data();}
  check(ggml_backend_vk_get_device_count()>0,"real Vulkan required");char desc[256]{};ggml_backend_vk_get_device_description(0,desc,sizeof(desc));check(std::string(desc).find(argv[3])!=std::string::npos,"device identity");
  std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>backend(ggml_backend_vk_init(0),ggml_backend_free);check(bool(backend),"Vulkan initialization");
+ if(argc==5&&std::string(argv[4])=="boundary"){boundary(f,backend.get(),input,out);return 0;}
  const auto active=run(f,backend.get(),true,composed,input,out,pending,ffn,final_write);
  if(ffn){
   const auto control_dir=out/"materialized-ffn";check(std::filesystem::create_directory(control_dir),"fresh FFN control");

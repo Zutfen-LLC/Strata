@@ -7,7 +7,7 @@
 #include <filesystem>
 #include <memory>
 namespace strata::core::portable_detail {
-// Diagnostic serial owner. Graphs borrow these allocated leaves; no scheduler
+// Opt-in serial owner. Graphs borrow these allocated leaves; no scheduler
 // may reuse their storage between residual upload and component/consumer calls.
 class PortableNativeHc {
     using Context=std::unique_ptr<ggml_context,decltype(&ggml_free)>;

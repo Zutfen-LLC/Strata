@@ -10,6 +10,8 @@ inline bool model_resident_dense(const PortableModelOptions& opts,size_t index,b
     return opts.dense_resident_weights || (!output && index==0 && opts.layer0_resident_weights);
 }
 inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer) {
+    if(opts.native_hc_pending_layer1_2 && layer==1)return PortableFfnOptions::deferred_hc_host_bound;
+    if(opts.native_hc_pending_layer1_2 && layer==2)return PortableGdnOptions::native_hc_pending_host_bound;
     if(layer || !opts.native_hc_norm_inject_layer0)return 0;
     return (opts.native_hc_mix_layer0 ? PortableGdnOptions::native_hc_read_host_bound : PortableGdnOptions::native_hc_host_bound)+
         (opts.native_hc_ffn_read_layer0 ? PortableFfnOptions::native_hc_pending_host_bound : 0)+
@@ -21,6 +23,13 @@ inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,P
     o.native_hc_ffn_read=opts.native_hc_ffn_read_layer0 && layer==0;
     o.native_hc_ffn_write=opts.native_hc_ffn_write_layer0 && layer==0;
     if(o.native_hc_norm_inject)o.native_hc_receipt_prefix=opts.native_hc_receipt_prefix;
+    if(opts.native_hc_pending_layer1_2) {
+        o.defer_ffn_hc_write=layer==1;
+        if(layer==2) {
+            o.native_hc_pending=true;o.native_hc_mix=true;o.native_hc_norm_inject=true;
+            o.native_hc_receipt_prefix=opts.native_hc_pending_receipt_prefix;
+        }
+    }
 }
 // Argument/mode validation only. No backend query, model access or allocation;
 // never a physical capability, metadata or memory-admission success receipt.
@@ -30,6 +39,12 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
             opts.expert_native_plan_prefix.empty()),"native capacity options require a profile");
         require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
                 "native Q8 observation requires explicit expert plans and strict accelerator execution");
+        require(!opts.native_hc_pending_layer1_2 || (!opts.prompt_chunk_size && !opts.gdn_production &&
+            !opts.gdn_batch_input_projections && !opts.gdn_causal_chunk && selected_accelerators && !opts.allow_cpu_fallback &&
+            (opts.gdn_resident_weights || opts.dense_resident_weights) && !opts.native_hc_pending_receipt_prefix.empty()),
+            "native HC layer1-2 requires serial eager strict accelerator, resident attention and receipt prefix");
+        const char* boundary_observer=std::getenv("STRATA_LAYER0_OBSERVER");
+        require(!opts.native_hc_pending_layer1_2 || !boundary_observer || !*boundary_observer,"native HC layer1-2: legacy observer unsupported");
         require(!opts.native_hc_ffn_write_layer0||opts.native_hc_ffn_read_layer0,"native FFN final write requires pending FFN read");
         require(!opts.native_hc_ffn_read_layer0 || (opts.native_hc_mix_layer0 &&
             (opts.layer0_resident_weights || opts.dense_resident_weights)),
@@ -61,7 +76,7 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
             "portable model: QSA production requires reuse and strict accelerators");
     require(!opts.gdn_production || (opts.gdn_resident_state && selected_accelerators && !opts.allow_cpu_fallback),
             "portable model: GDN production requires resident state and strict accelerators");
-    if(opts.native_hc_norm_inject_layer0) {
+    if(opts.native_hc_norm_inject_layer0 || opts.native_hc_pending_layer1_2) {
         require(PortableGdnLayer::native_hc_compiled(),"native HC serial: strict-FMA native-stage build required");
         native_hc_environment();
     }
