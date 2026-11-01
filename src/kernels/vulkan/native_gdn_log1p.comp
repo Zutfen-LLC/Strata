@@ -1,0 +1,16 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "native_gdn_log1p.glsl"
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer X{float x[];};
+layout(binding=1,std430) writeonly buffer Y{float y[];};
+layout(binding=2,std430) writeonly buffer U{float u[];};
+layout(binding=3,std430) writeonly buffer L{float l[];};
+layout(binding=4,std430) writeonly buffer NUM{float num[];};
+layout(binding=5,std430) writeonly buffer DEN{float den[];};
+layout(binding=6,std430) buffer STATUS{uint status[];};
+layout(push_constant) uniform P{uint off[7];}p;
+void main(){uint i=gl_LocalInvocationID.x;float ru,rl,rn,rd;float result=strata_gdn_log1p_positive(x[p.off[0]+i],ru,rl,rn,rd);y[p.off[1]+i]=result;u[p.off[2]+i]=ru;l[p.off[3]+i]=rl;num[p.off[4]+i]=rn;den[p.off[5]+i]=rd;
+ // Preserve intermediates even on a refused numerical class; never clamp.
+ if(isnan(result)||isinf(result)||isnan(rl)||isinf(rl))atomicOr(status[p.off[6]],1u);
+}
