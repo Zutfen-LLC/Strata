@@ -604,9 +604,13 @@ for each capability below.
    Start with identical synthetic post-convolution q/k/v, gate/beta, z, gamma
    and state, compare output and next state against the existing native launcher,
    and reuse deliberate intrinsic bounds. No fresh model capture is needed for
-   that development. The next numerical-family gap is native
-   `gdn_conv_l2_multi()` and `gdn_ab_multi()` selected by `Verifier::record_window()`:
-   the current prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
+   that development. PR117 now has bounded standalone convolution/L2 evidence;
+   model integration remains separate. The next unresolved numerical dependency
+   is `gdn_ab_multi()` softplus/log1pf selected by `Verifier::record_window()`.
+   PR118 tests the existing Metal compensated positive expression against actual
+   CUDA log1pf before any a/b integration; its tighter native accuracy requirement
+   remains a gate even if the weaker Vulkan log primitive guarantee passes.
+   The current model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
    projections also remain separate upstream work; do not attribute unequal model
    outputs to recurrence without equal inputs. Accepted-prefix commit and window
    scheduling follow numerical-family coverage, rather than capturing the
