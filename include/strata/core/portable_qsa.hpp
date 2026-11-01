@@ -31,6 +31,7 @@ struct PortableQsaOptions {
     // need a higher limit because the scheduler prices each view consumer.
     // Driver pipelines and other users of the borrowed backend are caller-owned.
     PortableFfnOptions execution;
+    bool resident_ffn_weights = false; // selected FFN bank only; attention placement unchanged
     size_t capacity = 4096;
     size_t state_budget = 64ull << 20;
     // Opt-in capacity-primed scheduler/scratch reuse; exact active shapes, host KV staging.

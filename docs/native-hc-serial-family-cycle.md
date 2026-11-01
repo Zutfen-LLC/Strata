@@ -2,9 +2,9 @@
 
 This default-disabled library slice completes the missing QSA attention→FFN
 producer seam and permits the existing native HC components across GDN/QSA
-layers of the supported geometry. It adds no new per-layer model flag or
-arithmetic kernel. Product-wide serial HC wiring follows after this bounded
-coordinator qualification; earlier model flags keep their existing scopes.
+layers of the supported geometry. It adds no arithmetic kernel. The bounded product capability is
+`--native-hc-serial-cycle PREFIX` with explicit
+`--hc-cycle-resident-weights`; earlier model flags keep their existing scopes.
 
 The specification is `Verifier::record_window()` in `src/core/verify.cpp`:
 `gr_read_group(0,pending,inj2_,inj_)` consumes a previous FFN tuple at attention
@@ -53,3 +53,35 @@ and an independently materialized QSA FFN-write/GDN-read control. Four positions
 cover QSA block completion. It exports three own-input pending reads and the
 control's native write for unchanged numerical checks. Rebound approved HC data
 are synthetic roles, not actual layer2/3/4 model role provenance.
+
+## Bounded product cycle
+
+The single capability composes GDN2 attention/FFN, QSA3 attention/FFN and GDN4
+attention, reusing the family options and native boundary predicates. It implies
+the existing entry boundaries, preserves explicit receipt prefixes, and adds
+no independent algorithm per layer. Layer1 PLE and layer0 behavior remain
+unchanged, and the scope hands off a materialized residual after the unchanged
+GDN4 FFN. It does not broaden to all layers, control vectors, split execution,
+heads or native window scheduling.
+
+Explicit cycle residency selects only FFN2/3 and is independent of the numerical
+capability so a matched control can admit the same bank policy. QSA attention
+weights retain their previous placement. Native shared weights already use a
+separate resident bank; the router is F32. Thus before alignment, generic
+FFN norm/HC/router bytes are 12,290,560 in control and 18,472,960 with native
+HC conversion. With the existing native-shared bank they total 17,518,080 and
+23,700,480 bytes per selected FFN. These are source geometry calculations,
+not observed VRAM or free-memory credit. Native conversion replaces each
+old Q8 bank; buffers, alignment and host envelopes use the actual allocator
+ledger. The next GDN attention replacement adds 6,182,400 weight bytes before
+alignment. Existing caps/reserves and fresh post-dense native-policy planning
+determine whether the complete configuration fits.
+
+Actual paid per-request receipts are `native_hc_cycle_ffn_calls_delta` for the
+two selected FFNs, `native_hc_cycle_outputs_delta` for QSA FFN production, and
+`native_hc_cycle_reads_delta` for the next GDN read. Counts derive from the
+executed calls, survive reset and include work before later failure. The
+model's token-local immutable carry uses family-neutral producer access; it is
+cleared only at its matching consumer and never crosses PLE/head boundaries.
+Own-input checks and same-image model comparisons remain distinct from native
+end-to-end or whole-state parity.

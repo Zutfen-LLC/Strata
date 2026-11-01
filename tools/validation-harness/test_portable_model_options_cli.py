@@ -69,3 +69,14 @@ run(qsa,False,'resident GDN')
 for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--qsa-production','--qsa-reuse-attention'],['--gdn-production','--gdn-resident-state']]:run([*qsa,'--gdn-resident-weights',*flags],False)
 run([*qsa,'--gdn-resident-weights'],False,'legacy observer',dict(os.environ,STRATA_LAYER0_OBSERVER='/absent/observer.bin'))
 print('ordinary QSA layer2-3 pending actual CLI defaults/preconditions passed')
+
+cycle=['--native-hc-serial-cycle','/absent/cycle','--hc-cycle-resident-weights','--gdn-resident-weights']
+c=run(cycle,True);assert c['native_hc_serial_cycle'] and c['hc_cycle_resident_weights'] and c['native_hc_pending_layer1_2'] and c['native_hc_pending_layer2_3'] and not c['dense_resident_weights'];assert not a['native_hc_serial_cycle'] and not a['hc_cycle_resident_weights']
+run(['--native-hc-serial-cycle','/absent/cycle','--gdn-resident-weights'],False,'matched FFN residency')
+for f in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--qsa-production','--qsa-reuse-attention'],['--gdn-production','--gdn-resident-state']]:run([*cycle,*f],False)
+run([*cycle],False,'legacy observer',dict(os.environ,STRATA_LAYER0_OBSERVER='/absent/observer.bin'))
+run(['--native-hc-serial-cycle','','--hc-cycle-resident-weights','--gdn-resident-weights'],False,'receipt prefix')
+res=run(['--hc-cycle-resident-weights'],True);assert res['hc_cycle_resident_weights'] and not res['native_hc_serial_cycle'] and not res['native_hc_pending_layer1_2']
+print('serial HC cycle actual CLI/defaults/residency/refusal contracts passed')
+# Prefix order must preserve explicitly supplied entry-owner paths.
+run(['--native-hc-pending-layer1-2','/absent/entry','--native-hc-pending-layer2-3','/absent/qsa',*cycle],True)
