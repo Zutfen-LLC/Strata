@@ -28,8 +28,10 @@ Native diagnostic pre/SiLU/argument fields are source-control intermediates, not
 instrumented values copied out of the production kernel. Their interpretation
 requires the actual-launcher output check to pass.
 
-The exact local control checks convolution association, SiLU using the actual
-exp value, reduction/epsilon, output using the actual rsqrt, and history commit.
+The exact local control checks convolution association, reduction/epsilon from
+the actual SiLU, output using the actual rsqrt, and history commit. SiLU division
+uses its actual backend primitive, with its own exp/quotient bound checked
+separately; it is not incorrectly forced to host-RNE bits on Vulkan.
 A separate primitive validator uses the existing primary-spec exp/division and
 2.5-local-ULP RNE-relative rsqrt policy (including NVIDIA's conservative 0.5-ULP
 policy slack). No blanket h tolerance or near-zero relative error is used.
