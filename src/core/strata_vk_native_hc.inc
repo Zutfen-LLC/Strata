@@ -37,3 +37,5 @@ void strata_vk_native_hc_run(StrataVkNativeHc* p,const ggml_tensor* residual,con
 
 #include "strata_vk_native_gdn_ab.inc"
 #include "strata_vk_native_qsa_norm_rope.inc"
+
+#include "strata_vk_native_qsa_indexer.inc"

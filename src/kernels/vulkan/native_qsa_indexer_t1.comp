@@ -1,0 +1,69 @@
+#version 450
+// Port of native_qsa_indexer.cu::append_body<false>, ordinary text T1.
+// MIT License
+//
+// Copyright (c) 2023-2026 The ggml authors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427) float nfma(float a,float b,float c);
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer X{float raw[];};
+layout(binding=1,std430) readonly buffer W{float gamma[];};
+layout(binding=2,std430) readonly buffer B{uint before[];};
+layout(binding=3,std430) writeonly buffer O{uint candidate[];};
+layout(binding=4,std430) writeonly buffer D{float diag[];};
+layout(binding=5,std430) buffer S{uint status[];};
+layout(push_constant) uniform Params{uint off[6];uint cells;uint pos;uint base;uint theta;}p;
+shared float values[128],partial[256],sums[8];
+float ck(float a){uint b=floatBitsToUint(a)&0x7fffffffu;if(b>=0x7f800000u||(b!=0u&&b<0x800000u))atomicOr(status[p.off[5]],1u);return a;}
+// Reuse Strata's existing integer RNE binary16 converter, without packHalf's
+// implementation-dependent denormal treatment. Expansion is exact integer work.
+uint half_rne(float x) {
+    uint b=floatBitsToUint(x), sign=(b>>16)&0x8000u;
+    uint e=(b>>23)&255u, m=b&0x7fffffu;
+    if(e==255u) return sign|0x7c00u|(m==0u?0u:0x200u|(m>>13));
+    if(e>142u) return sign|0x7c00u;
+    if(e<102u) return sign;
+    uint sig=m|0x800000u;
+    uint shift=e<113u?126u-e:13u;
+    uint q=sig>>shift, rem=sig&((1u<<shift)-1u), halfway=1u<<(shift-1u);
+    q+=uint(rem>halfway || (rem==halfway && (q&1u)!=0u));
+    return sign|(e<113u?q:((e-113u)<<10)+q);
+}
+float expand_half(uint h){uint sign=(h&0x8000u)<<16,e=(h>>10)&31u,m=h&1023u;if(e==0u){if(m==0u)return uintBitsToFloat(sign);uint shift=0u;while((m&1024u)==0u){m<<=1u;++shift;}return uintBitsToFloat(sign|((113u-shift)<<23)|((m&1023u)<<13));}return uintBitsToFloat(sign|((e+112u)<<23)|(m<<13));}
+void main(){uint tid=gl_LocalInvocationID.x,lane=tid&31u,block=512u+(p.cells/4u+1u)*128u,words=block+1u;
+ for(uint i=tid;i<words;i+=256u)candidate[p.off[3]+i]=before[p.off[2]+i];
+ for(uint i=tid;i<386u;i+=256u)diag[p.off[4]+i]=0.0;
+ barrier();
+ float incoming=0.0,mean=0.0;
+ if(tid<128u){incoming=expand_half(half_rne(raw[p.off[0]+tid]));ck(incoming);diag[p.off[4]+tid]=incoming;if(p.pos%4u<3u)candidate[p.off[3]+(p.pos%4u)*128u+tid]=floatBitsToUint(incoming);}
+ bool completes=p.pos==0u||p.pos%4u==3u;
+ if(!completes)return;
+ if(tid<128u){precise float sum=p.pos==0u?incoming:uintBitsToFloat(before[p.off[2]+tid]);for(uint j=1u;j<4u;++j){precise float v=p.pos==0u||j==3u?incoming:uintBitsToFloat(before[p.off[2]+j*128u+tid]);sum=ck(sum+v);}mean=ck(nfma(.25,sum,0.0));diag[p.off[4]+128u+tid]=mean;}
+ partial[tid]=ck(nfma(mean,mean,0.0));barrier();
+ for(uint d=16u;d>0u;d>>=1u){precise float a=ck(partial[tid]+partial[tid^d]);barrier();partial[tid]=a;barrier();}
+ if(lane==0u)sums[tid/32u]=partial[tid];barrier();partial[tid]=lane<8u?sums[lane]:0.0;barrier();
+ for(uint d=16u;d>0u;d>>=1u){precise float a=ck(partial[tid]+partial[tid^d]);barrier();partial[tid]=a;barrier();}
+ precise float ms=ck(partial[tid]/128.0);precise float arg=ck(ms+1e-6);float rs=ck(inversesqrt(arg));if(tid==0u){diag[p.off[4]+256u]=arg;diag[p.off[4]+257u]=rs;}
+ if(tid<128u){precise float scaled=ck(rs*mean);values[tid]=ck(scaled*gamma[p.off[1]+tid]);}barrier();
+ if(tid<128u){uint b=p.pos/4u;float y=values[tid];if(tid<64u){uint pair=tid%32u;float freq=pow(uintBitsToFloat(p.theta),float(pair));precise float angle=ck(float(p.pos==0u?0u:p.base+4u*b)*freq);float c=cos(angle),s=sin(angle);ck(freq);ck(c);ck(s);precise float product=ck(values[pair+32u]*(tid<32u?s:c));y=ck(nfma(values[pair],tid<32u?c:s,tid<32u?-product:product));if(tid<32u){uint d=p.off[4]+258u+tid;diag[d]=freq;diag[d+32u]=angle;diag[d+64u]=c;diag[d+96u]=s;}}
+ candidate[p.off[3]+512u+b*128u+tid]=floatBitsToUint(y);if(p.pos==0u)candidate[p.off[3]+384u+tid]=floatBitsToUint(y);else candidate[p.off[3]+512u+(b+1u)*128u+tid]=before[p.off[2]+384u+tid];if(tid==0u&&p.pos!=0u)candidate[p.off[3]+block]=p.base+4u*b;
+ }
+}
