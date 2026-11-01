@@ -5,7 +5,8 @@
 #include <stdexcept>
 using namespace native_qsa_attn;
 void cu(cudaError_t e){if(e!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(e));}
-struct Device{uint32_t*p=nullptr;size_t n=0;~Device(){if(p)cudaFree(p);}void alloc(const std::vector<uint32_t>&v){n=v.size();cu(cudaMalloc((void**)&p,n*4));set(v);}void set(const std::vector<uint32_t>&v){native_hc_need(v.size()==n,"native QSA span");cu(cudaMemcpy(p,v.data(),n*4,cudaMemcpyHostToDevice));}std::vector<uint32_t>get(){std::vector<uint32_t>v(n);cu(cudaMemcpy(v.data(),p,n*4,cudaMemcpyDeviceToHost));return v;}};
+size_t live_device_bytes=0,peak_device_bytes=0;
+struct Device{uint32_t*p=nullptr;size_t n=0;~Device(){if(p){cudaFree(p);live_device_bytes-=n*4;}}void alloc(const std::vector<uint32_t>&v){n=v.size();native_hc_need(n<=((4u<<20)-live_device_bytes)/4,"native attention/control device allocation cap");cu(cudaMalloc((void**)&p,n*4));live_device_bytes+=n*4;peak_device_bytes=std::max(peak_device_bytes,live_device_bytes);set(v);}void set(const std::vector<uint32_t>&v){native_hc_need(v.size()==n,"native QSA span");cu(cudaMemcpy(p,v.data(),n*4,cudaMemcpyHostToDevice));}std::vector<uint32_t>get(){std::vector<uint32_t>v(n);cu(cudaMemcpy(v.data(),p,n*4,cudaMemcpyDeviceToHost));return v;}};
 struct Stream{cudaStream_t p=nullptr;Stream(){cu(cudaStreamCreate(&p));}~Stream(){if(p)cudaStreamDestroy(p);}};
 // Primitive controls only: original attention/gate kernels are not edited.
 __global__ void primitive_exp(const float*x,float*y,size_t n){size_t i=size_t(blockIdx.x)*blockDim.x+threadIdx.x;if(i<n)y[i]=__expf(x[i]);}
@@ -24,5 +25,5 @@ int main(int argc,char**argv){try{
   // original-kernel partials, attention and gated output remain distinct.
   actual[8]=ref.out[1];actual[9]=ref.out[2];actual[11]=ref.out[4];for(size_t i=7;i<13;++i){if(repeat)native_hc_need(actual[i]==first[i],"native reset/repeat differs");first[i]=actual[i];}
  }
- for(size_t i:{8u,9u,11u})native_qsa_ss::put(dir/names[i-7],first[i]);check(f,dir);std::ofstream(dir/"report.json")<<"{\"actual_native_launchers\":true,\"native_logits_derived_control\":true,\"source_order_own_primitive_exact\":true,\"immutable_inputs_canaries\":true,\"reset_repeat_exact\":true,\"attention_calls\":2,\"gate_calls\":2,\"control_only_gate_calls\":2,\"qualified\":false}\n";return 0;
+ for(size_t i:{8u,9u,11u})native_qsa_ss::put(dir/names[i-7],first[i]);check(f,dir);std::ofstream(dir/"report.json")<<"{\"actual_native_launchers\":true,\"native_logits_derived_control\":true,\"source_order_own_primitive_exact\":true,\"immutable_inputs_canaries\":true,\"reset_repeat_exact\":true,\"attention_calls\":2,\"gate_calls\":2,\"control_only_gate_calls\":2,\"peak_device_bytes\":"<<peak_device_bytes<<",\"qualified\":false}\n";return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}

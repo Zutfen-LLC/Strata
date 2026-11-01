@@ -42,12 +42,13 @@ counted, candidates never commit persistent state, and repeat/reset/invalid/
 retry and canaries are checked. Runtime status encodes chunk/merge/gate stage.
 The Vulkan port only substitutes buffer/submission and logical-warp shared
 shuffle plumbing, requiring 256 workgroup invocations, 16640 bytes shared storage
-and nine storage bindings. Tensor admission is 2 MiB; three pipeline/status owners
+and nine storage bindings. Vulkan tensor admission is 2 MiB; the CUDA probe also bounds its primitive-control
+allocations within a separate 4 MiB device cap. Three pipeline/status owners
 have 192 KiB metadata budget. Existing physical/lifecycle safeguards remain.
 
 The independent C++ control has pinned single-cell, FP16-subnormal, 64/65-cell,
 all-masked and eight-term cancellation vectors, plus dense/permuted/missing-page
-cases. Separate Python checks enforce the frozen intrinsic bounds, paired sums,
+and natural chunk/merge exp-underflow cases. Separate Python checks enforce the frozen intrinsic bounds, paired sums,
 merge chronology/RNE division and own-sigmoid product, rejecting common erroneous
 backend values. Effective modules require strict FMA/protected basics and exact
 helper transformations; the actual producer output CLI is tested before GPU use.
