@@ -699,17 +699,19 @@ for each capability below.
    this run, diagnostic only. All three processes exit/reap and restore baseline
    across three observations; samples are discrete. qualified=false. Scores,
    selection, attention and native accepted-prefix/window authority remain gaps.
-   The next standalone score/selection slice follows native `qsa_select.cu`'s
-   default Ampere T1 multi scorer and register-radix selector, with exact
-   source-order scores and an independent cell-sort policy control. Local build,
-   eight fixture controls, effective modules and real output-contract checks pass;
-   physical CUDA/Vulkan qualification and model consumption are pending. Native
-   capacity is 2051, so short model contexts exercise identity selection only.
-   See [component scope](native-qsa-score-select-t1.md).
-   A separate default-disabled [model seam](native-qsa-score-select-model-t1.md)
-   now consumes the current indexer candidate and projected query and feeds native
-   IDs to existing attention. Local build/transaction/consumer/default-path tests
-   pass; physical component success and the bounded model diagnostic are pending.
+   [PR130](https://github.com/Zutfen-LLC/Strata/pull/130) standalone native
+   multi-score/register-radix selection passes the bounded native/Vulkan component
+   comparison at `a9051d67`: eight cases each, with all sixteen score/selection
+   output SHA/size pairs identical. Native capacity is 2051; competitive selection
+   above that width is covered synthetically. See [component scope](native-qsa-score-select-t1.md).
+   [PR131](https://github.com/Zutfen-LLC/Strata/pull/131) consumes the current
+   indexer candidate/projected query and feeds native IDs to existing attention.
+   Hermes reports its bounded model workflow passes at `64a60447`: build and 27
+   CTests, fresh planning READY/QUIT/no GEN, two reset-separated requests per
+   same-image arm, exited/reaped children/controller and no sealed STOP.
+   Context 256 exercises identity selection only; full native attention/window
+   parity remains unproven. See [model scope](native-qsa-score-select-model-t1.md).
+
 
 
 3. **Replicate native state authority and commit/restore.** Native

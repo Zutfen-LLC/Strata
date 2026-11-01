@@ -40,3 +40,13 @@ test and is not hardware evidence. The model handoff first requires the frozen
 standalone component report, then uses the existing fresh planning/same-image
 control/on workflow. No local fleet/model invocation occurred. No full native
 QSA/window, quality or performance parity or default enablement is claimed.
+
+## Bounded physical result
+
+Hermes reports the PR131 workflow passes at
+`64a6044752dfc4443f3823f857bd9c043500d855`: build and 27 CTests, fresh planning
+READY/QUIT with no GEN, then two reset-separated requests in each same-image
+control/on arm. Every process exits/reaps, the controller exits zero, no active
+children remain and no sealed STOP is present. This is the reported existing
+recipe result, not an additional local hardware run. Context 256 exercises
+identity selection only. No full native attention/window parity is established.
