@@ -3,6 +3,7 @@
 #include "ggml-cpu.h"
 #include "portable_graph.hpp"
 #include "portable_qsa_graph.hpp"
+#include "portable_native_hc.hpp"
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include <algorithm>
@@ -229,6 +230,11 @@ struct PortableQsaLayer::Impl {
     portable_detail::Backend cpu{nullptr, ggml_backend_free};
     Context weights_ctx{nullptr, ggml_free};
     Buffer weights_buffer{nullptr, ggml_backend_buffer_free};
+    Context hc_weights_ctx{nullptr,ggml_free};
+    Buffer hc_weights_buffer{nullptr,ggml_backend_buffer_free};
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    std::unique_ptr<portable_detail::PortableNativeHc> native_hc;
+#endif
     std::map<std::string, ggml_tensor *> w;
     Context state_ctx{nullptr, ggml_free};
     Context copy_ctx{nullptr, ggml_free};
@@ -241,6 +247,7 @@ struct PortableQsaLayer::Impl {
 
     void prepare(size_t T,std::string& error) {
         auto& s=*this;
+        require(!s.options.native_hc_read,"native QSA HC: chunk API unsupported");
         require(T>=1&&T<=8,"portable layer: chunk size outside [1,8]");
         const size_t extra=(s.options.production?0:s.options.capacity*2*KV*sizeof(uint16_t)+
                             (s.options.capacity/4+6)*ID*sizeof(float))+(3*T*RES+RES)*sizeof(float);
@@ -271,14 +278,29 @@ struct PortableQsaLayer::Impl {
         PortableQsaTrace trace;
         std::unique_ptr<Phase> temporary; // legacy T1 scratch stays live through FFN
     };
-    AttentionResult attend(uint64_t position,const std::vector<float>& residual,CursorView cursor,bool trace) {
+    AttentionResult attend(uint64_t position,const std::vector<float>& residual,CursorView cursor,bool trace,const PortableHcPendingWrite* pending=nullptr) {
         auto& s = *this;
         finite(residual);
         const int32_t p = int32_t(position);
         std::array<int32_t, 4> positions{{p, p, p, p}};
         ggml_backend_tensor_set(s.pos, positions.data(), 0, sizeof(positions));
+        std::vector<float> applied;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.native_hc) {
+            if(s.options.native_hc_pending) {
+                require(pending && pending->block.size()==H && pending->injection.size()==HC,"native QSA HC: complete tuple required");
+                finite(pending->block);finite(pending->injection);
+                write(s.native_hc->pending_input,residual);write(s.native_hc->previous_output,pending->block);write(s.native_hc->previous_inject,pending->injection);
+                s.native_hc->run_pending();
+            } else {write(s.native_hc->residual,residual);s.native_hc->run();}
+            applied=read(s.native_hc->residual);
+        } else
+#endif
         write(s.input, residual);
         s.project->run();
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.native_hc)s.native_hc->record_first();
+#endif
         auto q = read(s.q), k = read(s.k), v = read(s.v), gate = read(s.gate), iq = read(s.iq), ik = read(s.ik),
              inject = read(s.inject);
         auto hk = half(k), hv = half(v);
@@ -402,14 +424,23 @@ struct PortableQsaLayer::Impl {
         auto selection = s.options.production ? std::vector<float>{} : read(selected);
         write(s.out_input, attn);
         write(s.out_gate, gate);
-        write(s.out_residual, residual);
+        write(s.out_residual, s.options.native_hc_read ? applied : residual);
         write(s.out_inject, inject);
         s.combine->run();
         auto next_residual = read(s.attn_residual);
         auto gated = read(s.gated);
         PortableQsaTrace next_trace;
-        if (trace)
+        if (trace) {
             next_trace = {q, k, v, gate, iq, ik, new_pool, cell_scores, selection, attn, gated, next_residual};
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            if(s.native_hc) {
+                auto& t=next_trace.hc;t.original=residual;t.residual=applied;
+                if(pending){t.previous_output=pending->block;t.previous_injection=pending->injection;t.gate=read(s.native_hc->pending_gate);t.exponential=read(s.native_hc->pending_exp);}
+                t.rs=read(s.native_hc->rs);t.normalized=read(s.native_hc->normalized);t.inject=read(s.native_hc->inject);
+                t.low_pre=read(s.native_hc->low_pre);t.low=read(s.native_hc->low);t.low_exp=read(s.native_hc->low_exp);t.up_pre=read(s.native_hc->up_pre);t.gates=read(s.native_hc->gates);t.up_exp=read(s.native_hc->up_exp);t.mixed=read(s.native_hc->mixed);
+            }
+#endif
+        }
         return {std::move(next_residual),std::move(hk),std::move(hv),std::move(next_pool),
                 std::move(next_tail),std::move(next_placement),next_graphs-s.chunk_graphs(),std::move(next_trace),std::move(temporary)};
     }
@@ -497,6 +528,17 @@ struct PortableQsaLayer::Impl {
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableQsaOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 == 3, "portable QSA: expected a QSA layer 3/7/.../47");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
+        require(!options.native_hc_pending || options.native_hc_read,"native QSA HC: pending requires composed read");
+        if(options.native_hc_read) {
+            require(layer==3 && options.reuse_attention && !options.production && options.execution.request_accelerator &&
+                options.execution.accelerator && !options.execution.allow_cpu_fallback && !options.execution.layer0_observer && !options.native_hc_receipt_prefix.empty(),
+                "native QSA HC: eager layer3/T1/reuse/strict accelerator/receipt required");
+#ifndef STRATA_PORTABLE_NATIVE_HC
+            throw std::runtime_error("native QSA HC: strict-FMA native-stage build required");
+#else
+            portable_detail::native_hc_environment();
+#endif
+        }
         require(options.capacity > 0 && options.capacity <= 262144, "portable QSA: capacity must be in [1,262144]");
         require(!options.production || (options.reuse_attention && options.execution.request_accelerator &&
                     options.execution.accelerator && !options.execution.allow_cpu_fallback),
@@ -548,7 +590,11 @@ struct PortableQsaLayer::Impl {
         cpu.reset(ggml_backend_cpu_init());
         require(bool(cpu), "portable QSA: CPU unavailable");
         ggml_backend_cpu_set_n_threads(cpu.get(), options.execution.threads);
-        weights_ctx = context();
+        weights_ctx = context();if(options.native_hc_read)hc_weights_ctx=context();
+        auto hc_role=[&](const std::string& key){return options.native_hc_read && key.rfind("hc_attn_",0)==0;};
+        auto native_elements=[&](const std::string& key)->size_t {
+            return hc_role(key) && key!="hc_attn_norm.weight" ? (key=="hc_attn_inject.weight"?40960:3276800) : 0;
+        };
         for (const auto &view : aw) {
             const auto key = view.name.substr(prefix.size());
             const auto &shape = shapes().at(key);
@@ -561,8 +607,9 @@ struct PortableQsaLayer::Impl {
                     "portable QSA: unsupported encoding for role: " + view.name);
             const size_t rows = shape.size() == 2 ? size_t(shape[1]) : 1;
             const size_t source_bytes = ggml_row_size(ggml_type(view.type), shape[0]) * rows;
-            auto *t = ggml_new_tensor(weights_ctx.get(), widen ? GGML_TYPE_F32 : ggml_type(view.type),
-                                      int(shape.size()), shape.data());
+            const size_t count=native_elements(key);auto* ctx=hc_role(key)?hc_weights_ctx.get():weights_ctx.get();
+            auto *t = count?ggml_new_tensor_1d(ctx,GGML_TYPE_I32,int64_t(count/2)):
+                ggml_new_tensor(ctx, widen ? GGML_TYPE_F32 : ggml_type(view.type),int(shape.size()),shape.data());
             ggml_set_name(t, view.name.c_str());
             const size_t storage_bytes = ggml_nbytes(t);
             require(view.bytes == source_bytes && storage_bytes <= options.execution.weight_budget - weights_size,
@@ -573,15 +620,24 @@ struct PortableQsaLayer::Impl {
             w[key] = t;
         }
         auto *weight_backend = portable_detail::weight_backend(options.execution, cpu.get());
+        const size_t hc_allocation=options.native_hc_read?ggml_backend_alloc_ctx_tensors_from_buft_size(hc_weights_ctx.get(),ggml_backend_get_default_buffer_type(options.execution.accelerator)):0;
         const size_t allocation = ggml_backend_alloc_ctx_tensors_from_buft_size(
             weights_ctx.get(), ggml_backend_get_default_buffer_type(weight_backend));
+        require(hc_allocation<=options.execution.weight_budget-ffn->weight_bytes() && allocation<=options.execution.weight_budget-ffn->weight_bytes()-hc_allocation,"native QSA HC: combined aligned weight budget exceeded");
         require(allocation <= options.execution.weight_budget - ffn->weight_bytes(),
                 "portable QSA: aligned weight budget exceeded");
         weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), weight_backend));
         require(bool(weights_buffer), "portable QSA: weight allocation failed");
         ggml_backend_buffer_set_usage(weights_buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        if(options.native_hc_read) {
+            hc_weights_buffer.reset(ggml_backend_alloc_ctx_tensors(hc_weights_ctx.get(),options.execution.accelerator));require(bool(hc_weights_buffer),"native QSA HC: resident allocation");
+            ggml_backend_buffer_set_usage(hc_weights_buffer.get(),GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        }
         for (const auto &view : aw) {
-            auto *target = w.at(view.name.substr(prefix.size()));
+            const auto key=view.name.substr(prefix.size());auto *target = w.at(key);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            if(native_elements(key)) {auto converted=portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(view.data),view.bytes,native_elements(key));ggml_backend_tensor_set(target,converted.data(),0,converted.size()*2);continue;}
+#endif
             if (view.type != 30) {
                 ggml_backend_tensor_set(target, view.data, 0, view.bytes);
                 continue;
@@ -599,22 +655,40 @@ struct PortableQsaLayer::Impl {
         const size_t actual_weights = ggml_backend_buffer_get_size(weights_buffer.get());
         require(actual_weights <= options.execution.weight_budget - ffn->weight_bytes(),
                 "portable QSA: actual aligned weight budget exceeded");
-        attention_device_weights = weight_backend != cpu.get() ? actual_weights : 0;
-        weights_size = ffn->weight_bytes() + actual_weights;
+        const size_t hc_actual=hc_weights_buffer?ggml_backend_buffer_get_size(hc_weights_buffer.get()):0;
+        require(hc_actual<=options.execution.weight_budget-ffn->weight_bytes() && actual_weights<=options.execution.weight_budget-ffn->weight_bytes()-hc_actual,"native QSA HC: actual weight budget exceeded");
+        attention_device_weights = (weight_backend != cpu.get() ? actual_weights : 0)+hc_actual;
+        weights_size = ffn->weight_bytes() + actual_weights+hc_actual;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(options.native_hc_read) {
+            require(fixed_graphs<options.execution.graph_budget,"native QSA HC: no graph room");
+            native_hc=std::make_unique<portable_detail::PortableNativeHc>(options.execution.accelerator,w.at("hc_attn_norm.weight"),w.at("hc_attn_inject.weight"),options.execution.graph_budget-fixed_graphs,options.native_hc_receipt_prefix,w.at("hc_attn_down.weight"),w.at("hc_attn_up.weight"),options.native_hc_pending);
+            fixed_graphs+=native_hc->bytes();
+        }
+#endif
         project = std::make_unique<Phase>();
         auto *c = project->ctx.get();
         input = project->input({H, HC, 1});
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(native_hc)input=native_hc->residual;
+#endif
         pos = project->input({4}, GGML_TYPE_I32);
+        ggml_tensor* mixed=nullptr;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(native_hc){mixed=native_hc->mixed;inject=native_hc->inject;}else
+#endif
+        {
         auto *norm =
             ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, input, 1e-6f), RES, 1), w.at("hc_attn_norm.weight"));
         auto *low = ggml_silu(c, ggml_scale(c, ggml_mul_mat(c, w.at("hc_attn_down.weight"), norm), 0.25f));
         auto *gates = ggml_sigmoid(c, ggml_mul_mat(c, w.at("hc_attn_up.weight"), low));
         auto *weighted = ggml_reshape_2d(c, ggml_mul(c, norm, gates), H, HC);
-        auto *mixed = ggml_cont(c, ggml_view_1d(c, weighted, H, 0));
+        mixed = ggml_cont(c, ggml_view_1d(c, weighted, H, 0));
         for (int s = 1; s < HC; ++s)
             mixed = ggml_add(c, mixed, ggml_view_1d(c, weighted, H, size_t(s * H) * sizeof(float)));
         mixed = ggml_scale(c, mixed, 0.25f);
         inject = ggml_mul_mat(c, w.at("hc_attn_inject.weight"), norm);
+        }
         auto *full = ggml_mul_mat(c, w.at("attn_q.weight"), mixed);
         q = ggml_cont(c, ggml_view_3d(c, full, D, QH, 1, 2 * D * sizeof(float), 2 * D * QH * sizeof(float), 0));
         gate = ggml_cont(
@@ -698,6 +772,13 @@ struct PortableQsaLayer::Impl {
         }
     }
 };
+uint64_t PortableQsaLayer::native_hc_pending_calls() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_hc?impl_->native_hc->pending_calls():0;
+#else
+    return 0;
+#endif
+}
 size_t PortableQsaLayer::device_state_allocation_size(ggml_backend *backend, size_t capacity) {
     Context c(ggml_init({4096, nullptr, true}), ggml_free);
     require(bool(c), "portable QSA: state estimate metadata allocation failed");
@@ -820,6 +901,14 @@ std::unique_ptr<PortableQsaLayer> PortableQsaLayer::from_gguf(const GgufModel &m
 }
 bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residual, const PortableExpertRows &dispatch,
                             PortableRoute &route, std::string &error, PortableQsaTrace *trace) {
+    return step_impl(position,residual,nullptr,dispatch,route,error,trace);
+}
+bool PortableQsaLayer::step_pending(uint64_t position,const PortableHcPendingWrite& pending,const PortableExpertRows& dispatch,
+    PortableRoute& route,std::string& error,PortableQsaTrace* trace) {
+    return step_impl(position,pending.residual,&pending,dispatch,route,error,trace);
+}
+bool PortableQsaLayer::step_impl(uint64_t position,const std::vector<float>& residual,const PortableHcPendingWrite* pending,
+    const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableQsaTrace* trace) {
     error.clear();
     route = {};
     if (trace)
@@ -834,7 +923,8 @@ bool PortableQsaLayer::step(uint64_t position, const std::vector<float> &residua
                                      "text positions starting zero");
         require(s.count < s.options.capacity, "portable QSA: cache capacity exhausted");
         require(residual.size() == RES && bool(dispatch), "portable QSA: residual/callback required");
-        auto attended = s.attend(position,residual,{s.keys,s.values,s.pooled,s.tail},trace != nullptr);
+        require(s.options.native_hc_pending==bool(pending),"native QSA HC: explicit matching tuple mode required");
+        auto attended = s.attend(position,residual,{s.keys,s.values,s.pooled,s.tail},trace != nullptr,pending);
         auto next_residual = std::move(attended.residual);
         auto& hk = attended.key; auto& hv = attended.value;
         auto& next_pool = attended.pooled; auto& next_tail = attended.tail;
@@ -896,6 +986,7 @@ bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t pos
     try {
         PortableQsaAttention::Impl::Borrow borrow(s.shared());
         require(s.healthy && !s.chunk_active,"portable QSA: poisoned or active chunk; reset required");
+        require(!s.options.native_hc_read,"native QSA HC: chunk API unsupported");
         const size_t T=tokens.size();
         require(T>=1 && T<=8 && residual_rows.size()==T*RES && bool(dispatch),"portable QSA: invalid chunk shape/callback");
         require(position0==s.count && T<=s.options.capacity-s.count && T<=UINT64_MAX-s.chunk_work.tokens,
@@ -1056,6 +1147,9 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
             m.device_graph +=
                 ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.options.execution.accelerator);
     }
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    if(s.native_hc){m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=PortableQsaOptions::native_hc_host_bound;}
+#endif
     // Keep the existing host envelope: the unchanged fixed schedulers also
     // retain GGML metadata/context buffers outside get_buffer_size(). Sharing
     // device attention storage does not justify removing this host allowance.

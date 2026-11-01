@@ -117,6 +117,7 @@ int main(int argc, char **argv) {
                              " [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
                              " [--qsa-reuse-attention (compatibility flag; session scratch is shared)]\n"
                              " [--gdn-resident-state (trial, default off)]\n"
+                             " [--native-hc-pending-layer2-3 RECEIPT_PREFIX (experimental ordinary QSA HC carry)]\n"
                              " [--native-hc-pending-layer1-2 RECEIPT_PREFIX (experimental ordinary inter-layer carry)]\n"
                              " [--native-hc-ffn-write-layer0 RECEIPT_PREFIX (experimental final materialization before PLE)]\n"
                              " [--native-hc-ffn-read-layer0 RECEIPT_PREFIX (experimental actual layer0 FFN read; explicit resident scope)]\n"
@@ -197,7 +198,8 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if(key=="--native-hc-pending-layer1-2") {opts.native_hc_pending_layer1_2=true;opts.native_hc_pending_receipt_prefix=value;}
+            if(key=="--native-hc-pending-layer2-3") {opts.native_hc_pending_layer2_3=true;opts.native_hc_qsa_receipt_prefix=value;}
+            else if(key=="--native-hc-pending-layer1-2") {opts.native_hc_pending_layer1_2=true;opts.native_hc_pending_receipt_prefix=value;}
             else if(key=="--native-hc-ffn-write-layer0") {opts.native_hc_ffn_write_layer0=true;opts.native_hc_ffn_read_layer0=true;opts.native_hc_norm_inject_layer0=true;opts.native_hc_mix_layer0=true;opts.native_hc_receipt_prefix=value;}
             else if(key=="--native-hc-ffn-read-layer0") {opts.native_hc_ffn_read_layer0=true;opts.native_hc_norm_inject_layer0=true;opts.native_hc_mix_layer0=true;opts.native_hc_receipt_prefix=value;}
             else if(key=="--native-hc-read-layer0") {opts.native_hc_norm_inject_layer0=true;opts.native_hc_mix_layer0=true;opts.native_hc_receipt_prefix=value;}
@@ -348,6 +350,7 @@ int main(int argc, char **argv) {
                      <<",\"gdn_resident_weights\":"<<(opts.gdn_resident_weights?"true":"false")
                      <<",\"dense_resident_weights\":"<<(opts.dense_resident_weights?"true":"false")
                      <<",\"layer0_resident_weights\":"<<(opts.layer0_resident_weights?"true":"false")
+                     <<",\"native_hc_pending_layer2_3\":"<<(opts.native_hc_pending_layer2_3?"true":"false")
                      <<",\"native_hc_pending_layer1_2\":"<<(opts.native_hc_pending_layer1_2?"true":"false")
                      <<",\"native_hc_ffn_write_layer0\":"<<(opts.native_hc_ffn_write_layer0?"true":"false")
                      <<",\"native_hc_ffn_read_layer0\":"<<(opts.native_hc_ffn_read_layer0?"true":"false")
@@ -463,6 +466,7 @@ int main(int argc, char **argv) {
                          "native_moe_combine_observation=true qualified=false quantizer_qualified=false fp32_denorm_mode=unspecified\n";
         else
             std::cerr << "resident Vulkan/CPU expert rows; host PLE; original-order host merge. Vulkan hybrid Q8 is not CPU bit parity.\n";
+        if(opts.native_hc_pending_layer2_3)std::cerr<<"native_hc_pending_layer2_3=true qualified=false full_hc_parity=false qsa_computation=unchanged\n";
         if(opts.native_hc_pending_layer1_2)std::cerr<<"native_hc_pending_layer1_2=true qualified=false full_hc_parity=false layer0_ple_materialization=unchanged\n";
         if(opts.native_hc_ffn_write_layer0)std::cerr<<"native_hc_ffn_write_layer0=true qualified=false full_hc_parity=false materialized_before_next_layer_ple=true\n";
         if(opts.native_hc_ffn_read_layer0)std::cerr<<"native_hc_ffn_read_layer0=true full_hc_parity=false qualified=false pending_contract=native-hc-pending-t1-v1\n";
@@ -531,9 +535,10 @@ int main(int argc, char **argv) {
         std::vector<int32_t> executed_tokens;
         const auto heads_before = session->model_work();
         const auto router_fields = [&](std::ostream& out) {
-            if(opts.native_hc_pending_layer1_2 && !opts.native_hc_norm_inject_layer0)out<<",\"full_hc_parity\":false";
+            if((opts.native_hc_pending_layer1_2 || opts.native_hc_pending_layer2_3) && !opts.native_hc_norm_inject_layer0)out<<",\"full_hc_parity\":false";
             if(opts.native_hc_norm_inject_layer0)out<<",\"native_hc_norm_inject_layer0\":true,\"full_hc_parity\":false,\"native_hc_layer0_calls_delta\":"
                 <<session->model_work().native_hc_layer0_calls-heads_before.native_hc_layer0_calls;
+            if(opts.native_hc_pending_layer2_3)out<<",\"native_hc_pending_layer2_3\":true,\"deferred_ffn_layer2_outputs_delta\":"<<session->model_work().deferred_ffn_layer2_outputs-heads_before.deferred_ffn_layer2_outputs<<",\"native_hc_pending_layer3_calls_delta\":"<<session->model_work().native_hc_pending_layer3_calls-heads_before.native_hc_pending_layer3_calls;
             if(opts.native_hc_pending_layer1_2)out<<",\"native_hc_pending_layer1_2\":true,\"deferred_ffn_layer1_outputs_delta\":"<<session->model_work().deferred_ffn_layer1_outputs-heads_before.deferred_ffn_layer1_outputs<<",\"native_hc_pending_layer2_calls_delta\":"<<session->model_work().native_hc_pending_layer2_calls-heads_before.native_hc_pending_layer2_calls;
             if(opts.native_hc_ffn_write_layer0)out<<",\"native_hc_ffn_write_layer0\":true,\"native_ffn_hc_write_layer0_calls_delta\":"<<session->model_work().native_ffn_hc_write_layer0_calls-heads_before.native_ffn_hc_write_layer0_calls;
             if(opts.native_hc_ffn_read_layer0)out<<",\"native_hc_ffn_read_layer0\":true,\"native_ffn_hc_layer0_calls_delta\":"<<session->model_work().native_ffn_hc_layer0_calls-heads_before.native_ffn_hc_layer0_calls;

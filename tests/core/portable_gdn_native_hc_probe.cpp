@@ -2,6 +2,9 @@
 // Physical seam probe: approved caller-supplied HC inputs plus existing synthetic
 // full-GDN fixture. No model, new reference kernel or full-HC parity claim.
 #include "portable_gdn_fixture.hpp"
+#ifdef STRATA_QSA_HC_PROBE
+#include "portable_qsa_fixture.hpp"
+#endif
 #include "../kernels/native_hc_pending_fixture.hpp"
 #include "ggml-vulkan.h"
 #include <filesystem>
@@ -120,9 +123,51 @@ void boundary(const Fixture&f,ggml_backend_t backend,const std::vector<float>&in
  std::ofstream(out/"report.json")<<"{\"ordinary_layer1_to_layer2\":true,\"actual_producer_tuple\":true,\"deferred_productions\":2,\"pending_consumer_calls\":4,\"materialized_control_exact\":true,\"reset_rollback_retry\":true,\"disabled_repeat_exact\":true,\"synthetic_two_layer_fixture\":true,\"actual_layer1_PLE_executed\":false,\"qualified\":false,\"full_hc_parity\":false}\n";
 }
 
+#ifdef STRATA_QSA_HC_PROBE
+void qsa_boundary(const Fixture&f,ggml_backend_t backend,const std::vector<float>&input,const std::filesystem::path&out){
+ qsa_fixture::Fixture qf;
+ // Approved layer0 roles are development operands, not real layer3 provenance.
+ for(auto&v:qf.views)for(const auto&source:f.views)if(v.name.substr(6)==source.name.substr(6)&&v.name.find("hc_attn_")!=std::string::npos)v.data=source.data;
+ PortableFfnOptions exec;exec.threads=1;exec.accelerator=backend;exec.request_accelerator=true;
+ std::string error;PortableGdnOptions po;po.execution=exec;po.defer_ffn_hc_write=true;po.scratch=PortableGdnScratch::create(exec,error);check(bool(po.scratch),error);
+ auto gv=f.views;for(auto&v:gv)v.name.replace(0,6,"blk.2.");auto producer=PortableGdnLayer::create(2,gv,po,error);check(bool(producer),error);check(producer->reset(error),error);
+ PortableQsaOptions o;o.execution=exec;o.capacity=8;o.reuse_attention=true;o.attention=PortableQsaAttention::create(exec,error);check(bool(o.attention),error);
+ auto warmv=qf.views;for(auto&v:warmv)v.name.replace(0,6,"blk.11.");auto warm=PortableQsaLayer::create(11,warmv,o,error);check(bool(warm),error);check(warm->reset(error),error);
+ auto disabled=PortableQsaLayer::create(3,qf.views,o,error);check(bool(disabled),error);
+ o.native_hc_read=true;o.native_hc_pending=true;o.native_hc_receipt_prefix=(out/"consumer").string();auto active=PortableQsaLayer::create(3,qf.views,o,error);check(bool(active),error);check(active->reset(error),error);
+ auto co=o;co.native_hc_pending=false;co.native_hc_receipt_prefix=(out/"control").string();auto control=PortableQsaLayer::create(3,qf.views,co,error);check(bool(control),error);check(control->reset(error),error);
+ check(active->weight_bytes()==disabled->weight_bytes()+6182400u,"QSA HC role replacement accounting");
+ auto dispatch=[](int64_t l,const PortableRoute&r,std::vector<float>&rows,std::string&e){check(l==2||l==3||l==11,"QSA producer/consumer layer");return gdn_fixture::experts()(0,r,rows,e);};
+ PortableRoute route;PortableHcPendingWrite last;std::vector<float> first,applied_first;PortableFfnHcTrace initial;
+ for(size_t pos=0;pos<4;++pos){
+ auto x=input;for(size_t i=0;i<x.size();++i)x[i]+=float(pos)*float(int(i%7)-3)*0.000244140625f;
+ check(producer->step(x,dispatch,route,error),error);auto tuple=producer->pending_write();last=tuple;
+ check(warm->step(pos,x,dispatch,route,error),error);
+ PortableQsaTrace trace;check(active->step_pending(pos,tuple,dispatch,route,error,&trace),error);
+ check(trace.hc.original==tuple.residual&&trace.hc.previous_output==tuple.block&&trace.hc.previous_injection==tuple.injection,"actual GDN2/QSA3 tuple identity");
+ check(control->step(pos,trace.hc.residual,dispatch,route,error),error);
+ check(active->last_residual()==control->last_residual()&&active->keys()==control->keys()&&active->values()==control->values()&&active->pooled_keys()==control->pooled_keys()&&active->indexer_tail()==control->indexer_tail(),"QSA materialized control/state differs");
+ if(!pos){first=active->last_residual();applied_first=trace.hc.residual;initial=trace.hc;}
+ }
+ check(active->indexer_tail()==std::vector<float>(512,0)&&active->pooled_keys().size()==256,"QSA block completion changed");
+ auto keys=active->keys(),values=active->values();auto pool=active->pooled_keys(),tail=active->indexer_tail(),residual=active->last_residual();
+ auto fail=[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="intentional QSA provider refusal";return false;};
+ check(!active->step_pending(4,last,fail,route,error),"QSA refusal accepted");check(active->tokens()==4&&active->keys()==keys&&active->values()==values&&active->pooled_keys()==pool&&active->indexer_tail()==tail&&active->last_residual()==residual,"QSA failed candidate committed");
+ PortableQsaTrace retry;check(active->step_pending(4,last,dispatch,route,error,&retry),error);check(control->step(4,retry.hc.residual,dispatch,route,error),error);check(active->last_residual()==control->last_residual()&&active->keys()==control->keys()&&active->pooled_keys()==control->pooled_keys(),"QSA retry changed state");
+ check(producer->reset(error)&&active->reset(error),error);check(producer->pending_write().empty(),"producer stale tuple survived reset");check(producer->step(input,dispatch,route,error),error);check(active->step_pending(0,producer->pending_write(),dispatch,route,error),error);check(active->last_residual()==first,"QSA reset/replay changed result");
+ check(producer->deferred_hc_outputs()==5&&active->native_hc_pending_calls()==7,"QSA actual paid counters");
+ check(disabled->reset(error)&&disabled->step(0,applied_first,dispatch,route,error),error);auto d=disabled->last_residual();check(disabled->reset(error)&&disabled->step(0,applied_first,dispatch,route,error),error);check(disabled->last_residual()==d&&disabled->native_hc_pending_calls()==0,"QSA disabled repeat changed");
+ native_hc_pending_fixture::Pending fixture;fixture.norm.t=1;fixture.norm.x=initial.original;fixture.bo=initial.previous_output;fixture.inj=initial.previous_injection;
+ for(const auto&v:qf.views){if(v.name=="blk.3.hc_attn_norm.weight"){fixture.norm.w.resize(10240);memcpy(fixture.norm.w.data(),v.data,40960);}if(v.name=="blk.3.hc_attn_inject.weight")fixture.norm.wi=strata::core::portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,40960);if(v.name=="blk.3.hc_attn_down.weight")fixture.down=strata::core::portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);if(v.name=="blk.3.hc_attn_up.weight")fixture.up=strata::core::portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);}
+ native_hc_pending_fixture::write((out/"fixture.bin").string(),fixture);
+ for(auto pair:{std::pair{"residual",&initial.residual},std::pair{"pending-gate",&initial.gate},std::pair{"pending-exp",&initial.exponential},std::pair{"rs",&initial.rs},std::pair{"normalized",&initial.normalized},std::pair{"inject",&initial.inject},std::pair{"low-pre",&initial.low_pre},std::pair{"low",&initial.low},std::pair{"low-exp",&initial.low_exp},std::pair{"up-pre",&initial.up_pre},std::pair{"gates",&initial.gates},std::pair{"up-exp",&initial.up_exp},std::pair{"mixed",&initial.mixed}})save(out/(std::string(pair.first)+".f32le"),*pair.second);
+ std::ofstream(out/"report.json")<<"{\"ordinary_layer2_to_qsa3\":true,\"actual_producer_tuple\":true,\"deferred_productions\":5,\"pending_consumer_calls\":7,\"materialized_control_exact\":true,\"QSA_KV_indexer_reset_rollback_retry\":true,\"disabled_repeat_exact\":true,\"four_T1_positions\":true,\"synthetic_fixture\":true,\"qualified\":false,\"full_hc_parity\":false}\n";
+}
+#endif
+
 }
 int main(int argc,char**argv){try{
- check(argc==4||(argc==5&&(std::string(argv[4])=="read"||std::string(argv[4])=="pending"||std::string(argv[4])=="ffn"||std::string(argv[4])=="write"||std::string(argv[4])=="boundary")),"usage: portable_gdn_native_hc_probe OPERANDS FRESH_OUTPUT EXPECT_DEVICE [read|pending|ffn|write|boundary]");const bool composed=argc==5;const bool pending=composed&&std::string(argv[4])=="pending";const bool final_write=composed&&std::string(argv[4])=="write";const bool ffn=composed&&(std::string(argv[4])=="ffn"||final_write);const std::filesystem::path d=argv[1],out=argv[2];check(std::filesystem::create_directory(out),"fresh output directory");
+ check(argc==4||(argc==5&&(std::string(argv[4])=="read"||std::string(argv[4])=="pending"||std::string(argv[4])=="ffn"||std::string(argv[4])=="write"||std::string(argv[4])=="boundary"||std::string(argv[4])=="qsa")),"usage: portable_gdn_native_hc_probe OPERANDS FRESH_OUTPUT EXPECT_DEVICE [read|pending|ffn|write|boundary|qsa]");const bool composed=argc==5;const bool pending=composed&&std::string(argv[4])=="pending";const bool final_write=composed&&std::string(argv[4])=="write";const bool ffn=composed&&(std::string(argv[4])=="ffn"||final_write);const std::filesystem::path d=argv[1],out=argv[2];check(std::filesystem::create_directory(out),"fresh output directory");
  auto norm=load(d/"portable-hc_attn_norm.weight.bin",40960),inj=load(d/"portable-hc_attn_inject.weight.bin",43520),raw=load(d/"portable-embedding.f32le",40960);
  std::vector<uint8_t>down,up;if(composed){down=load(d/"portable-hc_attn_down.weight.bin",3481600);up=load(d/"portable-hc_attn_up.weight.bin",3481600);}
  std::vector<float>input(10240);memcpy(input.data(),raw.data(),40960);Fixture f;
@@ -130,6 +175,13 @@ int main(int argc,char**argv){try{
  check(ggml_backend_vk_get_device_count()>0,"real Vulkan required");char desc[256]{};ggml_backend_vk_get_device_description(0,desc,sizeof(desc));check(std::string(desc).find(argv[3])!=std::string::npos,"device identity");
  std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>backend(ggml_backend_vk_init(0),ggml_backend_free);check(bool(backend),"Vulkan initialization");
  if(argc==5&&std::string(argv[4])=="boundary"){boundary(f,backend.get(),input,out);return 0;}
+ if(argc==5&&std::string(argv[4])=="qsa"){
+#ifdef STRATA_QSA_HC_PROBE
+ qsa_boundary(f,backend.get(),input,out);return 0;
+#else
+ check(false,"QSA probe target unavailable");
+#endif
+ }
  const auto active=run(f,backend.get(),true,composed,input,out,pending,ffn,final_write);
  if(ffn){
   const auto control_dir=out/"materialized-ffn";check(std::filesystem::create_directory(control_dir),"fresh FFN control");

@@ -222,9 +222,9 @@ struct PortableFfn::Impl {
                 tokens >= 1 && tokens <= 8 && g.selected > 0 && g.selected <= g.experts && g.selected <= 64 && layer >= 0 &&
                 std::isfinite(g.epsilon) && g.epsilon > 0 && options.threads > 0,
                 "portable FFN: invalid geometry/options");
-        require(!options.defer_hc_write || (layer==1 && tokens==1 && g.hidden==2560 && g.streams==4 &&
+        require(!options.defer_hc_write || ((layer==1 || layer==2) && tokens==1 && g.hidden==2560 && g.streams==4 &&
             !options.native_hc_final_write && !options.layer0_observer),
-            "deferred HC write: layer1/T1/H2560 only, final write/observer unsupported");
+            "deferred HC write: layer1/2 T1/H2560 only, final write/observer unsupported");
         require(!options.native_hc_final_write||options.native_hc_pending_read,"native FFN final write requires pending read");
         if(options.native_hc_pending_read) {
             require(layer==0 && tokens==1 && g.hidden==2560 && g.streams==4 && g.rank==320 && g.epsilon==1e-6f &&

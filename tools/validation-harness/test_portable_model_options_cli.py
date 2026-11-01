@@ -61,3 +61,11 @@ run(carry,False,'resident attention')
 for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--gdn-production','--gdn-resident-state']]:run([*carry,'--gdn-resident-weights',*flags],False)
 run([*carry,'--gdn-resident-weights'],False,'legacy observer',dict(os.environ,STRATA_LAYER0_OBSERVER='/absent/observer.bin'))
 print('ordinary layer1-2 pending boundary actual CLI preconditions/defaults passed')
+
+qsa=['--native-hc-pending-layer2-3','/absent/qsa-hc']
+q=run([*qsa,'--gdn-resident-weights'],True)
+assert q['native_hc_pending_layer2_3'] and not a['native_hc_pending_layer2_3'] and not q['native_hc_pending_layer1_2']
+run(qsa,False,'resident GDN')
+for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--qsa-production','--qsa-reuse-attention'],['--gdn-production','--gdn-resident-state']]:run([*qsa,'--gdn-resident-weights',*flags],False)
+run([*qsa,'--gdn-resident-weights'],False,'legacy observer',dict(os.environ,STRATA_LAYER0_OBSERVER='/absent/observer.bin'))
+print('ordinary QSA layer2-3 pending actual CLI defaults/preconditions passed')
