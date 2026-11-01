@@ -1,0 +1,9 @@
+{
+  "commit": "4497566c7ca6b1d958fe27678f541308b948f6c2",
+  "files": {
+    "LICENSE.TXT": "ebcd9bbf783a73d05c53ba4d586b8d5813dcdf3bbec50265860ccc885e606f47",
+    "upstream/acosh_float_constants.h": "fec889988ae92ec07c3d758483fedfc213ab2a1da3b06a22e5e5e6c4ad114a6e",
+    "upstream/acoshf_utils.h": "863126f52ddecc22fa1988479193aadbcc6f9b5d05ab0b8f049ea5abb9aebccc",
+    "upstream/log1pf.h": "705c0a52c8a949731889396d65136b77d927a49f3d5a2a049da57a9c81410e27"
+  }
+}

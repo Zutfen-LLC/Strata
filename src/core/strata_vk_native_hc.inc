@@ -32,3 +32,5 @@ void strata_vk_native_hc_run(StrataVkNativeHc* p,const ggml_tensor* residual,con
 #include "strata_vk_native_gdn_conv.inc"
 
 #include "strata_vk_native_gdn_log1p.inc"
+
+#include "strata_vk_native_llvm_log1p.inc"
