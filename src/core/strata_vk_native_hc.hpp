@@ -34,6 +34,9 @@ namespace strata::core::portable_detail {
 // caller explicitly commits after all consumers succeed; no product integration.
 struct StrataVkNativeHcPending;
 StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t,const char* effective_spv,size_t budget=65536);
+// Explicit standalone final-write mode; same disjoint candidate/run/destroy contract.
+// Preserves native_gr_post scale-zero-bias operations. No model enablement.
+StrataVkNativeHcPending* strata_vk_native_hc_write_create(ggml_backend_t,const char* effective_spv,size_t budget=65536);
 size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*);
 void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*) noexcept;
 void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*,const ggml_tensor* residual,const ggml_tensor* block_out,
