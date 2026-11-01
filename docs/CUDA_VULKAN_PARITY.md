@@ -267,10 +267,15 @@ coordinators, shared-scratch lifetime, independent FMA/materialized control,
 rollback/reset, accounting/refusal, actual CLI and CPU model default-output
 regressions pass. Layer1 PLE and its upstream producer methods are preserved;
 carrying their actual tuple does not qualify those methods as native-equivalent.
-The small synthetic Vulkan probe is prepared but unrun. Existing layer-0 roles
-suffice for its clearly labelled development fixtures. Real-boundary validation would need
-the corresponding actual tuple and layer-2 HC roles, checking retained data
-before requesting a new capture. Keep layer-0 materialization before PLE and
+The operator-reported small synthetic Vulkan probe now passes shared-scratch
+tuple consumption, materialized control, reset/refusal/retry, own-input numerical
+contracts, effective-module checks and baseline cleanup. Actual layer1 PLE
+and real layer2 roles were not exercised by that synthetic fixture. Existing layer-0 roles
+suffice for its clearly labelled development fixtures. The integrated model owner already records its actual pending tuple and HC
+outputs. A bounded actual-model own-input check can read the four layer2 roles
+from the same GGUF shards and use existing contracts; it does not need a new
+native capture. Native-versus-Vulkan end-to-end comparison remains a separate
+question. Keep layer-0 materialization before PLE and
 control/head rules separate. See the [earlier producer/read scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
