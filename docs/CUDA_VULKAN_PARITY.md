@@ -1,143 +1,770 @@
-# CUDA and Vulkan parity roadmap
+# Strata method: CUDA/HIP to Vulkan migration map
 
-Tracking: [umbrella #65](https://github.com/Zutfen-LLC/Strata/issues/65).
+Tracking: [umbrella #65](https://github.com/Zutfen-LLC/Strata/issues/65), with
+[GDN #66](https://github.com/Zutfen-LLC/Strata/issues/66),
+[QSA #67](https://github.com/Zutfen-LLC/Strata/issues/67),
+[scheduling #68](https://github.com/Zutfen-LLC/Strata/issues/68),
+[prefill #69](https://github.com/Zutfen-LLC/Strata/issues/69) and
+[product breadth #70](https://github.com/Zutfen-LLC/Strata/issues/70).
+This updates the existing roadmap rather than introducing a parallel plan.
 
-Source baseline: `3dc736044b9b276a44729dfe708b740238d9fc3a`.
-This is an **unconfirmed static-analysis roadmap**, not a new hardware result.
-Follow Strata's model-specific CUDA/HIP/SYCL design unless a backend constraint
-or measured benefit justifies a difference. Product parity includes supported
-behavior and execution methodology, not only generated tokens or speed.
+## HC norm/injection checkpoint (2026-10-31)
 
-## Status update: first GDN slice
+[PR #97](https://github.com/Zutfen-LLC/Strata/pull/97) defines the standalone
+BF16 HC norm/injection method and versioned `native-hc-normal-v1` acceptance.
+Limited component acceptance applies only to its fixed geometry, selected
+method and normal-or-zero domain. Exact comparisons remain diagnostics;
+independent local operation checks and derived division/rsqrt bounds are
+separate from full-model behavior. It does not establish universal intrinsic
+bit identity, subnormal behavior, HC down/up/mixed or model parity.
 
-As of 2026-10-29, [PR #72](https://github.com/Zutfen-LLC/Strata/pull/72)
-implements the first opt-in slice of [issue #66](https://github.com/Zutfen-LLC/Strata/issues/66).
-Source and hardware qualification have been reported; the PR is not merged.
-Its device-owned GDN production policy removes full recurrent/conv/PLE-history
-mirror readbacks, retains explicit eager diagnostics, and uses an integer
-logits-status guard through an opt-in integration with the pinned Vulkan backend.
-Residual/FFN transfers and separate device commit copies remain.
-This is a bounded implementation checkpoint, not full CUDA/Vulkan parity.
-The baseline findings and first-slice plan below remain historical; the other
-roadmap items remain open.
+[Draft PR #98](https://github.com/Zutfen-LLC/Strata/pull/98), source
+`3d7eb782241cd45e202c87c152c2554eeb55dc27`, adds only an experimental layer-0
+serial eager integration. It uploads the actual residual before native
+norm/injection and lets the original graph borrow retained outputs. The BF16
+injection allocation replaces Q8 storage; graph/state admission, leases and
+commit rules stay explicit. The default is disabled, and chunks/PLE/GDN
+production modes refuse. The bounded physical coordinator gate passed at
+`3669d38323d817d7d7c3736570e47bea0b4ffc48`: retained initial HC boundaries,
+repeat/reset/disabled/rollback and replacement accounting passed. This is an
+operator-produced result independently checked from sealed receipts. Only two
+guard samples and the timeout-wrapper PID were retained; no continuous
+observation or separate executable-PID proof is claimed. The bounded matched resident off/on diagnostic has now completed; initial HC
+contract checks and within-arm reset/replay checks pass. Generated tokens agree
+for the retained short request, while routes and final heads differ. This is
+limited partial-seam evidence, not full-model numerical or quality acceptance.
+Bounded per-request head and initial HC diagnostics preserve those distinctions
+without changing numerical methods.
+Source now shares actual CLI/session mode checks through `--validate-options`,
+which does not imply backend or memory admission. Enabled layer-0 HC requires
+resident input roles; the existing minimum model option retains attention
+weights across all GDN layers. Both arms of a resident comparison must use that
+same ownership policy and fresh post-dense native capacity sizing.
 
-## Current boundary
+`--head-shape-admission` is a separate default-off accounting experiment. It
+bounds the unchanged head graph from metadata, allocator padding and node/source
+copies without liveness savings, retaining workspace/guard allowances. Only the
+existing proven Vulkan T1 direct-Q8 contract can replace the broad head graph
+preflight; unknown contracts keep the full cap. Construction enforces the admitted
+envelope before allocation, then checks actual bookkeeping. Caps, physical
+reserve, native quota/rank/helper exclusion and arithmetic stay unchanged.
+Small physical head bookkeeping/full-shape metadata and matched resident
+admission have passed their bounded gates. Both resident arms use the same
+head/admission and weight policy; native post-dense sizing freezes common
+ownership before GEN. These gates do not qualify other shapes/backends.
+[Draft PR #99](https://github.com/Zutfen-LLC/Strata/pull/99), source
+`df488f25812a9a5cac94eabe6630bfa7bcae75b0`, adds a standalone T1 BF16
+HC down/up/activation/mixed component with identical normalized operands and
+native lane/reduction/stream order. Its bounded zero/sparse/dense synthetic
+component gate passed: mixed outputs are exact across the two backends, while
+one fixture's low projection/activation output differs within the deliberate
+intrinsic contract. Exact local source-order checks remain separate from those
+bounds. Operator-produced receipts were independently checked offline. This is
+synthetic component acceptance only, not real-role or full-HC/model acceptance.
+The scope and native unobserved-intermediate limit are documented in the
+[pinned component contract](https://github.com/Zutfen-LLC/Strata/blob/df488f25812a9a5cac94eabe6630bfa7bcae75b0/docs/native-hc-mix-component.md).
+No additional synthetic campaign is required before bounded real-role validation;
+actual role identity/conversion and representative ranges remain the next gate.
+The two authorized real-role extractions are complete; original compat-BF16
+conversion matches both native roles byte-for-byte. An identical retained
+normalized operand exists, but its scaled down preactivations exceed the initial
+component domain. This is a qualification guard, not a native model limit.
+A specification-derived normal-domain prerequisite is implemented at
+[`73aeec1f`](https://github.com/Zutfen-LLC/Strata/blob/73aeec1f953b87f14a587c2d35d920262c811c3d/docs/native-hc-mix-component.md).
+It derives exp/division limits, rejects quotient underflow/nonfinite results,
+preserves the native operation/reduction order, and retains exact local checks
+and the existing intrinsic error policies. Independent boundary/adversarial
+regressions and offline real-input domain preflight pass. The bounded wider-domain/real-role
+component gate passed both backends' separate own-input arithmetic/intrinsic
+contracts. Cross-backend differences remain diagnostics; differing low operands
+prevent up-only attribution. Native sampling included case-loop observations;
+Vulkan sampling was baseline-only, so neither continuous nor per-child workload
+coverage follows. No more extraction or full-model capture is needed.
+A separately opt-in [serial layer0 composed attention read](https://github.com/Zutfen-LLC/Strata/pull/100)
+is implemented with existing components at the actual residual upload seam.
+The bounded coordinator gate has passed both component contracts and
+consumer-liveness/reset/rollback checks with approved HC operands and synthetic
+remaining GDN/FFN data. It does not qualify full real-weight GDN or the model;
+its discrete samples do not establish continuous workload coverage. The bounded
+matched-model diagnostic has completed the initial component contracts, finite
+head checks and exact within-arm reset/replay checks. Its comparator retains
+route/head differences as diagnostics, without a final-logit tolerance or a
+quality/performance claim. The comparison uses an authenticated historical
+norm/injection-only control, not a freshly executed default-off control or proof
+of new-image bit equivalence. Fresh post-dense native planning preserves the
+retained eager host-state policy (resident GDN weights do not imply resident
+GDN state). Historical controls are reused only with compatible frozen
+input/state/ownership/method/runtime bindings, and never relabeled new-image
+default-off equivalence. Conversion
+replaces resident banks, and aligned scratch/host bounds remain charged to
+existing admission. The old partial flag and defaults retain their behavior.
+Pending writes, FFN HC, other shapes/native modes and full-model acceptance remain
+separate. Defaults stay disabled and PRs remain drafts.
 
-The portable Q8 qwen4exp path implements GDN, QSA, PLE, HC, routed/shared MoE
-and the output head. It remains an opt-in serial token-ID executable, with
-context at most 256 and greedy sampling. Persistent dense weights and GDN
-state are default-off trials. Broader quant-role support, long-context
-behavior, native sampling, conversation reuse and serving integration are
-separate gaps.
+The next bounded HC method gap is the native pending-write/read transition.
+At [`f1561f31`](https://github.com/Zutfen-LLC/Strata/blob/f1561f313963746d172cebff11cc043947d814a9/include/strata/kernels/fused_gr.hpp),
+`FusedGrArgs::apply` folds the previous block output and injection into the
+residual with FMA before normalization, then materializes that same residual
+in the up pass. The selected multi-read implementation preserves this order;
+the current Vulkan component explicitly refuses pending writes. A standalone
+T1 same-input component using deterministic residual/block-output/injection
+operands is the next implementation gate, before changing graph/state lifetime
+or adding FFN roles. Existing approved attention roles suffice for that mechanical
+check; they do not qualify FFN role identity or native GDN output arithmetic.
+Retained composed-read diagnostics cannot attribute downstream differences
+without equal upstream mixed operands. No further harness redesign is a
+prerequisite for this bounded component work.
+[Draft PR #101](https://github.com/Zutfen-LLC/Strata/pull/101), source
+`a47bcea56b0f8cd07ff4e2b57657000a47b27e16`, implements this standalone
+T1 pending sigmoid/FMA, norm/injection and down/up/mixed composition. The actual
+native reference selects `apply=true`; Vulkan retains a disjoint candidate and
+leaves the original pending tuple unchanged. Existing model flags and state
+commit behavior are untouched. Exact own-gate FMA/cancellation checks precede
+the existing own-input v1/v2 contracts; no fitted cross-backend epsilon is added.
+Host/build checks remain separate from physical qualification. Actual CUDA
+compilation and the bounded synthetic native/Vulkan component gate have now
+completed both own-input contracts. Cross-backend raw differences remain
+diagnostics, not a reason to relabel the component as full-HC/model parity.
+Model pending lifetime and FFN role integration remain separate. See the
+[pending contract](https://github.com/Zutfen-LLC/Strata/blob/a47bcea56b0f8cd07ff4e2b57657000a47b27e16/docs/native-hc-pending-t1.md).
+[Draft PR #102](https://github.com/Zutfen-LLC/Strata/pull/102), source
+`ae72f3943a0c2013e49d2b5f07c80d1ba90c7559`, adds only an explicit diagnostic
+pending tuple at the serial attention coordinator. R-prime feeds BOTH the HC
+read and graph hidden consumers; public state still commits after FFN/provider
+success. The source preserves original operands and separates paid counters,
+charges the extra stable storage/host envelope and refuses the legacy observer
+schema that lacks this tuple. Host/resident state, private/shared scratch,
+rollback/reset/retry and materialized-candidate controls are tested; a deliberate
+old-R graph mutant fails. The bounded physical coordinator gate now passes
+pending arithmetic, own-input norm/mix contracts and exact available
+materialized-candidate component arrays. Whole residual/state/history equality
+is enforced by probe source assertions; whole state arrays are not exported.
+The compact evidence binds omitted binaries/fixtures by hash and does not
+independently establish complete shared-library closure or inherited loader
+mapping. This is a synthetic coordinator gate, not an actual model pending write.
+No model CLI flag or inferred prior write is added. Ordinary layer 0 attention
+has no previous native write; real producer/half identity and FFN roles must be
+bound before model carry. Existing approved attention operands plus synthetic
+block output suffice for this diagnostic gate; no new extraction is needed.
+See the [coordinator scope](https://github.com/Zutfen-LLC/Strata/blob/ae72f3943a0c2013e49d2b5f07c80d1ba90c7559/docs/native-hc-pending-serial-t1.md).
 
-The active native reference is **Verifier windows**: a native pack bypasses
-the older SessionGraphs loop
-([selection](../src/program/generate.cpp#L7219)).
-Verifier retains device scratch and captured execution
-([arena](../src/core/verify.cpp#L807),
-[window reuse](../src/core/verify.cpp#L2773)).
-SYCL likewise retains model-specific layer state
-([ownership](../sycl/src/core/session.cpp#L63)).
-Similar flags alone do not establish equivalent paths.
+The next essential product seam is the actual layer-0 GDN→FFN HC read. Native
+[`verify.cpp`](https://github.com/Zutfen-LLC/Strata/blob/ae72f3943a0c2013e49d2b5f07c80d1ba90c7559/src/core/verify.cpp#L1907)
+calls `gr_read_group(1, true, inj_, inj2_)` after producing the real block output.
+It consumes the original residual, actual projected block output and attention
+injection with **FFN** HC roles. Portable
+[`portable_gdn.cpp`](https://github.com/Zutfen-LLC/Strata/blob/ae72f3943a0c2013e49d2b5f07c80d1ba90c7559/src/core/portable_gdn.cpp#L214)
+currently materializes that residual before the GGML FFN HC read in
+[`portable_ffn.cpp`](https://github.com/Zutfen-LLC/Strata/blob/ae72f3943a0c2013e49d2b5f07c80d1ba90c7559/src/core/portable_ffn.cpp#L297).
+The bounded next change should connect that real producer tuple to the FFN read,
+preserving FMA-before-normalization, ownership, admission and whole-layer commit.
+A new diagnostic flag is not a substitute for that connection.
 
-| Work | Current gap | Next result |
+Synthetic FFN fixtures and the existing loader support implementation without
+new extraction. Real same-input numerical qualification additionally needs
+validated `blk.0.hc_ffn_{norm,down,up,inject}.weight` roles and a matched native
+position-0/layer-0 FFN input tuple. Attention-role approval and model provenance
+alone do not establish those bytes or operands. Obtain the scoped provenance
+and any necessary extraction authorization before publishing new raw FFN data;
+reuse existing dump seams where suitable. Recompute actual residency/scheduler
+costs through the existing post-dense planner rather than reusing historical
+expert counts or treating the component replacement delta as the full GPU cost.
+
+[Draft PR #103](https://github.com/Zutfen-LLC/Strata/pull/103), source
+`f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562`, implements that actual producer
+connection as an opt-in layer-0 T1 C++ path. The projected graph output and
+attention injection are retained through readback before shared-arena reuse;
+FFN roles use the original BF16 conversion and existing pending/norm/mix owners.
+The same candidate feeds FFN HC and the final residual consumer, with unchanged
+whole-layer publication. Host tests inspect actual graph producer/consumer
+identity, exercise rollback/reset and compare an independent materialized
+control. An old-R final-consumer mutant fails; corrected source and default
+controls pass. A bounded physical synthetic coordinator gate now records successful
+pending/norm/mix contracts, materialized control, reset/rollback/disabled behavior
+and lifecycle cleanup. The compact evidence supports independent receipt and
+matching-module validation; omitted output arrays prevent independent numerical
+replay, whole-state arrays are not exported, and runtime library closure is not
+independently captured. No continuous monitoring claim is made. Original packer
+conversion now reproduces all four extracted real FFN role payloads byte for
+byte; this establishes role identity only. A standalone real FFN pending-read
+gate now uses an actual matched native tuple
+and all four conversion-verified roles. Both unchanged own-input numerical
+contracts and actual effective modules independently replay successfully. The
+backends retain different pending gates/residuals and downstream operands; this
+is bounded component acceptance, not cross-backend bit identity or model parity.
+There is
+no new model CLI flag, and the final FFN write/next-layer carry still uses the
+previous portable method.
+[Draft PR #104](https://github.com/Zutfen-LLC/Strata/pull/104), source
+`fcdee6895c24b9551842b16ca4c35f3d9b4fb22d`, supplies the missing native
+pre-read tuple snapshot. STRL004 copies original R, actual GDN BO and attention
+injection before the destructive half-1 read, using the existing stream and
+completion boundary inside the unchanged observer reservation. Portable/legacy
+captures keep their older schema and cannot supply missing BO by reconstruction.
+Host serialization, CUDA-mock, portable enabled/disabled and reader checks pass;
+actual native compilation and one guarded capture now supply the original tuple.
+The compact tuple/provenance and lifecycle receipts are verified, but the full
+sealed trace is not exported in that packet for independent decoder replay.
+Tuple and exact role conversion now support the independently replayed standalone
+real FFN component gate described above. The actual model option/wiring remains
+missing: explicit matched layer-0 FFN residency, complete admission and native
+planner ownership must accompany the existing C++ producer/consumer seam.
+Final FFN write/next-layer carry remains separate unfinished work.
+[Draft PR #105](https://github.com/Zutfen-LLC/Strata/pull/105), source
+`6f08323d35a1e2040866631ad0cafca656386ca9`, now wires the default-disabled
+actual FFN-read model option. Explicit layer-0 residency includes FFN weights
+without changing attention-only GDN residency, other layers, the head or expert
+placement. Complete actual allocation accounting and conservative host bounds
+remain admitted; actual FFN paid-work counters survive reset/provider rollback.
+Focused parser, actual producer/consumer, accounting/refusal, rollback and CPU
+model disabled-output regressions pass. The corrected deployment continuation
+passes planning-only entrypoints with the actual product parser and real
+process policy against synthetic providers. A bounded matched resident model
+gate now passes complete planner admission,
+actual FFN participation, own-input initial numerical contracts and exact
+within-arm head/route/receipt replay. Independent offline replay reproduces the
+sealed checker and validates actual modules. Initial attention receipts match
+across arms; generated IDs match while routes and heads differ. These are partial
+integration diagnostics, not full state/quality/performance or full-HC parity.
+Executable/library payloads remain host-bound; whole-state arrays and earlier
+full native capture originals are not independently replayed here.
+The remaining final-write seam is the GGML post multiply/add in
+`src/core/portable_ffn.cpp`; original native code materializes before layer-1 PLE
+and otherwise preserves its pending/control/head boundaries. A write-only
+candidate must preserve the selected native postops' scale/sigmoid/FMA order.
+The standalone T1 final-write component now passes bounded synthetic and
+identical-input real-operand backend-local contracts with actual native/Vulkan
+execution and effective-module validation. Cross-backend differences remain;
+no output tolerance was fitted and component evidence is not model parity.
+The default-disabled `--native-hc-ffn-write-layer0` model/layer seam now
+materializes the actual final FFN producer before the next layer/PLE consumer.
+It replaces the unused post graph, reuses retained inputs, preserves transaction
+commit/rollback and charges its storage/host bound with separate paid counters.
+Local actual-consumer/admission/parser/default-output regressions pass; its
+bounded physical coordinator now passes actual producer/consumer, reset/rollback,
+disabled repeats, own-input numerical contracts and effective-module checks.
+A fresh same-image matched-model diagnostic now passes actual final-write
+participation, initial own-input numerical checks and exact within-arm reset
+heads/routes/receipts under the frozen native ownership. Generated IDs agree,
+while later routes and retained heads differ; this is bounded integration
+evidence, not model numerical, quality or full-HC parity. Processes exit and
+restore measured baselines; whole-state arrays and executable/runtime payloads
+remain outside the compact result. Generic cross-layer pending/control/head
+integration remains separate. See the
+[bounded implementation](https://github.com/Zutfen-LLC/Strata/blob/a2d36ce3d7153533ee9b3eee80cc38d044885f9a/docs/native-hc-ffn-write-layer0.md).
+The standalone real replay uses the recovered actual post-combine FFN block
+output; HC mixed and GDN BO are not substituted. The coordinator does not prove
+model PLE parity: whole-state arrays are source asserted, runtime payloads stay
+host bound and monitoring is discrete. Fresh same-image control/on model work
+uses one native planning load followed automatically by fixed-ownership arms,
+with actual per-arm admission under the same caps and reserve. No default is
+enabled. The next concrete method gap is one ordinary inter-layer pending
+transition: retain the layer-1 FFN producer tuple and fold its write into layer-2
+attention HC read, as native `verify.cpp` does for non-PLE/control boundaries.
+[Draft PR #108](https://github.com/Zutfen-LLC/Strata/pull/108) now implements
+that default-disabled ordinary layer1-to-layer2 carry. Local actual two-layer
+coordinators, shared-scratch lifetime, independent FMA/materialized control,
+rollback/reset, accounting/refusal, actual CLI and CPU model default-output
+regressions pass. Layer1 PLE and its upstream producer methods are preserved;
+carrying their actual tuple does not qualify those methods as native-equivalent.
+The operator-reported small synthetic Vulkan probe now passes shared-scratch
+tuple consumption, materialized control, reset/refusal/retry, own-input numerical
+contracts, effective-module checks and baseline cleanup. Actual layer1 PLE
+and real layer2 roles were not exercised by that synthetic fixture. Existing layer-0 roles
+suffice for its clearly labelled development fixtures. The integrated model owner records its actual pending tuple and HC outputs.
+The fresh same-image actual-model own-input check now passes pending FMA,
+normalization/mix, paid-work and exact within-arm reset/replay checks, using
+actual layer2 roles from the same GGUF. Generated IDs agree across arms while
+routes and retained heads differ. The retained-data checker completed offline
+after correcting a blanket rejection of lifecycle events; the live monitor,
+numerical criteria and original STOP remain unchanged. Existing validated module
+receipts were reused, with no model/GPU rerun. Future model recipes must reuse
+the recognized tracked-pidfd verified-exit receipt policy and continue refusing
+live/unverified/unknown events. This is bounded own-input integration, with no
+independent native capture, whole-state export or full-model numerical/quality
+qualification.
+
+[PR109](https://github.com/Zutfen-LLC/Strata/pull/109), source
+`9a6d41029797304fbe1de79d5fb2bc311bae6c97`, adds the default-disabled ordinary
+layer2 FFN → layer3 QSA pending read. Its specification remains
+`src/core/verify.cpp::Verifier::record_window()` → `pre` →
+`gr_read_group(0, pending, inj2_, inj_)` and
+`src/kernels/cuda/fused_gr.cu::fused_gr_read_multi()`: apply the prior FFN
+FMA before native-method HC normalization, injection and mixing. Vulkan
+buffer ownership/submission expresses that dependency; it changes no placement
+policy or QSA projection/attention/indexer algorithm. Layer0 PLE materialization
+and control/head exceptions remain unchanged.
+
+The small Vulkan gate passes: actual GDN2 producer/QSA3 consumer, shared scratch,
+four-position pooled-block completion, materialized same-backend residual and
+KV/indexer equality, provider rollback/retry, reset and five effective HC module
+checks. Nine focused CTests pass. The probe checks five producer outputs and
+seven paid consumer calls, including work before intentional refusal. Its
+rebound layer0 HC operands are synthetic development roles, not actual layer3
+model provenance. Complete state equality is asserted by the probe; arrays are
+not exported. Guard sampling is discrete and does not establish continuous
+coverage. This is a functional synthetic gate, not full QSA/model parity.
+
+The actual-model diagnostic also passes using the same source and fresh native
+planning: 384 primary/1490 helper ownership freezes and each arm's actual
+admission passes. Layer0 and layer1→layer2 are fixed in both arms; only on adds
+layer2→layer3. Each reset-separated request reports 28 earlier producer/read
+calls in both arms and 28 new producer/read calls in on versus zero in control.
+Actual layer3 GGUF-role/owner pending-v1, normal-v1 and mix-v2 checks and all 21
+HC module uses pass. Both arms repeat generated IDs `[18,24,16]`; within-arm
+heads/routes/receipts repeat exactly. First cross-arm route-rank divergence is
+position 1/layer 5, first selected-set divergence position 1/layer 11. Matching-history
+maximum absolute logit differences at positions 24–27 are approximately 1.61825,
+0.66505, 0.70438 and 1.44528. These are diagnostics, not acceptance tolerances.
+All three planned model processes exit with verified identity and three baseline
+cleanup observations; no retry, new native capture or rebuild was needed.
+
+This establishes bounded actual-path own-input behavior, not independent native
+end-to-end numerical equivalence. Whole-model QSA state is not exported and no
+live model failure is injected. QSA rollback/reset remains covered explicitly
+by the synthetic coordinator, with real model reset/replay as separate evidence.
+Native QSA projection/attention/indexer arithmetic and captured-window scheduling
+remain unported or unqualified. The new boundary changes HC method as well as
+materialization, so downstream changes cannot be attributed to materialization
+alone. See the [implemented scope](https://github.com/Zutfen-LLC/Strata/blob/9a6d41029797304fbe1de79d5fb2bc311bae6c97/docs/native-hc-pending-layer2-3-qsa.md).
+
+[PR110](https://github.com/Zutfen-LLC/Strata/pull/110), source
+`a7d87b40941a62bae74242a1791afc510ef4293e`, implements the reusable library
+family cycle. Its bounded Vulkan coordinator gate passes ten focused CTests,
+actual post-projection QSA attention→FFN and QSA FFN→GDN tuple/control checks,
+three own-input pending reads/control write and 22 effective module uses.
+Provider rollback/retry/reset and complete state/control equality are asserted
+by probe source; state arrays are omitted and guards are discrete samples.
+Rebound development roles are synthetic, not actual model role provenance.
+
+[PR111](https://github.com/Zutfen-LLC/Strata/pull/111), source
+`3333e00cdae8cb56f9733512f9e822ae536f7222`, wires one default-disabled bounded
+serial-HC product capability through that same family implementation. Explicit
+FFN2/3 residency can be matched independently in control/on, while unrelated
+QSA weights retain their prior placement. The initial GDN2→QSA3→GDN4 scope uses
+actual projected output and native boundary predicates, preserves PLE/head and
+the unchanged remainder, and charges actual resident banks/buffers plus host
+bounds before original native-policy planning. Local family/residency/carry,
+allocation, parser and default-off model tests pass. The bounded model cycle
+now also passes fresh native-policy planning, same frozen 384/1490 ownership,
+independent arm admission and matched FFN2/3 residency. Each reset request in on
+reports FFN calls `[28,28]`, 28 outgoing tuples and 28 next-attention reads;
+control has no new cycle work. Actual-owner own-input contracts, 33 module uses
+and within-arm reset/replay pass. Both arms repeat `[18,24,16]`, but first
+cross-arm rank/set divergences occur at position 1/layer 9 and position 2/layer 12;
+matching-history logits differ (maximum about 1.76163), which is diagnostic only.
+All three model children exit/reap and restore three baseline observations with
+empty owner lists. The initial stale-source harness STOP remains preserved;
+its corrected continuation reused build/image/roles/sentinels rather than
+rebuilding or spending additional model loads. No whole-state arrays or live
+model failure injection are claimed. This does not port native QSA kernels,
+accepted-prefix commits, captured scheduling, quality or performance parity.
+
+Do not attribute later route/head differences to down/up alone when upstream
+injection and internal state already differ, and do not invent a final-logit
+tolerance from matching generated tokens.
+See the [contract](https://github.com/Zutfen-LLC/Strata/blob/1c3e835f4ce832ba7017ffb549c25facf6f3b9f2/docs/native-hc-numerical-contract.md)
+and [serial implementation scope](https://github.com/Zutfen-LLC/Strata/blob/3d7eb782241cd45e202c87c152c2554eeb55dc27/docs/native-hc-serial-t1.md).
+
+## Contract and inspected versions
+
+The target is Strata's existing model-specific native engine: preserve its
+ownership, capacity/placement policy, numerical order, state transitions and
+execution methodology. Vulkan allocation, feature chains, barriers and command
+submission implement that contract. They are not permission to invent routing,
+hotness, compression, rebalancing or a different model algorithm.
+
+This is a **source inspection and migration plan**, not a hardware qualification
+or a claim of native algorithm parity. Source pins inspected on 2026-10-30:
+
+- Native reference: `92c86668619bb6cef60d96de0812ea48a819e9cb`.
+- Portable Vulkan candidate: `847336f4e22066b48ac7665da1a74881de1df9a5`
+  ([draft PR #93](https://github.com/Zutfen-LLC/Strata/pull/93)); its native
+  generation/cache/kernel sources are unchanged from the native reference.
+- Diagnostic-only follow-up: `97fc53b522683bb8d978ae99782dacb4f5012c1b` adds
+  resident-admission operands and a post-dense free-memory observation. It does
+  not implement automatic sizing or change the admission predicate.
+- Explicit capacity-planning follow-up: `0216ec9b79f8109e160affa73bb5526b71466874`
+  ([draft PR #95](https://github.com/Zutfen-LLC/Strata/pull/95)), stacked on PR93.
+  Its post-dense sizing, immutable plan binding and aligned estimator are
+  inspected separately below; other rows retain their pinned reference.
+
+Links below pin those versions so that a flag or later refactor cannot silently
+change the reference. The historical `3dc7360` roadmap and first GDN-slice status
+remain in Git history; their old gap descriptions are not current status.
+Start with qwen4exp Q8_0, one sequence and a primary plus one expert helper.
+Other native modes remain part of product parity, not implied by this first target.
+
+## End-to-end map
+
+"Preserved" below describes source correspondence or an ownership contract.
+It does not mean that a Vulkan kernel, driver or complete model has passed an
+independent native comparison. Method, numerical, lifecycle and performance
+acceptance remain separate.
+
+| Boundary | Native Strata method | Current portable Vulkan counterpart and required work |
 | --- | --- | --- |
-| [GDN #66](https://github.com/Zutfen-LLC/Strata/issues/66) | Resident state still downloaded and mirrored each token | Device-authoritative normal inference; explicit eager diagnostics |
-| [QSA #67](https://github.com/Zutfen-LLC/Strata/issues/67) | Fresh attention scheduler and active-prefix KV uploads | Bounded execution reuse, then persistent device KV/pool/tail |
-| [Scheduling #68](https://github.com/Zutfen-LLC/Strata/issues/68) | Shared work precedes blocking dispatch; serial expert entries/devices | Route readiness, useful shared overlap and grouped expert work |
-| [Prefill #69](https://github.com/Zutfen-LLC/Strata/issues/69) | Full T1/head execution for every prompt position | Small native-style chunks; omit unused vocabulary projections |
-| [Product breadth #70](https://github.com/Zutfen-LLC/Strata/issues/70) | Experimental token-ID feature subset | Explicit supported/experimental/missing capabilities |
+| Discovery and capabilities | [`device_count`, `device_summary`, primary selection][n-device] and generation's architecture/runtime checks select an actual backend/device. Backend-specific reserve rules exist; they are not universal hardware constants. | [`portable_model_main`][v-main] selects ordered GGML Vulkan devices and validates totals/free/reserves. Native-stage dot/FMA logical enablement and [BDA/int64 checks][v-address] are additional Vulkan plumbing. Physical support is not proof of logical enablement. Keep explicit unsupported errors; do not bypass checks to make a run start. Product-level discovery/integration remains separate from this opt-in CLI. |
+| Model load and immutable weights | [`WeightTable::load`, `NativeDense` binding in generation][n-load] and native head/embedding paths bind supported model roles once. Native role/format support is broader than this Q8 target. | [`PortableModelSession::Impl`][v-model] reads the six-shard GGUF geometry and trusted expert identity; portable dense/head/FFN owners retain their copies. [`dense_resident_weights`][v-options] is still an explicit trial, not enabled by topology. Preserve dtype/provenance, including BF16 scalar recovery and BF16 indexer widening. Do not call a CPU-resident weight with repeated backend transfers equivalent to native device residency. |
+| State, scratch and schedulers | [`session_bytes`/`session_init`][n-session] carve shared GDN/QSA/MoE/block scratch and per-layer state. [`Verifier::init` and captured windows][n-verify] retain model-specific execution resources. Native packs bypass the older `SessionGraphs` route ([selection][n-window-select]). | The [model][v-model] shares GDN and QSA scratch owners per dense backend. [Device admission][v-memory] distinguishes persistent weights/state, retained schedulers/private workspace and peak temporary/conversion storage. These are GGML/backend costs, not native arena sizes. Resident/production state flags exist, but their presence does not mean a run selected them. Audit ownership and actual high-water requirements before changing a bound; an unspent conservative allowance is not measured VRAM. |
+| Reserves and expert capacity | After weights/session allocations, [generation reads current free memory][n-auto]. Auto mode prices reserve and future prompt resources; its per-layer mode computes `q = floor(min(requested byte ceiling, free room) / sum(layer slot strides))` ([implementation][n-size]). [`RemoteExperts::open`][n-helper] independently accounts for helper weights/free reserve and optionally auto-sizes. | The current [portable budget invariant][v-budget-doc] combines an independent policy ceiling, backend availability, reserve and conservative ledger. Fixed-plan mode charges **configured expert tensor plus runtime budgets** and admits the frozen plan or refuses. The [diagnostic follow-up][v-expert-preflight] exposes those operands. In explicit [native-capacity mode][v-capacity], post-dense ledger and physical-free room bound the requested byte ceiling; the native per-layer formula and exact aligned cache estimate determine capacity before plans freeze. Runtime allowances, caps and reserves remain charged. This covers per-layer primary plus one helper, not native global fill, auto tail extension, multiple helpers or adaptive policies. |
+| Primary/helper ownership and profile order | [`ExpertCache::admit`][n-admit] supports per-layer no-eviction quotas. [Profile fill][n-fill] continues past a full layer; the [helper][n-helper] selects first distinct unclaimed source-ranked pairs. Native also supports other modes, multiple helpers, auto tail extension and optional adaptation. | [`partition_native`][v-select] mirrors the fixed-slot, per-layer primary plus one-helper selection. It does not implement all those other modes. [`dense_device`][v-topology] explicitly puts dense/state/head on the primary; portable's default remains contiguous split. GPU-plan assets are sorted **after ownership selection**: physical slot numbers may differ from native fill order, so compare ownership, masks and restored route order rather than slot-number equality. No invented alternating/balanced policy belongs in the native mode. |
+| Resident experts and CPU misses | Native [`ExpertCache`][n-cache] owns persistent expert blobs; [`RemoteExperts`][n-helper] owns helper cache/resources. Uncached experts remain CPU work through the existing `ExpertPool`, not implicit graph fallback. | The opt-in [`NativeQ8Cache`][v-cache] uses bounded GGML blocks and one fixed 80-entry scratch; its [address formation][v-address] checks owners/ranges. This is new Vulkan storage plumbing, not CUDA's allocator. The older portable per-expert graph path is a separate mode. [`LocalExperts`][v-local] dispatches plan-owned entries, restores original slots, and sends misses to [the original native CPU pool][v-cpu]. Keep weight bytes, scratch, runtime allowance and CPU work distinct. |
+| Router, shared expert and combine | Native [`route_multi`][n-router], dense MMVQ/BF16 shared expert methods and [`combine_k10_vec4`][n-combine] define tie/reduction behavior and ordered first-product/FMA/shared-add arithmetic. | Vulkan [router][v-router] emulates the native logical lane order; [shared source correspondence][v-shared-doc] preserves distinct dense versus grouped reductions; [combine][v-combine] preserves K10 ordering. These are shader ports, not the native kernel binaries. Descriptor components use Logical addressing; GU/down use physical64 ([ABI distinction][v-abi]). Denorm/Exp and cross-vendor arithmetic qualifications remain explicit. Shader instruction/unit tests alone do not establish native algorithm or full-model parity. With local `--remote-expert-opt`, [native helpers weight/reduce their owned rows][n-helper-reduce] and the main device adds their partials after local combine. Portable currently restores complete unweighted rows and combines all K10 slots in original order. Matching ownership and native component arithmetic therefore do not establish the same full-FFN reduction/addition order; this remains an explicit source-level gap. The observer preserves both methods and marks unavailable complete native rows rather than stripping the helper option. |
+| Scheduling and useful overlap | [`Verifier::record_window`][n-verify] publishes routes and coordinates CPU work, cached experts and shared work; shared-stream defaults differ across CUDA/HIP where source policy warrants it. Captured execution and retained arenas are part of the native method. | [`PortableModelSession`][v-model] remains serial across layer/provider boundaries, and [`LocalExperts`][v-local] submits devices synchronously. Native-method router/shared/combine does **not** imply native fork/join overlap, helper concurrency, ring scheduling or captured execution. Preserve row association and one weighting/merge while migrating scheduling in bounded slices; do not add a generic scheduler framework or claim overlap from kernel timing. |
+| Prefill, decode and output head | Native [`Prefill`][n-prefill] owns model-specific chunks/resources; native decode uses Verifier windows, not a loop over independent diagnostic layer executables. Head/sampling behavior is part of generation. | [`generate`, `advance_chunk`, `advance` and `step`][v-generate] support bounded serial/chunked prompt processing and final-prompt head projection. Chunking, GDN batched projections/causal work and prompt-head elision are separate opt-ins. The current CLI is token-ID, greedy and context <=256; it is not native serving, long context, sampling, request batching or MTP. Preserve requested diagnostic logits while omitting only unused heads. |
+| Transfers and state authority | Native session/window state is device-authoritative in its active execution path; scratch is reused and commits follow the model's native chronology. Native CPU experts still require their intentional exchanges. | [GDN state/production][v-gdn-doc] and [QSA production ownership][v-qsa-doc] remove some mirrors when selected. Host PLE, inter-layer residual/provider transfers and explicit device commit copies remain in parts of the portable path. Diagnostic snapshots must be explicit; do not require full host mirrors in normal inference or return stale observer vectors. Production poison/reset/replay semantics differ deliberately from eager diagnostic rollback. |
+| Lifetime, reset and cleanup | [`Verifier` destruction][n-verify-free], session release and cache/helper close synchronize and free their owned resources. Reuse and conversation/checkpoint behavior are broader than one process. | Layer/session RAII, [`LocalExperts` release][v-local-free] and executor release preserve borrowed-backend lifetimes; failures poison until reset/replay where specified. A zero owned-allocation counter is not proof that driver usage has returned to baseline. Fresh/resident, cancellation, partial setup and reset tests remain necessary. External stdio supervisors and post-exit telemetry polls are test harness policy, not new native model behavior or a serving implementation. |
+| Performance and product completion | [Generation wall summaries][n-timing] distinguish prefill, decode and time-to-first-token; internal device phases have different boundaries. Native product support also includes conversation, sampling/stops, families/formats, platforms and serving. | Portable [phase receipts][v-timing-doc] are inclusive/coarse host scopes: do not sum nested phases or equate them to GPU-active time. Compare matched source/model/quantization, placement, residency, context, prompt, CPU workers, lifecycle, arithmetic and timing boundaries. A short GEN3 or synthetic addressing case is not a throughput, quality, power or product-parity result. Broader support remains tracked by #70. |
 
-## First slice: GDN production ownership
+## Capacity policy is not selection policy
 
-Normal PortableModelSession does not inspect the layer's host state vectors,
-yet GDN downloads candidate recurrence and histories every token
-([readbacks](../src/core/portable_gdn.cpp#L461)).
-Use the existing resident allocation and cached graph. Remove full state
-downloads from normal resident execution; retain the smaller residual exchange
-needed by the current FFN seam. Device copies may remain initially where
-required by the backend. Do not build a generic state framework to remove them.
+The existing fixed-slot exporter demonstrates a **selection rule**, not a fit
+calculation. A request for 20 experts per layer (960 across 48 layers) plus, for
+example, 1490 helper slots is an explicit configuration. Neither count is a
+native default, a measured fit, or an instruction to fill all VRAM. The same
+applies to older example helper counts in [PORTABLE_MODEL.md](PORTABLE_MODEL.md).
+The native per-layer flag is itself optional; the native engine also supports
+global profile fill and automatic capacity paths.
 
-Add an explicit eager diagnostic mode retaining today's full mirrors,
-intermediate finite checks, trace/state observers and rejected-candidate
-tests. Legacy const-vector observers must not return stale mirrors in
-production. Keep them diagnostic-only, or provide a checked snapshot with
-documented synchronization, failure and lifetime semantics
-([existing getters](../src/core/portable_gdn.cpp#L534)).
+The explicit native-sizing mode in PR95 implements this ordering for its bounded
+primary-plus-one-helper target; retain it when broadening support:
 
-This is a deliberate error-policy distinction. Production may advance device
-state before a later failure; poison the layer/session and require reset/replay.
-Publish position and results only after success. It need not retain diagnostic
-standalone-layer rollback. Native CUDA T1 windows self-commit
-([commit](../src/core/verify.cpp#L3264)) and guard logits on device
-([guard](../src/core/verify.cpp#L2300)), rather than maintaining full GDN host
-mirrors. Keep a bounded device logits-status guard in the production slice;
-do not replace mirrors with no numerical failure detection.
+1. Bind the selected native model/method and price or allocate dense weights,
+   session state, reusable scratch and future prompt requirements on their owners.
+2. Read current per-device free memory. Keep the configured reserve and policy
+   ceilings. Reconcile each conservative Vulkan ledger with its real resource
+   lifetimes; do not remove costs just because telemetry is smaller.
+3. Derive the expert byte ceiling from **both** remaining ledger capacity and
+   current free room. Price aligned blocks, fixed request scratch, component
+   owners and backend runtime allowance before deciding how many whole blobs fit.
+   Reserve is subtracted once in each independent admission calculation; there
+   is no credit from the other device and no double subtraction in one ledger.
+4. Apply the native per-layer stride/quota formula and original source-rank fill;
+   then select the helper's first unclaimed distinct pairs with its own capacity.
+   Only then freeze/bind the plan and allocate it. Retain native no-eviction and
+   first-occurrence/row-order behavior.
 
-Acceptance for #66:
+This is the required sequence, **not an implemented automatic Vulkan sizer**.
+The existing immutable-plan API should continue refusing a plan that does not
+fit; it must not silently resize/rebalance it. An explicit native-sizing entry
+point must resolve capacity before plan freeze. Do not manually try smaller
+quotas until one passes, turn the full configured tensor ceiling into claimed
+actual bytes, copy CUDA allocation sizes onto GGML, or weaken reserve/ABI guards.
 
-- No full recurrence/conv/PLE-history downloads during normal resident steps.
-- Eager diagnostics preserve state/trace values, finite failure behavior and
-  rollback tests; trace requests select or require this mode.
-- Matched same-backend successful execution preserves arithmetic and routes.
-- Backend/provider/nonfinite failure poisons production; another step refuses.
-  Reset/replay recovers, and reset failure remains poisoned.
-- Memory admission, inspection behavior and readback/timing counters describe
-  each policy. Diagnostic read counts are not product correctness requirements.
+Before changing sizing, distinguish three possibilities using recorded operands:
+insufficient real free memory, conservative resources genuinely retained by this
+backend, or a demonstrated accounting/lifetime mismatch. Only the last permits
+an accounting correction, with proof that the resource is shared, temporary or
+otherwise already charged. Allocator/BDA support removes addressing limits; it
+does not settle how much memory the model should retain.
 
-## Execution work after GDN
+## Ordered implementation slices and acceptance
 
-**QSA:** reuse bounded attention execution first, then append KV/indexer state
-on device. Project/pool/combine graphs already persist; attention does not
-([construction](../src/core/portable_qsa.cpp#L464)).
-Test partial blocks, pooled spare/tail behavior, reset A/B/A, ties, capacity
-and sparse selection transitions. The assembled 256-position path does not
-qualify selection beyond the 2051-cell cutoff. Bound retained graph/workspace
-memory instead of retaining every possible shape without admission.
+Each slice uses the existing model/components and harnesses. Its change should
+name a row above, the native reference function, the intended semantic result
+and its decisive test. Test constants and private operator scripts do not become
+production defaults. Keep failed runs and unsupported cases visible.
 
-**Shared and routed experts:** follow native route publication and shared
-fork/join
-([native scheduling](../src/core/verify.cpp#L1982)).
-Preserve original masks, slot order and exactly one weighting/merge.
-Group entries without silently changing the current hybrid Q8 arithmetic.
-Measure actual overlap and exposed wall time. CUDA/HIP already use different
-shared-stream defaults where measurements justify it
-([backend policy](../src/core/verify.cpp#L254)); Vulkan needs its own evidence.
+Post-dense accounting and native quota/rank/helper-exclusion planning are
+implemented and have bounded admission evidence. Preserve the conservative
+ledger, measured allocations, byte ceilings/reserve and fixed-plan refusal
+semantics. This is a shared prerequisite, not a new sizing policy to redesign
+for each capability below.
 
-**Prefill:** follow the existing model-specific
-[Prefill decomposition](../include/strata/prefill/prefill.hpp).
-Start with small single-sequence chunks. Compare serial/chunked states at
-tails and arbitrary segmentation, including GDN, QSA and PLE history. Preserve
-final-prompt logits for first-token selection, and compute requested diagnostic
-rows. Skip other unused vocabulary projections. Multi-request batching and
-MTP are later work, not prerequisites.
+1. **Generalize the tested serial HC policy to ordinary boundaries once.**
+   The reusable GDN/QSA cycle is implemented and has bounded real-model evidence
+   in PR110/111. [PR112](https://github.com/Zutfen-LLC/Strata/pull/112), source
+   `de94a24edf0c9ebcc7933fd080251479e8274d4a`, adds one default-disabled ordinary
+   serial scope using native `pre`/`post` predicates, actual post-projection
+   tuples, existing components and state transactions. It preserves layer1 PLE,
+   materializes the nonfused final FFN write and refuses unported split/fused-head
+   modes. All 48 product predicates, shared-scratch family composition and the
+   final-layer write/rollback/reset are CPU-tested; HC device arithmetic is mocked.
+   Broad-scope admission succeeded, while the on request stopped at a normal-only
+   sigmoid guard. [PR113](https://github.com/Zutfen-LLC/Strata/pull/113) retained
+   the actual rejected operands. [PR114](https://github.com/Zutfen-LLC/Strata/pull/114)
+   preserves native exp/add/divide and admits only checked finite-input tail
+   identities. Its tiny same-input native/Vulkan gate passed each backend's
+   original expression controls and exact tail identities; normal cross-backend
+   bit differences remain. The finite-exp/subnormal-reciprocal transition is still
+   unsupported. The rebuilt corrected ordinary on arm completed one original
+   bounded request with admitted frozen placement and finite generated output.
+   All ordinary paid-work counters, own-input numerical checks, finite head/route
+   receipts, process exit and baseline cleanup passed. All 283 actual HC modules
+   validated; a post-run checker classification error was corrected offline while
+   preserving its original STOP, without a model rerun. This establishes functional
+   ordinary serial coverage for that request and removes the diagnosed layer38
+   position2 refusal. It is not a corrected-source reset pair, full native
+   numerical/state equivalence, native PLE/head/QSA numerical or window-scheduling
+   parity. Defaults remain disabled and the finite-exp/subnormal-reciprocal
+   transition remains unsupported.
 
-## Preserve correctness accommodations
+   The combined validation first prices selected banks and existing buffer/host
+   envelopes, then uses original post-dense planning before any model requests.
+   Keep the cycle profile as a matched control. For this 48-layer geometry,
+   attention layers 2–47 and FFN layers 2–47 add, relative to the current on profile,
+   32 GDN attention conversions, 11 resident QSA HC banks and 44 resident generic
+   native FFN banks. Before alignment, these add 197,836,800 + 145,530,880
+   + 812,810,240 = 1,156,177,920 persistent bank bytes. Shared expert banks are already
+   resident and are not added again. Current conservative additional host bounds
+   are about 781,582,336 bytes, including deferred tuples and a materialized final
+   write. Raw additional component tensor payload is about 23.6 MB; alignment,
+   pipeline metadata/private workspaces and changes in replaced GGML schedulers
+   still require the real ledger. These are estimates, not VRAM observations,
+   fit guarantees or permission to lower bounds. The native planner must derive
+   expert capacity after the actual new dense ledger; do not preserve a quota by
+   inventing streaming, compression or rebalancing. If dense admission itself
+   cannot fit, stop scope expansion and work on numerical-family ports within
+   the already admitted cycle instead.
 
-The [per-head QSA attention](../src/core/portable_qsa_graph.hpp#L6)
-works around a documented pinned-backend regression. Keep it until the
-affected regression and all-head/cache-length tests pass. Exact BF16 indexer
-widening and stable routing/selection tie handling also remain deliberate
-policies. Scheduler placement does not remove coordinator host transfers,
-and intentional CPU experts are distinct from implicit CPU graph fallback.
+   Exceptions remain precise: first-layer attention has no prior write; layer 1
+   PLE materializes and applies its operation before HC (`verify.cpp:1230–1310`),
+   and the current GDN native-HC implementation still refuses a PLE graph.
+   Preserve that separate branch rather than enabling HC before PLE. Prior
+   control-vector coverage clears pending and current coverage materializes as
+   part of `cvec_apply` (`post`, 2223–2231); unsupported control modes must refuse,
+   not be approximated by the predicate alone. At layer 47, the native non-fused
+   variant uses `gr_write` before global-head HC; `STRATA_FUSE_HEAD_GR=1` selects
+   a different pending-to-head path (`verify.cpp:2075–2081,2223–2287`). Preserve the
+   selected variant and refuse unsupported fusion; the existing write component
+   can express the non-fused endpoint but does not port head arithmetic. Split
+   handoffs must follow native transport boundaries; none is inferred from the
+   current primary-dense layout. PLE, control, global head/fusion and split work
+   are distinct source-defined capabilities, not ordinary-layer exceptions to
+   silently bypass.
 
-## Product breadth and completion
+   Acceptance is a parameterized full-boundary/geometry/admission test, existing
+   family cycle controls, and one combined fresh-planning/same-image diagnostic
+   with actual role/tuple provenance and reset. Reuse numerical contracts and
+   bounded relevant receipts, not a new capture or per-layer audit campaign.
+   This closes structural ordinary serial-HC coverage; it does not establish
+   native GDN/QSA arithmetic, full model quality or window/state parity. Native
+   numerical-family work follows; window scheduling should not capture an
+   unqualified numerical method merely to produce a speed result.
+2. **Port the remaining native numerical primitives by algorithm family.**
+   HC method selection does not port dense projection, GDN recurrent math,
+   QSA norm/RoPE/indexer/pooling/selection/attention/output, head math or every
+   expert format. Use the selected native `record_window` calls and their
+   existing kernel launchers as the specification, identical inputs and existing
+   deliberate intrinsic contracts. Preserve dtype conversion, masks/ties,
+   accumulation/reduction association and local-helper partial-reduction order;
+   portable original-row combine is not automatically identical to native
+   helper reduction. Group shared primitives and shape families, not layer
+   numbers. Component controls must reject incorrect math; model quality and
+   first-divergence diagnostics remain separate from own-input correctness.
 
-#70 tracks quant-role coverage; context/RoPE/KV options; sampler/stops;
-conversation checkpoints; serving/cancellation/Windows lifecycle;
-multi-GPU stages/capacity; independent request batching and MTP; and model
-families/vision. Implement those as focused changes, with truthful unsupported
-configuration errors. Dense, head and expert quant support must be listed
-separately.
+   [PR115](https://github.com/Zutfen-LLC/Strata/pull/115) implements the ordinary
+   T1 GDN recurrence/output norm/gate component. The actual unchanged native
+   launcher and Vulkan pass zero/sparse/dense own-primitive state/output controls,
+   reset/repeat and module protections; the selected native delta contraction
+   matched. Dense cross-backend bits differ and remain diagnostic. An operand-free
+   NoContraction parser correction reused the original outputs offline; it changed
+   no shader, compiler flag or numerical policy.
 
-Reuse [#23](https://github.com/Zutfen-LLC/Strata/issues/23) for worker
-qualification, [#26](https://github.com/Zutfen-LLC/Strata/issues/26) for GPU
-transport security, and [#11](https://github.com/Zutfen-LLC/Strata/issues/11)
-for distributed latency. This roadmap does not duplicate their protocols.
+   [PR116](https://github.com/Zutfen-LLC/Strata/pull/116) wires that same method into
+   the model's existing shared serial schedulers and eager candidate/commit path,
+   default-disabled, for ordinary GDN layers with layer1 PLE explicitly unchanged.
+   Resident state/weights, aligned banks and an additional explicit host allowance
+   remain subject to original admission/planning. Source tests cover shared warming,
+   actual graph state progression, failure noncommit and reset; recurrence device
+   arithmetic is mocked there. The initial model diagnostic admitted its native
+   placement but stopped at a normal-only decay-log guard. The correction at
+   `9da19578577db7d7b72a1d63a25b93837b993bc8` preserves native exp/add/divide/FMA
+   order, admitting legitimate exp underflow and the established sigmoid tails;
+   subnormal recurrence and unqualified transition classes still refuse. Reported
+   native/Vulkan tiny checks pass the original failure input and tail boundaries.
 
-Use focused fixtures and existing harnesses. Keep operator references,
-same-backend replay, cross-backend numerical screens and task accuracy
-separate: matching tokens alone proves none of the other gates. Performance
-comparisons must match arithmetic, residency, placement, process lifecycle
-and timing boundaries. Record specific backend limitations or measured
-deviations in each child issue. This document changes no runtime defaults.
+   The corrected on-model continuation passes fresh admission and exact retained
+   ownership, one load and two reset-separated 25-token/GEN3 requests. Seven tests,
+   first-call GDN source-order/candidate-commit checks, all 35 GDN module uses and
+   exact within-arm reset replay pass; the process is reaped and three baseline
+   cleanup observations pass. The prior control is original-image evidence only,
+   not a corrected-image same-image comparison. This removes the decay refusal for
+   these bounded requests; `qualified=false`, full numerical/state/window parity
+   and quality/performance remain unclaimed. Original stopped results are retained.
+
+   [PR117](https://github.com/Zutfen-LLC/Strata/pull/117) ports standalone native
+   T1 convolution/SiLU/q-k L2 and verify/commit history. Reported native/Vulkan
+   zero/sparse/dense source-order/primitive/reset checks pass; history is exact
+   across backends, and dense h differences remain diagnostic. Vulkan module,
+   alias/noncommit/retry/canary and both lifecycle/cleanup checks pass. The original
+   output-name runner STOP is preserved and corrected offline/additively; native
+   zero/build were reused. No model or a/b qualification follows; `qualified=false`.
+
+   The native specification for this port is the ordinary T1 recurrence and output norm/gate
+   selected by `Verifier::record_window()` (`verify.cpp:1510–1531`) through
+   `gdn_step_norm_multi()` and `gdn_step_norm_multi_kernel()`
+   (`src/kernels/cuda/verify_kernels.cu:286–383,1111–1165`). The default portable counterpart
+   still composes `ggml_gated_delta_net`, RMS norm and sigmoid in
+   `PortableGdnLayer::Impl::build_tail()` (`portable_gdn.cpp:195–218`); HC coverage
+   does not qualify that method. Port the native state-row layout, FMA chains,
+   four row-group reductions, output scale/norm/gate order and selected T1 state
+   update, adapting only Vulkan storage/submission and transaction ownership.
+   Start with identical synthetic post-convolution q/k/v, gate/beta, z, gamma
+   and state, compare output and next state against the existing native launcher,
+   and reuse deliberate intrinsic bounds. No fresh model capture is needed for
+   that development. PR117 now has bounded standalone convolution/L2 evidence;
+   model integration remains separate. The next unresolved numerical dependency
+   is `gdn_ab_multi()` softplus/log1pf selected by `Verifier::record_window()`.
+   PR118 tests the existing Metal compensated positive expression against actual
+   CUDA log1pf before any a/b integration; its tighter native accuracy requirement
+   remains a gate even if the weaker Vulkan log primitive guarantee passes.
+   The PR118 hardware probe failed its frozen one-adjacent-step target: CUDA
+   log1pf passed all cases, while Vulkan's existing Metal compensated expression
+   was two steps low for a near-exp(20) boundary input. Its emitted module passed
+   validation; this is a numerical dependency STOP, not model qualification.
+   Native uses a strict v>20 bypass, so equality still consumes exp/log1pf.
+   Retained intermediates attribute the extra step to division: the Vulkan log
+   is one representable step low, multiplication is RNE, and division is one
+   further step below its RNE quotient. Both primitive bounds pass while the
+   composed native-accuracy target fails. Existing native_f32_div_rn.glsl would
+   remove that division step for this element, but is not log1pf or evidence of
+   general compensated accuracy. Complete retained counterfactuals now show
+   RNE division alone still fails boundary/ordinary inputs; ideal-log/RNE-division
+   controls pass, and CUDA's compensated diagnostic also retains a failure.
+   No qualified log1p implementation exists in current Vulkan dependencies.
+   LLVM libc's [existing correctly rounded log1pf](https://github.com/llvm/llvm-project/blob/main/libc/src/__support/math/log1pf.h)
+   is an external candidate with Apache-2.0/LLVM-exception licensing and FP64
+   arithmetic/support requirements. ROCm OCML's [FP32 expansion implementation](https://github.com/ROCm/ROCm-Device-Libs/blob/amd-stg-open/ocml/src/log1pF.cl)
+   uses NCSA-licensed AMD builtin/expansion helpers; the required Vulkan accuracy
+   is not established. Selecting either is a separate backend primitive port,
+   preserving native's outer softplus method, not an already-qualified shader.
+   PR119 now implements a separate standalone adapter of pinned LLVM libc's
+   accurate non-FMA/RNE configuration, preserving original coefficients/tables
+   and in-domain hard cases. It requires actual logical FP64 and 64-bit RTE/signed
+   controls. Its bounded four-fixture native/Vulkan hardware comparison now
+   passes: Vulkan matches the original LLVM oracle/FP64 controls and RNE exactly;
+   native CUDA log1pf stays within the unchanged gate. Cleanup passes; sampling
+   is discrete with no Vulkan in-loop sample. This is primitive evidence only.
+   It does not change the frozen gate, native outer softplus method or
+   PR118's failed result. No a/b integration or default enablement follows.
+   PR120 now ports ordinary T1 gdn_ab_multi as a standalone component: native
+   BF16 rows, continuous per-lane FMA across chunks, XOR reduction, strict v>20
+   bypass and gate/beta order. Local source-order/numerical/module tests pass;
+   Hermes reports all four native/Vulkan cases and cleanup passed. Native had
+   four in-loop guard samples; Vulkan had none. This is bounded component
+   evidence, not model parity. PR121 (`afe94b9af3dda841b9c9cb308576a77d60bd2191`)
+   now adds the explicit default-disabled ordinary T1 model seam: matched
+   compat-BF16 alpha/beta replacement, completed QKV/mixed borrowing, reused
+   recurrence candidate leaves, aligned reservation and existing commit/rollback.
+   Fourteen local tests and the isolated generated workflow pass. Hermes now
+   reports a successful bounded same-image model comparison with fresh native
+   planning and two reset-separated requests per arm. The on arm runs actual
+   convolution, a/b and recurrence on all 35 ordinary layers; PLE/QSA remain
+   excluded. First-layer source-order/intrinsic controls, exact H/gate/beta
+   producer links, accepted history/state commit, protected modules and within-arm
+   head/route/state-digest reset replay pass. The initial harness STOP rejected a
+   valid LLVM capability receipt before READY; an exact-schema classifier repair
+   reused the successful build/control/plans and ran only the new on arm. The
+   original STOP is preserved. Cross-arm generated IDs match, but routes and
+   matching-history logits differ; these are diagnostics, not numerical parity.
+   Owned exit/reap and three baseline cleanup observations pass. This establishes
+   bounded ordinary T1 integration only: qualified=false, full native numerical,
+   accepted-prefix/window, quality and performance parity remain unproven.
+   Layer1 PLE stays unchanged.
+   The default model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
+   projections also remain separate upstream work; do not attribute unequal model
+   outputs to recurrence without equal inputs. Accepted-prefix commit and window
+   scheduling follow numerical-family coverage, rather than capturing the
+   current GGML graph and calling it the native method.
+3. **Replicate native state authority and commit/restore.** Native
+   `Verifier::capture_commit()`/`Verifier::commit()` and restore paths handle GDN history/state and
+   QSA KV/indexer tails for the accepted prefix. Reuse the existing session
+   owners; port those transitions and remove host mirrors only when ownership
+   and lifetime are proved. Test accepted-prefix/tail, reset A/B/A, failures,
+   partial setup and bounded retained memory. Eager rollback and production
+   poison/reset are different contracts; neither is evidence of speculative
+   native-window commit parity. Keep unsupported combinations refusing.
+4. **Replicate the native window's execution dependencies.** Port the selected
+   `record_window()` group order, route publication, CPU/helper work, shared
+   fork/join and reusable execution resources to Vulkan submissions/barriers.
+   Device commands differ; the dependency graph and arithmetic policy do not.
+   Then cover native T1/T8/prefill/decode windows and accepted-prefix commit,
+   followed by the selected speculative/batching behavior. Do not introduce a
+   generic replacement scheduler or infer overlap from individual kernel time.
+   Check row association, one weighting/combine, segmentation/tails, final-prompt
+   heads and state; measure actual transfers/submissions and bounded allocations.
+5. **Handle native boundary exceptions and product coverage explicitly.**
+   Layer0 starts without a prior pending tuple; layer1 PLE must materialize and
+   apply its history-dependent operation first (`pre`, lines1230–1310).
+   Control-vector coverage materializes before its operation, final-layer/head
+   paths may use `gr_write` or fused head-GR, and pipeline handoff must express
+   native transport boundaries (`post`/head, lines2223–2285). These are distinct
+   source-defined behaviors, not reasons for inventing per-layer policies.
+   Keep currently unsupported control/split/head-fusion modes explicit until
+   ported. Broaden context/KV formats, quant roles, sampler/stops/checkpoints,
+   serving/cancellation and model families using their existing native methods.
+   Run matched native/Vulkan end-to-end quality and performance only for an
+   explicitly supported configuration; token matches alone are not quality,
+   native arithmetic, full-HC or speed qualification.
+
+Preserve existing correctness accommodations while migrating: the
+[pinned-backend per-head QSA graph][v-qsa-graph], exact BF16 indexer widening and
+stable tie behavior must not be removed as incidental optimization. Replace a
+workaround only after its affected regression and full relevant shape/cache tests
+pass. Worker qualification, transport/security and distributed latency remain in
+[#23](https://github.com/Zutfen-LLC/Strata/issues/23),
+[#26](https://github.com/Zutfen-LLC/Strata/issues/26) and
+[#11](https://github.com/Zutfen-LLC/Strata/issues/11); this map does not introduce
+another worker protocol.
+
+## Decisions to make explicitly
+
+No user decision is needed to preserve current guards or document an existing
+gap. Before broadening a slice, agree which native configuration is the target:
+per-layer or global fill, fixed or auto capacity, helper count, prompt mode and
+supported model/quant roles. These are native choices, not interchangeable flags.
+Choose cross-backend acceptance criteria before declaring parity; strict
+per-boundary identity, allowed numerical differences and task quality must not
+be silently substituted for one another. User-set reserves/caps remain binding;
+a platform-specific change needs separate evidence and a visible decision.
+
+Keep private hardware results, operator paths and artifact links out of this
+public map. Refer to source/test contracts here; retain execution evidence in
+its appropriate private location. This document changes no runtime default and
+does not authorize a new physical run.
+
+[n-device]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/core/device.cu#L78
+[n-load]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/program/generate.cpp#L4012
+[n-session]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/core/session.cpp#L56
+[n-verify]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/core/verify.cpp#L659
+[n-window-select]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/program/generate.cpp#L7219
+[n-auto]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/program/generate.cpp#L6087
+[n-size]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/program/generate.cpp#L6234
+[n-helper]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/core/remote_experts.cpp#L135
+[n-admit]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/core/expert_cache.cpp#L643
+[n-fill]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/program/generate.cpp#L6445
+[n-cache]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/core/expert_cache.cpp
+[n-router]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/kernels/cuda/native_router.cu#L100
+[n-combine]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/kernels/cuda/native_moe.cu#L66
+[n-prefill]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/include/strata/prefill/prefill.hpp
+[n-verify-free]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/core/verify.cpp#L586
+[n-timing]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/program/generate.cpp#L16981
+[v-main]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/portable_model_main.cpp#L304
+[v-address]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/strata_vk_q8_gu.inc#L10
+[v-model]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/portable_model.cpp
+[v-options]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/include/strata/core/portable_model.hpp#L51
+[v-memory]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/portable_memory.hpp#L40
+[v-budget-doc]: PORTABLE_DEVICE_BUDGETS.md
+[v-expert-preflight]: https://github.com/Zutfen-LLC/Strata/blob/97fc53b522683bb8d978ae99782dacb4f5012c1b/src/core/portable_memory.hpp#L37
+[v-select]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/tools/export_local_ranked_assignments.py#L89
+[v-topology]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/portable_topology.hpp#L6
+[v-cache]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/worker/vulkan_native_q8_cache.hpp#L40
+[v-local]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/portable_local_experts.cpp#L130
+[v-cpu]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/portable_cpu_experts.hpp#L270
+[v-router]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/kernels/vulkan/native_router.comp#L1
+[v-shared-doc]: native-shared-vulkan.md#native-binding-and-arithmetic
+[v-combine]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/kernels/vulkan/native_moe_combine.comp#L15
+[v-abi]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/native_q8_gu_spirv.hpp#L21
+[v-generate]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/portable_model.cpp#L721
+[v-gdn-doc]: PORTABLE_MODEL.md#gdn-execution-policy
+[v-qsa-doc]: PORTABLE_MODEL.md#qsa-device-state-policy
+[v-local-free]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/portable_local_experts.cpp#L115
+[v-timing-doc]: PORTABLE_MODEL.md#coarse-model-phase-totals
+
+[v-qsa-graph]: https://github.com/Zutfen-LLC/Strata/blob/847336f4e22066b48ac7665da1a74881de1df9a5/src/core/portable_qsa_graph.hpp#L6
+
+[v-capacity]: https://github.com/Zutfen-LLC/Strata/blob/0216ec9b79f8109e160affa73bb5526b71466874/src/core/portable_model.cpp#L403
+
+[n-helper-reduce]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/core/remote_expert_opt.cu#L23
