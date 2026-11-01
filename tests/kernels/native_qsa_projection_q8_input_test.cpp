@@ -2,6 +2,7 @@
 using namespace native_projection_q8;
 int main(int argc,char**argv){try{
     if(argc==4 && std::string(argv[1])=="--synthetic"){write(argv[3],synthetic(std::stoul(argv[2])));return 0;}
+    if(argc==3 && std::string(argv[1])=="--validate"){(void)read(argv[2]);return 0;}
     if(argc==4 && std::string(argv[1])=="--contract"){contract(read(argv[2]),argv[3]);return 0;}
     if(argc==4 && std::string(argv[1])=="--check"){auto x=read(argv[2]);auto q=load(argv[3]);pinned(q);return 0;}
     if(argc==4 && std::string(argv[1])=="--host-control"){auto x=read(argv[2]);save(argv[3],quantize(x));return 0;}

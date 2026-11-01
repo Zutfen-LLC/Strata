@@ -52,7 +52,10 @@ check the hashes before using the existing guarded native-then-Vulkan workflow.
 Both producer binaries offer `--contract FIXTURE OUTPUT` without initializing a
 backend. The output contract requires `qx.bin` of exactly 6,912 bytes. Compare
 results with `tools/native_qsa_projection_q8_numeric.py --fixture FIXTURE
---native NATIVE_DIRECTORY --vulkan VULKAN_DIRECTORY`. Both actual producer exit
+--fixture-sha256 FROZEN_HASH --validator CONTROL --validator-sha256 CONTROL_HASH
+--native NATIVE_DIRECTORY --vulkan VULKAN_DIRECTORY`. The checker hashes the
+fixture and validator and invokes the compiled control to validate a copy of the
+exact fixture bytes before comparing outputs. Both actual producer exit
 statuses, canary/repeat reports, effective module, fixture identity and guarded
 runner lifecycle must also pass. Preserve raw outputs and failure receipts.
 
