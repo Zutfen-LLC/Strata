@@ -554,10 +554,27 @@ for each capability below.
    numbers. Component controls must reject incorrect math; model quality and
    first-divergence diagnostics remain separate from own-input correctness.
 
-   The next concrete port is the ordinary T1 GDN recurrence and output norm/gate
+   [PR115](https://github.com/Zutfen-LLC/Strata/pull/115) implements the ordinary
+   T1 GDN recurrence/output norm/gate component. The actual unchanged native
+   launcher and Vulkan pass zero/sparse/dense own-primitive state/output controls,
+   reset/repeat and module protections; the selected native delta contraction
+   matched. Dense cross-backend bits differ and remain diagnostic. An operand-free
+   NoContraction parser correction reused the original outputs offline; it changed
+   no shader, compiler flag or numerical policy.
+
+   [PR116](https://github.com/Zutfen-LLC/Strata/pull/116) wires that same method into
+   the model's existing shared serial schedulers and eager candidate/commit path,
+   default-disabled, for ordinary GDN layers with layer1 PLE explicitly unchanged.
+   Resident state/weights, aligned banks and an additional explicit host allowance
+   remain subject to original admission/planning. Source tests cover shared warming,
+   actual graph state progression, failure noncommit and reset; recurrence device
+   arithmetic is mocked there. A fresh same-image model comparison is prepared,
+   not yet evidence. No native window/accepted-prefix or full-model parity follows.
+
+   The native specification for this port is the ordinary T1 recurrence and output norm/gate
    selected by `Verifier::record_window()` (`verify.cpp:1510–1531`) through
    `gdn_step_norm_multi()` and `gdn_step_norm_multi_kernel()`
-   (`src/kernels/cuda/verify_kernels.cu:286–383,1111–1165`). The portable counterpart
+   (`src/kernels/cuda/verify_kernels.cu:286–383,1111–1165`). The default portable counterpart
    still composes `ggml_gated_delta_net`, RMS norm and sigmoid in
    `PortableGdnLayer::Impl::build_tail()` (`portable_gdn.cpp:195–218`); HC coverage
    does not qualify that method. Port the native state-row layout, FMA chains,
