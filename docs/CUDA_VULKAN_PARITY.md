@@ -488,9 +488,17 @@ for each capability below.
    identities. Its tiny same-input native/Vulkan gate passed each backend's
    original expression controls and exact tail identities; normal cross-backend
    bit differences remain. The finite-exp/subnormal-reciprocal transition is still
-   unsupported. One guarded on-arm model continuation is pending, with actual
-   model rebuild and fresh admission required. No native PLE/head/QSA numerical,
-   window-scheduling or full-model parity follows from this gate.
+   unsupported. The rebuilt corrected ordinary on arm completed one original
+   bounded request with admitted frozen placement and finite generated output.
+   All ordinary paid-work counters, own-input numerical checks, finite head/route
+   receipts, process exit and baseline cleanup passed. All 283 actual HC modules
+   validated; a post-run checker classification error was corrected offline while
+   preserving its original STOP, without a model rerun. This establishes functional
+   ordinary serial coverage for that request and removes the diagnosed layer38
+   position2 refusal. It is not a corrected-source reset pair, full native
+   numerical/state equivalence, native PLE/head/QSA numerical or window-scheduling
+   parity. Defaults remain disabled and the finite-exp/subnormal-reciprocal
+   transition remains unsupported.
 
    The combined validation first prices selected banks and existing buffer/host
    envelopes, then uses original post-dense planning before any model requests.
@@ -545,6 +553,24 @@ for each capability below.
    helper reduction. Group shared primitives and shape families, not layer
    numbers. Component controls must reject incorrect math; model quality and
    first-divergence diagnostics remain separate from own-input correctness.
+
+   The next concrete port is the ordinary T1 GDN recurrence and output norm/gate
+   selected by `Verifier::record_window()` (`verify.cpp:1510–1531`) through
+   `gdn_step_norm_multi()` and `gdn_step_norm_multi_kernel()`
+   (`src/kernels/cuda/verify_kernels.cu:286–383,1111–1165`). The portable counterpart
+   still composes `ggml_gated_delta_net`, RMS norm and sigmoid in
+   `PortableGdnLayer::Impl::build_tail()` (`portable_gdn.cpp:195–218`); HC coverage
+   does not qualify that method. Port the native state-row layout, FMA chains,
+   four row-group reductions, output scale/norm/gate order and selected T1 state
+   update, adapting only Vulkan storage/submission and transaction ownership.
+   Start with identical synthetic post-convolution q/k/v, gate/beta, z, gamma
+   and state, compare output and next state against the existing native launcher,
+   and reuse deliberate intrinsic bounds. No fresh model capture is needed for
+   that development. Convolution/L2, a/b projections and dense quantized
+   projections remain separate upstream work; do not attribute unequal model
+   outputs to recurrence without equal inputs. Accepted-prefix commit and window
+   scheduling follow numerical-family coverage, rather than capturing the
+   current GGML graph and calling it the native method.
 3. **Replicate native state authority and commit/restore.** Native
    `Verifier::capture_commit()`/`Verifier::commit()` and restore paths handle GDN history/state and
    QSA KV/indexer tails for the accepted prefix. Reuse the existing session
