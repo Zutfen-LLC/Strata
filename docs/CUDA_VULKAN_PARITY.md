@@ -261,8 +261,14 @@ with actual per-arm admission under the same caps and reserve. No default is
 enabled. The next concrete method gap is one ordinary inter-layer pending
 transition: retain the layer-1 FFN producer tuple and fold its write into layer-2
 attention HC read, as native `verify.cpp` does for non-PLE/control boundaries.
-Start with synthetic two-layer producer/consumer tests; existing layer-0 roles
-suffice for those development fixtures. Real-boundary validation would need
+[Draft PR #108](https://github.com/Zutfen-LLC/Strata/pull/108) now implements
+that default-disabled ordinary layer1-to-layer2 carry. Local actual two-layer
+coordinators, shared-scratch lifetime, independent FMA/materialized control,
+rollback/reset, accounting/refusal, actual CLI and CPU model default-output
+regressions pass. Layer1 PLE and its upstream producer methods are preserved;
+carrying their actual tuple does not qualify those methods as native-equivalent.
+The small synthetic Vulkan probe is prepared but unrun. Existing layer-0 roles
+suffice for its clearly labelled development fixtures. Real-boundary validation would need
 the corresponding actual tuple and layer-2 HC roles, checking retained data
 before requesting a new capture. Keep layer-0 materialization before PLE and
 control/head rules separate. See the [earlier producer/read scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
