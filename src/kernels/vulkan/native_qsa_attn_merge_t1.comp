@@ -1,0 +1,40 @@
+#version 450
+// Native qsa_decode_attn.cu::attn_merge_kernel, default Ampere.
+// MIT License
+//
+// Copyright (c) 2026 Niko1221 and the Strata contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427) float nfma(float a,float b,float c);
+#extension GL_GOOGLE_include_directive : require
+#include "native_f32_div_rn.glsl"
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer S{float scratch[];};
+layout(binding=1,std430) writeonly buffer O{float attn[];};
+layout(binding=2,std430) buffer A{float aux[];};
+layout(binding=3,std430) buffer E{uint status[];};
+layout(push_constant) uniform Params{uint off[4];}p;
+float ck(float v){uint a=floatBitsToUint(v)&0x7fffffffu;if(a>=0x7f800000u||(a!=0u&&a<0x800000u))atomicOr(status[p.off[3]],1u);return v;}
+float maximum(float a,float b){return a==0.0&&b==0.0?uintBitsToFloat(floatBitsToUint(a)&floatBitsToUint(b)):max(a,b);}
+void main(){uint h=gl_WorkGroupID.x,d=gl_LocalInvocationID.x,kvh=h/12u,hl=h%12u;float M=-uintBitsToFloat(0x7f7fffffu);for(uint c=0u;c<33u;++c)M=maximum(M,scratch[p.off[0]+202752u+(kvh*33u+c)*12u+hl]);
+ precise float L=0.0,acc=0.0;for(uint c=0u;c<33u;++c){uint slot=kvh*33u+c;float m=scratch[p.off[0]+202752u+slot*12u+hl];if(m==-uintBitsToFloat(0x7f7fffffu))continue;precise float delta=ck(m-M);float w=ck(exp(delta));if(d==0u)aux[p.off[2]+h*33u+c]=w;L=ck(nfma(ck(scratch[p.off[0]+203544u+slot*12u+hl]),w,L));acc=ck(nfma(ck(scratch[p.off[0]+(slot*12u+hl)*256u+d]),w,acc));}
+ if(d==0u){aux[p.off[2]+792u+h]=M;aux[p.off[2]+816u+h]=L;}aux[p.off[2]+840u+h*256u+d]=acc;
+ float outv=L>0.0?ck(uintBitsToFloat(strata_f32_div_rn_bits(floatBitsToUint(acc),floatBitsToUint(L)))):0.0;attn[p.off[1]+h*256u+d]=outv;
+}

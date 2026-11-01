@@ -711,6 +711,11 @@ for each capability below.
    same-image arm, exited/reaped children/controller and no sealed STOP.
    Context 256 exercises identity selection only; full native attention/window
    parity remains unproven. See [model scope](native-qsa-score-select-model-t1.md).
+   The next standalone [FP16 T1 attention component](native-qsa-attention-t1.md)
+   follows the existing native chunk/merge and separate gate launchers. Local
+   Vulkan/host/source-order/intrinsic/module/output-contract checks pass; native
+   compilation and physical comparison are pending. It does not enable a model
+   path or port quantized KV, projections, accepted-prefix or window scheduling.
 
 
 
