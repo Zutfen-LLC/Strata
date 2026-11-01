@@ -584,6 +584,14 @@ for each capability below.
    these bounded requests; `qualified=false`, full numerical/state/window parity
    and quality/performance remain unclaimed. Original stopped results are retained.
 
+   [PR117](https://github.com/Zutfen-LLC/Strata/pull/117) ports standalone native
+   T1 convolution/SiLU/q-k L2 and verify/commit history. Reported native/Vulkan
+   zero/sparse/dense source-order/primitive/reset checks pass; history is exact
+   across backends, and dense h differences remain diagnostic. Vulkan module,
+   alias/noncommit/retry/canary and both lifecycle/cleanup checks pass. The original
+   output-name runner STOP is preserved and corrected offline/additively; native
+   zero/build were reused. No model or a/b qualification follows; `qualified=false`.
+
    The native specification for this port is the ordinary T1 recurrence and output norm/gate
    selected by `Verifier::record_window()` (`verify.cpp:1510–1531`) through
    `gdn_step_norm_multi()` and `gdn_step_norm_multi_kernel()`
