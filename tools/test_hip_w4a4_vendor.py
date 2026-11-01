@@ -4,7 +4,7 @@ No GPU compiler is substituted for a claimed compile: this is a host CMake test.
 from pathlib import Path
 import json,tempfile,subprocess,sys,shutil
 source=Path(sys.argv[1]).resolve() if len(sys.argv)>1 else Path(__file__).resolve().parents[1]
-cmake=shutil.which('cmake');assert cmake,'CMake required'
+cmake=sys.argv[2] if len(sys.argv)>2 else shutil.which('cmake');assert cmake and Path(cmake).is_file(),'recorded CMake executable required (optional second argument)'
 s=(source/'CMakeLists.txt').read_text();start=s.index('    set(_strata_w4a4_archs ');end=s.index('    # STRATA_MMQ_TAB:',start);block=s[start:end]
 with tempfile.TemporaryDirectory(prefix='hip-w4a4-cmake-') as tmp:
  root=Path(tmp);(root/'src/prefill').mkdir(parents=True);(root/'src/prefill/mmq_nvfp4_w4a4.cu').write_text('int w4a4_fixture;\n');(root/'other.cpp').write_text('int unrelated_fixture;\n')
