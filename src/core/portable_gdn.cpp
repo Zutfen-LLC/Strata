@@ -740,7 +740,7 @@ struct PortableGdnLayer::Impl {
         require(!options.execution.native_hc_pending_read,"portable GDN: configure FFN read through layer option, not raw execution option");
         require(!options.native_hc_ffn_read || (options.native_hc_mix &&
                 (!options.native_hc_pending || portable_detail::native_hc_boundary(int(layer)).pending_attention) &&
-                options.execution.resident_dense_weights && !options.execution.layer0_observer),
+                (options.execution.resident_dense_weights || options.resident_ffn_weights) && !options.execution.layer0_observer),
                 "native GDN-to-FFN: composed attention/resident dense required; legacy observer unsupported");
         require(!options.native_hc_pending||options.native_hc_mix,"native HC pending: composed read required");
         require(!options.native_hc_pending||!options.execution.layer0_observer,"native HC pending: legacy observer lacks pending tuple schema; use bounded layer trace");
@@ -786,6 +786,7 @@ struct PortableGdnLayer::Impl {
                 "portable GDN: missing/extra attention, PLE or FFN tensors");
         std::string error;
         auto ffn_options=options.execution;
+        ffn_options.resident_dense_weights=options.execution.resident_dense_weights || options.resident_ffn_weights;
         ffn_options.native_hc_pending_read=options.native_hc_ffn_read;
         ffn_options.native_hc_final_write=options.native_hc_ffn_write;
         ffn_options.defer_hc_write=options.defer_ffn_hc_write;

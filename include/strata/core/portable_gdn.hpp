@@ -24,6 +24,7 @@ struct PortableGdnOptions {
     static constexpr size_t native_hc_read_host_bound = 8u << 20;
     static constexpr size_t native_hc_pending_host_bound = native_hc_read_host_bound + (128u << 10);
     PortableFfnOptions execution;
+    bool resident_ffn_weights = false; // selected FFN bank only; attention placement unchanged
     bool defer_ffn_hc_write = false; // layer1 outgoing ordinary boundary; PLE remains unchanged
     bool native_hc_norm_inject = false; // experimental layer-0 serial T1 only; mixed remains GGML
     bool native_hc_mix = false; // experimental attention read; requires native norm/injection

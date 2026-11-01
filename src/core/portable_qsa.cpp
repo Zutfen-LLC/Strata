@@ -546,7 +546,7 @@ struct PortableQsaLayer::Impl {
 #endif
         }
         require(!options.native_hc_ffn_write || (options.native_hc_ffn_read && !options.defer_ffn_hc_write),"native QSA HC: conflicting outgoing write modes");
-        require(!options.native_hc_ffn_read || (options.native_hc_read && options.execution.resident_dense_weights),"native QSA FFN HC: composed read and resident FFN weights required");
+        require(!options.native_hc_ffn_read || (options.native_hc_read && (options.execution.resident_dense_weights || options.resident_ffn_weights)),"native QSA FFN HC: composed read and resident FFN weights required");
         require(!options.defer_ffn_hc_write || (portable_detail::native_hc_boundary(int(layer)).defer_ffn && !options.production),"native QSA HC: ordinary outgoing boundary required");
         require(!options.execution.native_hc_pending_read && !options.execution.native_hc_final_write && !options.execution.defer_hc_write,"native QSA HC: configure FFN through layer options");
         require(options.capacity > 0 && options.capacity <= 262144, "portable QSA: capacity must be in [1,262144]");
@@ -580,6 +580,7 @@ struct PortableQsaLayer::Impl {
         require(aw.size() == shapes().size() && fw.size() == 9, "portable QSA: missing/extra attention or FFN tensors");
         std::string error;
         auto ffn_options=options.execution;
+        ffn_options.resident_dense_weights=options.execution.resident_dense_weights || options.resident_ffn_weights;
         ffn_options.native_hc_pending_read=options.native_hc_ffn_read;
         ffn_options.native_hc_final_write=options.native_hc_ffn_write;
         ffn_options.defer_hc_write=options.defer_ffn_hc_write;

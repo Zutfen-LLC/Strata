@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include "strata/core/portable_gdn.hpp"
 #include "strata/core/portable_qsa.hpp"
 
@@ -83,6 +84,9 @@ struct PortableModelOptions {
     bool expert_dispatch_oracle = false;
     size_t expert_staging_cap = 64ull << 20;
     bool expert_check_rows = false, expert_record_routes = false;
+    bool hc_cycle_resident_weights = false; // matched FFN2/3 banks; independent of attention residency
+    bool native_hc_serial_cycle = false; // bounded reusable GDN2/QSA3/GDN4 cycle
+    std::string native_hc_cycle_receipt_prefix;
     bool native_hc_pending_layer2_3 = false; // ordinary GDN FFN -> QSA HC, T1 only
     std::string native_hc_qsa_receipt_prefix;
     bool native_hc_pending_layer1_2 = false; // ordinary FFN -> next attention carry; default off
@@ -129,6 +133,8 @@ struct PortableExpertWork {
 // Whole-call wall totals are optional; head outcome counters are unconditional.
 // Layer totals include matched provider intervals.
 struct PortableModelWork {
+    std::array<uint64_t,2> native_hc_cycle_ffn_calls{};
+    uint64_t native_hc_cycle_outputs=0,native_hc_cycle_reads=0;
     uint64_t deferred_ffn_layer1_outputs=0, native_hc_pending_layer2_calls=0;
     uint64_t deferred_ffn_layer2_outputs=0, native_hc_pending_layer3_calls=0;
     uint64_t native_ffn_hc_write_layer0_calls = 0; // actual successful final-write work, reset preserves paid work
