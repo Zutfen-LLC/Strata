@@ -70,6 +70,68 @@ size_t aligned_weight_size(ggml_context* c, ggml_backend_t backend) {
             "portable head: weight estimator mismatch");
     return total;
 }
+struct HeadGraph { ggml_tensor *input, *output; ggml_cgraph* graph; };
+HeadGraph build_head_graph(ggml_context* c, const PortableHeadGeometry& g,
+                          const std::map<std::string, ggml_tensor*>& w) {
+    const int64_t width=g.hidden*g.streams;
+    ggml_tensor *input=nullptr,*output=nullptr;
+    ggml_cgraph* graph=nullptr;
+    input = ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, 1);
+    ggml_set_input(input);
+    auto *norm = ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, input, g.epsilon), width, 1),
+                  w.at("output_hc_norm.weight"));
+    auto *low = ggml_silu(c, ggml_scale(c, ggml_mul_mat(c, w.at("output_hc_down.weight"), norm), 0.25f));
+    auto *gate = ggml_sigmoid(c, ggml_mul_mat(c, w.at("output_hc_up.weight"), low));
+    auto *weighted = ggml_reshape_2d(c, ggml_mul(c, norm, gate), g.hidden, g.streams);
+    auto *mixed = ggml_cont(c, ggml_view_1d(c, weighted, g.hidden, 0));
+    for (int64_t s = 1; s < g.streams; ++s)
+        mixed = ggml_add(c, mixed, ggml_view_1d(c, weighted, g.hidden, size_t(s * g.hidden) * sizeof(float)));
+    output = ggml_mul_mat(c, w.at("output.weight"), ggml_scale(c, mixed, 0.25f));
+    ggml_set_name(output, "portable_logits");
+    ggml_set_output(output);
+    graph = ggml_new_graph(c);
+    ggml_build_forward_expand(graph, output);
+    return {input,output,graph};
+}
+size_t add_bound(size_t a,size_t b) {
+    require(b<=SIZE_MAX-a,"portable head: admission overflow");return a+b;
+}
+// Deliberately mirrors portable_graph's no-reuse node/source-copy envelope.
+// Max of both default buffer types bounds either scheduler placement; every
+// unallocated graph input gets original storage on BOTH backends as well.
+// Immutable weights already have separately admitted original storage.
+size_t graph_storage_bound(ggml_cgraph* graph, ggml_backend_t cpu, ggml_backend_t accelerator,
+                          const std::map<std::string,ggml_tensor*>& weights) {
+    auto bytes=[&](ggml_backend_t backend,ggml_tensor* t) {
+        while(t->view_src)t=t->view_src;
+        auto* buft=ggml_backend_get_default_buffer_type(backend);
+        const size_t alignment=ggml_backend_buft_get_alignment(buft);
+        require(alignment && !(alignment&(alignment-1)),"portable head: graph alignment");
+        return add_bound(ggml_backend_buft_get_alloc_size(buft,t),alignment-1);
+    };
+    auto external=[&](ggml_tensor* root) {
+        for(const auto& item:weights)if(item.second==root)return true;
+        return false;
+    };
+    auto max_bytes=[&](ggml_tensor* t) {
+        const size_t host=bytes(cpu,t);
+        return accelerator?std::max(host,bytes(accelerator,t)):host;
+    };
+    size_t bound=0;
+    for(int i=0;i<ggml_graph_n_nodes(graph);++i) {
+        auto* node=ggml_graph_node(graph,i);
+        if(!node->view_src)bound=add_bound(bound,max_bytes(node));
+        for(auto* src:node->src)if(src) {
+            auto* root=src;while(root->view_src)root=root->view_src;
+            bound=add_bound(bound,max_bytes(root));
+            if(root->op==GGML_OP_NONE && !external(root)) {
+                bound=add_bound(bound,bytes(cpu,root));
+                if(accelerator)bound=add_bound(bound,bytes(accelerator,root));
+            }
+        }
+    }
+    return bound;
+}
 } // namespace
 struct PortableHead::Impl {
     PortableHeadGeometry g;
@@ -106,21 +168,8 @@ struct PortableHead::Impl {
                 "portable head: actual aligned weight budget/estimate exceeded");
         device_weights = weight_backend != cpu.get() ? weight_size : 0;
         auto *c = ctx.get();
-        input = ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, 1);
-        ggml_set_input(input);
-        auto *norm = ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, input, g.epsilon), width, 1),
-                              w.at("output_hc_norm.weight"));
-        auto *low = ggml_silu(c, ggml_scale(c, ggml_mul_mat(c, w.at("output_hc_down.weight"), norm), 0.25f));
-        auto *gate = ggml_sigmoid(c, ggml_mul_mat(c, w.at("output_hc_up.weight"), low));
-        auto *weighted = ggml_reshape_2d(c, ggml_mul(c, norm, gate), g.hidden, g.streams);
-        auto *mixed = ggml_cont(c, ggml_view_1d(c, weighted, g.hidden, 0));
-        for (int64_t s = 1; s < g.streams; ++s)
-            mixed = ggml_add(c, mixed, ggml_view_1d(c, weighted, g.hidden, size_t(s * g.hidden) * sizeof(float)));
-        output = ggml_mul_mat(c, w.at("output.weight"), ggml_scale(c, mixed, 0.25f));
-        ggml_set_name(output, "portable_logits");
-        ggml_set_output(output);
-        graph = ggml_new_graph(c);
-        ggml_build_forward_expand(graph, output);
+        const auto built=build_head_graph(c,g,w);
+        input=built.input;output=built.output;graph=built.graph;
         const size_t workspace = ggml_graph_plan(graph, opts.threads, nullptr).work_size;
         require(workspace <= opts.graph_budget, "portable head: CPU workspace budget");
         graph_size = workspace;
@@ -168,6 +217,37 @@ size_t PortableHead::weight_allocation_size(ggml_backend* backend, PortableHeadG
     auto metadata = context();
     weight_metadata(metadata.get(),geometry,views,SIZE_MAX);
     return aligned_weight_size(metadata.get(),backend);
+}
+PortableHeadAdmission PortableHead::admission(PortableHeadGeometry g,
+    const std::vector<PortableTensorView>& views, PortableFfnOptions opts, bool guard_logits) {
+    require(opts.threads>0,"portable head: invalid thread count");
+    auto weights=context(),ctx=context();
+    auto w=weight_metadata(weights.get(),g,views,opts.weight_budget);
+    portable_detail::Backend cpu(ggml_backend_cpu_init(),ggml_backend_free);
+    require(bool(cpu),"portable head: CPU unavailable for metadata sizing");
+    auto built=build_head_graph(ctx.get(),g,w);
+    auto* accelerator=opts.request_accelerator?opts.accelerator:nullptr;
+    PortableHeadAdmission a;
+    a.scheduler_bound=graph_storage_bound(built.graph,cpu.get(),accelerator,w);
+    a.cpu_workspace=ggml_graph_plan(built.graph,opts.threads,nullptr).work_size;
+    if(accelerator) {
+        const auto limit=portable_detail::head_storage_limit(accelerator);
+        a.direct_q8=portable_detail::direct_head_q8_matvec(built.output,limit);
+#ifdef STRATA_PORTABLE_VULKAN_WORKSPACE
+        a.verified_vulkan=ggml_backend_is_vk(accelerator) && a.direct_q8 && !opts.allow_cpu_fallback;
+#endif
+        const size_t output_f32=size_t(g.hidden*g.vocabulary)*sizeof(float);
+        const size_t hc_f32=size_t(g.hidden*g.streams*g.rank)*sizeof(float);
+        a.device_workspace=add_bound(portable_detail::head_conversion_bound(output_f32,hc_f32,a.direct_q8),
+            size_t(g.vocabulary*16+g.hidden*g.streams*4)*sizeof(float));
+        if(guard_logits) {
+            auto status=context();ggml_new_tensor_1d(status.get(),GGML_TYPE_I32,16);
+            a.guard_bound=add_bound(aligned_weight_size(status.get(),accelerator),1u<<20);
+        }
+    }
+    a.graph_bound=add_bound(add_bound(a.scheduler_bound,a.cpu_workspace),
+                            add_bound(a.device_workspace,a.guard_bound));
+    return a;
 }
 PortableHead::PortableHead(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 PortableHead::~PortableHead() = default;

@@ -4,12 +4,16 @@
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
+#include <cstring>
+#ifdef STRATA_PORTABLE_MODEL_VULKAN
+#include "ggml-vulkan.h"
+#endif
 using namespace strata::core;
 namespace D = strata::core::portable_detail;
 namespace {
 void check(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 }
-int main() {
+int main(int argc,char** argv) {
     try {
         std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init({2u<<20,nullptr,true}),ggml_free);
         check(bool(ctx), "metadata context");
@@ -65,6 +69,50 @@ int main() {
             {"output_hc_up.weight",{320,10240},8,&dummy,3481600},
             {"output.weight",{2560,248320},8,&dummy,675430400}};
         const PortableHeadGeometry geometry{2560,4,320,248320,1e-6f};
+        std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> vk(nullptr,ggml_backend_free);
+        if(argc!=1) {
+            check(argc==3 && std::string(argv[1])=="--vulkan","usage: portable_head_admission_test [--vulkan INDEX]");
+#ifdef STRATA_PORTABLE_MODEL_VULKAN
+            size_t used=0;const auto index=std::stoul(argv[2],&used);
+            check(used==std::strlen(argv[2]) && index<size_t(ggml_backend_vk_get_device_count()),"Vulkan index");
+            vk.reset(ggml_backend_vk_init(index));check(bool(vk),"Vulkan backend");
+#else
+            throw std::runtime_error("Vulkan not compiled");
+#endif
+        }
+        PortableFfnOptions estimate_options;estimate_options.weight_budget=1ull<<30;
+        const auto host_estimate=PortableHead::admission(geometry,weights,estimate_options,true);
+        check(host_estimate.scheduler_bound>=675430400 && host_estimate.scheduler_bound<800*M,
+              "full Q8 head source copy remains charged without payload allocation");
+        std::printf("head_shape_host scheduler_bound=%zu cpu_workspace=%zu total=%zu verified=0\n",
+                    host_estimate.scheduler_bound,host_estimate.cpu_workspace,host_estimate.graph_bound);
+        check(!host_estimate.verified_vulkan && !host_estimate.direct_q8,"CPU metadata cannot earn Vulkan credit");
+        check(host_estimate.graph_bound==host_estimate.scheduler_bound+host_estimate.cpu_workspace,
+              "host metadata has no device workspace/status allocation");
+        estimate_options.request_accelerator=true;estimate_options.accelerator=cpu.get();
+        const auto unknown_estimate=PortableHead::admission(geometry,weights,estimate_options,true);
+        check(!unknown_estimate.verified_vulkan && !unknown_estimate.direct_q8,
+              "unverified backend retains fallback, even with supported shapes");
+        check(unknown_estimate.device_workspace==2542796800ull+16056320,"unknown path retains full conversion");
+        check(unknown_estimate.guard_bound>=(1u<<20)+64,"integer status and resource allowance retained");
+        if(vk) {
+            estimate_options.accelerator=vk.get();estimate_options.allow_cpu_fallback=false;
+            const auto physical=PortableHead::admission(geometry,weights,estimate_options,true);
+            check(physical.verified_vulkan && physical.direct_q8,"physical direct-Q8 contract required; no fallback");
+            check(physical.device_workspace==13107200+16056320,"physical proven HC/other workspace unchanged");
+            check(physical.graph_bound<1024*M,"metadata head bound below 1GiB without removing Q8 copy");
+            D::preflight_device_memory(6000*M,7500*M,physical.graph_bound);
+            D::preflight_device_memory(6000*M,6000*M+physical.graph_bound,physical.graph_bound);
+            bool short_room=false;
+            try {D::preflight_device_memory(6000*M,6000*M+physical.graph_bound-1,physical.graph_bound);}
+            catch(const std::exception&){short_room=true;}
+            check(short_room,"exact head metadata bound refuses one byte short");
+            estimate_options.allow_cpu_fallback=true;
+            check(!PortableHead::admission(geometry,weights,estimate_options,true).verified_vulkan,
+                  "fallback execution cannot earn tight Vulkan admission");
+            std::printf("head_shape_physical scheduler_bound=%zu cpu_workspace=%zu device_workspace=%zu guard=%zu total=%zu direct=1 verified=1\n",
+                physical.scheduler_bound,physical.cpu_workspace,physical.device_workspace,physical.guard_bound,physical.graph_bound);
+        }
         const size_t aligned=PortableHead::weight_allocation_size(cpu.get(),geometry,weights);
         check(aligned>=682434560 && aligned<1024*M,"complete aligned head weights below policy ceiling");
         bool legacy_refused=false;

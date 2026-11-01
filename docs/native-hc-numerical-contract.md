@@ -120,16 +120,16 @@ synthetics and a small fresh held-out case with the pinned native launcher and
 Vulkan stack. Require all structural/identity/lifecycle checks as well as this
 contract. Keep exact diagnostics. No performance claim follows from a tiny test.
 
-The next implementation slice can be a separately named experimental serial-T1
-norm/injection seam in `PortableGdnLayer::Impl`, currently
-`portable_gdn.cpp`'s HC `build` block. The standalone synchronous bridge cannot
-run during graph construction: split at the actual hidden-residual availability,
-then feed admitted retained normalized/injection tensors to their consumers.
+An experimental layer-0-only serial-T1 seam is now implemented in
+`PortableGdnLayer::Impl`; see [native-hc-serial-t1.md](native-hc-serial-t1.md).
+Its retained owner leaves are populated after actual residual upload and before
+graph consumers, never during graph construction. Physical seam qualification
+and model behavior remain separate pending gates.
 Charge converted BF16 storage, graph/scratch and component ownership once;
 preserve source rank/placement, caps, observer liveness and state commits.
 Do not silently enable chunk, pending-write or production-state paths. Default
 execution must remain bit-identical with the option disabled. Reject unsupported
-configurations before allocation/compute. This contract adds no model flag yet.
+configurations before allocation/compute. The experimental model flag remains disabled by default.
 
 Treat HC down/up BF16 conversion, ordered dots, SiLU, sigmoid/gating, mixed
 summation/mean and pending writes as a separate native-method slice. Current

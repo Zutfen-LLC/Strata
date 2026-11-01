@@ -18,7 +18,10 @@ class PortableGdnScratch {
 };
 enum class PortableGdnPolicy { eager_diagnostic, device_production };
 struct PortableGdnOptions {
+    static constexpr size_t native_hc_host_bound = 1u << 20; // explicit metadata/preflight/trace envelope
     PortableFfnOptions execution;
+    bool native_hc_norm_inject = false; // experimental layer-0 serial T1 only; mixed remains GGML
+    std::string native_hc_receipt_prefix;
     bool causal_chunk = false; // production/non-PLE T2..8; requires batched projections
     bool batch_input_projections = false; // opt-in chunk T>1, non-PLE only; T1 stays serial
     size_t state_budget = 16ull << 20; // host state/scratch bound; policy-specific mirrors
@@ -42,6 +45,8 @@ struct PortableGdnWork {
     uint64_t attention_exchange_calls = 0, attention_compute_calls = 0, ffn_calls = 0;
 };
 struct PortableGdnTrace {
+    bool native_hc_norm_inject = false;
+    std::vector<float> hc_residual, hc_normalized, hc_rs, hc_inject;
     std::vector<float> qkv, convolution, query, key, value, decay, beta, attention;
     std::array<uint32_t, 16> ple_rows{};
     std::vector<float> ple_embedding, ple_key, ple_value, ple_gate, ple_normalized, ple_convolution, ple_residual;
@@ -58,6 +63,8 @@ class PortableGdnLayer {
     ~PortableGdnLayer();
     PortableGdnLayer(const PortableGdnLayer &) = delete;
     PortableGdnLayer &operator=(const PortableGdnLayer &) = delete;
+    // Build availability only; not a physical-device or arithmetic qualification.
+    static bool native_hc_compiled();
     bool reset(std::string &error);
     bool poisoned() const;
     PortableGdnPolicy policy() const;
@@ -84,6 +91,7 @@ class PortableGdnLayer {
     // Actual projection graph submissions/columns, including work before a failed
     // chunk; reset preserves these cumulative execution receipts.
     uint64_t input_projection_calls() const;
+    uint64_t native_hc_calls() const; // actual successful component calls; cumulative across reset
     uint64_t causal_chunk_calls() const;
     uint64_t causal_residual_handoffs() const;
     uint64_t causal_state_commits() const;
