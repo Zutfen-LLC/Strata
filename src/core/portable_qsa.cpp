@@ -10,6 +10,7 @@
 #include "portable_native_qsa_norm_rope.hpp"
 #include "portable_native_qsa_indexer.hpp"
 #include "portable_native_qsa_select.hpp"
+#include "portable_native_qsa_attention.hpp"
 #endif
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
@@ -246,6 +247,7 @@ struct PortableQsaLayer::Impl {
     std::unique_ptr<portable_detail::PortableNativeQsaNormRope> native_norm_rope;
     std::unique_ptr<portable_detail::PortableNativeQsaIndexer> native_indexer;
     std::unique_ptr<portable_detail::PortableNativeQsaSelect> native_select;
+    std::unique_ptr<portable_detail::PortableNativeQsaAttention> native_attention;
     std::array<ggml_tensor*,3> norm_raw{};
 #endif
     std::map<std::string, ggml_tensor *> w;
@@ -260,7 +262,7 @@ struct PortableQsaLayer::Impl {
 
     void prepare(size_t T,std::string& error) {
         auto& s=*this;
-        require(!s.options.native_select_banks && !s.options.native_indexer_weights && !s.options.native_norm_rope_weights && !s.options.native_hc_read && !s.options.defer_ffn_hc_write,"native QSA HC: chunk API unsupported");
+        require(!s.options.native_attention_banks && !s.options.native_select_banks && !s.options.native_indexer_weights && !s.options.native_norm_rope_weights && !s.options.native_hc_read && !s.options.defer_ffn_hc_write,"native QSA HC: chunk API unsupported");
         require(T>=1&&T<=8,"portable layer: chunk size outside [1,8]");
         const size_t extra=(s.options.production?0:s.options.capacity*2*KV*sizeof(uint16_t)+
                             (s.options.capacity/4+6)*ID*sizeof(float))+(3*T*RES+RES)*sizeof(float);
@@ -416,7 +418,18 @@ struct PortableQsaLayer::Impl {
         portable_detail::PortableNativeQsaSelect::Candidate selection_candidate;
         if(s.options.native_select_t1)selection_candidate=s.native_select->run(s.iq,native_indexer_candidate,position);
 #endif
+        std::vector<float>attn,cell_scores,selection;
         std::unique_ptr<Phase> temporary;
+        auto next_placement = s.fixed_placement;
+        size_t next_graphs = s.fixed_graphs+s.retained_attention_bytes()+s.chunk_graphs();
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        portable_detail::PortableNativeQsaAttention::Candidate attention_candidate;
+        if(s.options.native_attention_t1){
+            attention_candidate=s.native_attention->run(s.q,s.norm_raw[0],next_keys,next_values,selection_candidate.ids,position);
+            attn=attention_candidate.attention;cell_scores=selection_candidate.cell_scores;selection=selection_candidate.mask;
+        }else
+#endif
+        {
         if (!s.attention_phase())
             temporary = std::make_unique<Phase>();
         auto &attention = s.attention_phase() ? *s.attention_phase() : *temporary;
@@ -425,8 +438,7 @@ struct PortableQsaLayer::Impl {
             attention.rebuild();
         }
         auto [ki, vi, qi, idxq, pk, mapping, bias, scores, selected, out] = s.build_attention(attention, n);
-        auto next_placement = s.fixed_placement;
-        size_t next_graphs = s.fixed_graphs+s.chunk_graphs();
+        next_graphs = s.fixed_graphs+s.chunk_graphs();
         attention.schedule("qsa-attend", s.options.execution, s.shared() ? s.shared()->cpu : s.cpu, next_placement, next_graphs, bool(s.attention_phase()));
         if (s.attention_phase()) {
             // Replanning may change offsets/topology (notably at 2051 cells).
@@ -454,14 +466,19 @@ struct PortableQsaLayer::Impl {
         else {write(scores,selection_candidate.cell_scores);write(selected,selection_candidate.mask);}
 #endif
         attention.run();
-        auto attn = read(out);
-        auto cell_scores = s.options.production ? std::vector<float>{} : read(scores);
-        auto selection = s.options.production ? std::vector<float>{} : read(selected);
+        attn = read(out);
+        cell_scores = s.options.production ? std::vector<float>{} : read(scores);
+        selection = s.options.production ? std::vector<float>{} : read(selected);
+        }
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(s.options.native_select_t1)s.native_select->consumed(position,selection_candidate,cell_scores,selection);
 #endif
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.options.native_attention_t1){write(s.out_input,attention_candidate.gated);s.native_attention->consumed(position,s.out_input,attention_candidate);}
+        else
+#endif
         write(s.out_input, attn);
-        write(s.out_gate, gate);
+        if(!s.options.native_attention_t1)write(s.out_gate, gate);
         write(s.out_residual, s.options.native_hc_read ? applied : residual);
         if(!s.options.native_hc_ffn_read)write(s.out_inject, inject);
         s.combine->run();
@@ -568,6 +585,14 @@ struct PortableQsaLayer::Impl {
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableQsaOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 == 3, "portable QSA: expected a QSA layer 3/7/.../47");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
+        require(!options.native_attention_t1||(options.native_attention_banks&&options.native_select_t1&&options.native_norm_rope_t1),"native QSA attention requires actual native IDs/query and matched banks");
+        if(options.native_attention_banks){
+            portable_detail::native_qsa_attention_environment();
+            require(options.native_select_t1&&options.native_norm_rope_t1&&options.reuse_attention&&!options.production&&options.capacity<=256&&options.execution.accelerator&&options.execution.request_accelerator&&!options.execution.allow_cpu_fallback&&!options.execution.layer0_observer&&!options.native_attention_receipt_prefix.empty(),"native QSA attention requires native query/IDs serial eager strict accelerator and receipt");
+#ifndef STRATA_PORTABLE_NATIVE_HC
+            throw std::runtime_error("native QSA attention requires strict native-stage build");
+#endif
+        }
         require(!options.native_select_t1||(options.native_select_banks&&options.native_indexer_t1),"native QSA selection requires matched banks and actual native indexer candidate");
         if(options.native_select_banks){
             portable_detail::native_qsa_select_environment();
@@ -633,7 +658,7 @@ struct PortableQsaLayer::Impl {
         if (options.production)
             states_size -= options.capacity * (4 * KV * sizeof(uint16_t) + 8 * sizeof(float)) +
                            (options.capacity / 4 + 2) * ID * 3 * sizeof(float);
-        require(states_size <= options.state_budget && ((options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)<=options.state_budget-states_size), "portable QSA: host state budget exceeded");
+        require(states_size <= options.state_budget && ((options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0)<=options.state_budget-states_size), "portable QSA: host state budget exceeded");
         std::vector<PortableTensorView> aw, fw;
         for (const auto &t : tensors) {
             require(t.name.rfind(prefix, 0) == 0, "portable QSA: tensor belongs to another layer");
@@ -749,6 +774,11 @@ struct PortableQsaLayer::Impl {
             native_indexer=std::make_unique<portable_detail::PortableNativeQsaIndexer>(options.execution.accelerator,w.at("indexer.k_norm.weight"),uint32_t(options.capacity),options.native_indexer_receipt_prefix,options.execution.graph_budget-fixed_graphs,options.native_indexer_record_first);
             fixed_graphs+=native_indexer->bytes();
         }
+        if(options.native_attention_banks){
+            require(fixed_graphs<options.execution.graph_budget,"native QSA attention no graph room");
+            native_attention=std::make_unique<portable_detail::PortableNativeQsaAttention>(options.execution.accelerator,uint32_t(options.capacity),options.native_attention_receipt_prefix,options.execution.graph_budget-fixed_graphs,options.native_attention_record_first);
+            fixed_graphs+=native_attention->bytes();
+        }
         if(options.native_select_banks){
             require(fixed_graphs<options.execution.graph_budget,"native QSA selection no graph room");
             native_select=std::make_unique<portable_detail::PortableNativeQsaSelect>(options.execution.accelerator,uint32_t(options.capacity),options.native_select_receipt_prefix,options.execution.graph_budget-fixed_graphs,options.native_select_record_first);
@@ -842,7 +872,7 @@ struct PortableQsaLayer::Impl {
         out_gate = combine->input({D * QH});
         out_residual = combine->input({H, HC, 1});
         out_inject = combine->input({HC});
-        gated = ggml_mul(c, out_input, ggml_sigmoid(c, out_gate));
+        gated = options.native_attention_t1 ? out_input : ggml_mul(c, out_input, ggml_sigmoid(c, out_gate));
         auto *projected = ggml_mul_mat(c, w.at("attn_output.weight"), gated);
         projected_output=projected;
         if(options.native_hc_ffn_read) {
@@ -890,6 +920,13 @@ uint64_t PortableQsaLayer::native_score_calls()const{
  return impl_->native_select?impl_->native_select->score_calls():0;
 #else
  return 0;
+#endif
+}
+uint64_t PortableQsaLayer::native_attention_calls(unsigned stage)const{
+#ifdef STRATA_PORTABLE_NATIVE_HC
+ return impl_->native_attention?impl_->native_attention->calls(stage):0;
+#else
+ (void)stage;return 0;
 #endif
 }
 uint64_t PortableQsaLayer::native_select_calls()const{
@@ -1260,7 +1297,7 @@ size_t PortableQsaLayer::graph_bytes() const {
     return (impl_->attention_phase() ? impl_->fixed_graphs+impl_->retained_attention_bytes() : impl_->graphs_size)+impl_->chunk_graphs();
 }
 size_t PortableQsaLayer::state_bytes() const {
-    return impl_->states_size+impl_->chunk_host_bound+(impl_->options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(impl_->options.native_select_banks?PortableQsaOptions::native_select_host_bound:0) + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
+    return impl_->states_size+impl_->chunk_host_bound+(impl_->options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(impl_->options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(impl_->options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0) + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
 }
 bool PortableQsaLayer::poisoned() const { return !impl_->healthy; }
 bool PortableQsaLayer::inspect_state(PortableQsaState &state, std::string &error) const {
@@ -1304,6 +1341,7 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
     }
 #ifdef STRATA_PORTABLE_NATIVE_HC
     if(s.native_norm_rope){m.device_graph+=s.native_norm_rope->bytes();m.host_extra_bound+=PortableQsaOptions::native_norm_rope_host_bound;}
+    if(s.native_attention){m.device_graph+=s.native_attention->bytes();m.host_extra_bound+=PortableQsaOptions::native_attention_host_bound;}
     if(s.native_select){m.device_graph+=s.native_select->bytes();m.host_extra_bound+=PortableQsaOptions::native_select_host_bound;}
     if(s.native_indexer){m.device_graph+=s.native_indexer->bytes();m.host_extra_bound+=PortableQsaOptions::native_indexer_host_bound;}
     if(s.native_hc){m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=PortableQsaOptions::native_hc_host_bound;}

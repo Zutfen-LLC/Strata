@@ -23,6 +23,9 @@ struct PortableQsaOptions {
     static constexpr size_t native_indexer_host_bound=1u<<20;
     bool native_indexer_weights=false, native_indexer_t1=false, native_indexer_record_first=false;
     std::string native_indexer_receipt_prefix;
+    static constexpr size_t native_attention_host_bound=8u<<20;
+    bool native_attention_banks=false,native_attention_t1=false,native_attention_record_first=false;
+    std::string native_attention_receipt_prefix;
     static constexpr size_t native_select_host_bound=1u<<20;
     bool native_select_banks=false,native_select_t1=false,native_select_record_first=false;
     std::string native_select_receipt_prefix;
@@ -88,6 +91,7 @@ class PortableQsaLayer {
     uint64_t native_indexer_calls() const;
     uint64_t native_score_calls() const;
     uint64_t native_select_calls() const;
+    uint64_t native_attention_calls(unsigned stage) const;
     const std::vector<uint32_t>& native_indexer_state() const;
     uint64_t native_hc_pending_calls() const;
     uint64_t native_ffn_hc_pending_calls() const;

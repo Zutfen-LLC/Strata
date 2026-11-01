@@ -65,3 +65,14 @@ Local build/host checks are development evidence only. Native CUDA compilation
 and native02 then Vulkan05 physical comparison are required next. No full native
 QSA, accepted-prefix/window, quality or performance parity is claimed, and no
 model flag/default is enabled by this component.
+
+The bounded component comparison passed on native02 then Vulkan05 at source
+`56b01f6e0e707a0f8a5f3c34a48fa1f4d952bad6` (Hermes result
+1793571148.601549). Native two CTests/eight GPU cases and Vulkan four
+CTests/eight cases passed source-order, frozen exp/sigmoid, effective-module,
+canary, retry/reset and cleanup checks. Owned children exited, GPU owner scans
+were empty and both hosts restored baseline across three observations.
+Native eight and Vulkan four in-workload samples are discrete observations.
+This qualifies only the bounded component contract; model/window parity remains
+unproven. The default-disabled model adapter uses the existing FFN-success state
+transaction and actual projected Q/gate, selected IDs and FP16 KV candidates.
