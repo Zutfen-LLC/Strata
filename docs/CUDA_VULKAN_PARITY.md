@@ -305,14 +305,28 @@ model provenance. Complete state equality is asserted by the probe; arrays are
 not exported. Guard sampling is discrete and does not establish continuous
 coverage. This is a functional synthetic gate, not full QSA/model parity.
 
-The next validation reuses fresh native-policy planning and same-image model
-control/on, holding layer0 and layer1→layer2 methods fixed in both arms and
-adding only layer2→layer3 in on. It reads actual layer3 HC roles from the same
-GGUF and validates the actual producer's own-input receipts; no separate native
-capture is required for that question. Model reset/replay, finite heads/routes,
-paid counters, resource admission and lifecycle checks remain required. Native
-captured-window scheduling and native-versus-Vulkan QSA arithmetic equivalence
-remain separate migration gaps. See the [implemented boundary scope](https://github.com/Zutfen-LLC/Strata/blob/9a6d41029797304fbe1de79d5fb2bc311bae6c97/docs/native-hc-pending-layer2-3-qsa.md).
+The actual-model diagnostic also passes using the same source and fresh native
+planning: 384 primary/1490 helper ownership freezes and each arm's actual
+admission passes. Layer0 and layer1→layer2 are fixed in both arms; only on adds
+layer2→layer3. Each reset-separated request reports 28 earlier producer/read
+calls in both arms and 28 new producer/read calls in on versus zero in control.
+Actual layer3 GGUF-role/owner pending-v1, normal-v1 and mix-v2 checks and all 21
+HC module uses pass. Both arms repeat generated IDs `[18,24,16]`; within-arm
+heads/routes/receipts repeat exactly. First cross-arm route-rank divergence is
+position 1/layer 5, first selected-set divergence position 1/layer 11. Matching-history
+maximum absolute logit differences at positions 24–27 are approximately 1.61825,
+0.66505, 0.70438 and 1.44528. These are diagnostics, not acceptance tolerances.
+All three planned model processes exit with verified identity and three baseline
+cleanup observations; no retry, new native capture or rebuild was needed.
+
+This establishes bounded actual-path own-input behavior, not independent native
+end-to-end numerical equivalence. Whole-model QSA state is not exported and no
+live model failure is injected. QSA rollback/reset remains covered explicitly
+by the synthetic coordinator, with real model reset/replay as separate evidence.
+Native QSA projection/attention/indexer arithmetic and captured-window scheduling
+remain unported or unqualified. The new boundary changes HC method as well as
+materialization, so downstream changes cannot be attributed to materialization
+alone. See the [implemented scope](https://github.com/Zutfen-LLC/Strata/blob/9a6d41029797304fbe1de79d5fb2bc311bae6c97/docs/native-hc-pending-layer2-3-qsa.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
@@ -420,51 +434,72 @@ name a row above, the native reference function, the intended semantic result
 and its decisive test. Test constants and private operator scripts do not become
 production defaults. Keep failed runs and unsupported cases visible.
 
-1. **Reconcile post-dense capacity before another sizing change.** The source
-   audit is complete for this target: no duplicate retained owner was established,
-   so the conservative ledger is retained. Preserve the
-   diagnostic-only PR93 follow-up. Host tests must cover both devices, exact fit,
-   one-byte refusal, overflow, no ledger mutation and no free-memory observation
-   granting ledger credit. Once this map is adopted, the smallest decisive
-   physical check is one guarded process with the *unchanged* plan/budgets and
-   source pin, recording failing die, every dense operand, current free/total,
-   effective cap and shortfall before refusal. No load-only-plus-GEN duplicate,
-   guessed smaller quotas, changed reserves or admission bypass. Use the data to
-   choose between a resource-lifetime correction and the native sizing slice.
-2. **Implement native capacity planning at the existing load/plan seam.**
-   Implemented for the explicit bounded mode in PR95, with host golden,
-   immutable-plan and shared allocator-estimator tests. Preserve
-   explicit fixed-plan behavior and only the supported native sizing mode,
-   applying the byte-ceiling/quota/rank sequence above. Golden host cases compare
-   with the native formula: equal/unequal layer sizes, exact/short room, alignment,
-   primary/helper exclusion, duplicate/short profiles and overflow. Refuse missing
-   memory/feature evidence and unsupported modes. A bounded real-model admission
-   must reconcile complete dense+expert ledgers and actual allocations, retain
-   the reserve, and execute the same request in that one process. No fit claim
-   precedes this gate.
-3. **Match native ownership/state and qualify arithmetic separately.** Select
-   dense/state/production policies explicitly; do not infer them from topology or
-   native FFN flags. Remove only proven redundant mirrors/owners. Test reset A/B/A,
-   tails, partial setup, nonfinite/provider failure, poisoning and bounded memory.
-   Compare router/shared/grouped/combine boundaries against existing native
-   launchers, using identical real operands, original masks/ties/order and explicit
-   numerical criteria. CPU-only/shader tests, same-backend replays and generated
-   token matches remain different evidence. Preserve independent quality checks.
-4. **Migrate scheduling and prefill without changing the model.** Follow native
-   route-ready/shared fork/join, useful CPU/helper overlap and reusable execution
-   resources. Make one seam change at a time; captured-window/command work is a
-   later focused slice, not permission for an immediate graph rewrite. Compare
-   T1 versus bounded chunks, arbitrary segmentation and tail states, final-prompt
-   logits, original routes and one combine. Measure transfer/readback/submission
-   counts and exposed wall time; verify no per-step allocation growth. Fixing
-   correctness alone is not a speed result.
-5. **Broaden product behavior, then measure matched end-to-end performance.**
-   Track context/KV/RoPE, quant roles, samplers/stops, reuse/checkpoints, serving,
-   cancellation, batching/MTP, families and platforms under #70 in bounded slices.
-   Unsupported configurations must fail clearly. Benchmark only after the chosen
-   arithmetic, residency, placement and lifecycle gates pass, using matched cold
-   and resident cases and honest prefill/decode/TTFT boundaries. Do not select a
-   different policy merely to improve a benchmark.
+Post-dense accounting and native quota/rank/helper-exclusion planning are
+implemented and have bounded admission evidence. Preserve the conservative
+ledger, measured allocations, byte ceilings/reserve and fixed-plan refusal
+semantics. This is a shared prerequisite, not a new sizing policy to redesign
+for each capability below.
+
+1. **Complete one reusable serial HC lifecycle across GDN and QSA.** This is
+   the next highest-value bounded step. `Verifier::record_window()` uses the
+   same `pre`/`gr_read_group` rules across layers, not separate algorithms per
+   index. Reuse the existing pending/norm/injection/down/up/mix components and
+   value-owned producer tuple; replace development-only index guards with the
+   native geometry, mode and boundary predicates. First cover one complete
+   GDN/QSA cycle, including QSA attention→FFN and QSA FFN→next attention, through
+   one family-generic path rather than another switch/PR for each layer.
+   The concrete missing QSA attention producer is `projected` after
+   `attn_output.weight` in `portable_qsa.cpp`; its existing `gated` output is
+   earlier and must not be substituted. Native `verify.cpp:1909` consumes the
+   post-projection `bo_` via `gr_read_group(1,true,inj_,inj2_)`. `PortableQsaLayer`
+   currently creates an ordinary FFN and materializes that write; FFN native HC
+   is still guarded to layer0, and deferred FFN production to layers1/2.
+   Preserve actual producer lifetime, shared-scratch liveness, transactional
+   commit/rollback/reset and complete per-role/device/host admission. Test the
+   full family cycle against materialized same-backend controls, then use one
+   fresh-planning/same-image model comparison. Allow further layer coverage only
+   through the same admitted implementation and parameterized tests.
+2. **Port the remaining native numerical primitives by algorithm family.**
+   HC method selection does not port dense projection, GDN recurrent math,
+   QSA norm/RoPE/indexer/pooling/selection/attention/output, head math or every
+   expert format. Use the selected native `record_window` calls and their
+   existing kernel launchers as the specification, identical inputs and existing
+   deliberate intrinsic contracts. Preserve dtype conversion, masks/ties,
+   accumulation/reduction association and local-helper partial-reduction order;
+   portable original-row combine is not automatically identical to native
+   helper reduction. Group shared primitives and shape families, not layer
+   numbers. Component controls must reject incorrect math; model quality and
+   first-divergence diagnostics remain separate from own-input correctness.
+3. **Replicate native state authority and commit/restore.** Native
+   `Verifier::capture_commit()`/`Verifier::commit()` and restore paths handle GDN history/state and
+   QSA KV/indexer tails for the accepted prefix. Reuse the existing session
+   owners; port those transitions and remove host mirrors only when ownership
+   and lifetime are proved. Test accepted-prefix/tail, reset A/B/A, failures,
+   partial setup and bounded retained memory. Eager rollback and production
+   poison/reset are different contracts; neither is evidence of speculative
+   native-window commit parity. Keep unsupported combinations refusing.
+4. **Replicate the native window's execution dependencies.** Port the selected
+   `record_window()` group order, route publication, CPU/helper work, shared
+   fork/join and reusable execution resources to Vulkan submissions/barriers.
+   Device commands differ; the dependency graph and arithmetic policy do not.
+   Then cover native T1/T8/prefill/decode windows and accepted-prefix commit,
+   followed by the selected speculative/batching behavior. Do not introduce a
+   generic replacement scheduler or infer overlap from individual kernel time.
+   Check row association, one weighting/combine, segmentation/tails, final-prompt
+   heads and state; measure actual transfers/submissions and bounded allocations.
+5. **Handle native boundary exceptions and product coverage explicitly.**
+   Layer0 starts without a prior pending tuple; layer1 PLE must materialize and
+   apply its history-dependent operation first (`pre`, lines1230–1310).
+   Control-vector coverage materializes before its operation, final-layer/head
+   paths may use `gr_write` or fused head-GR, and pipeline handoff must express
+   native transport boundaries (`post`/head, lines2223–2285). These are distinct
+   source-defined behaviors, not reasons for inventing per-layer policies.
+   Keep currently unsupported control/split/head-fusion modes explicit until
+   ported. Broaden context/KV formats, quant roles, sampler/stops/checkpoints,
+   serving/cancellation and model families using their existing native methods.
+   Run matched native/Vulkan end-to-end quality and performance only for an
+   explicitly supported configuration; token matches alone are not quality,
+   native arithmetic, full-HC or speed qualification.
 
 Preserve existing correctness accommodations while migrating: the
 [pinned-backend per-head QSA graph][v-qsa-graph], exact BF16 indexer widening and
