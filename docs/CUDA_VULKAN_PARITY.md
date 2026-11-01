@@ -639,6 +639,11 @@ for each capability below.
    is discrete with no Vulkan in-loop sample. This is primitive evidence only.
    It does not change the frozen gate, native outer softplus method or
    PR118's failed result. No a/b integration or default enablement follows.
+   PR120 now ports ordinary T1 gdn_ab_multi as a standalone component: native
+   BF16 rows, continuous per-lane FMA across chunks, XOR reduction, strict v>20
+   bypass and gate/beta order. Local source-order/numerical/module tests pass;
+   actual native/Vulkan component qualification and model-prefix integration
+   remain separate pending steps. No new algorithm or default is introduced.
    The current model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
    projections also remain separate upstream work; do not attribute unequal model
    outputs to recurrence without equal inputs. Accepted-prefix commit and window
