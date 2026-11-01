@@ -53,5 +53,30 @@ int main(){try{
  PortableModelOptions mo;mo.native_hc_serial_cycle=mo.hc_cycle_resident_weights=mo.native_hc_pending_layer1_2=mo.native_hc_pending_layer2_3=mo.gdn_resident_weights=true;mo.native_hc_pending_receipt_prefix=(root/"entry").string();mo.native_hc_qsa_receipt_prefix=(root/"qsa").string();mo.native_hc_cycle_receipt_prefix=(root/"cycle").string();validate_model_modes(mo,1);
  bool carry=false;for(size_t l=0;l<48;++l){check(model_pending_consumer(mo,l)==carry,"model cycle stale/missing carry");carry=model_deferred_producer(mo,l);if(l%4==3){PortableQsaOptions q;model_qsa_hc_options(mo,l,q);check(q.resident_ffn_weights==(l==3)&&q.native_hc_ffn_read==(l==3)&&q.defer_ffn_hc_write==(l==3),"QSA product cycle scope");}else{PortableGdnOptions g;model_gdn_hc_options(mo,l,g);check(g.resident_ffn_weights==(l==2)&&g.native_hc_ffn_read==(l==2),"GDN product cycle scope");check(g.defer_ffn_hc_write==(l==1||l==2),"GDN outgoing product scope");}}
  check(!carry&&!model_resident_dense(mo,3,false),"model final/head carry or unrelated residency");auto off=mo;off.native_hc_serial_cycle=false;PortableGdnOptions off2;PortableQsaOptions off3;model_gdn_hc_options(off,2,off2);model_qsa_hc_options(off,3,off3);check(off2.resident_ffn_weights&&off3.resident_ffn_weights&&!off2.native_hc_ffn_read&&!off3.native_hc_ffn_read&&!off3.defer_ffn_hc_write,"matched control residency changed numerical policy");check(model_hc_host_bound(mo,2)-model_hc_host_bound(off,2)==PortableFfnOptions::native_hc_pending_host_bound&&model_hc_host_bound(mo,3)-model_hc_host_bound(off,3)==PortableFfnOptions::native_hc_pending_host_bound+PortableFfnOptions::deferred_hc_host_bound&&model_hc_host_bound(mo,4)==PortableGdnOptions::native_hc_pending_host_bound,"model host envelope incomplete");
+
+ // Full ordinary scope selects families by native geometry, never a copied
+ // numbered-layer selector. PLE layer1 remains in its original graph.
+ auto ordinary=mo;ordinary.native_hc_serial_cycle=false;ordinary.native_hc_serial=true;
+ ordinary.hc_serial_resident_weights=true;ordinary.native_hc_ffn_write_layer0=true;
+ ordinary.native_hc_ffn_read_layer0=ordinary.native_hc_mix_layer0=ordinary.native_hc_norm_inject_layer0=true;
+ ordinary.layer0_resident_weights=true;ordinary.dense_topology=PortableDenseTopology::primary;
+ ordinary.native_hc_receipt_prefix=(root/"zero").string();ordinary.native_hc_serial_receipt_prefix=(root/"ordinary").string();
+ validate_model_modes(ordinary,1);carry=false;
+ size_t selected=0;
+ for(size_t l=0;l<48;++l){check(model_pending_consumer(ordinary,l)==carry,"ordinary pending chain");carry=model_deferred_producer(ordinary,l);
+  if(l%4==3){PortableQsaOptions q;model_qsa_hc_options(ordinary,l,q);check(q.native_hc_read&&q.native_hc_ffn_read&&q.resident_ffn_weights,"ordinary QSA scope");check(q.defer_ffn_hc_write==(l<47)&&q.native_hc_ffn_write==(l==47),"ordinary QSA final head boundary");}
+  else {PortableGdnOptions g;model_gdn_hc_options(ordinary,l,g);check(g.native_hc_ffn_read==(l!=1),"ordinary GDN PLE exception");check(g.native_hc_pending==(l>=2),"ordinary GDN pending predicate");check(g.defer_ffn_hc_write==(l>0),"ordinary GDN post predicate");}
+  if(l>=2){++selected;check(model_ffn_resident(ordinary,l),"ordinary bank admission selector");check(model_hc_host_bound(ordinary,l)>=PortableFfnOptions::native_hc_pending_host_bound,"ordinary host charge");}
+ }
+ check(selected==46&&!carry,"ordinary head must materialize");
+ auto matched=ordinary;matched.native_hc_serial=false;matched.native_hc_serial_cycle=true;
+ for(size_t l=2;l<48;++l)check(model_ffn_resident(matched,l),"matched control residency missing");
+ // Actual QSA final endpoint executes the same qualified write and refuses
+ // outgoing carry, including rollback and reset, rather than deferring to head.
+ auto fq=qo;fq.defer_ffn_hc_write=false;fq.native_hc_ffn_write=true;fq.native_hc_receipt_prefix=(root/"final47").string();
+ auto final=PortableQsaLayer::create(47,finalviews,fq,error);check(bool(final),error);check(final->reset(error),error);
+ check(final->step_pending(0,last,dispatch,route,error),error);auto finalres=final->last_residual();check(final->pending_write().empty()&&final->native_ffn_hc_write_calls()==1,"head materialization/counter");
+ check(!final->step_pending(1,last,fail,route,error)&&final->last_residual()==finalres&&final->tokens()==1,"final endpoint rollback");
+ check(final->reset(error)&&final->step_pending(0,last,dispatch,route,error)&&final->last_residual()==finalres,"final endpoint reset");
  check(projections>=6&&g2->native_ffn_hc_pending_calls()==5&&q3->native_ffn_hc_pending_calls()==7&&q3->deferred_hc_outputs()==6,"paid family work counters");cpu->iface.graph_compute=original_compute;std::filesystem::remove_all(root);puts("reusable GDN/QSA HC family cycle / post-projection tuple / independent FMA / shared scratch / admission / rollback reset / native boundary predicates pass; mocked HC only");return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}

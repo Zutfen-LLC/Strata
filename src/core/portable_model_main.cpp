@@ -121,6 +121,7 @@ int main(int argc, char **argv) {
                              " [--native-hc-pending-layer1-2 RECEIPT_PREFIX (experimental ordinary inter-layer carry)]\n"
                              " [--native-hc-ffn-write-layer0 RECEIPT_PREFIX (experimental final materialization before PLE)]\n"
                              " [--native-hc-ffn-read-layer0 RECEIPT_PREFIX (experimental actual layer0 FFN read; explicit resident scope)]\n"
+                             " [--native-hc-serial PREFIX --hc-serial-resident-weights (trial, ordinary serial boundaries)]\n"
                              " [--native-hc-serial-cycle PREFIX --hc-cycle-resident-weights (trial, bounded GDN/QSA cycle)]\n"
                              " [--layer0-resident-weights (trial, only layer0 dense/FFN weights)]\n"
                              " [--native-hc-read-layer0 RECEIPT_PREFIX (experimental serial T1 attention read)]\n"
@@ -171,6 +172,7 @@ int main(int argc, char **argv) {
                 opts.gdn_resident_state = true;
                 continue;
             }
+            if (key == "--hc-serial-resident-weights") {opts.hc_serial_resident_weights=true;continue;}
             if (key == "--hc-cycle-resident-weights") {opts.hc_cycle_resident_weights=true;continue;}
             if (key == "--layer0-resident-weights") {opts.layer0_resident_weights=true;continue;}
             if (key == "--dense-resident-weights") {
@@ -200,7 +202,8 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if(key=="--native-hc-serial-cycle") {
+            if(key=="--native-hc-serial") {opts.native_hc_serial=true;opts.native_hc_serial_receipt_prefix=value;}
+            else if(key=="--native-hc-serial-cycle") {
                 opts.native_hc_serial_cycle=true;opts.native_hc_cycle_receipt_prefix=value;
                 opts.native_hc_pending_layer1_2=opts.native_hc_pending_layer2_3=true;
                 if(opts.native_hc_pending_receipt_prefix.empty())opts.native_hc_pending_receipt_prefix=value+".entry";
@@ -359,6 +362,8 @@ int main(int argc, char **argv) {
                      <<",\"dense_resident_weights\":"<<(opts.dense_resident_weights?"true":"false")
                      <<",\"layer0_resident_weights\":"<<(opts.layer0_resident_weights?"true":"false")
                      <<",\"native_hc_serial_cycle\":"<<(opts.native_hc_serial_cycle?"true":"false")
+                     <<",\"native_hc_serial\":"<<(opts.native_hc_serial?"true":"false")
+                     <<",\"hc_serial_resident_weights\":"<<(opts.hc_serial_resident_weights?"true":"false")
                      <<",\"hc_cycle_resident_weights\":"<<(opts.hc_cycle_resident_weights?"true":"false")
                      <<",\"native_hc_pending_layer2_3\":"<<(opts.native_hc_pending_layer2_3?"true":"false")
                      <<",\"native_hc_pending_layer1_2\":"<<(opts.native_hc_pending_layer1_2?"true":"false")
@@ -550,6 +555,16 @@ int main(int argc, char **argv) {
             if(opts.native_hc_norm_inject_layer0)out<<",\"native_hc_norm_inject_layer0\":true,\"full_hc_parity\":false,\"native_hc_layer0_calls_delta\":"
                 <<session->model_work().native_hc_layer0_calls-heads_before.native_hc_layer0_calls;
             if(opts.hc_cycle_resident_weights)out<<",\"hc_cycle_resident_weights\":true";
+            if(opts.hc_serial_resident_weights)out<<",\"hc_serial_resident_weights\":true";
+            if(opts.native_hc_serial) {
+                out<<",\"native_hc_serial\":true";
+                const auto w=session->model_work();
+                auto counts=[&](const char* name,const auto& now,const auto& before){out<<",\""<<name<<"\":[";for(size_t l=0;l<48;++l){if(l)out<<",";out<<now[l]-before[l];}out<<"]";};
+                counts("native_hc_serial_reads_delta",w.native_hc_serial_reads,heads_before.native_hc_serial_reads);
+                counts("native_hc_serial_ffn_calls_delta",w.native_hc_serial_ffn_calls,heads_before.native_hc_serial_ffn_calls);
+                counts("native_hc_serial_outputs_delta",w.native_hc_serial_outputs,heads_before.native_hc_serial_outputs);
+                out<<",\"native_hc_serial_final_writes_delta\":"<<w.native_hc_serial_final_writes-heads_before.native_hc_serial_final_writes;
+            }
             if(opts.native_hc_serial_cycle) {const auto w=session->model_work();
                 out<<",\"native_hc_serial_cycle\":true,\"native_hc_cycle_ffn_calls_delta\":["<<w.native_hc_cycle_ffn_calls[0]-heads_before.native_hc_cycle_ffn_calls[0]<<","<<w.native_hc_cycle_ffn_calls[1]-heads_before.native_hc_cycle_ffn_calls[1]
                    <<"],\"native_hc_cycle_outputs_delta\":"<<w.native_hc_cycle_outputs-heads_before.native_hc_cycle_outputs<<",\"native_hc_cycle_reads_delta\":"<<w.native_hc_cycle_reads-heads_before.native_hc_cycle_reads;

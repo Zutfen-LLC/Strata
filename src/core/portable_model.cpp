@@ -267,7 +267,7 @@ struct PortableModelSession::Impl {
             const size_t graph_preflight=opts.layer_graph_cap*(opts.prompt_chunk_size?2:1);
             require(graph_preflight <= SIZE_MAX - private_workspace, "portable model: graph cap overflow");
             const bool resident = !opts.accelerators.empty() &&
-                                  (portable_detail::model_resident_dense(opts,l,false) || (opts.gdn_resident_weights && l % 4 != 3) || ((opts.native_hc_pending_layer2_3 && l==3) || (opts.hc_cycle_resident_weights && portable_detail::model_cycle_ffn(l))));
+                                  (portable_detail::model_resident_dense(opts,l,false) || (opts.gdn_resident_weights && l % 4 != 3) || ((opts.native_hc_pending_layer2_3 && l==3) || portable_detail::model_ffn_resident(opts,l)));
             const size_t state_bound = portable_detail::layer_state_preflight_bytes(
                 opts, l, opts.accelerators.empty() ? nullptr : opts.accelerators[device(l)]);
             require(state_bound <= SIZE_MAX - graph_preflight - private_workspace,
@@ -822,6 +822,13 @@ PortableExpertWork PortableModelSession::expert_work() const {
 }
 PortableModelWork PortableModelSession::model_work() const {
     auto work=impl_->model_work;
+    if(impl_->opts.native_hc_serial) for(size_t l=0;l<impl_->layers.size();++l) {
+        const auto& a=impl_->layers[l];
+        work.native_hc_serial_reads[l]=a.gdn ? a.gdn->native_hc_pending_calls() : a.qsa->native_hc_pending_calls();
+        work.native_hc_serial_ffn_calls[l]=a.gdn ? a.gdn->native_ffn_hc_pending_calls() : a.qsa->native_ffn_hc_pending_calls();
+        work.native_hc_serial_outputs[l]=a.gdn ? a.gdn->deferred_hc_outputs() : a.qsa->deferred_hc_outputs();
+        if(l==47)work.native_hc_serial_final_writes=a.qsa->native_ffn_hc_write_calls();
+    }
     if(impl_->opts.native_hc_serial_cycle) {
         work.native_hc_cycle_ffn_calls={impl_->layers[2].gdn->native_ffn_hc_pending_calls(),impl_->layers[3].qsa->native_ffn_hc_pending_calls()};
         work.native_hc_cycle_outputs=impl_->layers[3].qsa->deferred_hc_outputs();

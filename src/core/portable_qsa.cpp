@@ -794,6 +794,7 @@ struct PortableQsaLayer::Impl {
         }
     }
 };
+uint64_t PortableQsaLayer::native_ffn_hc_write_calls() const {return impl_->ffn->native_hc_write_calls();}
 uint64_t PortableQsaLayer::native_ffn_hc_pending_calls() const {return impl_->ffn->native_hc_pending_calls();}
 uint64_t PortableQsaLayer::deferred_hc_outputs() const {return impl_->ffn->work().deferred_hc_outputs;}
 const PortableHcPendingWrite& PortableQsaLayer::pending_write() const {return impl_->pending;}
