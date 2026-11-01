@@ -11,12 +11,13 @@ int main(){try{
  auto named=[&](int layer){auto views=f.views;for(auto&v:views)v.name.replace(0,6,"blk."+std::to_string(layer)+".");return views;};
  auto dispatch=[](int64_t l,const PortableRoute&r,std::vector<float>&rows,std::string&e){check(l==1||l==2||l==0,"unexpected source layer");return experts()(0,r,rows,e);};
  PortableGdnOptions a;a.execution.threads=1;a.execution.accelerator=cpu.get();a.execution.request_accelerator=true;a.defer_ffn_hc_write=true;
+ a.scratch=PortableGdnScratch::create(a.execution,error);check(bool(a.scratch),error);
  auto producer=PortableGdnLayer::create(1,named(1),a,error);check(bool(producer),error);check(producer->reset(error),error);PortableRoute route;
  check(producer->step(f.input(0),dispatch,route,error),error);const auto tuple=producer->pending_write();
  check(tuple.residual==producer->last_residual()&&tuple.block.size()==2560&&tuple.injection.size()==4,"incomplete actual producer tuple");check(producer->deferred_hc_outputs()==1,"producer count");
  std::vector<float> applied(10240);
  for(size_t c=0;c<4;++c){const float scale=std::fma(0.25f,tuple.injection[c],0.0f);const float gate=std::fma(2.0f,1.0f/(1.0f+std::exp(-scale)),0.0f);for(size_t d=0;d<2560;++d)applied[c*2560+d]=std::fma(tuple.block[d],gate,tuple.residual[c*2560+d]);}
- PortableGdnOptions b;b.execution=a.execution;b.resident_attention_weights=true;b.native_hc_norm_inject=true;b.native_hc_mix=true;b.native_hc_pending=true;b.native_hc_receipt_prefix=(root/"consumer").string();
+ PortableGdnOptions b;b.execution=a.execution;b.scratch=a.scratch;b.resident_attention_weights=true;b.native_hc_norm_inject=true;b.native_hc_mix=true;b.native_hc_pending=true;b.native_hc_receipt_prefix=(root/"consumer").string();
  auto consumer=PortableGdnLayer::create(2,named(2),b,error);check(bool(consumer),error);check(consumer->reset(error),error);PortableGdnTrace trace;
  check(consumer->step_pending(tuple.residual,tuple.block,tuple.injection,dispatch,route,error,&trace),error);
  check(trace.hc_pending_input==tuple.residual&&trace.hc_previous_output==tuple.block&&trace.hc_previous_inject==tuple.injection,"actual inter-layer tuple replaced/stale");

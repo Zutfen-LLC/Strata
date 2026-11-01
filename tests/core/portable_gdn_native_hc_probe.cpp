@@ -89,8 +89,8 @@ void boundary(const Fixture&f,ggml_backend_t backend,const std::vector<float>&in
  auto renamed=[&](int l){auto v=f.views;for(auto&t:v)t.name.replace(0,6,"blk."+std::to_string(l)+".");return v;};
  auto dispatch=[](int64_t l,const PortableRoute&r,std::vector<float>&rows,std::string&e){check(l==0||l==1||l==2,"boundary source layer");return experts()(0,r,rows,e);};
  PortableGdnOptions a;a.execution.threads=1;a.execution.accelerator=backend;a.execution.request_accelerator=true;a.defer_ffn_hc_write=true;
- std::string error;auto producer=PortableGdnLayer::create(1,renamed(1),a,error);check(bool(producer),error);check(producer->reset(error),error);
- PortableGdnOptions b;b.execution=a.execution;b.resident_attention_weights=true;b.native_hc_norm_inject=true;b.native_hc_mix=true;b.native_hc_pending=true;b.native_hc_receipt_prefix=(out/"consumer").string();
+ std::string error;a.scratch=PortableGdnScratch::create(a.execution,error);check(bool(a.scratch),error);auto producer=PortableGdnLayer::create(1,renamed(1),a,error);check(bool(producer),error);check(producer->reset(error),error);
+ PortableGdnOptions b;b.execution=a.execution;b.scratch=a.scratch;b.resident_attention_weights=true;b.native_hc_norm_inject=true;b.native_hc_mix=true;b.native_hc_pending=true;b.native_hc_receipt_prefix=(out/"consumer").string();
  auto consumer=PortableGdnLayer::create(2,renamed(2),b,error);check(bool(consumer),error);check(consumer->reset(error),error);PortableRoute route;PortableGdnTrace t;
  check(producer->step(input,dispatch,route,error),error);const auto tuple=producer->pending_write();
  check(consumer->step_pending(tuple.residual,tuple.block,tuple.injection,dispatch,route,error,&t),error);
