@@ -1,0 +1,42 @@
+#version 450
+#extension GL_EXT_spirv_intrinsics : require
+#extension GL_GOOGLE_include_directive : require
+#include "../../core/native_hc_mix_limits.h"
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427) float nfma(float a,float b,float c);
+layout(local_size_x=128) in;
+layout(binding=0,std430) readonly buffer HISTORY {float history[];};
+layout(binding=1,std430) readonly buffer QKV {float qkv[];};
+layout(binding=2,std430) readonly buffer W {float w[];};
+layout(binding=3,std430) writeonly buffer NH {float nh[];};
+layout(binding=4,std430) writeonly buffer H {float h[];};
+layout(binding=5,std430) writeonly buffer PRE {float pre[];};
+layout(binding=6,std430) writeonly buffer EX {float ex[];};
+layout(binding=7,std430) writeonly buffer SILU {float silu[];};
+layout(binding=8,std430) writeonly buffer RS {float rs[];};
+layout(binding=9,std430) writeonly buffer ARG {float arg[];};
+layout(binding=10,std430) buffer STATUS {uint status[];};
+layout(push_constant) uniform P {uint off[11];uint commit;} p;
+shared float sums[128];
+float ck(float v){uint b=floatBitsToUint(v)&0x7fffffffu;if(b>=0x7f800000u||(b!=0u&&b<0x800000u))atomicOr(status[p.off[10]],1u);return v;}
+void main(){uint group=gl_WorkGroupID.x,lane=gl_LocalInvocationID.x,c=group*128u+lane;
+ float a=ck(history[p.off[0]+c*3u]),b=ck(history[p.off[0]+c*3u+1u]),d=ck(history[p.off[0]+c*3u+2u]),x=ck(qkv[p.off[1]+c]);
+ nh[p.off[3]+c*3u]=p.commit!=0u?b:a;nh[p.off[3]+c*3u+1u]=p.commit!=0u?d:b;nh[p.off[3]+c*3u+2u]=p.commit!=0u?x:d;
+ // CUDA-contraction candidate, checked against the unchanged native launcher.
+ precise float second=ck(b*ck(w[p.off[2]+c*4u+1u]));
+ precise float v=ck(nfma(a,ck(w[p.off[2]+c*4u]),second));
+ v=ck(nfma(d,ck(w[p.off[2]+c*4u+2u]),v));v=ck(nfma(x,ck(w[p.off[2]+c*4u+3u]),v));pre[p.off[5]+c]=v;
+ float e=exp(-v);precise float den=1.0+e;precise float y=v/den;ex[p.off[6]+c]=e;
+ if(v>uintBitsToFloat(STRATA_HC_MIX_ACTIVATION_LIMIT_BITS)){
+  if(floatBitsToUint(e)>0x33800000u||den!=1.0||floatBitsToUint(y)!=floatBitsToUint(v))atomicOr(status[p.off[10]],2u);
+ }else if(v<=-89.0){
+  if(floatBitsToUint(e)!=0x7f800000u||floatBitsToUint(den)!=0x7f800000u||floatBitsToUint(y)!=0x80000000u)atomicOr(status[p.off[10]],2u);
+ }else{
+  if((floatBitsToUint(v)&0x7fffffffu)>STRATA_HC_MIX_ACTIVATION_LIMIT_BITS)atomicOr(status[p.off[10]],2u);
+  ck(e);ck(den);ck(y);precise float minimum=uintBitsToFloat(STRATA_HC_MIX_MIN_QUOTIENT_BITS)*den;if(v!=0.0&&abs(v)<minimum)atomicOr(status[p.off[10]],2u);if(!(e>0.0)||den>uintBitsToFloat(STRATA_HC_MIX_MAX_DENOMINATOR_BITS))atomicOr(status[p.off[10]],2u);
+ }
+ silu[p.off[7]+c]=y;
+ precise float sq=0.0;if(group<32u)sq=ck(y*y);sums[lane]=sq;barrier();
+ for(uint delta=16u;delta>0u;delta>>=1u){precise float next=ck(sums[lane]+sums[lane^delta]);barrier();sums[lane]=next;barrier();}
+ if(group<32u){precise float total=ck(ck(ck(sums[0]+sums[32])+sums[64])+sums[96]);precise float shifted=ck(total+0.000001);float scale=ck(inversesqrt(shifted));if(lane==0u){rs[p.off[8]+group]=scale;arg[p.off[9]+group]=shifted;}y=ck(y*scale);}
+ h[p.off[4]+c]=y;
+}
