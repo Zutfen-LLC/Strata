@@ -3140,7 +3140,7 @@ if(STRATA_BUILD_TESTS)
   endif()
   add_test(NAME native_gdn_conv_t1_input_test COMMAND native_gdn_conv_t1_input_test)
   add_test(NAME native_component_output_contract_test COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_component_output_contract.py" "$<TARGET_FILE:native_gdn_conv_t1_input_test>")
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_compiled_component_output_contract.py" "$<TARGET_FILE:native_gdn_conv_t1_input_test>")
   add_test(NAME portable_native_stdout_contract_test COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_portable_native_methods_v1.py"
     NativeMethods.test_actual_llvm_startup_receipt_through_suite

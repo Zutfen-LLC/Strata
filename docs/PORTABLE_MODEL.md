@@ -9,6 +9,12 @@ The initial implementation supports one serial text sequence, all 48 layers,
 and context limits from 1 to 256 tokens. Defaults remain off. The existing
 CUDA production executable and allocations are separate.
 
+The [Strata method migration map](CUDA_VULKAN_PARITY.md) is the source of truth
+for native ownership, automatic capacity versus fixed-plan selection, numerical
+qualification and the next bounded migration slices. The examples below are
+explicit fixed-slot requests; matching selection order does not implement native
+automatic sizing or prove that a complete model fits.
+
 ## Native primary and expert helper ownership
 
 `--dense-topology primary` expresses native Strata's dense-primary plus one
