@@ -172,6 +172,7 @@ struct PortableGdnLayer::Impl {
     ggml_cgraph *projection_graph = nullptr, *tail_graph = nullptr;
     ggml_tensor *projection_input = nullptr;
     std::array<ggml_tensor*,5> projection_outputs{}, projection_inputs{};
+    ggml_tensor *produced_block=nullptr,*produced_inject=nullptr; // graph-owned until completed tuple readback
     using AttentionOutputs = std::array<ggml_tensor*,11>;
     AttentionOutputs tail_outputs{};
     size_t projection_tokens = 0, projection_bytes = 0;
@@ -213,6 +214,12 @@ struct PortableGdnLayer::Impl {
         auto *outgate = ggml_reshape_2d(c, ggml_sigmoid(c, z), D, HV);
         auto *projected =
             ggml_mul_mat(c, w.at("ssm_out.weight"), ggml_reshape_1d(c, ggml_mul(c, normalized, outgate), INNER));
+        if(options.native_hc_ffn_read) {
+            // No eager multiply/add: actual half-1 read performs the native FMA.
+            produced_block=projected;produced_inject=inject;
+            attn_residual=hidden;
+            return outputs();
+        }
         auto *scatter =
             ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, inject, 0.25f)), 2.0f), 1, HC, 1);
         auto *repeat = ggml_repeat_4d(c, ggml_reshape_3d(c, projected, H, 1, 1), H, HC, 1, 1);
@@ -321,6 +328,7 @@ struct PortableGdnLayer::Impl {
     };
     struct AttentionResult {
         std::vector<float> residual;
+        std::vector<float> block, inject;
         std::array<int32_t,2> previous;
         PortableGdnTrace trace;
     };
@@ -338,7 +346,7 @@ struct PortableGdnLayer::Impl {
         auto next_previous = cursor.previous;
         PortableGdnWork disabled;
         auto &timing = work ? *work : disabled;
-        std::vector<float> next_residual;
+        std::vector<float> next_residual,next_block,next_inject;
         {
             portable_detail::ScopedExpertTimer<> attention_timer(work != nullptr,
                 timing.attention_exchange_ms, timing.attention_exchange_calls);
@@ -404,6 +412,11 @@ struct PortableGdnLayer::Impl {
                 read_into(s.history_output, s.candidate_history, work);
             }
             next_residual = read(s.attn_residual, work);
+            if(s.options.native_hc_ffn_read) {
+                // Read before the shared graph lease releases or any FFN graph
+                // can reuse its arena. No caller/scheduler-owned pointer escapes.
+                next_block=read(s.produced_block,work);next_inject=read(s.produced_inject,work);
+            }
             auto* observer=s.options.execution.layer0_observer;
             if(observer && observer->active()) {
                 const auto mixed=read(s.observed_mixed),inject=read(s.observed_inject);
@@ -431,7 +444,7 @@ struct PortableGdnLayer::Impl {
                 }
             }
         }
-        return {std::move(next_residual),next_previous,std::move(next_trace)};
+        return {std::move(next_residual),std::move(next_block),std::move(next_inject),next_previous,std::move(next_trace)};
     }
     void commit_device(PortableGdnWork* work, bool projected = false, bool causal = false) {
         auto& s = *this;
@@ -617,6 +630,9 @@ struct PortableGdnLayer::Impl {
                 ggml_set_output(t);
                 ggml_build_forward_expand(graph, t);
             }
+            if(options.native_hc_ffn_read)for(auto* t:{produced_block,produced_inject}) {
+                ggml_set_output(t);ggml_build_forward_expand(graph,t);
+            }
             if (options.ple_table) {
                 for (auto *t : {ple_hist_out, ple_key, ple_value, ple_gate, ple_norm, ple_conv, ple_result}) {
                     ggml_set_output(t);
@@ -714,6 +730,10 @@ struct PortableGdnLayer::Impl {
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 != 3,
                 "portable GDN: expected a non-QSA layer in [0,47]");
+        require(!options.execution.native_hc_pending_read,"portable GDN: configure FFN read through layer option, not raw execution option");
+        require(!options.native_hc_ffn_read || (options.native_hc_mix && !options.native_hc_pending &&
+                options.execution.resident_dense_weights && !options.execution.layer0_observer),
+                "native GDN-to-FFN: composed attention/resident dense required; diagnostic prior tuple/legacy observer unsupported");
         require(!options.native_hc_pending||options.native_hc_mix,"native HC pending: composed read required");
         require(!options.native_hc_pending||!options.execution.layer0_observer,"native HC pending: legacy observer lacks pending tuple schema; use bounded layer trace");
         require(!options.native_hc_mix||options.native_hc_norm_inject,"native HC read: norm/injection required");
@@ -758,6 +778,8 @@ struct PortableGdnLayer::Impl {
                 "portable GDN: missing/extra attention, PLE or FFN tensors");
         std::string error;
         auto ffn_options=options.execution;
+        ffn_options.native_hc_pending_read=options.native_hc_ffn_read;
+        ffn_options.native_hc_receipt_prefix=options.native_hc_receipt_prefix+".ffn";
         if(options.scratch) {
             const size_t retained=options.scratch->graph_bytes();
             require(retained<ffn_options.graph_budget,"portable GDN: no private FFN graph budget");
@@ -1018,7 +1040,9 @@ bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residua
         {
             portable_detail::ScopedExpertTimer<> ffn_timer(work != nullptr, timing.ffn_ms, timing.ffn_calls);
             require(s.ffn->reset(next_residual, error), error);
-            const bool ok = s.ffn->step(dispatch, candidate, error);
+            const bool ok = s.options.native_hc_ffn_read ?
+                s.ffn->step_pending(attended.block,attended.inject,dispatch,candidate,error,trace?&next_trace.ffn_hc:nullptr):
+                s.ffn->step(dispatch, candidate, error);
             require(ok, error);
             next_residual = s.ffn->residual(); // allocate before the no-throw public commit
         }
@@ -1174,6 +1198,7 @@ const std::vector<float> &PortableGdnLayer::convolution_history() const {
 }
 const std::vector<float> &PortableGdnLayer::last_residual() const { return impl_->last; }
 uint64_t PortableGdnLayer::tokens() const { return impl_->count; }
+uint64_t PortableGdnLayer::native_ffn_hc_pending_calls() const {return impl_->ffn->native_hc_pending_calls();}
 uint64_t PortableGdnLayer::native_hc_pending_calls() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     return impl_->native_hc?impl_->native_hc->pending_calls():0;

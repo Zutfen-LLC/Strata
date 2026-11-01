@@ -7,6 +7,9 @@
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "native_shared_layout.hpp"
+#ifdef STRATA_PORTABLE_NATIVE_HC
+#include "portable_native_hc.hpp"
+#endif
 #ifdef STRATA_PORTABLE_NATIVE_SHARED
 #include "portable_native_shared.hpp"
 #endif
@@ -135,7 +138,13 @@ struct PortableFfn::Impl {
                 const bool native=options.native_shared && (scalar || projection);
                 require(view.data,"portable FFN: invalid tensor payload");
                 ggml_tensor* t=nullptr;
-                if(native) {
+                const bool native_hc=options.native_hc_pending_read &&
+                    (key=="hc_ffn_down.weight" || key=="hc_ffn_up.weight" || key=="hc_ffn_inject.weight");
+                if(native_hc) {
+                    require(view.type==8 && view.bytes==size_t(view.shape[0]*view.shape[1])/32*34,
+                            "native FFN HC: Q8 role encoding required");
+                    t=ggml_new_tensor_1d(weights_ctx.get(),GGML_TYPE_I32,view.shape[0]*view.shape[1]/2);
+                } else if(native) {
                     size_t bytes=0;
                     if(projection) {
                         require(view.type==8,"portable FFN: native shared projections require Q8_0");
@@ -188,6 +197,12 @@ struct PortableFfn::Impl {
             }
             for(const auto& view:weights) {
                 const auto key=view.name.substr(prefix.size());auto* t=w.at(key);auto found=converted.find(key);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+                if(options.native_hc_pending_read && key!="hc_ffn_norm.weight" && key.rfind("hc_ffn_",0)==0) {
+                    const auto bytes=portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(view.data),view.bytes,size_t(view.shape[0]*view.shape[1]));
+                    ggml_backend_tensor_set(t,bytes.data(),0,bytes.size()*2);
+                } else
+#endif
                 ggml_backend_tensor_set(t,found==converted.end()?view.data:found->second.data(),0,ggml_nbytes(t));
             }
             weights_size = ggml_backend_buffer_get_size(weights_buffer.get());
@@ -207,6 +222,17 @@ struct PortableFfn::Impl {
                 tokens >= 1 && tokens <= 8 && g.selected > 0 && g.selected <= g.experts && g.selected <= 64 && layer >= 0 &&
                 std::isfinite(g.epsilon) && g.epsilon > 0 && options.threads > 0,
                 "portable FFN: invalid geometry/options");
+        if(options.native_hc_pending_read) {
+            require(layer==0 && tokens==1 && g.hidden==2560 && g.streams==4 && g.rank==320 && g.epsilon==1e-6f &&
+                    options.request_accelerator && options.accelerator && options.resident_dense_weights && !options.allow_cpu_fallback &&
+                    !options.layer0_observer && !options.native_hc_receipt_prefix.empty(),
+                    "native FFN HC: layer0/T1/H2560/R320/strict resident weights/receipt required; legacy observer unsupported");
+#ifndef STRATA_PORTABLE_NATIVE_HC
+            throw std::runtime_error("native FFN HC: strict-FMA native-stage build required");
+#else
+            portable_detail::native_hc_environment();
+#endif
+        }
         require(!options.native_shared || (options.request_accelerator && options.accelerator && !options.allow_cpu_fallback &&
                 !options.native_shared_receipt_prefix.empty()),"portable FFN: native shared requires strict accelerator and private receipt prefix");
         if(options.native_shared)portable_detail::native_shared_shape(uint32_t(g.hidden),uint32_t(g.shared_ff),uint32_t(tokens));
@@ -235,6 +261,9 @@ struct PortableFfn::Impl {
     std::shared_ptr<Weights> owned_weights;
     std::shared_ptr<ChunkLease> chunk_lease;
     Backend& cpu;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    std::unique_ptr<portable_detail::PortableNativeHc> native_hc;
+#endif
     Context pre_ctx{nullptr, ggml_free}, post_ctx{nullptr, ggml_free};
     Scheduler pre_sched{nullptr, ggml_backend_sched_free}, post_sched{nullptr, ggml_backend_sched_free};
     ggml_cgraph *pre = nullptr, *post = nullptr;
@@ -244,6 +273,7 @@ struct PortableFfn::Impl {
     std::vector<PortablePlacement> placement;
     size_t weights_size = 0, graphs_size = 0, device_weights = 0;
     bool initialized = false;
+
 #ifdef STRATA_PORTABLE_NATIVE_SHARED
     std::unique_ptr<portable_detail::PortableNativeShared> native_shared;
 #endif
@@ -289,11 +319,25 @@ struct PortableFfn::Impl {
             graphs_size+=native_shared->bytes();
         }
 #endif
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(options.native_hc_pending_read) {
+            require(graphs_size<options.graph_budget,"native FFN HC: no graph room");
+            native_hc=std::make_unique<portable_detail::PortableNativeHc>(options.accelerator,w.at("hc_ffn_norm.weight"),w.at("hc_ffn_inject.weight"),
+                options.graph_budget-graphs_size,options.native_hc_receipt_prefix,w.at("hc_ffn_down.weight"),w.at("hc_ffn_up.weight"),true);
+            graphs_size+=native_hc->bytes();
+            placement.push_back({"native-hc-ffn","NATIVE_BF16_PENDING_READ_T1","actual GDN projection/attention injection -> FFN HC read",
+                "F32/BF16",ggml_backend_name(options.accelerator),"",{g.hidden,g.streams,1}});
+        }
+#endif
         const int64_t width = g.hidden*g.streams;
 
         auto* c = pre_ctx.get();
         input = named(ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, tokens), "residual");
         ggml_set_input(input);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(native_hc) {input=native_hc->residual;mixed=native_hc->mixed;inject=native_hc->inject;} else
+#endif
+        {
         auto* norm = ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, input, g.epsilon), width, tokens), w.at("hc_ffn_norm.weight"));
         auto* low = ggml_silu(c, ggml_scale(c, ggml_mul_mat(c, w.at("hc_ffn_down.weight"), norm), 1.0f / float(g.streams)));
         auto* gate = ggml_sigmoid(c, ggml_mul_mat(c, w.at("hc_ffn_up.weight"), low));
@@ -313,6 +357,7 @@ struct PortableFfn::Impl {
         }
         mixed = named(ggml_scale(c, mixed, 1.0f / float(g.streams)), "mixed");
         inject = named(ggml_mul_mat(c, w.at("hc_ffn_inject.weight"), norm), "inject");
+        }
         logits = named(ggml_mul_mat(c, w.at("ffn_gate_inp.weight"), mixed), "router_logits");
         if(!options.native_shared) {
             auto* sg = ggml_silu(c, ggml_mul_mat(c, w.at("ffn_gate_shexp.weight"), mixed));
@@ -395,6 +440,7 @@ std::unique_ptr<PortableFfn> PortableFfn::create_chunk_execution(int64_t tokens,
     error.clear();
     try {
         auto& s = *impl_;
+        require(!s.options.native_hc_pending_read,"native FFN HC: chunk execution unsupported");
         require(s.tokens == 1 && tokens >= 2 && tokens <= 8,
                 "portable FFN: shared chunk requires T1 owner and T in [2,8]");
         require(s.owned_weights->active_chunk.expired(),
@@ -448,14 +494,41 @@ bool PortableFfn::reset(const std::vector<float>& residual, std::string& error) 
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route, std::string& error) {
-    error.clear(); route = {};
+    return step_impl(nullptr,nullptr,dispatch,route,error,nullptr);
+}
+bool PortableFfn::step_pending(const std::vector<float>& b,const std::vector<float>& i,
+    const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableFfnHcTrace* trace) {
+    return step_impl(&b,&i,dispatch,route,error,trace);
+}
+bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>* i,
+    const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableFfnHcTrace* trace) {
+    error.clear(); route = {};if(trace)*trace={};
     try {
         auto& s = *impl_;
         require(s.tokens == 1, "portable FFN: multirow graph requires batch dispatch");
         require(s.initialized && bool(dispatch), "portable FFN: reset and expert callback required");
+        require(s.options.native_hc_pending_read==bool(b&&i),"native FFN HC: complete fresh tuple required only in pending mode");
+        PortableFfnHcTrace observed;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.native_hc) {
+            require(b->size()==2560 && i->size()==4,"native FFN HC: producer tuple shape");finite(*b);finite(*i);
+            write(s.native_hc->pending_input,s.state);write(s.native_hc->previous_output,*b);write(s.native_hc->previous_inject,*i);
+            s.native_hc->run_pending();
+            if(trace) {
+                observed.original=s.state;observed.previous_output=*b;observed.previous_injection=*i;
+                observed.residual=read(s.native_hc->residual);observed.gate=read(s.native_hc->pending_gate);observed.exponential=read(s.native_hc->pending_exp);
+                observed.normalized=read(s.native_hc->normalized);observed.rs=read(s.native_hc->rs);observed.inject=read(s.native_hc->inject);
+                observed.low_pre=read(s.native_hc->low_pre);observed.low=read(s.native_hc->low);observed.low_exp=read(s.native_hc->low_exp);
+                observed.up_pre=read(s.native_hc->up_pre);observed.gates=read(s.native_hc->gates);observed.up_exp=read(s.native_hc->up_exp);observed.mixed=read(s.native_hc->mixed);
+            }
+        } else
+#endif
         write(s.input, s.state);
         ++s.work.pre_graph_calls;
         require(ggml_backend_sched_graph_compute(s.pre_sched.get(), s.pre) == GGML_STATUS_SUCCESS, "portable FFN: pre graph failed");
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.native_hc)s.native_hc->record_first();
+#endif
         PortableRoute candidate;
         auto* observer=s.options.layer0_observer;
         if(observer && observer->active()) {
@@ -502,14 +575,18 @@ bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route,
         }
         finite(block);
         if(observer && observer->active())observer->put(Layer0Observer::combined_output,block.data(),block.size());
-        write(s.post_input, s.state); write(s.post_inject, read(s.inject)); write(s.post_block, block);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.native_hc) write(s.post_input,read(s.native_hc->residual));else
+#endif
+        write(s.post_input, s.state);
+        write(s.post_inject, read(s.inject)); write(s.post_block, block);
         ++s.work.post_graph_calls;
         require(ggml_backend_sched_graph_compute(s.post_sched.get(), s.post) == GGML_STATUS_SUCCESS, "portable FFN: post graph failed");
         auto next = read(s.output);
         if(candidate.native_shared){++s.work.native_shared_calls;++s.work.native_shared_rows;}
         if(candidate.native_router){++s.work.native_router_calls;++s.work.native_router_rows;}
         ++s.work.logical_rows; ++s.work.completed_chunks;
-        s.state = std::move(next); route = std::move(candidate); error.clear(); return true;
+        s.state = std::move(next); route = std::move(candidate);if(trace)*trace=std::move(observed); error.clear(); return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 bool PortableFfn::step_batch(const PortableExpertRowsBatch& dispatch,
@@ -517,6 +594,7 @@ bool PortableFfn::step_batch(const PortableExpertRowsBatch& dispatch,
     error.clear(); routes.clear();
     try {
         auto& s = *impl_;
+        require(!s.options.native_hc_pending_read,"native FFN HC: batch execution unsupported");
         require(s.initialized && bool(dispatch), "portable FFN: reset and expert callback required");
         write(s.input, s.state);
         ++s.work.pre_graph_calls;
@@ -582,6 +660,13 @@ const std::vector<PortablePlacement>& PortableFfn::placements() const { return i
 size_t PortableFfn::weight_bytes() const { return impl_->weights_size; }
 size_t PortableFfn::graph_bytes() const { return impl_->graphs_size; }
 
+uint64_t PortableFfn::native_hc_pending_calls() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_hc?impl_->native_hc->pending_calls():0;
+#else
+    return 0;
+#endif
+}
 PortableMemoryUsage PortableFfn::memory_usage() const {
     const auto &s = *impl_;
     PortableMemoryUsage m;
@@ -603,6 +688,9 @@ PortableMemoryUsage PortableFfn::memory_usage() const {
 #endif
 #ifdef STRATA_PORTABLE_NATIVE_SHARED
     if(s.native_shared){m.device_graph+=s.native_shared->bytes();m.host_extra_bound+=s.native_shared->host_bound();}
+#endif
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    if(s.native_hc) {m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=8u<<20;}
 #endif
     m.host_extra_bound+=s.owned_weights->shared_host_bound;
     m.host_extra_bound += 3*metadata_bytes; // three owning metadata contexts, plus token staging below
