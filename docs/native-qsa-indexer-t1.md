@@ -80,3 +80,18 @@ and three-FMA/nine-protected-operation module checks. Exit/reap and three baseli
 cleanup observations pass. Native has five in-loop guard samples; Vulkan has none,
 so no continuous/per-child sampling claim follows. This is component evidence,
 not model, native-window, quality or performance qualification.
+
+## Bounded model result
+
+Hermes reports the comparison at `f68c187ed5e3d991f14cc491f90705b4e61421b4`
+passes 23 tests, fresh native planning/admission with matched ownership and two
+reset-separated established 25-token/GEN3 requests per arm. On performs 28 actual
+indexer calls per ordinary QSA layer/request; control performs none. Earlier
+native QSA normalization stays fixed. Layer3 positions0..7 own-input state/math,
+candidate-to-FFN-commit-to-next-input links, 24 new protected module uses and prior
+HC/GDN/QSA checks pass. Within-arm head/route/full-state reset is exact. Retained
+cross-arm routes match and matching-history logits at positions24..27 are bit
+identical; this is a diagnostic, not full native parity. All three processes
+exit/reap and restore baseline across three observations; guard sampling is
+discrete. qualified=false; native scores/selection/attention, accepted-prefix/
+window, quality and performance qualification remain separate.
