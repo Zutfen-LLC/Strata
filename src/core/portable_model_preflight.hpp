@@ -32,6 +32,7 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         if(layer>=2) b+=(layer%4==3 ? PortableQsaOptions::native_hc_host_bound : PortableGdnOptions::native_hc_pending_host_bound)+PortableFfnOptions::native_hc_pending_host_bound;
         b+=layer==47 ? PortableFfnOptions::native_hc_write_host_bound : PortableFfnOptions::deferred_hc_host_bound;
         if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_recurrence_host_bound;
+        if(opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_preparation_host_bound;
         return b;
     }
     size_t bound=0;
@@ -46,9 +47,14 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         (opts.native_hc_ffn_read_layer0 ? PortableFfnOptions::native_hc_pending_host_bound : 0)+
         (opts.native_hc_ffn_write_layer0 ? PortableFfnOptions::native_hc_write_host_bound : 0);
     if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_recurrence_host_bound;
+    if(opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_preparation_host_bound;
     return bound;
 }
 inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,PortableGdnOptions& o) {
+    o.native_preparation_weights=opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer);
+    o.native_preparation_t1=opts.native_gdn_preparation_t1&&model_gdn_t1_layer(layer);
+    if(o.native_preparation_weights)o.state_budget+=PortableGdnOptions::native_preparation_host_bound;
+    if(o.native_preparation_t1){o.native_preparation_receipt=opts.native_gdn_preparation_receipt_prefix+".layer-"+std::to_string(layer);o.native_preparation_record_first=layer==0;}
     o.native_recurrence_t1=opts.native_gdn_t1 && model_gdn_t1_layer(layer);
     if(o.native_recurrence_t1){o.state_budget+=PortableGdnOptions::native_recurrence_host_bound;o.native_recurrence_receipt=opts.native_gdn_receipt_prefix+".layer-"+std::to_string(layer)+"/effective.spv";o.native_recurrence_record_first=layer==0;}
     o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && layer==0;
@@ -151,6 +157,8 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
             selected_accelerators && !opts.allow_cpu_fallback && !opts.gdn_production && !opts.gdn_batch_input_projections &&
             !opts.gdn_causal_chunk && !opts.prompt_chunk_size && !opts.native_gdn_receipt_prefix.empty() && opts.dense_topology==PortableDenseTopology::primary),
             "native GDN T1 requires serial eager primary dense, resident state/attention, strict accelerator and receipt prefix");
+    require(!opts.native_gdn_preparation_weights||opts.native_gdn_t1,"native GDN preparation weights require ordinary native recurrence");
+    require(!opts.native_gdn_preparation_t1||(opts.native_gdn_preparation_weights&&!opts.native_gdn_preparation_receipt_prefix.empty()),"native GDN preparation requires explicit BF16 residency and receipt");
     if(opts.native_gdn_t1)require(PortableGdnLayer::native_hc_compiled(),"native GDN T1: strict-FMA native stage build required");
     require(!opts.gdn_production || (opts.gdn_resident_state && selected_accelerators && !opts.allow_cpu_fallback),
             "portable model: GDN production requires resident state and strict accelerators");

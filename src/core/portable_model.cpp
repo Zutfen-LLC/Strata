@@ -836,6 +836,7 @@ PortableModelWork PortableModelSession::model_work(bool state_digests) const {
     }
     for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(l==3&&layer.qsa)work.native_hc_pending_layer3_calls+=layer.qsa->native_hc_pending_calls();if(!layer.gdn)continue;
         work.native_gdn_t1_calls[l]=layer.gdn->native_recurrence_calls();
+        work.native_gdn_conv_calls[l]=layer.gdn->native_convolution_calls();work.native_gdn_ab_calls[l]=layer.gdn->native_ab_calls();
         if(state_digests && !impl_->opts.gdn_production){const auto&state=layer.gdn->recurrent_state();const auto digest=worker::blob_digest(state.data(),state.size()*sizeof(float));work.gdn_state_a[l]=digest.a;work.gdn_state_b[l]=digest.b;}
         if(l==2)work.deferred_ffn_layer2_outputs+=layer.gdn->deferred_hc_outputs();
         if(l==1)work.deferred_ffn_layer1_outputs+=layer.gdn->deferred_hc_outputs();

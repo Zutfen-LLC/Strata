@@ -1082,3 +1082,41 @@ Operator receipts and machine-specific run instructions are retained privately.
 
 The opt-in [first-token layer-0 observer](LAYER0_OBSERVER.md) diagnoses existing
 operands through combine without changing the selected runtime methods.
+
+### Experimental native T1 GDN preparation
+
+`--gdn-native-prep-bf16` replaces the ordinary GDN alpha/beta Q8 resident
+matrices with the original native packer's compat-BF16 representation. This
+explicit weight setting is shared by a matched control and experimental arm;
+it requires `--native-gdn-t1`, resident attention/state and strict serial eager
+execution. It does not enable a preparation kernel by itself.
+
+`--native-gdn-prep-t1 PREFIX` additionally runs the existing native-method
+convolution/SiLU/L2 and a/b preparation components before the native recurrence.
+The specification is `Verifier::record_window()`'s `gdn_conv_l2_multi()` and
+`gdn_ab_multi()` in `src/kernels/cuda/verify_kernels.cu`: channel/history layout,
+FMA and warp reduction order, strict v>20 branch, and beta/decay meanings are
+preserved. The separately tested LLVM log1pf adapter supplies the missing Vulkan
+primitive with its original accuracy and FP64 feature gates. Native window
+scheduling is still separate work.
+
+The fixed ordinary geometry is T1/N2560/C10240/HV48/S128/qk32. Layer1 PLE keeps
+its existing path; chunk/production/fallback modes refuse. Both settings default
+to false. Existing unsupported numerical classes still refuse, retaining current
+failure inputs and completed intermediates without committing candidate state.
+
+The prefix retains actual completed mixed and QKV tensors, then borrows them for
+preparation. Candidate history, normalized H, gate and beta reuse the recurrence
+bank. Only bounded diagnostic/status leaves are added; no duplicate weights,
+projection bank or state authority is retained. After the suffix and FFN succeed,
+the existing transaction publishes candidate state/history. Reset and failure
+noncommit follow the same owner. Actual convolution/a-b dispatch counters are
+reported per layer and request, including completed refused work.
+
+Both weight configurations reserve aligned preparation storage and an explicit
+2 MiB host allowance per ordinary layer, so a native-plan control can reserve the
+experimental bank without changing quotas or caps. The on arm debits actual
+storage from that reservation; unused room remains conservatively charged.
+Fresh post-dense native planning and each actual arm's admission remain required.
+First-call own-input component receipts are bounded to layer0; this feature does
+not establish whole-model numerical, quality, throughput or window parity.

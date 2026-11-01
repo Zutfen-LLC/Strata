@@ -187,6 +187,7 @@ int main(int argc, char **argv) {
                 opts.gdn_batch_input_projections = true;
                 continue;
             }
+            if(key=="--gdn-native-prep-bf16") {opts.native_gdn_preparation_weights=true;continue;}
             if (key == "--gdn-resident-weights") {
                 opts.gdn_resident_weights = true;
                 continue;
@@ -202,7 +203,8 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if(key=="--native-gdn-t1") {opts.native_gdn_t1=true;opts.native_gdn_receipt_prefix=value;}
+            if(key=="--native-gdn-prep-t1") {opts.native_gdn_preparation_t1=true;opts.native_gdn_preparation_receipt_prefix=value;}
+            else if(key=="--native-gdn-t1") {opts.native_gdn_t1=true;opts.native_gdn_receipt_prefix=value;}
             else if(key=="--native-hc-serial") {opts.native_hc_serial=true;opts.native_hc_serial_receipt_prefix=value;}
             else if(key=="--native-hc-serial-cycle") {
                 opts.native_hc_serial_cycle=true;opts.native_hc_cycle_receipt_prefix=value;
@@ -364,6 +366,7 @@ int main(int argc, char **argv) {
                      <<",\"layer0_resident_weights\":"<<(opts.layer0_resident_weights?"true":"false")
                      <<",\"native_hc_serial_cycle\":"<<(opts.native_hc_serial_cycle?"true":"false")
                      <<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false")
+                     <<",\"native_gdn_preparation_t1\":"<<(opts.native_gdn_preparation_t1?"true":"false")<<",\"native_gdn_preparation_weights\":"<<(opts.native_gdn_preparation_weights?"true":"false")
                      <<",\"gdn_resident_state\":"<<(opts.gdn_resident_state?"true":"false")
                      <<",\"native_hc_serial\":"<<(opts.native_hc_serial?"true":"false")
                      <<",\"hc_serial_resident_weights\":"<<(opts.hc_serial_resident_weights?"true":"false")
@@ -561,8 +564,9 @@ int main(int argc, char **argv) {
                 const auto w=session->model_work(true);
                 auto array=[&](const char*name,const auto&a){out<<",\""<<name<<"\":[";for(size_t l=0;l<48;++l){if(l)out<<",";out<<a[l];}out<<"]";};
                 array("gdn_state_before_a",heads_before.gdn_state_a);array("gdn_state_before_b",heads_before.gdn_state_b);array("gdn_state_after_a",w.gdn_state_a);array("gdn_state_after_b",w.gdn_state_b);
-                std::array<uint64_t,48>delta{};for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_t1_calls[l]-heads_before.native_gdn_t1_calls[l];array("native_gdn_t1_calls_delta",delta);
-                out<<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false");
+                std::array<uint64_t,48>delta{};for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_t1_calls[l]-heads_before.native_gdn_t1_calls[l];array("native_gdn_t1_calls_delta",delta);for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_conv_calls[l]-heads_before.native_gdn_conv_calls[l];array("native_gdn_conv_calls_delta",delta);for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_ab_calls[l]-heads_before.native_gdn_ab_calls[l];array("native_gdn_ab_calls_delta",delta);
+                out<<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false")
+                     <<",\"native_gdn_preparation_t1\":"<<(opts.native_gdn_preparation_t1?"true":"false")<<",\"native_gdn_preparation_weights\":"<<(opts.native_gdn_preparation_weights?"true":"false");
             }
             if(opts.hc_cycle_resident_weights)out<<",\"hc_cycle_resident_weights\":true";
             if(opts.hc_serial_resident_weights)out<<",\"hc_serial_resident_weights\":true";

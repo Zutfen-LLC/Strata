@@ -96,3 +96,14 @@ r=run(gdn,True);assert r['native_gdn_t1'] and r['gdn_resident_state']
 for missing in ('--gdn-resident-weights','--gdn-resident-state'):
  bad=[x for x in gdn if x!=missing];run(bad,False)
 run(gdn+['--allow-cpu-fallback'],False)
+
+prep_weights=[*gdn,'--gdn-native-prep-bf16']
+prep=[*prep_weights,'--native-gdn-prep-t1','/absent/prep']
+r=run(gdn,True);assert not r['native_gdn_preparation_t1'] and not r['native_gdn_preparation_weights']
+r=run(prep_weights,True);assert not r['native_gdn_preparation_t1'] and r['native_gdn_preparation_weights']
+r=run(prep,True);assert r['native_gdn_preparation_t1'] and r['native_gdn_preparation_weights']
+run(['--gdn-native-prep-bf16'],False,'native recurrence')
+run([*gdn,'--native-gdn-prep-t1','/absent/no-bank'],False,'explicit BF16 residency')
+run([*prep_weights,'--native-gdn-prep-t1',''],False,'receipt')
+for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--gdn-production']]:run([*prep,*flags],False)
+print('native GDN preparation actual CLI defaults/matched BF16/preconditions passed')
