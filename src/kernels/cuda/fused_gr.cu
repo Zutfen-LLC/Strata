@@ -3061,3 +3061,15 @@ void fused_gr_normalized_probe(const float* normalized,const uint16_t* down,cons
     gr_up_multi_kernel<1,true><<<UPM_BLOCKS,THREADS,0,st>>>(m);
 }
 }
+
+namespace strata::kernels {
+namespace {
+__global__ void gr_pending_gate_probe(const float* previous,float* gate,float* exponential){
+ const int c=threadIdx.x;if(c<HC){const float scaled=previous[c]/(float)HC;exponential[c]=__expf(-scaled);gate[c]=2.f*sigmoidf_(scaled);}
+}
+}
+void fused_gr_pending_gate_probe(const float* previous,float* gate,float* exponential,void* stream){
+ if(!previous||!gate||!exponential)throw std::invalid_argument("HC pending probe: nonnull T1 spans required");
+ gr_pending_gate_probe<<<1,32,0,static_cast<cudaStream_t>(stream)>>>(previous,gate,exponential);
+}
+}
