@@ -615,8 +615,14 @@ for each capability below.
    was two steps low for a near-exp(20) boundary input. Its emitted module passed
    validation; this is a numerical dependency STOP, not model qualification.
    Native uses a strict v>20 bypass, so equality still consumes exp/log1pf.
-   Actual log/division intermediates are needed for attribution; no new
-   approximation, target relaxation or a/b integration is selected.
+   Retained intermediates attribute the extra step to division: the Vulkan log
+   is one representable step low, multiplication is RNE, and division is one
+   further step below its RNE quotient. Both primitive bounds pass while the
+   composed native-accuracy target fails. Existing native_f32_div_rn.glsl would
+   remove that division step for this element, but is not log1pf or evidence of
+   general compensated accuracy. Offline checking of all retained intermediates
+   must precede any candidate change; no approximation, relaxed target or a/b
+   integration is selected.
    The current model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
    projections also remain separate upstream work; do not attribute unequal model
    outputs to recurrence without equal inputs. Accepted-prefix commit and window
