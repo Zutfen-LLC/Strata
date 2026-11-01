@@ -1,3 +1,4 @@
+#include "../kernels/native_hc_write_fixture.hpp"
 // Physical seam probe: approved caller-supplied HC inputs plus existing synthetic
 // full-GDN fixture. No model, new reference kernel or full-HC parity claim.
 #include "portable_gdn_fixture.hpp"
@@ -25,14 +26,20 @@ void export_ffn(const std::filesystem::path& out,const PortableFfnHcTrace& t,con
  }
  native_hc_pending_fixture::write((out/"fixture.bin").string(),fixture);
 }
+void export_write(const std::filesystem::path& out,const PortableFfnHcTrace&t){
+ check(std::filesystem::create_directory(out),"fresh final write observations");
+ native_hc_write_fixture::Fixture f{t.residual,t.write_block,t.inject};native_hc_write_fixture::write((out/"fixture.bin").string(),f);
+ save(out/"residual.f32le",t.write_candidate);save(out/"gate.f32le",t.write_gate);save(out/"exp.f32le",t.write_exp);
+}
 struct Result{std::vector<float> residual,state,history;size_t weights=0;std::vector<float> hc_input;PortableFfnHcTrace ffn;};
-Result run(const Fixture&f,ggml_backend_t backend,bool enabled,bool composed,const std::vector<float>&input,const std::filesystem::path&out,bool pending=false,bool ffn=false){
+Result run(const Fixture&f,ggml_backend_t backend,bool enabled,bool composed,const std::vector<float>&input,const std::filesystem::path&out,bool pending=false,bool ffn=false,bool final_write=false){
  PortableGdnOptions o;o.execution.threads=1;o.execution.accelerator=backend;o.execution.request_accelerator=true;o.execution.allow_cpu_fallback=false;o.resident_attention_weights=true;o.resident_state=true;o.execution.resident_dense_weights=ffn;
  std::string error;o.scratch=PortableGdnScratch::create(o.execution,error);check(bool(o.scratch),error);
  // Warm the reusable scheduler with a normal graph before borrowing it for HC.
  auto views=f.views;for(auto&v:views)v.name.replace(0,6,"blk.4.");
  auto warm=PortableGdnLayer::create(4,views,o,error);check(bool(warm),error);
  o.native_hc_ffn_read=enabled&&ffn;
+ o.native_hc_ffn_write=enabled&&final_write;
  o.native_hc_pending=enabled&&pending;
  o.native_hc_mix=enabled&&composed;
  o.native_hc_norm_inject=enabled;o.native_hc_receipt_prefix=(out/"hc").string();
@@ -44,6 +51,10 @@ Result run(const Fixture&f,ggml_backend_t backend,bool enabled,bool composed,con
  check(layer->native_hc_calls()==(enabled?1u:0u),"actual HC participation");
  auto first=layer->last_residual(),state=layer->recurrent_state(),history=layer->convolution_history();
  if(enabled&&ffn){check(a.ffn_hc.original==input&&a.ffn_hc.previous_output.size()==2560&&a.ffn_hc.previous_injection==a.hc_inject,"actual GDN-to-FFN tuple binding");export_ffn(out/"ffn",a.ffn_hc,f);}
+ if(enabled&&final_write){
+  check(layer->native_ffn_hc_write_calls()==1&&a.ffn_hc.write_candidate==first,"actual final materialization participation/consumer");
+  export_write(out/"write",a.ffn_hc);
+ }
  if(enabled){
   check(a.native_hc_norm_inject&&(pending?a.native_hc_pending&&a.hc_pending_input==input&&a.hc_previous_output==bo&&a.hc_previous_inject==previous_injection:a.hc_residual==input),"post-graph input/tuple preservation/upload");
   if(pending){save(out/"residual.f32le",a.hc_residual);save(out/"pending-gate.f32le",a.hc_pending_gate);save(out/"pending-exp.f32le",a.hc_pending_exp);save(out/"unapplied-residual.f32le",a.hc_pending_input);save(out/"previous-output.f32le",a.hc_previous_output);save(out/"previous-injection.f32le",a.hc_previous_inject);}
@@ -66,32 +77,34 @@ Result run(const Fixture&f,ggml_backend_t backend,bool enabled,bool composed,con
  PortableExpertRows refusal=[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="intentional fixture provider refusal";return false;};
  check(!step(refusal),"provider failure accepted");check(layer->tokens()==0&&layer->last_residual().empty()&&layer->recurrent_state()==before&&layer->convolution_history()==before_history&&layer->token_history()==before_tokens,"provider failure committed state/history/token metadata");
  check(layer->reset(error),error);
+ check(layer->native_ffn_hc_write_calls()==(enabled&&final_write?2u:0u),"final write paid work/provider rollback count");
  check(layer->native_ffn_hc_pending_calls()==(enabled&&ffn?3u:0u),"actual half-1 work counter");
  check(layer->native_hc_mix_calls()==(enabled&&composed?3u:0u),"actual mixed work counter");
  check(layer->native_hc_pending_calls()==(enabled&&pending?3u:0u),"actual pending work counter");
  printf("{\"native_layer0\":%s,\"actual_component_calls\":%llu,\"pending_calls\":%llu,\"weight_bytes\":%zu,\"graph_bytes\":%zu,\"reset_repeat_exact\":true,\"provider_rollback\":true}\n",enabled?"true":"false",(unsigned long long)layer->native_hc_calls(),(unsigned long long)layer->native_hc_pending_calls(),layer->weight_bytes(),layer->graph_bytes());
- if(ffn)printf("{\"actual_ffn_pending_calls\":%llu}\n",(unsigned long long)layer->native_ffn_hc_pending_calls());
+ if(ffn)printf("{\"actual_ffn_pending_calls\":%llu,\"actual_ffn_write_calls\":%llu}\n",(unsigned long long)layer->native_ffn_hc_pending_calls(),(unsigned long long)layer->native_ffn_hc_write_calls());
  return {first,state,history,layer->weight_bytes(),a.hc_residual,std::move(a.ffn_hc)};
 }
 }
 int main(int argc,char**argv){try{
- check(argc==4||(argc==5&&(std::string(argv[4])=="read"||std::string(argv[4])=="pending"||std::string(argv[4])=="ffn")),"usage: portable_gdn_native_hc_probe OPERANDS FRESH_OUTPUT EXPECT_DEVICE [read|pending|ffn]");const bool composed=argc==5;const bool pending=composed&&std::string(argv[4])=="pending";const bool ffn=composed&&std::string(argv[4])=="ffn";const std::filesystem::path d=argv[1],out=argv[2];check(std::filesystem::create_directory(out),"fresh output directory");
+ check(argc==4||(argc==5&&(std::string(argv[4])=="read"||std::string(argv[4])=="pending"||std::string(argv[4])=="ffn"||std::string(argv[4])=="write")),"usage: portable_gdn_native_hc_probe OPERANDS FRESH_OUTPUT EXPECT_DEVICE [read|pending|ffn|write]");const bool composed=argc==5;const bool pending=composed&&std::string(argv[4])=="pending";const bool final_write=composed&&std::string(argv[4])=="write";const bool ffn=composed&&(std::string(argv[4])=="ffn"||final_write);const std::filesystem::path d=argv[1],out=argv[2];check(std::filesystem::create_directory(out),"fresh output directory");
  auto norm=load(d/"portable-hc_attn_norm.weight.bin",40960),inj=load(d/"portable-hc_attn_inject.weight.bin",43520),raw=load(d/"portable-embedding.f32le",40960);
  std::vector<uint8_t>down,up;if(composed){down=load(d/"portable-hc_attn_down.weight.bin",3481600);up=load(d/"portable-hc_attn_up.weight.bin",3481600);}
  std::vector<float>input(10240);memcpy(input.data(),raw.data(),40960);Fixture f;
  for(auto&v:f.views){if(v.name=="blk.0.hc_attn_norm.weight")v.data=norm.data();if(v.name=="blk.0.hc_attn_inject.weight")v.data=inj.data();if(composed&&v.name=="blk.0.hc_attn_down.weight")v.data=down.data();if(composed&&v.name=="blk.0.hc_attn_up.weight")v.data=up.data();}
  check(ggml_backend_vk_get_device_count()>0,"real Vulkan required");char desc[256]{};ggml_backend_vk_get_device_description(0,desc,sizeof(desc));check(std::string(desc).find(argv[3])!=std::string::npos,"device identity");
  std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>backend(ggml_backend_vk_init(0),ggml_backend_free);check(bool(backend),"Vulkan initialization");
- const auto active=run(f,backend.get(),true,composed,input,out,pending,ffn);
+ const auto active=run(f,backend.get(),true,composed,input,out,pending,ffn,final_write);
  if(ffn){
   const auto control_dir=out/"materialized-ffn";check(std::filesystem::create_directory(control_dir),"fresh FFN control");
-  PortableFfnOptions o;o.threads=1;o.accelerator=backend.get();o.request_accelerator=true;o.resident_dense_weights=true;o.native_hc_pending_read=true;o.native_hc_receipt_prefix=(control_dir/"hc").string();
+  PortableFfnOptions o;o.threads=1;o.accelerator=backend.get();o.request_accelerator=true;o.resident_dense_weights=true;o.native_hc_pending_read=true;o.native_hc_final_write=final_write;o.native_hc_receipt_prefix=(control_dir/"hc").string();
   std::vector<PortableTensorView> weights;for(const auto&v:f.views)if(v.name.find("hc_ffn_")!=std::string::npos||v.name.find(".ffn_")!=std::string::npos)weights.push_back(v);
   std::string error;auto control=PortableFfn::create({2560,4,320,640,512,10,1e-6f},0,weights,o,error);check(bool(control),error);
   check(control->reset(active.ffn.residual,error),error);PortableRoute route;PortableFfnHcTrace trace;
   check(control->step_pending(std::vector<float>(2560,0),std::vector<float>(4,0),experts(),route,error,&trace),error);
   check(control->residual()==active.residual&&trace.normalized==active.ffn.normalized&&trace.rs==active.ffn.rs&&trace.inject==active.ffn.inject&&trace.mixed==active.ffn.mixed,"actual FFN candidate downstream control differs");
   export_ffn(control_dir/"ffn",trace,f);
+  if(final_write){check(control->native_hc_write_calls()==1&&control->work().post_graph_calls==0,"control did not use final component replacement");export_write(control_dir/"write",trace);}
  }
  if(pending){
   check(std::filesystem::create_directory(out/"materialized-control"),"fresh materialized control");
@@ -109,6 +122,6 @@ int main(int argc,char**argv){try{
   pf.down=strata::core::portable_detail::native_hc_q8_bf16(down.data(),down.size(),3276800);pf.up=strata::core::portable_detail::native_hc_q8_bf16(up.data(),up.size(),3276800);
   native_hc_pending_fixture::write((out/"pending-fixture.bin").string(),pf);
  }
- std::ofstream report(out/"report.json");if(ffn)report<<"{\"actual_gdn_to_ffn\":"<<(ffn?"true":"false")<<",\"ffn_materialized_control_exact\":"<<(ffn?"true":"false")<<",\"metadata\":";report<<"{\"tokens\":1,\"guards\":true,\"finite_normal_domain\":true,\"repeat_exact\":true,\"qualified\":false,\"serial_layer0_integration\":true,\"composed_read\":"<<(composed?"true":"false")<<",\"pending_read\":"<<(pending?"true":"false")<<",\"materialized_candidate_control_exact\":"<<(pending?"true":"false")<<",\"full_hc_parity\":false,\"reset_repeat_exact\":true,\"provider_rollback\":true,\"disabled_repeat_exact\":true}";if(ffn)report<<"}";report<<"\n";
+ std::ofstream report(out/"report.json");if(ffn)report<<"{\"native_final_write\":"<<(final_write?"true":"false")<<",\"actual_gdn_to_ffn\":"<<(ffn?"true":"false")<<",\"ffn_materialized_control_exact\":"<<(ffn?"true":"false")<<",\"metadata\":";report<<"{\"tokens\":1,\"guards\":true,\"finite_normal_domain\":true,\"repeat_exact\":true,\"qualified\":false,\"serial_layer0_integration\":true,\"composed_read\":"<<(composed?"true":"false")<<",\"pending_read\":"<<(pending?"true":"false")<<",\"materialized_candidate_control_exact\":"<<(pending?"true":"false")<<",\"full_hc_parity\":false,\"reset_repeat_exact\":true,\"provider_rollback\":true,\"disabled_repeat_exact\":true}";if(ffn)report<<"}";report<<"\n";
  return 0;
 }catch(const std::exception&e){fprintf(stderr,"STOP: %s\n",e.what());return 1;}}

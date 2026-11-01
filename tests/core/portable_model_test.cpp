@@ -77,6 +77,8 @@ int main() {
                   error.find("explicit layer0/dense resident weights")!=std::string::npos,
                   "FFN model API touched metadata before mode refusal");
         }
+        {auto invalid=opts;invalid.native_hc_ffn_write_layer0=true;
+         check(!PortableModelSession::open({"/absent/model.gguf"},"/absent/manifest",invalid,error)&&error.find("final write requires pending")!=std::string::npos,"final write API touched model before preflight");}
         std::vector<std::vector<float>> reference;
         opts.expert_dispatch_oracle = true;
         size_t baseline_state_bound=0;
@@ -89,7 +91,7 @@ int main() {
                 reference.push_back(std::move(logits));
             }
             const auto untimed=baseline->model_work();
-            check(untimed.native_shared_calls==0 && untimed.native_shared_rows==0,"default model credited native shared work");
+            check(untimed.native_ffn_hc_write_layer0_calls==0 && untimed.native_shared_calls==0 && untimed.native_shared_rows==0,"default model credited native shared work");
             check(untimed.native_router_calls==0 && untimed.native_router_rows==0,"default model credited native router work");
             check(untimed.heads_executed==2 && untimed.heads_skipped==0, "default exhaustive head counters without timers");
             check(untimed.gdn_phases.attention_exchange_ms==0 && untimed.gdn_phases.attention_compute_ms==0 &&

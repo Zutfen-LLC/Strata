@@ -809,6 +809,7 @@ PortableModelWork PortableModelSession::model_work() const {
     auto work=impl_->model_work;
     for(const auto& layer:impl_->layers) if(layer.gdn) {
         work.native_ffn_hc_layer0_calls+=layer.gdn->native_ffn_hc_pending_calls();
+        work.native_ffn_hc_write_layer0_calls+=layer.gdn->native_ffn_hc_write_calls();
         work.native_hc_mix_layer0_calls+=layer.gdn->native_hc_mix_calls();
         work.native_hc_layer0_calls+=layer.gdn->native_hc_calls();
         work.gdn_causal_submissions+=layer.gdn->causal_chunk_calls();

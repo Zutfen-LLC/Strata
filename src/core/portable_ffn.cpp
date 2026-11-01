@@ -222,6 +222,7 @@ struct PortableFfn::Impl {
                 tokens >= 1 && tokens <= 8 && g.selected > 0 && g.selected <= g.experts && g.selected <= 64 && layer >= 0 &&
                 std::isfinite(g.epsilon) && g.epsilon > 0 && options.threads > 0,
                 "portable FFN: invalid geometry/options");
+        require(!options.native_hc_final_write||options.native_hc_pending_read,"native FFN final write requires pending read");
         if(options.native_hc_pending_read) {
             require(layer==0 && tokens==1 && g.hidden==2560 && g.streams==4 && g.rank==320 && g.epsilon==1e-6f &&
                     options.request_accelerator && options.accelerator && options.resident_dense_weights && !options.allow_cpu_fallback &&
@@ -291,7 +292,7 @@ struct PortableFfn::Impl {
          std::shared_ptr<ChunkLease> lease = {})
         : g(weights->g), layer(weights->layer), tokens(count), options(opts),
           owned_weights(std::move(weights)), chunk_lease(std::move(lease)), cpu(owned_weights->cpu) {
-        pre_ctx = context(); post_ctx = context();
+        pre_ctx = context(); if(!options.native_hc_final_write)post_ctx = context();
         weights_size = owned_weights->weights_size;
         device_weights = owned_weights->device_weights;
         const auto& w = owned_weights->w;
@@ -323,7 +324,7 @@ struct PortableFfn::Impl {
         if(options.native_hc_pending_read) {
             require(graphs_size<options.graph_budget,"native FFN HC: no graph room");
             native_hc=std::make_unique<portable_detail::PortableNativeHc>(options.accelerator,w.at("hc_ffn_norm.weight"),w.at("hc_ffn_inject.weight"),
-                options.graph_budget-graphs_size,options.native_hc_receipt_prefix,w.at("hc_ffn_down.weight"),w.at("hc_ffn_up.weight"),true);
+                options.graph_budget-graphs_size,options.native_hc_receipt_prefix,w.at("hc_ffn_down.weight"),w.at("hc_ffn_up.weight"),true,options.native_hc_final_write);
             graphs_size+=native_hc->bytes();
             placement.push_back({"native-hc-ffn","NATIVE_BF16_PENDING_READ_T1","actual GDN projection/attention injection -> FFN HC read",
                 "F32/BF16",ggml_backend_name(options.accelerator),"",{g.hidden,g.streams,1}});
@@ -369,6 +370,7 @@ struct PortableFfn::Impl {
         for(auto* t:{mixed,inject,logits,shared})if(t){ggml_set_output(t);ggml_build_forward_expand(pre,t);}
         pre_sched = portable_detail::schedule(pre, "pre-experts", options, cpu, placement, graphs_size);
 
+        if(!options.native_hc_final_write) {
         c = post_ctx.get();
         post_input = ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, tokens);
         post_inject = tokens == 1 ? ggml_new_tensor_1d(c, GGML_TYPE_F32, g.streams)
@@ -382,6 +384,7 @@ struct PortableFfn::Impl {
         ggml_set_output(output);
         post = ggml_new_graph(c); ggml_build_forward_expand(post, output);
         post_sched = portable_detail::schedule(post, "post-experts", options, cpu, placement, graphs_size);
+        } else placement.push_back({"native-hc-ffn-write","NATIVE_FINAL_WRITE_T1","post-combine block / applied FFN residual / FFN injection","F32",ggml_backend_name(options.accelerator),"",{g.hidden,g.streams,1}});
 #ifdef STRATA_PORTABLE_NATIVE_SHARED
         if(native_shared)placement.push_back({"shared","NATIVE_Q8_SHARED_METHOD","live mixed / BF16 scalar / gated output","F32",ggml_backend_name(options.accelerator),"",{g.hidden,g.shared_ff,tokens}});
 #endif
@@ -575,14 +578,24 @@ bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>
         }
         finite(block);
         if(observer && observer->active())observer->put(Layer0Observer::combined_output,block.data(),block.size());
+        std::vector<float> next;
 #ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.options.native_hc_final_write) {
+            write(s.native_hc->write_block,block);s.native_hc->run_write();
+            next=read(s.native_hc->write_candidate);finite(next);
+            s.native_hc->record_write_first();
+            if(trace){observed.write_block=block;observed.write_gate=read(s.native_hc->write_gate);observed.write_exp=read(s.native_hc->write_exp);observed.write_candidate=next;}
+        } else {
         if(s.native_hc) write(s.post_input,read(s.native_hc->residual));else
 #endif
         write(s.post_input, s.state);
         write(s.post_inject, read(s.inject)); write(s.post_block, block);
         ++s.work.post_graph_calls;
         require(ggml_backend_sched_graph_compute(s.post_sched.get(), s.post) == GGML_STATUS_SUCCESS, "portable FFN: post graph failed");
-        auto next = read(s.output);
+        next = read(s.output);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        }
+#endif
         if(candidate.native_shared){++s.work.native_shared_calls;++s.work.native_shared_rows;}
         if(candidate.native_router){++s.work.native_router_calls;++s.work.native_router_rows;}
         ++s.work.logical_rows; ++s.work.completed_chunks;
@@ -667,12 +680,19 @@ uint64_t PortableFfn::native_hc_pending_calls() const {
     return 0;
 #endif
 }
+uint64_t PortableFfn::native_hc_write_calls() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_hc?impl_->native_hc->write_calls():0;
+#else
+    return 0;
+#endif
+}
 PortableMemoryUsage PortableFfn::memory_usage() const {
     const auto &s = *impl_;
     PortableMemoryUsage m;
     m.host_weights = s.weights_size - s.device_weights;
     m.device_weights = s.device_weights;
-    for (auto *sched : {s.pre_sched.get(), s.post_sched.get()}) {
+    for (auto *sched : {s.pre_sched.get(), s.post_sched.get()}) if(sched) {
         m.host_graph += ggml_backend_sched_get_buffer_size(sched, s.cpu.get());
         if (s.options.accelerator && s.options.request_accelerator)
             m.device_graph += ggml_backend_sched_get_buffer_size(sched, s.options.accelerator);
@@ -690,7 +710,8 @@ PortableMemoryUsage PortableFfn::memory_usage() const {
     if(s.native_shared){m.device_graph+=s.native_shared->bytes();m.host_extra_bound+=s.native_shared->host_bound();}
 #endif
 #ifdef STRATA_PORTABLE_NATIVE_HC
-    if(s.native_hc) {m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=PortableFfnOptions::native_hc_pending_host_bound;}
+    if(s.native_hc) {m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=PortableFfnOptions::native_hc_pending_host_bound;
+        if(s.options.native_hc_final_write)m.host_extra_bound+=PortableFfnOptions::native_hc_write_host_bound;}
 #endif
     m.host_extra_bound+=s.owned_weights->shared_host_bound;
     m.host_extra_bound += 3*metadata_bytes; // three owning metadata contexts, plus token staging below
@@ -700,7 +721,7 @@ PortableMemoryUsage PortableFfn::memory_usage() const {
                                    s.tokens*s.g.experts*8) * sizeof(float);
     }
     m.host_extra_bound += ggml_graph_plan(s.pre, s.options.threads, nullptr).work_size +
-                          ggml_graph_plan(s.post, s.options.threads, nullptr).work_size;
+                          (s.post?ggml_graph_plan(s.post, s.options.threads, nullptr).work_size:0);
     if (s.options.request_accelerator && s.options.accelerator) {
         const size_t largest = std::max({s.g.hidden * s.g.streams * s.g.rank,
             s.g.hidden * s.g.shared_ff, s.g.hidden * s.g.experts});

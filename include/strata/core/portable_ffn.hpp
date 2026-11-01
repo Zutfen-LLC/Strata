@@ -34,6 +34,8 @@ struct PortableTensorView {
 
 struct PortableFfnOptions {
     static constexpr size_t native_hc_pending_host_bound = 8u << 20; // streamed conversion, trace and metadata
+    static constexpr size_t native_hc_write_host_bound = 1u << 20; // final preflight/candidate/receipt envelope
+    bool native_hc_final_write = false; // actual layer0 materialization, never cross-layer deferred carry
     bool native_hc_pending_read = false; // experimental serial layer-0 FFN read of actual producer tuple
     std::string native_hc_receipt_prefix;
     int threads = 1;
@@ -110,6 +112,7 @@ struct PortableLayerChunkWork {
 struct PortableFfnHcTrace {
     std::vector<float> original, previous_output, previous_injection, residual, gate, exponential;
     std::vector<float> normalized, rs, inject, low_pre, low, low_exp, up_pre, gates, up_exp, mixed;
+    std::vector<float> write_block, write_gate, write_exp, write_candidate;
 };
 
 class PortableFfn {
@@ -146,6 +149,7 @@ public:
                       const PortableExpertRows& dispatch, PortableRoute& route, std::string& error,
                       PortableFfnHcTrace* trace = nullptr);
     uint64_t native_hc_pending_calls() const;
+    uint64_t native_hc_write_calls() const;
     // reset takes [hidden,streams,tokens], with dimension zero fastest.
     // Transactional publication; a failed batch clears routes and keeps residual.
     // This FFN has no recurrent state. Its enclosing model must poison on failure.

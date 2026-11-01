@@ -26,6 +26,7 @@ struct PortableGdnOptions {
     PortableFfnOptions execution;
     bool native_hc_norm_inject = false; // experimental layer-0 serial T1 only; mixed remains GGML
     bool native_hc_mix = false; // experimental attention read; requires native norm/injection
+    bool native_hc_ffn_write = false; // materialize actual layer0 FFN output before next PLE consumer
     bool native_hc_ffn_read = false; // actual layer-0 GDN producer -> native pending FFN read, T1 only
     bool native_hc_pending = false; // diagnostic explicit tuple only; no model CLI or FFN role binding
     std::string native_hc_receipt_prefix;
@@ -112,6 +113,7 @@ class PortableGdnLayer {
     // chunk; reset preserves these cumulative execution receipts.
     uint64_t input_projection_calls() const;
     uint64_t native_ffn_hc_pending_calls() const;
+    uint64_t native_ffn_hc_write_calls() const;
     uint64_t native_hc_pending_calls() const; // paid successful work, including later graph/provider refusal
     uint64_t native_hc_mix_calls() const;
     uint64_t native_hc_calls() const; // actual successful component calls; cumulative across reset

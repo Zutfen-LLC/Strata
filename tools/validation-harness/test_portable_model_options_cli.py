@@ -46,3 +46,10 @@ for flags in [['--allow-cpu-fallback'],['--gdn-production','--gdn-resident-state
 run([*ffn,'--layer0-resident-weights'],False,'legacy observer',dict(os.environ,STRATA_LAYER0_OBSERVER='/absent/legacy.bin'))
 run([*ffn,'--layer0-resident-weights'],False,'recorded-unset HC mode',dict(os.environ,STRATA_HC_Q8='1'))
 print(str(count)+' actual product mode/parser preflights passed; no model/backend/memory admission performed')
+
+write=['--native-hc-ffn-write-layer0','/absent/hc-write']
+w=run([*write,'--layer0-resident-weights'],True)
+assert w['native_hc_ffn_write_layer0'] and w['native_hc_ffn_read_layer0'] and w['native_hc_mix_layer0'] and not a['native_hc_ffn_write_layer0']
+run(write,False,'explicit layer0/dense resident weights')
+for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--gdn-production','--gdn-resident-state']]:run([*write,'--layer0-resident-weights',*flags],False)
+print('final-write actual CLI preconditions/defaults passed')
