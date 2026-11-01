@@ -24,6 +24,9 @@ struct PortableGdnOptions {
     static constexpr size_t native_hc_read_host_bound = 8u << 20;
     static constexpr size_t native_hc_pending_host_bound = native_hc_read_host_bound + (128u << 10);
     PortableFfnOptions execution;
+    // Experimental fixed T1 eager/private/resident-state path; no CLI/default integration.
+    bool native_recurrence_t1 = false;
+    std::string native_recurrence_receipt;
     bool resident_ffn_weights = false; // selected FFN bank only; attention placement unchanged
     bool defer_ffn_hc_write = false; // layer1 outgoing ordinary boundary; PLE remains unchanged
     bool native_hc_norm_inject = false; // experimental layer-0 serial T1 only; mixed remains GGML
@@ -118,6 +121,7 @@ class PortableGdnLayer {
     uint64_t native_ffn_hc_write_calls() const;
     const PortableHcPendingWrite& pending_write() const;
     uint64_t deferred_hc_outputs() const;
+    uint64_t native_recurrence_calls() const; // completed component work, even if later FFN refuses
     uint64_t native_hc_pending_calls() const; // paid successful work, including later graph/provider refusal
     uint64_t native_hc_mix_calls() const;
     uint64_t native_hc_calls() const; // actual successful component calls; cumulative across reset
