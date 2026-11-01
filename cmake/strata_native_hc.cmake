@@ -104,6 +104,12 @@ function(strata_native_hc_enable out)
   add_custom_target(strata_native_qsa_norm_rope_shader DEPENDS "${out}/strata_native_qsa_norm_rope_spv.hpp")
   add_dependencies(ggml-vulkan strata_native_qsa_norm_rope_shader)
   add_executable(native_qsa_norm_rope_component tests/kernels/native_qsa_norm_rope_component.cpp)
+  if(STRATA_BUILD_TESTS)
+    add_test(NAME native_qsa_norm_rope_output_contract_test COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_qsa_producer_contract.py"
+      "$<TARGET_FILE:native_qsa_norm_rope_input_test>" "$<TARGET_FILE:native_qsa_norm_rope_component>")
+  endif()
+
   target_include_directories(native_qsa_norm_rope_component PRIVATE src/core tests/kernels)
   target_link_libraries(native_qsa_norm_rope_component PRIVATE ggml-vulkan ggml-base)
   if(NOT MSVC)

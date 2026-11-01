@@ -6,6 +6,7 @@
 using namespace native_qsa_nr;
 using namespace strata::core::portable_detail;
 int main(int argc,char**argv){try{
+ if(argc==4&&std::string(argv[1])=="--contract"){contract(read(argv[2]),argv[3]);return 0;}
  native_hc_need(argc==9&&std::string(argv[1])=="--device"&&std::string(argv[3])=="--expect-device"&&std::string(argv[5])=="--fixture"&&std::string(argv[7])=="--output","QSA norm/RoPE component arguments");auto f=read(argv[6]);std::filesystem::path dir=argv[8];native_hc_need(std::filesystem::create_directory(dir),"QSA fresh result");std::filesystem::copy_file(argv[6],dir/"fixture.bin");
  std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>backend(ggml_backend_vk_init(std::stoi(argv[2])),ggml_backend_free);native_hc_need(bool(backend)&&std::string(ggml_backend_dev_description(ggml_backend_get_device(backend.get()))).find(argv[4])!=std::string::npos,"QSA actual Vulkan device required");
  std::unique_ptr<ggml_context,decltype(&ggml_free)>ctx(ggml_init({32768,nullptr,true}),ggml_free);std::array<ggml_tensor*,6>b{},t{};std::array<std::vector<uint32_t>,6>initial,first;const size_t n[]={f.x.size(),f.gamma.size(),f.pos.size(),size_t(f.rows)*f.cols,size_t(f.rows)*f.cols,size_t(f.rows)*130};
