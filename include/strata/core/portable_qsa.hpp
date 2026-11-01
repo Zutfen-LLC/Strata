@@ -23,6 +23,9 @@ struct PortableQsaOptions {
     static constexpr size_t native_indexer_host_bound=1u<<20;
     bool native_indexer_weights=false, native_indexer_t1=false, native_indexer_record_first=false;
     std::string native_indexer_receipt_prefix;
+    static constexpr size_t native_select_host_bound=1u<<20;
+    bool native_select_banks=false,native_select_t1=false,native_select_record_first=false;
+    std::string native_select_receipt_prefix;
     bool native_norm_rope_weights=false; // matched explicit resident F32 roles/candidate reserve
     bool native_norm_rope_t1=false;
     bool native_norm_rope_record_first=false;
@@ -83,6 +86,8 @@ class PortableQsaLayer {
                       PortableRoute& route,std::string& error,PortableQsaTrace* trace=nullptr);
     uint64_t native_norm_rope_calls() const;
     uint64_t native_indexer_calls() const;
+    uint64_t native_score_calls() const;
+    uint64_t native_select_calls() const;
     const std::vector<uint32_t>& native_indexer_state() const;
     uint64_t native_hc_pending_calls() const;
     uint64_t native_ffn_hc_pending_calls() const;

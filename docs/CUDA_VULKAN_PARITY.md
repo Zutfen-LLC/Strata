@@ -706,6 +706,10 @@ for each capability below.
    physical CUDA/Vulkan qualification and model consumption are pending. Native
    capacity is 2051, so short model contexts exercise identity selection only.
    See [component scope](native-qsa-score-select-t1.md).
+   A separate default-disabled [model seam](native-qsa-score-select-model-t1.md)
+   now consumes the current indexer candidate and projected query and feeds native
+   IDs to existing attention. Local build/transaction/consumer/default-path tests
+   pass; physical component success and the bounded model diagnostic are pending.
 
 
 3. **Replicate native state authority and commit/restore.** Native

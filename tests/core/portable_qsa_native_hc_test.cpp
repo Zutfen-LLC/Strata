@@ -2,8 +2,9 @@
 #include "portable_native_hc_test_backend.hpp"
 #include "portable_qsa_fixture.hpp"
 namespace {
-bool inspect_qsa=false;size_t qsa_consumers=0;
+bool inspect_qsa=false,inspect_native_selection=false;size_t qsa_consumers=0,selection_consumers=0;
 ggml_status qsa_compute(ggml_backend_t b,ggml_cgraph*g){
+ if(inspect_native_selection)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_LOG&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="qsa-selected-mask"){check(t->src[0]->op==GGML_OP_NONE,"attention recomputed a portable selection instead of consuming native IDs");++selection_consumers;}}
  if(inspect_qsa)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op!=GGML_OP_MUL_MAT||!t->src[0])continue;const std::string name=ggml_get_name(t->src[0]);
  if(name=="blk.3.attn_q.weight"||name=="blk.3.attn_k.weight"||name=="blk.3.attn_v.weight"||name=="blk.3.indexer.q_proj.weight"||name=="blk.3.indexer.k_proj.weight"){
  auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"QSA projection/indexer ignored actual native mixed leaf");++qsa_consumers;}}
@@ -69,6 +70,22 @@ int main(){try{
  }
  check(std::vector<float>(idx->pooled_keys().begin()+128,idx->pooled_keys().end())==spare,"completed block lost persistent cell-zero spare");
  for(size_t pos=0;pos<4;++pos){auto dir=root/("idx-on/first-"+std::to_string(pos));auto fixture=native_qsa_idx::read((dir/"fixture.bin").string());native_qsa_idx::check(fixture,dir);check(native_qsa_idx::words(dir/"state.u32le",fixture.before.size())==native_qsa_idx::words(dir/"accepted-state.u32le",fixture.before.size()),"serialized candidate/FFN commit link differs");}
+ // Score/selection consumes the current native candidate, not committed state.
+ auto ss=ix;ss.native_select_banks=true;ss.native_indexer_receipt_prefix=(root/"ss-control-indexer").string();ss.native_select_receipt_prefix=(root/"ss-control").string();
+ auto score_control=PortableQsaLayer::create(3,qf.views,ss,error);check(bool(score_control),error);
+ ss.native_select_t1=true;ss.native_select_record_first=true;ss.native_indexer_receipt_prefix=(root/"ss-on-indexer").string();ss.native_select_receipt_prefix=(root/"ss-on").string();
+ auto score_on=PortableQsaLayer::create(3,qf.views,ss,error);check(bool(score_on),error);check(score_on->weight_bytes()==score_control->weight_bytes(),"score banks changed weight residency");check(score_on->graph_bytes()>=idx->graph_bytes(),"score aligned banks omitted");check(score_on->state_bytes()>=idx->state_bytes()+PortableQsaOptions::native_select_host_bound,"score host accounting missing");
+ check(score_control->reset(error)&&score_on->reset(error),error);std::vector<float>ss_first;
+ for(size_t pos=0;pos<4;++pos){check(score_control->step(pos,f.input(pos),nr_dispatch,nr_route,error),error);PortableQsaTrace tr;inspect_native_selection=true;check(score_on->step(pos,f.input(pos),nr_dispatch,nr_route,error,&tr),error);inspect_native_selection=false;check(score_on->native_score_calls()==pos+1&&score_on->native_select_calls()==pos+1&&score_control->native_score_calls()==0&&score_control->native_select_calls()==0,"score counters not actual work");check(tr.selected==std::vector<float>(pos+1,1),"native identity IDs not consumed by real attention");check(score_on->last_residual()==score_control->last_residual()&&score_on->keys()==score_control->keys()&&score_on->native_indexer_state()==score_control->native_indexer_state(),"short-context native score/identity changed attention/state");if(pos==0)ss_first=score_on->last_residual();
+ auto dir=root/("ss-on/first-"+std::to_string(pos));native_qsa_ss::check(native_qsa_ss::read((dir/"fixture.bin").string()),dir);}
+ check(selection_consumers==4,"actual native selection attention consumer missing");
+ auto ss_state=score_on->native_indexer_state();auto ss_keys=score_on->keys();auto ss_last=score_on->last_residual();
+ fail_qsa_score=true;check(!score_on->step(4,f.input(4),nr_dispatch,nr_route,error),"score refusal accepted");fail_qsa_score=false;check(score_on->native_score_calls()==5&&score_on->native_select_calls()==4&&score_on->native_indexer_state()==ss_state&&score_on->keys()==ss_keys&&score_on->tokens()==4,"score refusal committed candidate or hid work");
+ fail_qsa_select=true;check(!score_on->step(4,f.input(4),nr_dispatch,nr_route,error),"selector refusal accepted");fail_qsa_select=false;check(score_on->native_score_calls()==6&&score_on->native_select_calls()==5&&score_on->native_indexer_state()==ss_state&&score_on->last_residual()==ss_last,"selection refusal committed state");
+ check(!score_on->step(4,f.input(4),[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="injected FFN failure";return false;},nr_route,error),"post-selection FFN failure accepted");check(score_on->native_score_calls()==7&&score_on->native_select_calls()==6&&score_on->native_indexer_state()==ss_state&&score_on->keys()==ss_keys,"FFN failure published scored candidate");
+ check(score_on->step(4,f.input(4),nr_dispatch,nr_route,error),error);check(score_on->reset(error)&&score_on->step(0,f.input(0),nr_dispatch,nr_route,error),error);check(score_on->last_residual()==ss_first,"score reset/retry changed output");
+ auto sb=ss;sb.native_indexer_t1=false;sb.native_select_receipt_prefix=(root/"ss-invalid").string();check(!PortableQsaLayer::create(3,qf.views,sb,error),"scores accepted nonnative indexer state");
+ sb=ss;sb.execution.graph_budget=1;sb.native_select_receipt_prefix=(root/"ss-budget").string();check(!PortableQsaLayer::create(3,qf.views,sb,error),"score banks bypassed graph budget");
  auto idx_state=idx->native_indexer_state();auto idx_keys=idx->keys();auto idx_pool=idx->pooled_keys();auto idx_last=idx->last_residual();
  auto idx_fail=[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="intentional post-indexer FFN refusal";return false;};
  check(!idx->step(4,f.input(4),idx_fail,nr_route,error),"failed FFN published indexer candidate");

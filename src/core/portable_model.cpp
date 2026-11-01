@@ -834,7 +834,7 @@ PortableModelWork PortableModelSession::model_work(bool state_digests) const {
         work.native_hc_cycle_outputs=impl_->layers[3].qsa->deferred_hc_outputs();
         work.native_hc_cycle_reads=impl_->layers[4].gdn->native_hc_pending_calls();
     }
-    for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(layer.qsa){work.native_qsa_norm_rope_calls[l]=layer.qsa->native_norm_rope_calls();work.native_qsa_indexer_calls[l]=layer.qsa->native_indexer_calls();}if(layer.qsa&&state_digests&&(impl_->opts.qsa_norm_rope_resident_weights||impl_->opts.qsa_indexer_resident_weights)&&!impl_->opts.qsa_production){
+    for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(layer.qsa){work.native_qsa_norm_rope_calls[l]=layer.qsa->native_norm_rope_calls();work.native_qsa_indexer_calls[l]=layer.qsa->native_indexer_calls();work.native_qsa_score_calls[l]=layer.qsa->native_score_calls();work.native_qsa_select_calls[l]=layer.qsa->native_select_calls();}if(layer.qsa&&state_digests&&(impl_->opts.qsa_norm_rope_resident_weights||impl_->opts.qsa_indexer_resident_weights)&&!impl_->opts.qsa_production){
             std::array<uint64_t,10>parts{};size_t at=0;
             auto add=[&](const auto&v){auto d=worker::blob_digest(v.data(),v.size()*sizeof(v[0]));parts[at++]=d.a;parts[at++]=d.b;};
             add(layer.qsa->keys());add(layer.qsa->values());add(layer.qsa->pooled_keys());add(layer.qsa->indexer_tail());if(!layer.qsa->native_indexer_state().empty())add(layer.qsa->native_indexer_state());auto d=worker::blob_digest(parts.data(),at*sizeof(uint64_t));work.qsa_state_a[l]=d.a;work.qsa_state_b[l]=d.b;

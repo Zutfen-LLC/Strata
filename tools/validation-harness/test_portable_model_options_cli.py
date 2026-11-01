@@ -128,3 +128,15 @@ for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'
 run(['--qsa-indexer-resident-weights',''],False,'receipt')
 run([*indexer,'--native-qsa-indexer-t1'],False,'analytic fused text',dict(os.environ,STRATA_ROPE_TABLE='1'))
 print('native indexer actual CLI/default/residency/mode preconditions pass')
+
+score=[*indexer,'--native-qsa-indexer-t1','--qsa-score-select-banks','/absent/scores']
+r=run(score,True);assert r['qsa_score_select_banks'] and not r['native_qsa_score_select_t1']
+r=run([*score,'--native-qsa-score-select-t1'],True);assert r['native_qsa_score_select_t1']
+assert not run([],True)['qsa_score_select_banks'] and not run([],True)['native_qsa_score_select_t1']
+run(['--native-qsa-score-select-t1'],False,'matched candidate banks')
+run(['--qsa-score-select-banks','/absent/scores'],False,'actual native indexer')
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:run([*score,'--native-qsa-score-select-t1',*bad],False)
+run([*indexer,'--native-qsa-indexer-t1','--qsa-score-select-banks',''],False,'receipt')
+print('native score/selection actual CLI/default/banks/native producer/mode preconditions pass')
+
+run(score,False,'alternative native dispatch',dict(os.environ,STRATA_TOPK_OLD='1'))
