@@ -243,8 +243,14 @@ commit/rollback and charges its storage/host bound with separate paid counters.
 Local actual-consumer/admission/parser/default-output regressions pass; its
 bounded physical coordinator now passes actual producer/consumer, reset/rollback,
 disabled repeats, own-input numerical contracts and effective-module checks.
-The matched-model state/PLE gate remains unrun. Generic
-cross-layer pending/control/head integration remains separate. See the
+A fresh same-image matched-model diagnostic now passes actual final-write
+participation, initial own-input numerical checks and exact within-arm reset
+heads/routes/receipts under the frozen native ownership. Generated IDs agree,
+while later routes and retained heads differ; this is bounded integration
+evidence, not model numerical, quality or full-HC parity. Processes exit and
+restore measured baselines; whole-state arrays and executable/runtime payloads
+remain outside the compact result. Generic cross-layer pending/control/head
+integration remains separate. See the
 [bounded implementation](https://github.com/Zutfen-LLC/Strata/blob/a2d36ce3d7153533ee9b3eee80cc38d044885f9a/docs/native-hc-ffn-write-layer0.md).
 The standalone real replay uses the recovered actual post-combine FFN block
 output; HC mixed and GDN BO are not substituted. The coordinator does not prove
@@ -252,7 +258,14 @@ model PLE parity: whole-state arrays are source asserted, runtime payloads stay
 host bound and monitoring is discrete. Fresh same-image control/on model work
 uses one native planning load followed automatically by fixed-ownership arms,
 with actual per-arm admission under the same caps and reserve. No default is
-enabled. See the [earlier producer/read scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
+enabled. The next concrete method gap is one ordinary inter-layer pending
+transition: retain the layer-1 FFN producer tuple and fold its write into layer-2
+attention HC read, as native `verify.cpp` does for non-PLE/control boundaries.
+Start with synthetic two-layer producer/consumer tests; existing layer-0 roles
+suffice for those development fixtures. Real-boundary validation would need
+the corresponding actual tuple and layer-2 HC roles, checking retained data
+before requesting a new capture. Keep layer-0 materialization before PLE and
+control/head rules separate. See the [earlier producer/read scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
