@@ -19,6 +19,11 @@ class PortableQsaAttention {
 };
 struct PortableQsaOptions {
     static constexpr size_t native_hc_host_bound = PortableFfnOptions::native_hc_pending_host_bound + (128u<<10);
+    static constexpr size_t native_norm_rope_host_bound=2u<<20;
+    bool native_norm_rope_weights=false; // matched explicit resident F32 roles/candidate reserve
+    bool native_norm_rope_t1=false;
+    bool native_norm_rope_record_first=false;
+    std::string native_norm_rope_receipt_prefix;
     bool native_hc_read = false; // opt-in serial family; native pending/norm/mix method
     bool native_hc_pending = false; // require explicit incoming R/BO/injection tuple
     std::string native_hc_receipt_prefix;
@@ -73,6 +78,7 @@ class PortableQsaLayer {
               PortableRoute &route, std::string &error, PortableQsaTrace *trace = nullptr);
     bool step_pending(uint64_t position,const PortableHcPendingWrite& pending,const PortableExpertRows& dispatch,
                       PortableRoute& route,std::string& error,PortableQsaTrace* trace=nullptr);
+    uint64_t native_norm_rope_calls() const;
     uint64_t native_hc_pending_calls() const;
     uint64_t native_ffn_hc_pending_calls() const;
     uint64_t native_ffn_hc_write_calls() const;

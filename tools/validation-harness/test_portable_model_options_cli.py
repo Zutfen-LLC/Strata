@@ -107,3 +107,14 @@ run([*gdn,'--native-gdn-prep-t1','/absent/no-bank'],False,'explicit BF16 residen
 run([*prep_weights,'--native-gdn-prep-t1',''],False,'receipt')
 for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--gdn-production']]:run([*prep,*flags],False)
 print('native GDN preparation actual CLI defaults/matched BF16/preconditions passed')
+
+# Actual QSA residency/dispatch options, before model access/backend initialization.
+nr=['--qsa-norm-rope-resident-weights','/absent/qsa-native']
+assert not run([],True)['native_qsa_norm_rope_t1']
+assert run(nr,True)['qsa_norm_rope_resident_weights']
+assert not run(nr,True)['native_qsa_norm_rope_t1']
+assert run([*nr,'--native-qsa-norm-rope-t1'],True)['native_qsa_norm_rope_t1']
+run(['--native-qsa-norm-rope-t1'],False,'matched resident roles')
+for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--qsa-production','--qsa-reuse-attention']]:run([*nr,*flags],False)
+for key in ['STRATA_ROPE_TABLE','STRATA_NO_NORM_ROPE']:run(nr,False,'analytic fused text method',dict(os.environ,**{key:'1'}))
+print('native QSA actual CLI residency/dispatch/default/unsupported-mode preconditions passed')

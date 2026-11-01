@@ -267,7 +267,7 @@ struct PortableModelSession::Impl {
             const size_t graph_preflight=opts.layer_graph_cap*(opts.prompt_chunk_size?2:1);
             require(graph_preflight <= SIZE_MAX - private_workspace, "portable model: graph cap overflow");
             const bool resident = !opts.accelerators.empty() &&
-                                  (portable_detail::model_resident_dense(opts,l,false) || (opts.gdn_resident_weights && l % 4 != 3) || ((opts.native_hc_pending_layer2_3 && l==3) || portable_detail::model_ffn_resident(opts,l)));
+                                  (portable_detail::model_resident_dense(opts,l,false) || (opts.gdn_resident_weights && l % 4 != 3) || ((opts.qsa_norm_rope_resident_weights&&l%4==3) || (opts.native_hc_pending_layer2_3 && l==3) || portable_detail::model_ffn_resident(opts,l)));
             const size_t state_bound = portable_detail::layer_state_preflight_bytes(
                 opts, l, opts.accelerators.empty() ? nullptr : opts.accelerators[device(l)]);
             require(state_bound <= SIZE_MAX - graph_preflight - private_workspace,
@@ -834,7 +834,11 @@ PortableModelWork PortableModelSession::model_work(bool state_digests) const {
         work.native_hc_cycle_outputs=impl_->layers[3].qsa->deferred_hc_outputs();
         work.native_hc_cycle_reads=impl_->layers[4].gdn->native_hc_pending_calls();
     }
-    for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(l==3&&layer.qsa)work.native_hc_pending_layer3_calls+=layer.qsa->native_hc_pending_calls();if(!layer.gdn)continue;
+    for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(layer.qsa)work.native_qsa_norm_rope_calls[l]=layer.qsa->native_norm_rope_calls();if(layer.qsa&&state_digests&&impl_->opts.qsa_norm_rope_resident_weights&&!impl_->opts.qsa_production){
+            std::array<uint64_t,8>parts{};size_t at=0;
+            auto add=[&](const auto&v){auto d=worker::blob_digest(v.data(),v.size()*sizeof(v[0]));parts[at++]=d.a;parts[at++]=d.b;};
+            add(layer.qsa->keys());add(layer.qsa->values());add(layer.qsa->pooled_keys());add(layer.qsa->indexer_tail());auto d=worker::blob_digest(parts.data(),sizeof(parts));work.qsa_state_a[l]=d.a;work.qsa_state_b[l]=d.b;
+        }if(l==3&&layer.qsa)work.native_hc_pending_layer3_calls+=layer.qsa->native_hc_pending_calls();if(!layer.gdn)continue;
         work.native_gdn_t1_calls[l]=layer.gdn->native_recurrence_calls();
         work.native_gdn_conv_calls[l]=layer.gdn->native_convolution_calls();work.native_gdn_ab_calls[l]=layer.gdn->native_ab_calls();
         if(state_digests && !impl_->opts.gdn_production){const auto&state=layer.gdn->recurrent_state();const auto digest=worker::blob_digest(state.data(),state.size()*sizeof(float));work.gdn_state_a[l]=digest.a;work.gdn_state_b[l]=digest.b;}

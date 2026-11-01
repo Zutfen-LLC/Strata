@@ -20,6 +20,35 @@ int main(){try{
  PortableQsaOptions o;o.execution=exec;o.capacity=8;o.reuse_attention=true;o.attention=PortableQsaAttention::create(exec,error);check(bool(o.attention),error);
  auto warmv=qf.views;for(auto&v:warmv)v.name.replace(0,6,"blk.11.");auto warm=PortableQsaLayer::create(11,warmv,o,error);check(bool(warm),error);check(warm->reset(error),error);
  auto disabled=PortableQsaLayer::create(3,qf.views,o,error);check(bool(disabled),error);
+
+ // Native QSA model seam: actual completed projection outputs, not graph-time
+ // placeholders. The component primitive alone is mocked on this CPU backend.
+ auto nr=o;nr.native_norm_rope_weights=true;nr.native_norm_rope_receipt_prefix=(root/"nr-control").string();
+ auto matched=PortableQsaLayer::create(3,qf.views,nr,error);check(bool(matched),error);
+ nr.native_norm_rope_t1=true;nr.native_norm_rope_record_first=true;nr.native_norm_rope_receipt_prefix=(root/"nr-on").string();
+ auto native_qsa=PortableQsaLayer::create(3,qf.views,nr,error);check(bool(native_qsa),error);
+ check(matched->weight_bytes()==native_qsa->weight_bytes(),"QSA norm roles not identically resident");
+ check(matched->weight_bytes()<=disabled->weight_bytes()+4096,"QSA norm bank duplicated source weights");
+ check(native_qsa->memory_usage().host_extra_bound>=PortableQsaOptions::native_norm_rope_host_bound,"QSA norm host allowance omitted");
+ PortableRoute nr_route;auto nr_dispatch=[](int64_t,const PortableRoute&r,std::vector<float>&rows,std::string&e){return gdn_fixture::experts()(0,r,rows,e);};
+ check(disabled->reset(error)&&matched->reset(error)&&native_qsa->reset(error),error);std::vector<float>nr_first;
+ for(size_t pos=0;pos<4;++pos){
+  check(disabled->step(pos,f.input(pos),nr_dispatch,nr_route,error),error);check(matched->step(pos,f.input(pos),nr_dispatch,nr_route,error),error);
+  check(disabled->last_residual()==matched->last_residual()&&disabled->keys()==matched->keys()&&disabled->pooled_keys()==matched->pooled_keys(),"explicit residency changed disabled arithmetic");
+  PortableQsaTrace tr;check(native_qsa->step(pos,f.input(pos),nr_dispatch,nr_route,error,&tr),error);
+  check(tr.query.size()==6144&&tr.key.size()==512&&tr.index_query.size()==512,"actual native candidate consumers lost geometry");
+  check(native_qsa->native_norm_rope_calls()==3*(pos+1)&&matched->native_norm_rope_calls()==0,"native QSA paid counters wrong");
+  if(pos==0)nr_first=native_qsa->last_residual();
+ }
+ auto nr_keys=native_qsa->keys();auto nr_values=native_qsa->values();auto nr_pool=native_qsa->pooled_keys();auto nr_tail=native_qsa->indexer_tail();auto nr_last=native_qsa->last_residual();
+ fail_qsa_norm=true;check(!native_qsa->step(4,f.input(4),nr_dispatch,nr_route,error),"native QSA domain refusal accepted");fail_qsa_norm=false;
+ check(native_qsa->tokens()==4&&native_qsa->keys()==nr_keys&&native_qsa->values()==nr_values&&native_qsa->pooled_keys()==nr_pool&&native_qsa->indexer_tail()==nr_tail&&native_qsa->last_residual()==nr_last,"native QSA failure committed state");
+ check(native_qsa->native_norm_rope_calls()==13,"refused completed QSA work hidden");
+ check(std::filesystem::exists(root/"nr-on/failure-q-4/fixture.bin")&&!std::filesystem::exists(root/"nr-on/failure-q-4/rotated.f32le"),"failure published stale/uninitialized candidate values");
+ check(native_qsa->step(4,f.input(4),nr_dispatch,nr_route,error),error);check(native_qsa->reset(error)&&native_qsa->step(0,f.input(0),nr_dispatch,nr_route,error),error);check(native_qsa->last_residual()==nr_first,"native QSA reset/repeat changed state/output");
+ auto nr_bad=nr;nr_bad.execution.weight_budget=native_qsa->weight_bytes()-1;nr_bad.native_norm_rope_receipt_prefix=(root/"nr-budget").string();check(!PortableQsaLayer::create(3,qf.views,nr_bad,error),"QSA one-byte-short weights admitted");
+ nr_bad=nr;nr_bad.production=true;nr_bad.native_norm_rope_receipt_prefix=(root/"nr-production").string();check(!PortableQsaLayer::create(3,qf.views,nr_bad,error),"unsupported native QSA production mode accepted");
+ check(disabled->reset(error),error);
  o.native_hc_read=true;o.native_hc_pending=true;o.native_hc_receipt_prefix=(root/"pending").string();
  auto active=PortableQsaLayer::create(3,qf.views,o,error);check(bool(active),error);check(active->reset(error),error);
  auto co=o;co.native_hc_pending=false;co.native_hc_receipt_prefix=(root/"control").string();auto control=PortableQsaLayer::create(3,qf.views,co,error);check(bool(control),error);check(control->reset(error),error);

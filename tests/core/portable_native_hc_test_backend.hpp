@@ -122,3 +122,24 @@ uint32_t strata_vk_native_gdn_ab_run(StrataVkNativeGdnAb*p,ggml_tensor*const t[8
  put(t[5],gate);put(t[6],beta);put(t[7],diag);++p->calls;return fail_prep_ab?1:0;
 }
 }
+
+#include "../kernels/native_qsa_norm_rope_fixture.hpp"
+#include "strata_vk_native_qsa_norm_rope.hpp"
+namespace { bool fail_qsa_norm=false;size_t qsa_norm_calls=0;std::vector<float>qsa_last_raw; }
+namespace strata::core::portable_detail {
+struct StrataVkNativeQsaNormRope{uint64_t calls=0;};
+StrataVkNativeQsaNormRope* strata_vk_native_qsa_norm_rope_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"QSA component metadata budget");std::ofstream(path)<<"mock, not shader evidence\n";return new StrataVkNativeQsaNormRope;}
+void strata_vk_native_qsa_norm_rope_destroy(StrataVkNativeQsaNormRope*p)noexcept{delete p;}
+size_t strata_vk_native_qsa_norm_rope_bytes(const StrataVkNativeQsaNormRope*){return 512;}
+uint64_t strata_vk_native_qsa_norm_rope_calls(const StrataVkNativeQsaNormRope*p)noexcept{return p?p->calls:0;}
+uint32_t strata_vk_native_qsa_norm_rope_run(StrataVkNativeQsaNormRope*p,ggml_tensor*const t[6],uint32_t cols,uint32_t rows,uint32_t stride,uint32_t theta){
+ check(t[0]->flags&GGML_TENSOR_FLAG_OUTPUT,"actual QSA projection lifetime missing OUTPUT");
+ native_qsa_nr::Fixture f;f.cols=cols;f.rows=rows;f.stride=stride;f.theta=theta;f.x=get(t[0]);f.gamma=get(t[1]);f.pos.resize(rows);ggml_backend_tensor_get(t[2],f.pos.data(),0,rows*4);native_qsa_nr::validate(f);qsa_last_raw=f.x;
+ ++p->calls;++qsa_norm_calls;if(fail_qsa_norm)return 1;
+ // Independent host primitive provider, not Vulkan/CUDA numerical evidence.
+ std::vector<float>d(rows*130);
+ for(size_t r=0;r<rows;++r){std::array<float,256>a{};for(size_t c=0;c<cols;++c)a[c]=f.x[r*stride+c]*f.x[r*stride+c];for(int off:{16,8,4,2,1}){auto b=a;for(size_t c=0;c<256;++c)a[c]=b[c]+b[c^off];}std::array<float,32>b{};for(size_t c=0;c<8;++c)b[c]=a[c*32];for(int off:{16,8,4,2,1}){auto old=b;for(size_t c=0;c<32;++c)b[c]=old[c]+old[c^off];}d[r*130]=b[0]/float(cols)+1e-6f;d[r*130+1]=1.f/std::sqrt(d[r*130]);
+  for(size_t c=0;c<32;++c){float freq=::powf(native_qsa_nr::value(theta),float(c)),angle=float(f.pos[r])*freq;d[r*130+2+c]=freq;d[r*130+34+c]=angle;d[r*130+66+c]=::cosf(angle);d[r*130+98+c]=::sinf(angle);}}
+ auto out=native_qsa_nr::control(f,d);put(t[3],out.normalized);put(t[4],out.rotated);put(t[5],d);return 0;
+}
+}

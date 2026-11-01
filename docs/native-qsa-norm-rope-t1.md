@@ -52,3 +52,35 @@ performance or general intrinsic equivalence follows from a component pass.
 References: [CUDA floating-point functions](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/mathematical-functions.html),
 [GLSL extended instructions](https://registry.khronos.org/SPIR-V/specs/unified1/GLSL.std.450.html),
 and the repository's native `src/kernels/rope_parity.cpp` checks 5/6.
+
+## Default-disabled model seam
+
+The separate model scope uses `--qsa-norm-rope-resident-weights PREFIX` in both
+control/on and adds `--native-qsa-norm-rope-t1` only to on. It applies the same
+three methods to ordinary QSA layers 3/7/.../47, without changing upstream
+projections, HC/GDN choices, pooled-key normalization or attention/selection.
+Actual completed raw Q-full (stride512), K and indexer-query tensors are retained
+as graph outputs. Native candidates run before readback and existing consumers;
+the unused GGML position leaf is not uploaded in the native path.
+
+Only the three F32 normalization roles move to the resident bank; their original
+host allocations are replaced. Both arms reserve the same aligned candidate,
+position/diagnostic scratch and component status storage, plus a conservative
+2 MiB host allowance per QSA layer. The existing ledger and native planner decide
+fit. No cap, reserve, quota or placement rule changes. Production/device-authority
+QSA, chunks, table RoPE or explicitly disabled native fusion refuse in this scope.
+
+Initial layer3 Q/K/indexer-query own-input fixtures and component outputs are
+recorded. Accepted first-key FP16 bytes bind the K candidate to the existing KV
+commit. Later failures retain current input/status and do not publish stale
+candidate outputs. Paid calls are counted even if later FFN work refuses; eager
+KV/indexer publication still follows successful FFN. Per-request QSA state digests
+and actual call deltas support exact within-arm reset replay, not cross-backend
+state equality. The default path allocates or dispatches none of this storage.
+
+Local coordinator tests use the real GGML projections/consumers/state with only
+the component arithmetic mocked; they establish plumbing and noncommit, not GPU
+numerics. The actual standalone native/Vulkan component gate must pass before
+the bounded same-image fresh-planning/model comparison. Neither gate establishes
+native QSA projection, pooled indexer, attention/selection, accepted-prefix/window,
+quality or performance parity.

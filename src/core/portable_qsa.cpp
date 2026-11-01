@@ -5,6 +5,10 @@
 #include "portable_qsa_graph.hpp"
 #include "portable_native_hc.hpp"
 #include "native_hc_boundary.hpp"
+#include "portable_native_qsa_policy.hpp"
+#ifdef STRATA_PORTABLE_NATIVE_HC
+#include "portable_native_qsa_norm_rope.hpp"
+#endif
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include <algorithm>
@@ -237,6 +241,8 @@ struct PortableQsaLayer::Impl {
     Buffer hc_weights_buffer{nullptr,ggml_backend_buffer_free};
 #ifdef STRATA_PORTABLE_NATIVE_HC
     std::unique_ptr<portable_detail::PortableNativeHc> native_hc;
+    std::unique_ptr<portable_detail::PortableNativeQsaNormRope> native_norm_rope;
+    std::array<ggml_tensor*,3> norm_raw{};
 #endif
     std::map<std::string, ggml_tensor *> w;
     Context state_ctx{nullptr, ggml_free};
@@ -250,7 +256,7 @@ struct PortableQsaLayer::Impl {
 
     void prepare(size_t T,std::string& error) {
         auto& s=*this;
-        require(!s.options.native_hc_read && !s.options.defer_ffn_hc_write,"native QSA HC: chunk API unsupported");
+        require(!s.options.native_norm_rope_weights && !s.options.native_hc_read && !s.options.defer_ffn_hc_write,"native QSA HC: chunk API unsupported");
         require(T>=1&&T<=8,"portable layer: chunk size outside [1,8]");
         const size_t extra=(s.options.production?0:s.options.capacity*2*KV*sizeof(uint16_t)+
                             (s.options.capacity/4+6)*ID*sizeof(float))+(3*T*RES+RES)*sizeof(float);
@@ -287,7 +293,7 @@ struct PortableQsaLayer::Impl {
         finite(residual);
         const int32_t p = int32_t(position);
         std::array<int32_t, 4> positions{{p, p, p, p}};
-        ggml_backend_tensor_set(s.pos, positions.data(), 0, sizeof(positions));
+        if(!s.options.native_norm_rope_t1)ggml_backend_tensor_set(s.pos, positions.data(), 0, sizeof(positions));
         std::vector<float> applied;
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(s.native_hc) {
@@ -302,6 +308,9 @@ struct PortableQsaLayer::Impl {
 #endif
         write(s.input, residual);
         s.project->run();
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.options.native_norm_rope_t1)s.native_norm_rope->run(s.norm_raw,position);
+#endif
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(s.native_hc)s.native_hc->record_first();
 #endif
@@ -534,6 +543,16 @@ struct PortableQsaLayer::Impl {
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableQsaOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 == 3, "portable QSA: expected a QSA layer 3/7/.../47");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
+        require(!options.native_norm_rope_t1||options.native_norm_rope_weights,"native QSA norm/RoPE requires matched resident roles");
+        if(options.native_norm_rope_weights){
+            portable_detail::native_qsa_model_environment();
+            require(options.reuse_attention&&!options.production&&options.capacity<=256&&options.execution.accelerator&&options.execution.request_accelerator&&!options.execution.allow_cpu_fallback&&!options.execution.layer0_observer&&!options.native_norm_rope_receipt_prefix.empty(),"native QSA norm/RoPE requires serial eager/reuse/strict accelerator/receipt");
+#ifndef STRATA_PORTABLE_NATIVE_HC
+            throw std::runtime_error("native QSA norm/RoPE requires strict native-stage build");
+#else
+            portable_detail::native_hc_environment();
+#endif
+        }
         require(!options.native_hc_pending || options.native_hc_read,"native QSA HC: pending requires composed read");
         if(options.native_hc_read) {
             require(options.reuse_attention && !options.production && options.execution.request_accelerator &&
@@ -606,8 +625,9 @@ struct PortableQsaLayer::Impl {
         cpu.reset(ggml_backend_cpu_init());
         require(bool(cpu), "portable QSA: CPU unavailable");
         ggml_backend_cpu_set_n_threads(cpu.get(), options.execution.threads);
-        weights_ctx = context();if(options.native_hc_read)hc_weights_ctx=context();
+        weights_ctx = context();if(options.native_hc_read||options.native_norm_rope_weights)hc_weights_ctx=context();
         auto hc_role=[&](const std::string& key){return options.native_hc_read && key.rfind("hc_attn_",0)==0;};
+        auto device_role=[&](const std::string&key){return hc_role(key)||(options.native_norm_rope_weights&&(key=="attn_q_norm.weight"||key=="attn_k_norm.weight"||key=="indexer.q_norm.weight"));};
         auto native_elements=[&](const std::string& key)->size_t {
             return hc_role(key) && key!="hc_attn_norm.weight" ? (key=="hc_attn_inject.weight"?40960:3276800) : 0;
         };
@@ -623,7 +643,7 @@ struct PortableQsaLayer::Impl {
                     "portable QSA: unsupported encoding for role: " + view.name);
             const size_t rows = shape.size() == 2 ? size_t(shape[1]) : 1;
             const size_t source_bytes = ggml_row_size(ggml_type(view.type), shape[0]) * rows;
-            const size_t count=native_elements(key);auto* ctx=hc_role(key)?hc_weights_ctx.get():weights_ctx.get();
+            const size_t count=native_elements(key);auto* ctx=device_role(key)?hc_weights_ctx.get():weights_ctx.get();
             auto *t = count?ggml_new_tensor_1d(ctx,GGML_TYPE_I32,int64_t(count/2)):
                 ggml_new_tensor(ctx, widen ? GGML_TYPE_F32 : ggml_type(view.type),int(shape.size()),shape.data());
             ggml_set_name(t, view.name.c_str());
@@ -636,7 +656,7 @@ struct PortableQsaLayer::Impl {
             w[key] = t;
         }
         auto *weight_backend = portable_detail::weight_backend(options.execution, cpu.get());
-        const size_t hc_allocation=options.native_hc_read?ggml_backend_alloc_ctx_tensors_from_buft_size(hc_weights_ctx.get(),ggml_backend_get_default_buffer_type(options.execution.accelerator)):0;
+        const size_t hc_allocation=(options.native_hc_read||options.native_norm_rope_weights)?ggml_backend_alloc_ctx_tensors_from_buft_size(hc_weights_ctx.get(),ggml_backend_get_default_buffer_type(options.execution.accelerator)):0;
         const size_t allocation = ggml_backend_alloc_ctx_tensors_from_buft_size(
             weights_ctx.get(), ggml_backend_get_default_buffer_type(weight_backend));
         require(hc_allocation<=options.execution.weight_budget-ffn->weight_bytes() && allocation<=options.execution.weight_budget-ffn->weight_bytes()-hc_allocation,"native QSA HC: combined aligned weight budget exceeded");
@@ -645,7 +665,7 @@ struct PortableQsaLayer::Impl {
         weights_buffer.reset(ggml_backend_alloc_ctx_tensors(weights_ctx.get(), weight_backend));
         require(bool(weights_buffer), "portable QSA: weight allocation failed");
         ggml_backend_buffer_set_usage(weights_buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-        if(options.native_hc_read) {
+        if(options.native_hc_read||options.native_norm_rope_weights) {
             hc_weights_buffer.reset(ggml_backend_alloc_ctx_tensors(hc_weights_ctx.get(),options.execution.accelerator));require(bool(hc_weights_buffer),"native QSA HC: resident allocation");
             ggml_backend_buffer_set_usage(hc_weights_buffer.get(),GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
         }
@@ -681,6 +701,11 @@ struct PortableQsaLayer::Impl {
             native_hc=std::make_unique<portable_detail::PortableNativeHc>(options.execution.accelerator,w.at("hc_attn_norm.weight"),w.at("hc_attn_inject.weight"),options.execution.graph_budget-fixed_graphs,options.native_hc_receipt_prefix,w.at("hc_attn_down.weight"),w.at("hc_attn_up.weight"),options.native_hc_pending);
             fixed_graphs+=native_hc->bytes();
         }
+        if(options.native_norm_rope_weights){
+            require(fixed_graphs<options.execution.graph_budget,"native QSA norm/RoPE no graph room");
+            native_norm_rope=std::make_unique<portable_detail::PortableNativeQsaNormRope>(options.execution.accelerator,std::array<ggml_tensor*,3>{{w.at("attn_q_norm.weight"),w.at("attn_k_norm.weight"),w.at("indexer.q_norm.weight")}},options.native_norm_rope_receipt_prefix,options.execution.graph_budget-fixed_graphs,options.native_norm_rope_record_first);
+            fixed_graphs+=native_norm_rope->bytes();
+        }
 #endif
         project = std::make_unique<Phase>();
         auto *c = project->ctx.get();
@@ -709,9 +734,10 @@ struct PortableQsaLayer::Impl {
         q = ggml_cont(c, ggml_view_3d(c, full, D, QH, 1, 2 * D * sizeof(float), 2 * D * QH * sizeof(float), 0));
         gate = ggml_cont(
             c, ggml_view_3d(c, full, D, QH, 1, 2 * D * sizeof(float), 2 * D * QH * sizeof(float), D * sizeof(float)));
-        q = rope(c, ggml_mul(c, ggml_rms_norm(c, q, 1e-6f), w.at("attn_q_norm.weight")), pos);
+        if(!options.native_norm_rope_t1)q = rope(c, ggml_mul(c, ggml_rms_norm(c, q, 1e-6f), w.at("attn_q_norm.weight")), pos);
         k = ggml_reshape_3d(c, ggml_mul_mat(c, w.at("attn_k.weight"), mixed), D, KH, 1);
-        k = rope(c, ggml_mul(c, ggml_rms_norm(c, k, 1e-6f), w.at("attn_k_norm.weight")), pos);
+        auto* raw_k=k;
+        if(!options.native_norm_rope_t1)k = rope(c, ggml_mul(c, ggml_rms_norm(c, k, 1e-6f), w.at("attn_k_norm.weight")), pos);
         v = ggml_mul_mat(c, w.at("attn_v.weight"), mixed);
         auto *index_query = ggml_mul_mat(c, w.at("indexer.q_proj.weight"), mixed);
         ik = ggml_mul_mat(c, w.at("indexer.k_proj.weight"), mixed);
@@ -721,7 +747,15 @@ struct PortableQsaLayer::Impl {
         if (w.at("indexer.k_proj.weight")->type == GGML_TYPE_F32)
             ggml_mul_mat_set_prec(ik, GGML_PREC_F32);
         iq = ggml_reshape_3d(c, index_query, ID, IH, 1);
-        iq = rope(c, ggml_mul(c, ggml_rms_norm(c, iq, 1e-6f), w.at("indexer.q_norm.weight")), pos);
+        auto* raw_iq=iq;
+        if(!options.native_norm_rope_t1)iq = rope(c, ggml_mul(c, ggml_rms_norm(c, iq, 1e-6f), w.at("indexer.q_norm.weight")), pos);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(options.native_norm_rope_t1){
+            norm_raw={{full,raw_k,raw_iq}};
+            for(size_t i=0;i<3;++i)project->output(norm_raw[i],std::array<const char*,3>{{"qsa-raw-query","qsa-raw-key","qsa-raw-index-query"}}[i]);
+            q=native_norm_rope->output[0];k=native_norm_rope->output[1];iq=native_norm_rope->output[2];
+        }
+#endif
         for (auto pair : {std::pair<ggml_tensor *, const char *>{q, "qsa-query"},
                           {k, "qsa-key"},
                           {v, "qsa-value"},
@@ -729,7 +763,7 @@ struct PortableQsaLayer::Impl {
                           {iq, "qsa-index-query"},
                           {ik, "qsa-index-raw-key"},
                           {inject, "qsa-inject"}})
-            project->output(pair.first, pair.second);
+            if(!options.native_norm_rope_t1||(pair.first!=q&&pair.first!=k&&pair.first!=iq))project->output(pair.first, pair.second);
         project->schedule("qsa-project", options.execution, cpu, fixed_placement, fixed_graphs);
         if (options.production)
             allocate_state();
@@ -798,6 +832,13 @@ uint64_t PortableQsaLayer::native_ffn_hc_write_calls() const {return impl_->ffn-
 uint64_t PortableQsaLayer::native_ffn_hc_pending_calls() const {return impl_->ffn->native_hc_pending_calls();}
 uint64_t PortableQsaLayer::deferred_hc_outputs() const {return impl_->ffn->work().deferred_hc_outputs;}
 const PortableHcPendingWrite& PortableQsaLayer::pending_write() const {return impl_->pending;}
+uint64_t PortableQsaLayer::native_norm_rope_calls()const{
+#ifdef STRATA_PORTABLE_NATIVE_HC
+ return impl_->native_norm_rope?impl_->native_norm_rope->calls():0;
+#else
+ return 0;
+#endif
+}
 uint64_t PortableQsaLayer::native_hc_pending_calls() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     return impl_->native_hc?impl_->native_hc->pending_calls():0;
@@ -964,6 +1005,9 @@ bool PortableQsaLayer::step_impl(uint64_t position,const std::vector<float>& res
         next_residual = s.ffn->residual();
         finite(next_residual);
         auto next_pending=s.ffn->pending_write();
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.options.native_norm_rope_t1)s.native_norm_rope->record_commit(hk,position);
+#endif
         // Publish only after all computations succeed. Diagnostics append to
         // reserved host history here; production already appended device state
         // and poisons the layer on any failure before this point.
@@ -1175,6 +1219,7 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
                 ggml_backend_sched_get_buffer_size(phase->scheduler.get(), s.options.execution.accelerator);
     }
 #ifdef STRATA_PORTABLE_NATIVE_HC
+    if(s.native_norm_rope){m.device_graph+=s.native_norm_rope->bytes();m.host_extra_bound+=PortableQsaOptions::native_norm_rope_host_bound;}
     if(s.native_hc){m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=PortableQsaOptions::native_hc_host_bound;}
 #endif
     // Keep the existing host envelope: the unchanged fixed schedulers also
