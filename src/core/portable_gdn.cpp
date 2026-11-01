@@ -325,7 +325,8 @@ struct PortableGdnLayer::Impl {
         PortableGdnTrace trace;
     };
     AttentionResult attend(int32_t token, const std::vector<float>& residual,
-                           CursorView cursor, bool want_trace, PortableGdnWork* work, bool projected = false) {
+                           CursorView cursor, bool want_trace, PortableGdnWork* work, bool projected = false,
+                           const std::vector<float>* previous_output=nullptr,const std::vector<float>* previous_injection=nullptr) {
         auto& s = *this;
         const auto saved_outputs=projected?s.outputs():AttentionOutputs{};
         struct Restore { Impl& s; AttentionOutputs saved; bool enabled; ~Restore(){if(enabled)s.outputs(saved);} } restore{s,saved_outputs,projected};
@@ -354,13 +355,19 @@ struct PortableGdnLayer::Impl {
                     next_trace.ple_embedding = std::move(embedding);
                 }
             }
-            write(s.input, residual);
 #ifdef STRATA_PORTABLE_NATIVE_HC
-            if(s.native_hc) {
-                require(!projected,"native HC serial: projected execution unsupported");
-                s.native_hc->run(); // actual uploaded residual; before any graph consumer
-            }
+            if(s.native_hc && s.native_hc->pending_input) {
+                require(!projected && previous_output && previous_injection,"native HC pending: explicit T1 tuple required");
+                write(s.native_hc->pending_input,residual);write(s.native_hc->previous_output,*previous_output);write(s.native_hc->previous_inject,*previous_injection);
+                s.native_hc->run_pending(); // candidate R-prime is BOTH graph hidden and HC input
+            } else
 #endif
+            {
+                write(s.input, residual);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+                if(s.native_hc) {require(!projected,"native HC serial: projected execution unsupported");s.native_hc->run();}
+#endif
+            }
             if (!s.state_buffer) {
                 write(s.state_input, cursor.state);
                 write(s.history_input, cursor.history);
@@ -376,6 +383,11 @@ struct PortableGdnLayer::Impl {
             if(s.native_hc)s.native_hc->record_first();
             if(trace && s.native_hc) {
                 next_trace.native_hc_norm_inject=true;
+                if(s.native_hc->pending_input) {
+                    next_trace.native_hc_pending=true;next_trace.hc_pending_input=read(s.native_hc->pending_input);
+                    next_trace.hc_previous_output=read(s.native_hc->previous_output);next_trace.hc_previous_inject=read(s.native_hc->previous_inject);
+                    next_trace.hc_pending_gate=read(s.native_hc->pending_gate);next_trace.hc_pending_exp=read(s.native_hc->pending_exp);
+                }
                 next_trace.hc_residual=read(s.native_hc->residual);
                 next_trace.hc_normalized=read(s.native_hc->normalized);
                 next_trace.hc_rs=read(s.native_hc->rs);
@@ -465,7 +477,7 @@ struct PortableGdnLayer::Impl {
 
     bool production() const { return options.policy == PortableGdnPolicy::device_production; }
     size_t host_state_bytes() const {
-        return (options.native_hc_norm_inject?(options.native_hc_mix?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound):0)+HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
+        return (options.native_hc_norm_inject?(options.native_hc_pending?PortableGdnOptions::native_hc_pending_host_bound:(options.native_hc_mix?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound)):0)+HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
             (options.ple_table ? PLE_STATE_BYTES - (production() ? 2 * PLE_HISTORY * sizeof(float) : 0) : 0);
     }
 
@@ -702,6 +714,8 @@ struct PortableGdnLayer::Impl {
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 != 3,
                 "portable GDN: expected a non-QSA layer in [0,47]");
+        require(!options.native_hc_pending||options.native_hc_mix,"native HC pending: composed read required");
+        require(!options.native_hc_pending||!options.execution.layer0_observer,"native HC pending: legacy observer lacks pending tuple schema; use bounded layer trace");
         require(!options.native_hc_mix||options.native_hc_norm_inject,"native HC read: norm/injection required");
         if(options.native_hc_norm_inject) {
             require(layer==0 && !options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk,
@@ -820,9 +834,9 @@ struct PortableGdnLayer::Impl {
             require(graphs_size<options.execution.graph_budget,"native HC serial: no graph budget");
             native_hc=std::make_unique<portable_detail::PortableNativeHc>(options.execution.accelerator,w.at("hc_attn_norm.weight"),
                 w.at("hc_attn_inject.weight"),options.execution.graph_budget-graphs_size,options.native_hc_receipt_prefix,
-                options.native_hc_mix?w.at("hc_attn_down.weight"):nullptr,options.native_hc_mix?w.at("hc_attn_up.weight"):nullptr);
+                options.native_hc_mix?w.at("hc_attn_down.weight"):nullptr,options.native_hc_mix?w.at("hc_attn_up.weight"):nullptr,options.native_hc_pending);
             graphs_size+=native_hc->bytes();
-            placement.push_back({"native-hc",options.native_hc_mix?"NATIVE_BF16_READ_SERIAL_T1":"NATIVE_BF16_NORM_INJECT_SERIAL_T1",options.native_hc_mix?"layer-0 attention read only; pending write unchanged":"layer-0 only; GGML mixed remains", "F32/BF16",ggml_backend_name(options.execution.accelerator),"",{H,HC,1}});
+            placement.push_back({"native-hc",options.native_hc_pending?"NATIVE_BF16_PENDING_READ_T1_DIAGNOSTIC":(options.native_hc_mix?"NATIVE_BF16_READ_SERIAL_T1":"NATIVE_BF16_NORM_INJECT_SERIAL_T1"),options.native_hc_pending?"explicit synthetic prior tuple, layer-0 attention roles; no model pending carry":(options.native_hc_mix?"layer-0 attention read only; pending write unchanged":"layer-0 only; GGML mixed remains"), "F32/BF16",ggml_backend_name(options.execution.accelerator),"",{H,HC,1}});
         }
 #endif
         if (options.scratch) { Borrow borrow(*this); }
@@ -970,6 +984,16 @@ bool PortableGdnLayer::step(const std::vector<float> &residual, const PortableEx
 }
 bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, const PortableExpertRows &dispatch,
                             PortableRoute &route, std::string &error, PortableGdnTrace *trace, PortableGdnWork *work) {
+    return step_impl(token,residual,nullptr,nullptr,dispatch,route,error,trace,work);
+}
+bool PortableGdnLayer::step_pending(const std::vector<float>& residual,const std::vector<float>& previous_output,
+    const std::vector<float>& previous_injection,const PortableExpertRows& dispatch,PortableRoute& route,
+    std::string& error,PortableGdnTrace* trace,PortableGdnWork* work) {
+    return step_impl(-1,residual,&previous_output,&previous_injection,dispatch,route,error,trace,work);
+}
+bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residual,
+    const std::vector<float>* previous_output,const std::vector<float>* previous_injection,
+    const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableGdnTrace* trace,PortableGdnWork* work) {
     error.clear();
     route = {};
     if (trace)
@@ -981,8 +1005,10 @@ bool PortableGdnLayer::step(int32_t token, const std::vector<float> &residual, c
         require(s.state_healthy, "portable GDN: resident state poisoned; reset required");
         require(!s.production() || !trace, "portable GDN: trace requires eager diagnostic policy");
         require(residual.size() == RESIDUAL && bool(dispatch), "portable GDN: residual/callback required");
+        require(s.options.native_hc_pending==bool(previous_output&&previous_injection),"native HC pending: explicit matching tuple mode required");
+        if(previous_output) {require(previous_output->size()==H&&previous_injection->size()==HC,"native HC pending: tuple shape");finite(*previous_output);finite(*previous_injection);}
         require(s.count < UINT64_MAX, "portable GDN: token counter exhausted");
-        auto attended = s.attend(token, residual, {s.state,s.history,s.ple_history,s.previous}, trace != nullptr, work);
+        auto attended = s.attend(token, residual, {s.state,s.history,s.ple_history,s.previous}, trace != nullptr, work,false,previous_output,previous_injection);
         auto next_residual = std::move(attended.residual);
         auto next_previous = attended.previous;
         auto next_trace = std::move(attended.trace);
@@ -1148,6 +1174,13 @@ const std::vector<float> &PortableGdnLayer::convolution_history() const {
 }
 const std::vector<float> &PortableGdnLayer::last_residual() const { return impl_->last; }
 uint64_t PortableGdnLayer::tokens() const { return impl_->count; }
+uint64_t PortableGdnLayer::native_hc_pending_calls() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_hc?impl_->native_hc->pending_calls():0;
+#else
+    return 0;
+#endif
+}
 uint64_t PortableGdnLayer::native_hc_mix_calls() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     return impl_->native_hc?impl_->native_hc->mix_calls():0;
