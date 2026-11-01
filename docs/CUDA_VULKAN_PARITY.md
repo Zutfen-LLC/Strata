@@ -474,16 +474,18 @@ for each capability below.
 
 1. **Generalize the tested serial HC policy to ordinary boundaries once.**
    The reusable GDN/QSA cycle is implemented and has bounded real-model evidence
-   in PR110/111. The remaining restriction is primarily the product scope in
-   `model_cycle_ffn`, `model_pending_consumer` and `model_deferred_producer`
-   (`portable_model_preflight.hpp`), not an unimplemented algorithm for every
-   layer. Replace that experimental scope with a geometry/role-validated sweep
-   driven by native `pre`/`post` predicates. Reuse actual post-projection tuples,
-   existing components, session state transactions and original capacity policy;
-   do not add another flag or implementation per layer.
+   in PR110/111. [PR112](https://github.com/Zutfen-LLC/Strata/pull/112), source
+   `de94a24edf0c9ebcc7933fd080251479e8274d4a`, adds one default-disabled ordinary
+   serial scope using native `pre`/`post` predicates, actual post-projection
+   tuples, existing components and state transactions. It preserves layer1 PLE,
+   materializes the nonfused final FFN write and refuses unported split/fused-head
+   modes. All 48 product predicates, shared-scratch family composition and the
+   final-layer write/rollback/reset are CPU-tested; HC device arithmetic is mocked.
+   Physical broad-scope admission and model comparison remain pending. This does
+   not establish native PLE/head/QSA numerical or window-scheduling parity.
 
-   The next bounded implementation should first price all selected banks and
-   existing buffer/host envelopes before enabling a supported ordinary T1 scope.
+   The combined validation first prices selected banks and existing buffer/host
+   envelopes, then uses original post-dense planning before any model requests.
    Keep the cycle profile as a matched control. For this 48-layer geometry,
    attention layers 2–47 and FFN layers 2–47 add, relative to the current on profile,
    32 GDN attention conversions, 11 resident QSA HC banks and 44 resident generic
