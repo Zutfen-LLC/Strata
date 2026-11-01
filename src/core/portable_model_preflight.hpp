@@ -2,6 +2,7 @@
 #include "strata/core/portable_model.hpp"
 #include "native_hc_layout.hpp"
 #include "native_hc_boundary.hpp"
+#include "portable_native_qsa_policy.hpp"
 #include <stdexcept>
 #include <cstdlib>
 namespace strata::core::portable_detail {
@@ -33,9 +34,10 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         b+=layer==47 ? PortableFfnOptions::native_hc_write_host_bound : PortableFfnOptions::deferred_hc_host_bound;
         if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_recurrence_host_bound;
         if(opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_preparation_host_bound;
+        if(opts.qsa_norm_rope_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_norm_rope_host_bound;
         return b;
     }
-    size_t bound=0;
+    size_t bound=opts.qsa_norm_rope_resident_weights&&layer%4==3?PortableQsaOptions::native_norm_rope_host_bound:0;
     if(opts.native_hc_pending_layer1_2 && layer==1)bound+=PortableFfnOptions::deferred_hc_host_bound;
     if(opts.native_hc_pending_layer1_2 && layer==2)bound+=PortableGdnOptions::native_hc_pending_host_bound;
     if(opts.native_hc_pending_layer2_3 && layer==2)bound+=PortableFfnOptions::deferred_hc_host_bound;
@@ -82,6 +84,10 @@ inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,P
     }
 }
 inline void model_qsa_hc_options(const PortableModelOptions& opts,size_t layer,PortableQsaOptions& o) {
+    o.native_norm_rope_weights=opts.qsa_norm_rope_resident_weights;
+    o.native_norm_rope_t1=opts.native_qsa_norm_rope_t1;
+    o.native_norm_rope_record_first=layer==3;
+    if(o.native_norm_rope_weights)o.native_norm_rope_receipt_prefix=opts.qsa_norm_rope_receipt_prefix+".layer-"+std::to_string(layer);
     o.native_hc_read=o.native_hc_pending=opts.native_hc_pending_layer2_3 && layer==3;
     if(o.native_hc_read)o.native_hc_receipt_prefix=opts.native_hc_qsa_receipt_prefix;
     o.resident_ffn_weights=model_ffn_resident(opts,layer);
@@ -153,6 +159,9 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
     require(opts.expert_workers>=1 && opts.expert_workers<=256,"portable model: expert workers must be in [1,256]");
     require(!opts.qsa_production || (opts.qsa_reuse_attention && selected_accelerators && !opts.allow_cpu_fallback),
             "portable model: QSA production requires reuse and strict accelerators");
+    require(!opts.native_qsa_norm_rope_t1||opts.qsa_norm_rope_resident_weights,"native QSA norm/RoPE requires matched resident roles");
+    require(!opts.qsa_norm_rope_resident_weights||(selected_accelerators&&!opts.allow_cpu_fallback&&!opts.qsa_production&&!opts.prompt_chunk_size&&opts.dense_topology==PortableDenseTopology::primary&&!opts.qsa_norm_rope_receipt_prefix.empty()),"native QSA norm/RoPE requires serial eager primary dense/strict accelerator/receipt");
+    if(opts.qsa_norm_rope_resident_weights){native_qsa_model_environment();require(PortableGdnLayer::native_hc_compiled(),"native QSA norm/RoPE: strict native-stage build required");native_hc_environment();}
     require(!opts.native_gdn_t1 || (opts.gdn_resident_state && (opts.gdn_resident_weights||opts.dense_resident_weights) &&
             selected_accelerators && !opts.allow_cpu_fallback && !opts.gdn_production && !opts.gdn_batch_input_projections &&
             !opts.gdn_causal_chunk && !opts.prompt_chunk_size && !opts.native_gdn_receipt_prefix.empty() && opts.dense_topology==PortableDenseTopology::primary),

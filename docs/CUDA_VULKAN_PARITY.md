@@ -668,6 +668,24 @@ for each capability below.
    outputs to recurrence without equal inputs. Accepted-prefix commit and window
    scheduling follow numerical-family coverage, rather than capturing the
    current GGML graph and calling it the native method.
+   [PR126](https://github.com/Zutfen-LLC/Strata/pull/126), tested at
+   `eab5f489c7bf8f72ae95899c547190f9aabe6e64`, adds default-disabled native
+   QSA weighted normalization/RoPE after completed Q/K/indexer-query projections.
+   The bounded same-image model comparison passes fresh native planning and
+   matched ownership, two reset-separated requests per arm, initial layer3
+   own-input controls and accepted FP16 KV-key linkage. On executes 84 calls per
+   ordinary QSA layer (1,008 per request); control executes none. All 24 new
+   module uses and existing HC/GDN checks pass. Within-arm state/head/route reset
+   is exact. Generated IDs match; routes differ from position1/layer41 and maximum
+   retained matching-history absolute logit difference is 1.3833283185958862,
+   diagnostic only. Owned exit/reap and three baseline cleanup observations pass;
+   resource samples are discrete. This does not establish native projections,
+   indexer append/pooling, scores/selection/attention, accepted-prefix/window,
+   quality or performance parity. Defaults remain unchanged and qualified=false.
+   Next is native `native_qsa_indexer_append`: FP16-round raw keys, retain the
+   three-row tail and repeated-cell-zero spare, then ordered pooling/norm/RoPE.
+   The current portable F32/four-row tail is a distinct method, not a substitute.
+
 3. **Replicate native state authority and commit/restore.** Native
    `Verifier::capture_commit()`/`Verifier::commit()` and restore paths handle GDN history/state and
    QSA KV/indexer tails for the accepted prefix. Reuse the existing session
