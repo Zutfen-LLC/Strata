@@ -568,8 +568,21 @@ for each capability below.
    Resident state/weights, aligned banks and an additional explicit host allowance
    remain subject to original admission/planning. Source tests cover shared warming,
    actual graph state progression, failure noncommit and reset; recurrence device
-   arithmetic is mocked there. A fresh same-image model comparison is prepared,
-   not yet evidence. No native window/accepted-prefix or full-model parity follows.
+   arithmetic is mocked there. The initial model diagnostic admitted its native
+   placement but stopped at a normal-only decay-log guard. The correction at
+   `9da19578577db7d7b72a1d63a25b93837b993bc8` preserves native exp/add/divide/FMA
+   order, admitting legitimate exp underflow and the established sigmoid tails;
+   subnormal recurrence and unqualified transition classes still refuse. Reported
+   native/Vulkan tiny checks pass the original failure input and tail boundaries.
+
+   The corrected on-model continuation passes fresh admission and exact retained
+   ownership, one load and two reset-separated 25-token/GEN3 requests. Seven tests,
+   first-call GDN source-order/candidate-commit checks, all 35 GDN module uses and
+   exact within-arm reset replay pass; the process is reaped and three baseline
+   cleanup observations pass. The prior control is original-image evidence only,
+   not a corrected-image same-image comparison. This removes the decay refusal for
+   these bounded requests; `qualified=false`, full numerical/state/window parity
+   and quality/performance remain unclaimed. Original stopped results are retained.
 
    The native specification for this port is the ordinary T1 recurrence and output norm/gate
    selected by `Verifier::record_window()` (`verify.cpp:1510–1531`) through
@@ -583,8 +596,10 @@ for each capability below.
    Start with identical synthetic post-convolution q/k/v, gate/beta, z, gamma
    and state, compare output and next state against the existing native launcher,
    and reuse deliberate intrinsic bounds. No fresh model capture is needed for
-   that development. Convolution/L2, a/b projections and dense quantized
-   projections remain separate upstream work; do not attribute unequal model
+   that development. The next numerical-family gap is native
+   `gdn_conv_l2_multi()` and `gdn_ab_multi()` selected by `Verifier::record_window()`:
+   the current prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
+   projections also remain separate upstream work; do not attribute unequal model
    outputs to recurrence without equal inputs. Accepted-prefix commit and window
    scheduling follow numerical-family coverage, rather than capturing the
    current GGML graph and calling it the native method.
