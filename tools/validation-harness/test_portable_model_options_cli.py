@@ -80,3 +80,11 @@ res=run(['--hc-cycle-resident-weights'],True);assert res['hc_cycle_resident_weig
 print('serial HC cycle actual CLI/defaults/residency/refusal contracts passed')
 # Prefix order must preserve explicitly supplied entry-owner paths.
 run(['--native-hc-pending-layer1-2','/absent/entry','--native-hc-pending-layer2-3','/absent/qsa',*cycle],True)
+
+ordinary=['--native-hc-serial','/absent/ordinary','--hc-serial-resident-weights','--gdn-resident-weights','--native-hc-ffn-write-layer0','/absent/zero','--layer0-resident-weights']
+r=run(ordinary,True);assert r['native_hc_serial'] and r['hc_serial_resident_weights'] and not r['native_hc_serial_cycle']
+assert not run([],True)['native_hc_serial']
+run(['--native-hc-serial','/absent/no-residency'],False,'ordinary native HC requires')
+for flags in [['--native-hc-serial-cycle','/absent/cycle'],['--dense-topology','split'],['--allow-cpu-fallback'],['--prompt-chunk-size','2']]:run([*ordinary,*flags],False)
+run(ordinary,False,'fused final head',dict(os.environ,STRATA_FUSE_HEAD_GR='1'))
+run(ordinary,True,env=dict(os.environ,STRATA_FUSE_HEAD_GR='0'))

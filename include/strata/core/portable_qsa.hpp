@@ -75,6 +75,7 @@ class PortableQsaLayer {
                       PortableRoute& route,std::string& error,PortableQsaTrace* trace=nullptr);
     uint64_t native_hc_pending_calls() const;
     uint64_t native_ffn_hc_pending_calls() const;
+    uint64_t native_ffn_hc_write_calls() const;
     uint64_t deferred_hc_outputs() const;
     const PortableHcPendingWrite& pending_write() const;
     // Opt-in T1..8 causal layer chunk. Token IDs bind the single-sequence

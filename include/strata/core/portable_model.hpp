@@ -84,6 +84,9 @@ struct PortableModelOptions {
     bool expert_dispatch_oracle = false;
     size_t expert_staging_cap = 64ull << 20;
     bool expert_check_rows = false, expert_record_routes = false;
+    bool hc_serial_resident_weights = false; // matched ordinary FFN banks, independent of numerical selection
+    bool native_hc_serial = false; // ordinary serial boundaries; PLE/head exceptions remain explicit
+    std::string native_hc_serial_receipt_prefix;
     bool hc_cycle_resident_weights = false; // matched FFN2/3 banks; independent of attention residency
     bool native_hc_serial_cycle = false; // bounded reusable GDN2/QSA3/GDN4 cycle
     std::string native_hc_cycle_receipt_prefix;
@@ -133,6 +136,8 @@ struct PortableExpertWork {
 // Whole-call wall totals are optional; head outcome counters are unconditional.
 // Layer totals include matched provider intervals.
 struct PortableModelWork {
+    std::array<uint64_t,48> native_hc_serial_reads{}, native_hc_serial_ffn_calls{}, native_hc_serial_outputs{};
+    uint64_t native_hc_serial_final_writes=0;
     std::array<uint64_t,2> native_hc_cycle_ffn_calls{};
     uint64_t native_hc_cycle_outputs=0,native_hc_cycle_reads=0;
     uint64_t deferred_ffn_layer1_outputs=0, native_hc_pending_layer2_calls=0;
