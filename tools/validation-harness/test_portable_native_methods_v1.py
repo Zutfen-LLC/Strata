@@ -159,6 +159,21 @@ class NativeMethods(unittest.TestCase):
                 raw = (Path(tmp)/'run'/f"case-{row['index']:02d}"/'stdout.jsonl').read_text()
                 self.assertTrue(raw.startswith(NATIVE_DIAGNOSTICS))
 
+    def test_actual_llvm_startup_receipt_through_suite(self):
+        line = 'native_llvm_log1p physical_float64=1 logical_float64=1 rte64=1 signed64=1 nonfma=true\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            summary, commands, _, _ = self.suite(Path(tmp), False, diagnostics=NATIVE_DIAGNOSTICS+line)
+            self.assertEqual(summary['status'], 'complete')
+            self.assertEqual(len(commands), 12)
+            for row in summary['requests']:
+                self.assertEqual(row['stdout_diagnostics'][-1], line.rstrip('\n'))
+        for bad in [line.replace('rte64=1', 'rte64=0'), line.replace('logical_float64=1 ', ''),
+                    line.replace('nonfma=true', 'nonfma=false'), line.rstrip()+' extra=1',
+                    line.replace('signed64=1', 'signed64=1 signed64=1')]:
+            with tempfile.TemporaryDirectory() as tmp:
+                p=Path(tmp)/'stdout';p.write_text(bad)
+                with self.assertRaises(ValueError):P.stdout_records(p)
+
     def test_stdout_classifier_rejects_malformed_unknown_and_error_output(self):
         bad = ['{"position":', '{"error":"failed"}', '[]', 'null', '',
                'unrecognized failure', 'native_q8_unknown error=failed',

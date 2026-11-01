@@ -63,6 +63,30 @@ Terminal cannot run. Strata's MCP server ([docs/MCP_SERVER.md](docs/MCP_SERVER.m
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.
 
+## Native backend migration work
+
+- Use the established native Strata source as the specification for algorithms,
+  operation order, placement, pending/materialized boundaries and state ownership.
+  Adapt backend plumbing; surface a genuine method or scope decision before changing it.
+- Group changes by coherent functional area. Reuse the existing runner and proceed
+  from component checks to bounded model validation within the user's granted scope;
+  do not invent an approval pause for routine authorized reversible work. When a
+  parent coordinates operators, send ready source/recipe pins to that parent promptly
+  so it can dispatch; do not leave completed instructions idle or dispatch twice.
+- Reuse compatible builds, controls, fixtures and offline results with their actual
+  source/input/state/method scope. Prefer immutable references and checked local
+  reconstruction over duplicate fixture uploads. Preserve failed results.
+- Before handoff, test the real producer startup diagnostics and output names/sizes
+  through the deployed runner entrypoint from an unrelated directory. Test shared
+  helper signatures/imports with the actual policy, not permissive substitutes.
+- Repair checker or packaging defects offline where possible. Rerun only missing
+  or invalidated work; a receipt defect alone does not justify another model load.
+  Keep reports concise and centered on the functional area's outcome and limits.
+- Preserve numerical contracts, native operation/state semantics, resource admission,
+  unrelated services/models, owned-process exit/reap and cleanup. Escalate actual
+  authorization limits or denials with execution status; never bypass review or
+  change approval rules. These defaults grant no authority beyond the user's scope.
+
 ## Contributing a change or report
 
 The rules are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. Read it before you open an issue or a pull request, and

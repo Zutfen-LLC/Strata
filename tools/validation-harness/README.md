@@ -124,3 +124,22 @@ The separate [100-case v2 contract](QUALITY_V2.md) uses explicit
 suite/scorer intact and reports paired semantic and formatting regressions.
 
 - Native method option forwarding and frozen answer screen: [NATIVE_METHOD_SCREEN.md](NATIVE_METHOD_SCREEN.md).
+
+
+For authorized native backend development, batch one coherent functional area and
+reuse this runner through component and bounded model stages. Send ready pins to
+the coordinating parent promptly; it owns operator dispatch when so assigned.
+Continue within the granted scope without extra routine approval pauses. Scope or
+native-method decisions and actual review denials still require escalation.
+
+Reuse valid images, controls and offline results with accurate source/input/state
+scope; reconstruct pinned fixtures locally where possible. Preserve active runs
+and failures. Fix parser/checker/packaging errors offline and rerun only invalidated
+work. Do not replace numerical, state, admission, owned-process or cleanup checks
+with procedural shortcuts, extra ceremonies or repeated campaigns.
+
+Test actual startup receipts through `stdout_records`, and consume the compiled
+producer's `--contract` output through `component_output_contract.require` instead
+of guessing output filenames. Run the generated CLI from an unrelated directory,
+with real shared policy/helper interfaces and explicit tools. A fake child that
+omits the producer's diagnostics is insufficient compatibility coverage.

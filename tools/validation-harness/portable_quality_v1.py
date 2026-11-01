@@ -164,10 +164,11 @@ def token_receipt(row, position, prompt_count, vocabulary, head_policy='eager_di
         raise ValueError('invalid token or greedy ID')
 
 
-# The native Q8 component prints these two diagnostics to stdout at creation.
-# Keep the retained stdio supervisor's two-name allowlist, with source-shaped
+# Native components print source-shaped creation receipts. Keep a strict
+# allowlist (including the LLVM primitive capability gate), with source-shaped
 # fields. Raw stdout remains untouched; diagnostics never count as token work.
 NATIVE_STDOUT_DIAGNOSTICS = (
+    re.compile(r'native_llvm_log1p physical_float64=1 logical_float64=1 rte64=1 signed64=1 nonfma=true'),
     re.compile(r'native_q8_integer_dot requested=[01] queried_support=[01] logical_enabled=[01] '
                r'ggml_accelerated=[01] device=[^\x00-\x1f]+'),
     re.compile(r'native_q8_strict_fma requested=[01] queried_support=[01] logical_enabled=[01] qualified=false'),
