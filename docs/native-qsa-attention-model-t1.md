@@ -52,3 +52,15 @@ reported without a new final-logit tolerance.
 Model validation is pending. `qualified=false` remains. This does not port output
 projection quantization/MMVQ, quantized/rotated KV, competitive model selection
 above capacity 2051, native accepted-prefix/window scheduling or full model parity.
+
+The initial bounded run at `4ca2d22d` built 31 focused tests and passed planning
+and two control requests, but on refused allocation before READY/GEN. A real
+GGML CPU allocator regression reproduces the same admission error for the native
+combine graph: the independent residual output is an unconsumed leaf, omitted
+by the node/source-only estimator. The correction supplies the phase's actual
+forward roots and charges only previously unaccounted leaf storage, using each
+backend's allocation size/alignment. Actual buffers, graph arithmetic, placement
+rules and caps are unchanged. Materialized control/native gated allocation in
+the isolated regression is 90,112/75,776 bytes both before and after correction;
+only the latter's admission previously failed. Reused control evidence is
+historical source-compatible evidence, not a newly executed same-image pair.
