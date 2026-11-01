@@ -188,6 +188,7 @@ int main(int argc, char **argv) {
                 opts.gdn_batch_input_projections = true;
                 continue;
             }
+            if(key=="--native-qsa-indexer-t1"){opts.native_qsa_indexer_t1=true;continue;}
             if(key=="--native-qsa-norm-rope-t1"){opts.native_qsa_norm_rope_t1=true;continue;}
             if(key=="--gdn-native-prep-bf16") {opts.native_gdn_preparation_weights=true;continue;}
             if (key == "--gdn-resident-weights") {
@@ -205,7 +206,8 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if(key=="--qsa-norm-rope-resident-weights"){opts.qsa_norm_rope_resident_weights=true;opts.qsa_norm_rope_receipt_prefix=value;}
+            if(key=="--qsa-indexer-resident-weights"){opts.qsa_indexer_resident_weights=true;opts.qsa_indexer_receipt_prefix=value;}
+            else if(key=="--qsa-norm-rope-resident-weights"){opts.qsa_norm_rope_resident_weights=true;opts.qsa_norm_rope_receipt_prefix=value;}
             else if(key=="--native-gdn-prep-t1") {opts.native_gdn_preparation_t1=true;opts.native_gdn_preparation_receipt_prefix=value;}
             else if(key=="--native-gdn-t1") {opts.native_gdn_t1=true;opts.native_gdn_receipt_prefix=value;}
             else if(key=="--native-hc-serial") {opts.native_hc_serial=true;opts.native_hc_serial_receipt_prefix=value;}
@@ -368,6 +370,7 @@ int main(int argc, char **argv) {
                      <<",\"dense_resident_weights\":"<<(opts.dense_resident_weights?"true":"false")
                      <<",\"layer0_resident_weights\":"<<(opts.layer0_resident_weights?"true":"false")
                      <<",\"native_hc_serial_cycle\":"<<(opts.native_hc_serial_cycle?"true":"false")
+                     <<",\"native_qsa_indexer_t1\":"<<(opts.native_qsa_indexer_t1?"true":"false")<<",\"qsa_indexer_resident_weights\":"<<(opts.qsa_indexer_resident_weights?"true":"false")
                      <<",\"native_qsa_norm_rope_t1\":"<<(opts.native_qsa_norm_rope_t1?"true":"false")<<",\"qsa_norm_rope_resident_weights\":"<<(opts.qsa_norm_rope_resident_weights?"true":"false")
                      <<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false")
                      <<",\"native_gdn_preparation_t1\":"<<(opts.native_gdn_preparation_t1?"true":"false")<<",\"native_gdn_preparation_weights\":"<<(opts.native_gdn_preparation_weights?"true":"false")
@@ -559,7 +562,7 @@ int main(int argc, char **argv) {
         }
         std::vector<float> logits;
         std::vector<int32_t> executed_tokens;
-        const auto heads_before = session->model_work((opts.gdn_resident_state&&!opts.gdn_production)||opts.qsa_norm_rope_resident_weights);
+        const auto heads_before = session->model_work((opts.gdn_resident_state&&!opts.gdn_production)||opts.qsa_norm_rope_resident_weights||opts.qsa_indexer_resident_weights);
         const auto router_fields = [&](std::ostream& out) {
             if((opts.native_hc_pending_layer1_2 || opts.native_hc_pending_layer2_3) && !opts.native_hc_norm_inject_layer0)out<<",\"full_hc_parity\":false";
             if(opts.native_hc_norm_inject_layer0)out<<",\"native_hc_norm_inject_layer0\":true,\"full_hc_parity\":false,\"native_hc_layer0_calls_delta\":"
@@ -572,9 +575,11 @@ int main(int argc, char **argv) {
                 out<<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false")
                      <<",\"native_gdn_preparation_t1\":"<<(opts.native_gdn_preparation_t1?"true":"false")<<",\"native_gdn_preparation_weights\":"<<(opts.native_gdn_preparation_weights?"true":"false");
             }
-            if(opts.qsa_norm_rope_resident_weights){
-                const auto w=session->model_work(true);out<<",\"qsa_norm_rope_resident_weights\":true,\"native_qsa_norm_rope_t1\":"<<(opts.native_qsa_norm_rope_t1?"true":"false");
+            if(opts.qsa_norm_rope_resident_weights||opts.qsa_indexer_resident_weights){
+                const auto w=session->model_work(true);out<<",\"qsa_norm_rope_resident_weights\":"<<(opts.qsa_norm_rope_resident_weights?"true":"false")<<",\"native_qsa_norm_rope_t1\":"<<(opts.native_qsa_norm_rope_t1?"true":"false");
                 auto array=[&](const char*name,const auto&a){out<<",\""<<name<<"\":[";for(size_t l=0;l<48;++l){if(l)out<<",";out<<a[l];}out<<"]";};
+                out<<",\"qsa_indexer_resident_weights\":"<<(opts.qsa_indexer_resident_weights?"true":"false")<<",\"native_qsa_indexer_t1\":"<<(opts.native_qsa_indexer_t1?"true":"false");
+                std::array<uint64_t,48>idx_delta{};for(size_t l=0;l<48;++l)idx_delta[l]=w.native_qsa_indexer_calls[l]-heads_before.native_qsa_indexer_calls[l];array("native_qsa_indexer_calls_delta",idx_delta);
                 array("qsa_state_before_a",heads_before.qsa_state_a);array("qsa_state_before_b",heads_before.qsa_state_b);array("qsa_state_after_a",w.qsa_state_a);array("qsa_state_after_b",w.qsa_state_b);
                 std::array<uint64_t,48>d{};for(size_t l=0;l<48;++l)d[l]=w.native_qsa_norm_rope_calls[l]-heads_before.native_qsa_norm_rope_calls[l];array("native_qsa_norm_rope_calls_delta",d);
             }

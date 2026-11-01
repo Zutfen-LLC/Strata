@@ -46,3 +46,52 @@ not actual CUDA/Vulkan execution. The component handoff first builds/calls the
 unchanged CUDA launcher, then Vulkan with the same generated fixtures. Model
 wiring follows component success, retaining the existing FFN-success transaction
 and original placement/admission; it is not silently enabled by component success.
+
+## Default-disabled eager model seam
+
+`--qsa-indexer-resident-weights PREFIX` reserves the same F32 k_norm role and
+candidate banks in both arms. `--native-qsa-indexer-t1` enables only the on arm.
+The actual completed raw-key projection is a retained graph output. Its native
+candidate supplies existing score/selection consumers; no score or attention
+algorithm changes. The three-row retained tail and full packed native state
+publish only after successful FFN. Reset clears both; failed component or FFN
+work leaves committed KV/indexer state unchanged. Paid calls remain counted.
+
+The resident role replaces its original allocation. Before/candidate banks,
+diagnostic/status alignment and metadata use the existing graph admission. A
+separate 1MiB host allowance per layer covers the fixed state, detached candidate,
+readback/serialization vectors and 32KiB GGML contexts (each state is at most
+35,332 bytes); it is also enforced by the layer state budget and charged once
+in host accounting. Existing generic KV/trace envelopes and physical reserve
+remain. The original native planner decides fit; prior placement is not assumed.
+
+Initial layer3 positions0..7 retain exact current raw/gamma/before operands,
+candidate and diagnostic values. Accepted-state bytes link each candidate to
+FFN-success publication. Within-arm reset hashes cover full native state, including
+the persistent spare and inactive capacity; they are not cross-arm parity claims.
+Only eager serial text/context<=256 is supported; production/chunks/table modes
+refuse. Local coordinator tests use actual graph producers/consumers and host
+component mocks; physical component and model validation remain separate.
+
+Hermes reports the component at `ba070a1072f4d9adc4172f2d0480a14bff75fc88` passes the
+bounded native/Vulkan five-case comparison: exact own-input state/order and
+numerical controls, repeat/reset, Vulkan immutable-input/canary/noncommit/retry
+and three-FMA/nine-protected-operation module checks. Exit/reap and three baseline
+cleanup observations pass. Native has five in-loop guard samples; Vulkan has none,
+so no continuous/per-child sampling claim follows. This is component evidence,
+not model, native-window, quality or performance qualification.
+
+## Bounded model result
+
+Hermes reports the comparison at `f68c187ed5e3d991f14cc491f90705b4e61421b4`
+passes 23 tests, fresh native planning/admission with matched ownership and two
+reset-separated established 25-token/GEN3 requests per arm. On performs 28 actual
+indexer calls per ordinary QSA layer/request; control performs none. Earlier
+native QSA normalization stays fixed. Layer3 positions0..7 own-input state/math,
+candidate-to-FFN-commit-to-next-input links, 24 new protected module uses and prior
+HC/GDN/QSA checks pass. Within-arm head/route/full-state reset is exact. Retained
+cross-arm routes match and matching-history logits at positions24..27 are bit
+identical; this is a diagnostic, not full native parity. All three processes
+exit/reap and restore baseline across three observations; guard sampling is
+discrete. qualified=false; native scores/selection/attention, accepted-prefix/
+window, quality and performance qualification remain separate.

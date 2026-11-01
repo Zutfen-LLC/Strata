@@ -682,9 +682,23 @@ for each capability below.
    resource samples are discrete. This does not establish native projections,
    indexer append/pooling, scores/selection/attention, accepted-prefix/window,
    quality or performance parity. Defaults remain unchanged and qualified=false.
-   Next is native `native_qsa_indexer_append`: FP16-round raw keys, retain the
-   three-row tail and repeated-cell-zero spare, then ordered pooling/norm/RoPE.
-   The current portable F32/four-row tail is a distinct method, not a substitute.
+   [PR127](https://github.com/Zutfen-LLC/Strata/pull/127) now ports native
+   `native_qsa_indexer_append` as a standalone candidate component: FP16-round raw
+   keys, retain the three-row tail and cell-zero spare, then ordered pool/norm/RoPE.
+   Hermes reports all five native/Vulkan cases pass own-input state/order,
+   intrinsic, reset/repeat and Vulkan canary/noncommit/retry/module controls at
+   `ba070a1072f4d9adc4172f2d0480a14bff75fc88`. Cleanup passes; native has five
+   in-loop samples and Vulkan none. The default portable F32/four-row tail remains
+   a distinct method. [PR129](https://github.com/Zutfen-LLC/Strata/pull/129) now
+   passes bounded model validation at `f68c187ed5e3d991f14cc491f90705b4e61421b4`:
+   23 tests, fresh native admission/matched ownership and two reset-separated
+   requests per arm. On runs 28 indexer calls per ordinary QSA layer/request;
+   control none. Actual layer3 positions0..7 own-input state/math, candidate/
+   FFN-commit/next-input linkage, 24 new module uses and within-arm head/route/state
+   reset pass. Cross-arm retained routes and matching-history logits match in
+   this run, diagnostic only. All three processes exit/reap and restore baseline
+   across three observations; samples are discrete. qualified=false. Scores,
+   selection, attention and native accepted-prefix/window authority remain gaps.
 
 3. **Replicate native state authority and commit/restore.** Native
    `Verifier::capture_commit()`/`Verifier::commit()` and restore paths handle GDN history/state and

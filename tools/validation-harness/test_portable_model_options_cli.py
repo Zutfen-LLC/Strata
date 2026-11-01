@@ -118,3 +118,13 @@ run(['--native-qsa-norm-rope-t1'],False,'matched resident roles')
 for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--qsa-production','--qsa-reuse-attention']]:run([*nr,*flags],False)
 for key in ['STRATA_ROPE_TABLE','STRATA_NO_NORM_ROPE']:run(nr,False,'analytic fused text method',dict(os.environ,**{key:'1'}))
 print('native QSA actual CLI residency/dispatch/default/unsupported-mode preconditions passed')
+
+indexer=['--qsa-indexer-resident-weights','/absent/indexer']
+i=run(indexer,True);assert i['qsa_indexer_resident_weights'] and not i['native_qsa_indexer_t1']
+i=run([*indexer,'--native-qsa-indexer-t1'],True);assert i['native_qsa_indexer_t1']
+assert not run([],True)['native_qsa_indexer_t1'] and not run([],True)['qsa_indexer_resident_weights']
+run(['--native-qsa-indexer-t1'],False,'matched resident')
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:run([*indexer,'--native-qsa-indexer-t1',*bad],False)
+run(['--qsa-indexer-resident-weights',''],False,'receipt')
+run([*indexer,'--native-qsa-indexer-t1'],False,'analytic fused text',dict(os.environ,STRATA_ROPE_TABLE='1'))
+print('native indexer actual CLI/default/residency/mode preconditions pass')
