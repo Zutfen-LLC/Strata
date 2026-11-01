@@ -9,6 +9,7 @@
 #include "native_shared_layout.hpp"
 #ifdef STRATA_PORTABLE_NATIVE_HC
 #include "portable_native_hc.hpp"
+#include "native_hc_boundary.hpp"
 #endif
 #ifdef STRATA_PORTABLE_NATIVE_SHARED
 #include "portable_native_shared.hpp"
@@ -222,15 +223,15 @@ struct PortableFfn::Impl {
                 tokens >= 1 && tokens <= 8 && g.selected > 0 && g.selected <= g.experts && g.selected <= 64 && layer >= 0 &&
                 std::isfinite(g.epsilon) && g.epsilon > 0 && options.threads > 0,
                 "portable FFN: invalid geometry/options");
-        require(!options.defer_hc_write || ((layer==1 || layer==2) && tokens==1 && g.hidden==2560 && g.streams==4 &&
+        require(!options.defer_hc_write || (layer<48 && portable_detail::native_hc_boundary(int(layer)).defer_ffn && tokens==1 && g.hidden==2560 && g.streams==4 &&
             !options.native_hc_final_write && !options.layer0_observer),
-            "deferred HC write: layer1/2 T1/H2560 only, final write/observer unsupported");
+            "deferred HC write: ordinary non-head/non-PLE T1/H2560 boundary only, final write/observer unsupported");
         require(!options.native_hc_final_write||options.native_hc_pending_read,"native FFN final write requires pending read");
         if(options.native_hc_pending_read) {
-            require(layer==0 && tokens==1 && g.hidden==2560 && g.streams==4 && g.rank==320 && g.epsilon==1e-6f &&
+            require(layer<48 && tokens==1 && g.hidden==2560 && g.streams==4 && g.rank==320 && g.epsilon==1e-6f &&
                     options.request_accelerator && options.accelerator && options.resident_dense_weights && !options.allow_cpu_fallback &&
                     !options.layer0_observer && !options.native_hc_receipt_prefix.empty(),
-                    "native FFN HC: layer0/T1/H2560/R320/strict resident weights/receipt required; legacy observer unsupported");
+                    "native FFN HC: T1/H2560/R320/strict resident weights/receipt required; legacy observer unsupported");
 #ifndef STRATA_PORTABLE_NATIVE_HC
             throw std::runtime_error("native FFN HC: strict-FMA native-stage build required");
 #else
@@ -330,7 +331,7 @@ struct PortableFfn::Impl {
             native_hc=std::make_unique<portable_detail::PortableNativeHc>(options.accelerator,w.at("hc_ffn_norm.weight"),w.at("hc_ffn_inject.weight"),
                 options.graph_budget-graphs_size,options.native_hc_receipt_prefix,w.at("hc_ffn_down.weight"),w.at("hc_ffn_up.weight"),true,options.native_hc_final_write);
             graphs_size+=native_hc->bytes();
-            placement.push_back({"native-hc-ffn","NATIVE_BF16_PENDING_READ_T1","actual GDN projection/attention injection -> FFN HC read",
+            placement.push_back({"native-hc-ffn","NATIVE_BF16_PENDING_READ_T1","actual attention output projection/injection -> FFN HC read",
                 "F32/BF16",ggml_backend_name(options.accelerator),"",{g.hidden,g.streams,1}});
         }
 #endif

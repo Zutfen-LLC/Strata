@@ -1782,6 +1782,13 @@ if(STRATA_NATIVE_EXPERTS)
           target_compile_definitions(portable_qsa_native_hc_test PRIVATE STRATA_PORTABLE_NATIVE_HC=1)
           target_link_libraries(portable_qsa_native_hc_test PRIVATE ggml-base ggml-cpu Threads::Threads)
           add_test(NAME portable_qsa_native_hc_test COMMAND portable_qsa_native_hc_test)
+          add_executable(portable_hc_family_cycle_test tests/core/portable_hc_family_cycle_test.cpp
+            src/core/portable_qsa.cpp src/core/portable_gdn.cpp src/core/portable_ffn.cpp src/core/portable_ple.cpp
+            src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp src/platform/memory.cpp)
+          target_include_directories(portable_hc_family_cycle_test PRIVATE include src/core "$<TARGET_PROPERTY:ggml-base,SOURCE_DIR>")
+          target_compile_definitions(portable_hc_family_cycle_test PRIVATE STRATA_PORTABLE_NATIVE_HC=1)
+          target_link_libraries(portable_hc_family_cycle_test PRIVATE ggml-base ggml-cpu Threads::Threads)
+          add_test(NAME portable_hc_family_cycle_test COMMAND portable_hc_family_cycle_test)
         endif()
 
 
