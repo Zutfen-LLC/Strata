@@ -749,3 +749,5 @@ does not authorize a new physical run.
 [v-capacity]: https://github.com/Zutfen-LLC/Strata/blob/0216ec9b79f8109e160affa73bb5526b71466874/src/core/portable_model.cpp#L403
 
 [n-helper-reduce]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/core/remote_expert_opt.cu#L23
+
+PR120 follow-through: Hermes reports the native T1 a/b component passed its four locally generated cases on CUDA and Vulkan, including continuous FMA/XOR layout controls, strict v>20, intrinsic contracts and effective modules. This qualifies only the bounded component configuration; no model/default enablement or full parity claim. Native had four in-loop guard samples; Vulkan had none. PR118’s failed compensated-expression result remains unchanged.
