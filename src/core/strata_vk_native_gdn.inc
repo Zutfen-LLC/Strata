@@ -1,4 +1,5 @@
 #include "strata_vk_native_gdn.hpp"
+#include "native_gdn_domain.hpp"
 #include "strata_native_gdn_t1_spv.hpp"
 namespace strata::core::portable_detail {
 struct StrataVkNativeGdn {std::unique_ptr<StrataVkLogitsGuard> owner;};
@@ -15,7 +16,7 @@ void strata_vk_native_gdn_run(StrataVkNativeGdn*p,ggml_tensor*const t[13],ggml_t
  for(size_t i:{8,10,11,12}){auto a=reinterpret_cast<uintptr_t>(aux->data),b=reinterpret_cast<uintptr_t>(t[i]->data);native_hc_need(t[i]->buffer==aux->buffer&&b>=a&&b-a<=ggml_nbytes(aux)&&ggml_nbytes(t[i])<=ggml_nbytes(aux)-(b-a),"native GDN: auxiliary view range");off[i]=(get_misalign_bytes(ctx,aux)+b-a)/4;}
  ggml_backend_vk_synchronize(g.backend);
  // Read one input at a time; 3 MiB maximum temporary, included by the layer host bound.
- for(size_t i=0;i<6;++i){std::vector<float>v(count[i]);ggml_backend_tensor_get(t[i],v.data(),0,v.size()*4);for(float x:v){native_hc_normal(x);if(i==2)native_hc_need(x<=0.f&&x>=-87.33651733398438f,"native GDN: decay exp domain");if(i==4)native_hc_need(std::fabs(x)<=87.33651733398438f,"native GDN: sigmoid normal domain");}}
+ for(size_t i=0;i<6;++i){std::vector<float>v(count[i]);ggml_backend_tensor_get(t[i],v.data(),0,v.size()*4);for(float x:v){native_hc_normal(x);if(i==2)native_gdn_decay_input(x);if(i==4)native_gdn_sigmoid_input(x);}}
  const uint32_t zero=0;ggml_backend_tensor_set(g.status,&zero,0,4);off[13]=get_misalign_bytes(ctx,g.status)/4;
  ggml_pipeline_request_descriptor_sets(ctx,g.pipeline,1);auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
  ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,t[0],true),ggml_vk_tensor_subbuffer(ctx,t[1],true),ggml_vk_tensor_subbuffer(ctx,t[2],true),ggml_vk_tensor_subbuffer(ctx,t[3],true),ggml_vk_tensor_subbuffer(ctx,t[4],true),ggml_vk_tensor_subbuffer(ctx,t[5],true),ggml_vk_tensor_subbuffer(ctx,t[6],true),ggml_vk_tensor_subbuffer(ctx,t[7],true),ggml_vk_tensor_subbuffer(ctx,aux,true),ggml_vk_tensor_subbuffer(ctx,t[9],true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},off,{48,1,1});ggml_vk_sync_buffers(ctx,compute);compute.reset();ggml_backend_vk_synchronize(g.backend);uint32_t status;ggml_backend_tensor_get(g.status,&status,0,4);native_hc_need(status==0,"native GDN: nonfinite/subnormal candidate refused; committed state unchanged");

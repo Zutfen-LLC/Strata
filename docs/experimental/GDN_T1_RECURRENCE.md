@@ -53,18 +53,39 @@ auxiliary allocation. A 512-invocation workgroup, shared storage and descriptor
 limits are checked before dispatch. Existing strict FMA and logical FP32 feature
 checks remain mandatory.
 
-## Numerical contract v1
+## Numerical contract v2: native exponent tails
 
-Inputs/basic intermediates/results must be finite normal or zero; subnormals
-refuse. Decay-log gate is in `[-87.33651733398438,0]`; z has magnitude at most
-`87.33651733398438`. This reuses the pre-existing normal-domain exp/division
-contract, not the HC up-sigmoid tail extension. Unsupported domain results refuse
-without committing. There is no clipping, alternate sigmoid or output epsilon.
+Inputs and recurrence/basic intermediates/results must be finite normal or zero;
+subnormal recurrence arithmetic still refuses. Decay-log inputs may be any finite
+normal/zero nonpositive value. Native `gdn_step_norm_multi` evaluates `__expf(gate)`
+directly, without a minimum-log clamp. Its actual exponential must be normal or
+zero and satisfy the original pointwise exp bound, allowing permitted underflow/
+FTZ zero only where that bound reaches the subnormal range. Preserved subnormal
+exponential values refuse before commit; this does not introduce an FTZ mode or
+replace the intrinsic. For example, the retained model refusal at
+`-138.10023498535156` has real exp approximately `1.0564e-60`, far below half the
+least F32 subnormal: rounded zero is legitimate, not a source input error. The
+original normal-only preflight rejected this valid native class before dispatch.
+
+The only other exponential in this numerical family is output sigmoid
+`1 / (1 + __expf(-z))`. It reuses the already qualified HC up-sigmoid tail contract:
+normal domain at the derived limit, any positive finite tail only with its actual
+rounded denominator exactly one and sigmoid exactly one, and negative z at most
+-89 only with actual +Inf exponential/denominator and exact positive-zero sigmoid.
+The mathematical overflow boundary lies below 89; the integer ceiling leaves the
+narrow transition/subnormal-quotient class explicitly unsupported. Positive-tail
+exp diagnostics may be subnormal/zero under the primary exp/FTZ allowances because
+the unchanged denominator addition must absorb them. No such subnormal feeds the
+recurrence. Negative sigmoid transition inputs between -89 and the derived normal
+limit refuse explicitly. No clipping, saturation assignment, exp shortcut, changed
+native build flags, new denorm execution mode or final-output epsilon is added.
+The original exp/add/divide and all recurrence FMAs execute in their original order.
 
 The independent host control uses exact F32 FMA/basic-operation association with
 contraction disabled outside explicit `std::fma`. State, output reduction and final
 y must match bitwise using that backend's actual exp/rsqrt/sigmoid primitives.
-A separate unchanged primary-spec exp/division validator checks those primitives.
+A separate primary-spec exp/division validator checks those primitives, including
+the permitted underflow and exact natural sigmoid tail identities.
 For the positive normal norm argument, reciprocal square root reuses the existing
 2.5-local-ULP v1 bound about its independently computed RNE result, including binade
 edges. For CUDA, 0.5 ULP is conservative policy slack beyond its documented 2 ULP
