@@ -26,3 +26,5 @@ void strata_vk_native_hc_run(StrataVkNativeHc* p,const ggml_tensor* residual,con
 #include "strata_vk_native_hc_mix.inc"
 
 #include "strata_vk_native_hc_pending.inc"
+
+#include "strata_vk_native_gdn.inc"

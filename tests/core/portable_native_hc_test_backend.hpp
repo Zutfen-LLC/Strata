@@ -76,3 +76,17 @@ void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*x,const ggml_te
  put(xn,out.xn);put(rs,out.rs);put(inject,out.inject);if(std::string(ggml_get_name(wi)).ends_with(".hc_ffn_inject.weight")){live_ffn_residual=x;live_ffn_inject=inject;}if(inspect_producer&&std::string(ggml_get_name(wi))=="blk.0.hc_attn_inject.weight")actual_attention_inject=out.inject;++calls;
 }
 }
+
+// GDN production seam control. Device recurrence is mocked only in coordinator tests.
+#include "strata_vk_native_gdn.hpp"
+#include "../kernels/native_gdn_t1_fixture.hpp"
+namespace {size_t gdn_calls=0;bool fail_gdn=false;}
+namespace strata::core::portable_detail {
+struct StrataVkNativeGdn{};
+StrataVkNativeGdn* strata_vk_native_gdn_create(ggml_backend_t,const char*path,size_t budget){gdn_fixture::check(budget>=512,"GDN metadata budget");std::ofstream(path)<<"mock GDN; not shader evidence\n";return new StrataVkNativeGdn;}
+void strata_vk_native_gdn_destroy(StrataVkNativeGdn*p)noexcept{delete p;}
+size_t strata_vk_native_gdn_bytes(const StrataVkNativeGdn*){return 512;}
+void strata_vk_native_gdn_run(StrataVkNativeGdn*,ggml_tensor*const t[13],ggml_tensor*){
+ native_gdn_t1::Fixture f;for(size_t i=0;i<6;++i)f[i]=get(t[i]);std::vector<float>eg(48),rs(49,1.f),sig(6144),se(6144);for(size_t i=0;i<48;++i)eg[i]=std::exp(f[2][i]);for(size_t i=0;i<6144;++i){se[i]=std::exp(-f[4][i]);sig[i]=1.f/(1.f+se[i]);}rs[48]=1.f/std::sqrt(128.f);auto partial=native_gdn_t1::control(f,eg,rs,sig);for(size_t i=0;i<48;++i)rs[i]=1.f/std::sqrt(partial.arg[i]);auto ref=native_gdn_t1::control(f,eg,rs,sig);put(t[6],ref.state);put(t[7],ref.y);put(t[8],eg);put(t[9],ref.oc);put(t[10],rs);put(t[11],se);put(t[12],sig);gdn_fixture::check(!fail_gdn,"injected GDN candidate refusal");++gdn_calls;
+}
+}

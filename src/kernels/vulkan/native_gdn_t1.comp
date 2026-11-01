@@ -1,0 +1,41 @@
+#version 450
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427) float nfma(float a,float b,float c);
+// verify_kernels.cu: S=128, RG=4, RPG=32. x=state column, y=row group.
+layout(local_size_x=128,local_size_y=4) in;
+layout(binding=0,std430) readonly buffer ST {float st[];};
+layout(binding=1,std430) readonly buffer H {float h[];};
+layout(binding=2,std430) readonly buffer G {float gate[];};
+layout(binding=3,std430) readonly buffer B {float beta[];};
+layout(binding=4,std430) readonly buffer Z {float z[];};
+layout(binding=5,std430) readonly buffer W {float gamma[];};
+layout(binding=6,std430) writeonly buffer NS {float ns[];};
+layout(binding=7,std430) writeonly buffer Y {float y[];};
+// Auxiliary actual intrinsic values are diagnostics/own-input controls, never substituted outputs.
+layout(binding=8,std430) buffer AUX {float aux[];};
+layout(binding=9,std430) buffer OC {float oc_out[];};
+layout(binding=10,std430) buffer STATUS {uint status[];};
+layout(push_constant) uniform P {uint off[14];} p;
+shared float kvpart[512],opart[512],normpart[512],wsum[4];
+float ck(float v){uint b=floatBitsToUint(v)&0x7fffffffu;if(b>=0x7f800000u||(b!=0u&&b<0x800000u))atomicOr(status[p.off[13]],1u);return v;}
+void main(){uint head=gl_WorkGroupID.x,col=gl_LocalInvocationID.x,rg=gl_LocalInvocationID.y,id=rg*128u+col;
+ uint qh=head%16u;float s[32];precise float kv=0.0;
+ for(uint r=0u;r<32u;++r){s[r]=ck(st[p.off[0]+((rg*32u+r)*48u+head)*128u+col]);kv=ck(nfma(s[r],ck(h[p.off[1]+2048u+qh*128u+rg*32u+r]),kv));}
+ kvpart[id]=kv;barrier();
+ precise float kvcol=ck(ck(ck(kvpart[col]+kvpart[128u+col])+kvpart[256u+col])+kvpart[384u+col]);
+ float gv=exp(ck(gate[p.off[2]+head]));gv=ck(gv);if(id==0u)aux[p.off[8]+head]=gv;
+ // CUDA defaults contract v-g*kv in this expression; explicit native FMA candidate,
+ // independently checked against the actual launcher before qualification.
+ precise float delta=ck(ck(nfma(-gv,kvcol,ck(h[p.off[1]+4096u+head*128u+col])))*ck(beta[p.off[3]+head]));
+ precise float o=0.0;
+ for(uint r=0u;r<32u;++r){precise float update=ck(ck(h[p.off[1]+2048u+qh*128u+rg*32u+r])*delta);s[r]=ck(nfma(gv,s[r],update));ns[p.off[6]+((rg*32u+r)*48u+head)*128u+col]=s[r];o=ck(nfma(s[r],ck(h[p.off[1]+qh*128u+rg*32u+r]),o));}
+ opart[id]=o;barrier();precise float oc=0.0;precise float sq=0.0;
+ if(rg==0u){oc=ck(ck(ck(ck(opart[col]+opart[128u+col])+opart[256u+col])+opart[384u+col])*inversesqrt(128.0));sq=ck(oc*oc);oc_out[p.off[9]+head*128u+col]=oc;}
+ normpart[id]=sq;barrier();
+ for(uint offset=16u;offset>0u;offset>>=1u){precise float next=ck(normpart[id]+normpart[rg*128u+(col^offset)]);barrier();normpart[id]=next;barrier();}
+ if(rg==0u&&(col&31u)==0u)wsum[col>>5u]=normpart[id];barrier();
+ if(rg==0u){precise float sum=ck(ck(ck(wsum[0]+wsum[1])+wsum[2])+wsum[3]);precise float mean=ck(sum/128.0);precise float shifted=ck(mean+0.000001);float scale=ck(inversesqrt(shifted));if(col==0u){aux[p.off[10]+head]=scale;if(head==0u)aux[p.off[10]+48u]=inversesqrt(128.0);}
+  float ev=ck(exp(-ck(z[p.off[4]+head*128u+col])));precise float denominator=ck(1.0+ev);precise float sigmoid=ck(1.0/denominator);aux[p.off[11]+head*128u+col]=ev;aux[p.off[12]+head*128u+col]=sigmoid;
+  precise float a=ck(oc*scale);precise float b=ck(a*ck(gamma[p.off[5]+col]));precise float result=ck(b*sigmoid);y[p.off[7]+head*128u+col]=result;
+ }
+}
