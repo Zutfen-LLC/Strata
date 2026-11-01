@@ -2479,6 +2479,11 @@ if(STRATA_NATIVE_EXPERTS)
     list(TRANSFORM _strata_w4a4_archs REPLACE "^(12[0-9])$" "\\1a")
     list(TRANSFORM _strata_w4a4_archs REPLACE "^(12[0-9])-(real|virtual)$" "\\1a-\\2")
     add_library(strata_mmq_w4a4 STATIC src/prefill/mmq_nvfp4_w4a4.cu)
+    if(STRATA_HIP_GFX906)
+      # This separate target also includes ggml-cuda/common.cuh. Like strata_mmq,
+      # select its HIP vendor adapter; keep the CUDA target definitions unchanged.
+      target_compile_definitions(strata_mmq_w4a4 PRIVATE GGML_USE_HIP)
+    endif()
     set_target_properties(strata_mmq_w4a4 PROPERTIES CUDA_ARCHITECTURES "${_strata_w4a4_archs}")
     target_include_directories(strata_mmq_w4a4 PRIVATE ${_strata_gg}/include ${_strata_gg}/src ${_strata_mmq})
     target_compile_options(strata_mmq_w4a4 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda -use_fast_math>)
