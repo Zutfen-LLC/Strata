@@ -1160,7 +1160,7 @@ bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residua
         }
         s.commit_device(work);
 #ifdef STRATA_PORTABLE_NATIVE_HC
-        if(s.native_gdn)s.native_gdn->record_commit(s.state_input,s.count);
+        if(s.native_gdn)s.native_gdn->record_commit(s.state_input,s.count,s.native_preparation?s.history_input:nullptr);
 #endif
         if (!s.production()) {
             s.ple_history.swap(s.candidate_ple_history);
