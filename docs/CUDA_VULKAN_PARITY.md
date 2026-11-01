@@ -481,8 +481,16 @@ for each capability below.
    materializes the nonfused final FFN write and refuses unported split/fused-head
    modes. All 48 product predicates, shared-scratch family composition and the
    final-layer write/rollback/reset are CPU-tested; HC device arithmetic is mocked.
-   Physical broad-scope admission and model comparison remain pending. This does
-   not establish native PLE/head/QSA numerical or window-scheduling parity.
+   Broad-scope admission succeeded, while the on request stopped at a normal-only
+   sigmoid guard. [PR113](https://github.com/Zutfen-LLC/Strata/pull/113) retained
+   the actual rejected operands. [PR114](https://github.com/Zutfen-LLC/Strata/pull/114)
+   preserves native exp/add/divide and admits only checked finite-input tail
+   identities. Its tiny same-input native/Vulkan gate passed each backend's
+   original expression controls and exact tail identities; normal cross-backend
+   bit differences remain. The finite-exp/subnormal-reciprocal transition is still
+   unsupported. One guarded on-arm model continuation is pending, with actual
+   model rebuild and fresh admission required. No native PLE/head/QSA numerical,
+   window-scheduling or full-model parity follows from this gate.
 
    The combined validation first prices selected banks and existing buffer/host
    envelopes, then uses original post-dense planning before any model requests.
