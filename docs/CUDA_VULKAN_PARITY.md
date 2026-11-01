@@ -285,15 +285,23 @@ independent native capture, whole-state export or full-model numerical/quality
 qualification.
 
 The next bounded capability is the ordinary layer2 FFN to layer3 QSA attention
-pending read. Native `verify.cpp` folds the previous FFN tuple into the first
-HC read for both layer families; `PortableQsaLayer` still takes a materialized
+pending read. The specification is `src/core/verify.cpp`,
+`Verifier::record_window()` and its `pre`/`gr_read_group(0, pending, inj2_, inj_)`
+path (lines 1215–1352 at the inspected source), backed by
+`src/kernels/cuda/fused_gr.cu::fused_gr_read_multi()`. It folds the previous FFN
+tuple into the first HC read for both layer families; `PortableQsaLayer` still takes a materialized
 residual and builds its HC normalization/mix in `src/core/portable_qsa.cpp`.
-Reuse the existing pending/norm/mix arithmetic with explicitly admitted HC-role
-storage; preserve QSA KV/indexer candidate/commit, provider rollback and reset.
+Port that existing selected native pending/norm/mix order, with explicitly
+admitted HC-role storage; preserve QSA KV/indexer candidate/commit, provider rollback and reset.
 Start with a small synthetic T1 sequence and materialized same-backend control,
 then reuse the current fresh-planning/same-image model workflow and direct
 GGUF-role/own-input receipts. That question needs no new native capture.
-Native-versus-Vulkan end-to-end comparison remains separate. Keep layer0's
+Vulkan allocation/buffer ownership and submission must express those same
+dependencies, not introduce a replacement algorithm or scheduler/placement
+policy. Existing GGML QSA/upstream methods and native captured-window scheduling
+remain explicit migration gaps; the current portable eager path is not claimed
+to reproduce them. Native-versus-Vulkan end-to-end comparison remains separate.
+Keep layer0's
 materialization before PLE and control/head rules unchanged. See the [earlier producer/read scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
