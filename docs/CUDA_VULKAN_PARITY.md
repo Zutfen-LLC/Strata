@@ -642,9 +642,15 @@ for each capability below.
    PR120 now ports ordinary T1 gdn_ab_multi as a standalone component: native
    BF16 rows, continuous per-lane FMA across chunks, XOR reduction, strict v>20
    bypass and gate/beta order. Local source-order/numerical/module tests pass;
-   actual native/Vulkan component qualification and model-prefix integration
-   remain separate pending steps. No new algorithm or default is introduced.
-   The current model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
+   Hermes reports all four native/Vulkan cases and cleanup passed. Native had
+   four in-loop guard samples; Vulkan had none. This is bounded component
+   evidence, not model parity. PR121 (`afe94b9af3dda841b9c9cb308576a77d60bd2191`)
+   now adds the explicit default-disabled ordinary T1 model seam: matched
+   compat-BF16 alpha/beta replacement, completed QKV/mixed borrowing, reused
+   recurrence candidate leaves, aligned reservation and existing commit/rollback.
+   Eleven local tests and the isolated generated workflow pass; fresh native-plan
+   matched control/on model validation is pending. Layer1 PLE stays unchanged.
+   The default model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
    projections also remain separate upstream work; do not attribute unequal model
    outputs to recurrence without equal inputs. Accepted-prefix commit and window
    scheduling follow numerical-family coverage, rather than capturing the
@@ -749,5 +755,3 @@ does not authorize a new physical run.
 [v-capacity]: https://github.com/Zutfen-LLC/Strata/blob/0216ec9b79f8109e160affa73bb5526b71466874/src/core/portable_model.cpp#L403
 
 [n-helper-reduce]: https://github.com/Zutfen-LLC/Strata/blob/92c86668619bb6cef60d96de0812ea48a819e9cb/src/core/remote_expert_opt.cu#L23
-
-PR120 follow-through: Hermes reports the native T1 a/b component passed its four locally generated cases on CUDA and Vulkan, including continuous FMA/XOR layout controls, strict v>20, intrinsic contracts and effective modules. This qualifies only the bounded component configuration; no model/default enablement or full parity claim. Native had four in-loop guard samples; Vulkan had none. PR118’s failed compensated-expression result remains unchanged.
