@@ -42,7 +42,7 @@ def parse_metadata(a):
     tokens, routes = map(int, header.groups())
     groups, slots, starts, dst, tok, original = ([int(v) for v in line.split()] for line in lines[2:])
     entries = len(dst)
-    if not (1 <= tokens <= 8 and 1 <= len(groups) <= 24 and len(slots) == len(groups)
+    if not (1 <= tokens <= 8 and 1 <= len(groups) <= 80 and len(slots) == len(groups)
             and len(starts) == len(groups)+1 and starts[0] == 0 and starts[-1] == entries
             and starts == sorted(starts) and 1 <= entries <= 80 and dst == list(range(entries))
             and len(tok) == len(original) == entries and len(set(original)) == entries

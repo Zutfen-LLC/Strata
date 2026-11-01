@@ -28,9 +28,18 @@ void cu(cudaError_t e){require(e==cudaSuccess,cudaGetErrorString(e));}
 struct Device {void* p=nullptr;size_t n;explicit Device(size_t size):n(size){cu(cudaMalloc(&p,n));}~Device(){if(p)cudaFree(p);}void put(const void* s){cu(cudaMemcpy(p,s,n,cudaMemcpyHostToDevice));}void dump(const std::string& path){std::vector<uint8_t> b(n);cu(cudaMemcpy(b.data(),p,n,cudaMemcpyDeviceToHost));write(path,b.data(),n);}};
 #endif
 int main(int argc,char** argv){try {
-    const bool timing=argc==11 && std::string(argv[10])=="--timing";
-    require((argc==10 || timing) && std::string(argv[1])=="--device" && std::string(argv[3])=="--expect-device",
-        "usage: --device INDEX --expect-device NAME CAPTURE RECORD ONE_LAYER_PLAN BLOB_DIR NEW_OUTPUT [--timing]");
+    bool timing=false;size_t budget=128u<<20;
+    for(int arg=10;arg<argc;++arg) {
+        const std::string option=argv[arg];
+        if(option=="--timing") {require(!timing,"duplicate timing option");timing=true;}
+        else if(option=="--budget-bytes") {
+            require(++arg<argc,"budget bytes required");const std::string value=argv[arg];
+            require(!value.empty() && value.find_first_not_of("0123456789")==std::string::npos,"invalid budget bytes");
+            const auto parsed=std::stoull(value);require(parsed && parsed<=SIZE_MAX,"budget bytes out of range");budget=size_t(parsed);
+        } else throw std::runtime_error("unknown replay option");
+    }
+    require(argc>=10 && std::string(argv[1])=="--device" && std::string(argv[3])=="--expect-device",
+        "usage: --device INDEX --expect-device NAME CAPTURE RECORD ONE_LAYER_PLAN BLOB_DIR NEW_OUTPUT [--timing] [--budget-bytes N]");
 #ifdef STRATA_Q8_REPLAY_CUDA
     require(!timing,"--timing is the Vulkan provider observation only");
 #endif
@@ -47,8 +56,7 @@ int main(int argc,char** argv){try {
     const size_t ordinal=std::stoull(record);require(ordinal<f.records.size() && f.records[ordinal].sent,"record absent/not sent");
     auto q=f.records[ordinal].request;
     require(p.model_id==f.setup.model_id && p.n_embd==2560 && p.n_ff==640 && p.gu_type==8 && p.d_type==8 &&
-        p.n_layers==f.setup.n_layers && p.n_expert==f.setup.n_expert && p.assets.size()<=24,"capture/plan identity or native geometry mismatch");
-    for(const auto& a:p.assets)require(a.layer==q.layer,"replay requires one-layer frozen plan");
+        p.n_layers==f.setup.n_layers && p.n_expert==f.setup.n_expert && !p.assets.empty(),"capture/plan identity or native geometry mismatch");
     for(size_t j=0;j<q.mask.size();++j)require(!q.mask[j] || p.owns(q.layer,q.ids[j]),"full request not covered by plan; refusing to remask");
     q.model_id=p.model_id;q.partition_id=p.placement_id.a;q.session=1;q.sequence=1;
     require(q.activations.size()==size_t(q.T)*H && q.weights.size()==q.mask.size() && !q.packed,"replay requires raw F32 input");finite(q.activations);finite(q.weights);
@@ -86,7 +94,7 @@ int main(int argc,char** argv){try {
         !rejected.gpu_allocated_bytes && !rejected.gpu_weight_bytes && !rejected.gpu_scratch_bytes && !rejected.gpu_allocation_count &&
         !vulkan_native_q8_allocation_snapshot(small.get(),rejected),"native Q8 weights-only budget refusal/rollback failed");
     small.reset();
-    auto executor=create_vulkan_native_q8_observation(backend.get(),128u<<20,prefix,prefix,timing);GpuCounters counters;EntryRowsReply reply;
+    auto executor=create_vulkan_native_q8_observation(backend.get(),budget,prefix,prefix,timing);GpuCounters counters;EntryRowsReply reply;
     require(executor->prepare_source(p,reader,counters,error),error);
     if(timing) {
         auto infer=[&](EntryRowsReply& rows){const bool ok=executor->infer_rows(p,q,rows,error);++q.sequence;return ok;};

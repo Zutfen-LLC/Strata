@@ -8,7 +8,7 @@
 using namespace strata::core::portable_detail;
 using native_q8_fixture::need;
 int main(int argc,char** argv){try {
-    auto code=q8_gu_float_controls(strata_native_moe_combine_spv,sizeof(strata_native_moe_combine_spv)/4);
+    auto code=native_component_float_controls(strata_native_moe_combine_spv,sizeof(strata_native_moe_combine_spv)/4,NativeComponentAddressing::descriptor);
     size_t first=0,fma=0,shared=0,loops=0;std::set<uint32_t> precise;
     std::map<uint32_t,std::vector<uint32_t>> definitions;
     uint32_t first_id=0,fma_id=0,accumulator=0,shared_id=0,vector_type=0,loop_index=0,loop_bound=0;

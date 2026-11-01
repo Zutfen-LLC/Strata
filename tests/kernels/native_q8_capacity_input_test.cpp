@@ -10,11 +10,11 @@ int main(){try {
     const auto weights=geo::weights();need(weights.size()==geo::WEIGHT_BYTES,"capacity weights changed");
     for(float x:geo::input())need(std::isfinite(x),"capacity nonfinite input");
     Q8GuLayout gu{geo::H,geo::F,geo::ENTRIES,geo::TOKENS,geo::GRID_GROUPS,
-        std::vector<uint32_t>(geo::GROUPS,0),geo::STARTS,geo::TOKENS_BY_ENTRY};
+        std::vector<uint64_t>(geo::GROUPS,0),geo::STARTS,geo::TOKENS_BY_ENTRY};
     Q8DownLayout down{geo::H,geo::F,geo::ENTRIES,geo::ENTRIES,geo::GRID_GROUPS,
-        std::vector<uint32_t>(geo::GROUPS,geo::DOWN_OFFSET),geo::STARTS,geo::DESTINATIONS};
+        std::vector<uint64_t>(geo::GROUPS,geo::DOWN_OFFSET),geo::STARTS,geo::DESTINATIONS};
     const auto gm=q8_gu_metadata(gu,weights.size()),dm=q8_down_metadata(down,weights.size());
-    need(gm.size()==130 && dm.size()==130 && gm[49]==geo::STARTS.back() && gm[129]==geo::TOKENS_BY_ENTRY.back() && dm[129]==geo::DESTINATIONS.back(),"capacity fixture final metadata");
+    need(gm.size()==q8_metadata_words && dm.size()==q8_metadata_words && gm[STRATA_Q8_START_WORD+geo::GROUPS]==geo::STARTS.back() && gm[STRATA_Q8_ID_WORD+79]==geo::TOKENS_BY_ENTRY.back() && dm[STRATA_Q8_ID_WORD+79]==geo::DESTINATIONS.back(),"capacity fixture final metadata");
     need(geo::STARTS[11]==geo::STARTS[12] && geo::GRID_GROUPS<geo::GROUPS,"strided/empty group fixture");
     std::vector<bool> seen(80,false);
     for(int e=geo::STARTS.front();e<geo::STARTS.back();++e){

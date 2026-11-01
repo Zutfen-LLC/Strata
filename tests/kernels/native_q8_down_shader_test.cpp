@@ -13,6 +13,14 @@ using namespace strata::core::portable_detail;
 using native_q8_fixture::need;
 int main(int argc,char** argv){try {
     auto code=q8_gu_float_controls(strata_q8_down_spv,sizeof(strata_q8_down_spv)/4);
+    // Missing BDA capability must fail before pipeline creation.
+    auto no_bda=code;
+    for(size_t p=5;p<no_bda.size();p+=no_bda[p]>>16)
+        if((no_bda[p]&65535)==spv::OpCapability && no_bda[p+1]==spv::CapabilityPhysicalStorageBufferAddresses) {
+            no_bda.erase(no_bda.begin()+p,no_bda.begin()+p+2);break;
+        }
+    bool refused_bda=false;try{q8_gu_float_controls(no_bda.data(),no_bda.size());}catch(...){refused_bda=true;}
+    need(refused_bda,"missing physical address capability accepted");
     size_t dots=0,fmas=0,muls=0,adds=0,barriers=0,modes=0;std::set<uint32_t> precise;
     for(size_t p=5;p<code.size();p+=code[p]>>16){const auto op=code[p]&65535;
         need(code[p]>>16 && p+(code[p]>>16)<=code.size(),"down malformed shader");

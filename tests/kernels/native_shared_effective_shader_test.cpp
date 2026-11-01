@@ -7,7 +7,7 @@
 using namespace strata::core::portable_detail;
 using native_shared_fixture::need;
 int main(int argc,char** argv) {try {
-    auto code=q8_gu_float_controls(strata_native_shared_spv,sizeof(strata_native_shared_spv)/4);
+    auto code=native_component_float_controls(strata_native_shared_spv,sizeof(strata_native_shared_spv)/4,NativeComponentAddressing::descriptor);
     size_t dots=0,fmas=0,modes=0;std::set<uint32_t> precise;
     for(size_t p=5;p<code.size();p+=code[p]>>16) {
         const auto op=code[p]&65535;

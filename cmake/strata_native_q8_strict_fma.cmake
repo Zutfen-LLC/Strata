@@ -87,7 +87,7 @@ function(strata_native_q8_strict_fma_enable out)
       COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${shader}"
       COMMAND "${CMAKE_COMMAND}" "-DINPUT=${shader}" "-DOUTPUT=${out}/strata_q8_${stage}_strict_fma_spv.hpp"
         "-DARRAY_NAME=strata_q8_${stage}_strict_fma_spv" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
-      DEPENDS src/kernels/vulkan/native_q8_${stage}.comp src/kernels/vulkan/native_q8_dot.glsl cmake/strata_native_stages_embed.cmake VERBATIM)
+      DEPENDS src/kernels/vulkan/native_q8_${stage}.comp src/kernels/vulkan/native_q8_dot.glsl src/kernels/vulkan/native_q8_abi.h cmake/strata_native_stages_embed.cmake VERBATIM)
     add_custom_target(strata_q8_${stage}_strict_fma_shader DEPENDS "${out}/strata_q8_${stage}_strict_fma_spv.hpp")
     add_dependencies(ggml-vulkan strata_q8_${stage}_strict_fma_shader)
   endforeach()

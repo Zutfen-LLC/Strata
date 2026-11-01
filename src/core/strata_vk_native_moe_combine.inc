@@ -8,7 +8,7 @@ StrataVkNativeMoeCombine* strata_vk_native_moe_combine_create(ggml_backend_t bac
     // Reuse Q8 device/feature receipt, controls, final-module validation and
     // pipeline/resource ownership. Only the explicit strict build includes us.
     result->owner=strata_vk_q8_component_owner(backend,strata_native_moe_combine_spv,sizeof(strata_native_moe_combine_spv)/4,
-        "strata_native_moe_combine_k10_observation",4,6,path);
+        NativeComponentAddressing::descriptor,"strata_native_moe_combine_k10_observation",4,6,path);
     return result.release();
 }
 size_t strata_vk_native_moe_combine_bytes(const StrataVkNativeMoeCombine* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}

@@ -19,7 +19,7 @@ int main(int argc,char** argv){try {
         std::string(argv[5])=="--fixture" && std::string(argv[7])=="--weights" && std::string(argv[9])=="--output",
         "compose: run through tools/native_q8_geometry.py for hashes and native oracle comparison");
     const auto input=geo::read_fixture(argv[6]);const auto weights=geo::read_weights(argv[8]);
-    Q8GuLayout layout{geo::H,geo::F,geo::ENTRIES,geo::TOKENS,geo::GRID_GROUPS,std::vector<uint32_t>(geo::GROUPS,0),geo::STARTS,geo::TOKENS_BY_ENTRY};
+    Q8GuLayout layout{geo::H,geo::F,geo::ENTRIES,geo::TOKENS,geo::GRID_GROUPS,std::vector<uint64_t>(geo::GROUPS,0),geo::STARTS,geo::TOKENS_BY_ENTRY};
     (void)q8_gu_metadata(layout,weights.size());
     const std::string index=argv[2];need(!index.empty() && index.find_first_not_of("0123456789")==std::string::npos,"compose: invalid device");
     const size_t device=std::stoull(index);need(device<size_t(ggml_backend_vk_get_device_count()),"compose: device absent");
@@ -55,7 +55,7 @@ int main(int argc,char** argv){try {
     // These are the SAME device views: no gate/up or packed-hidden host upload.
     // Existing runners fence each dispatch; no new scheduling or arithmetic.
     strata_vk_native_stages_run(activation.get(),2,g,u,h,q,geo::F,layout.starts.data(),layout.starts.size());
-    Q8DownLayout down_layout{geo::H,geo::F,geo::ENTRIES,geo::ENTRIES,geo::GRID_GROUPS,std::vector<uint32_t>(geo::GROUPS,geo::DOWN_OFFSET),geo::STARTS,geo::DESTINATIONS};
+    Q8DownLayout down_layout{geo::H,geo::F,geo::ENTRIES,geo::ENTRIES,geo::GRID_GROUPS,std::vector<uint64_t>(geo::GROUPS,geo::DOWN_OFFSET),geo::STARTS,geo::DESTINATIONS};
     strata_vk_q8_down_run(down.get(),w,q,o,down_layout);
     // Supplementary native separate activation diagnostic; never supplies q/down.
     strata_vk_native_stages_run(activation.get(),1,g,u,h,q,geo::F,layout.starts.data(),layout.starts.size());

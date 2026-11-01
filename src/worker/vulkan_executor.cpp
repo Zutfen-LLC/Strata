@@ -84,14 +84,16 @@ public:
             if(!native_receipt_.empty()) {
 #ifdef STRATA_VULKAN_NATIVE_Q8_PROVIDER
                 native_=std::make_unique<NativeQ8Cache>(backend_,p.assets.size(),size_t(tensor_budget_),native_receipt_,native_capture_,capture_first_only_);
-                c.gpu_allocated_bytes=native_->buffer_bytes();c.gpu_scratch_bytes=native_->scratch_bytes();c.gpu_allocation_count=4;
+                const auto owned=native_->allocation_snapshot();
+                c.gpu_allocated_bytes=owned.gpu_allocated_bytes;c.gpu_scratch_bytes=owned.gpu_scratch_bytes;c.gpu_allocation_count=owned.gpu_allocation_count;
                 c.gpu_peak_bytes=std::max(c.gpu_peak_bytes,c.gpu_allocated_bytes);
                 for(size_t j=0;j<p.assets.size();++j) {
                     if(j)require(read(p.assets[j],blob,err),err);
                     c.host_staging_peak=std::max(c.host_staging_peak,uint64_t(blob.capacity()));
                     require(blob.size()==p.assets[j].bytes && blob_digest(blob)==p.assets[j].digest,"native Q8 asset size/digest mismatch");
-                    native_->upload(j,blob);c.gpu_weight_bytes+=blob.size();
+                    native_->upload(j,blob);
                 }
+                c.gpu_weight_bytes=owned.gpu_weight_bytes;
                 plan_=p;return true;
 #else
                 throw std::runtime_error("native Q8 provider requires STRATA_VULKAN_NATIVE_STAGES; no fallback");

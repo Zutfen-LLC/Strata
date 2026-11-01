@@ -1,4 +1,5 @@
 #include "vulkan_native_q8_layout.hpp"
+#include "vulkan_expert_cache.hpp"
 #include <iostream>
 #include <fstream>
 #include "ggml-cpu.h"
@@ -6,7 +7,17 @@ using namespace strata::worker;
 using namespace strata::worker::vulkan_detail;
 int main(int argc,char** argv){try {
     require(native_q8_weight_bytes(24,128u<<20)==24*size_t(5222400),"packed slot accounting");
-    for(auto [slots,budget]:{std::pair<size_t,size_t>{0,SIZE_MAX},{25,SIZE_MAX},{1,5222399}}){bool denied=false;try{native_q8_weight_bytes(slots,budget);}catch(const std::exception&){denied=true;}require(denied,"invalid resident weights accepted");}
+    for(auto [slots,budget]:{std::pair<size_t,size_t>{0,SIZE_MAX},{SIZE_MAX,SIZE_MAX},{1,5222399}}){bool denied=false;try{native_q8_weight_bytes(slots,budget);}catch(const std::exception&){denied=true;}require(denied,"invalid resident weights accepted");}
+    for(size_t slots:{25,205,206,822,823,960,1378}) {
+        const auto layout=expert_block_layout(slots,5222400,1ull<<30);
+        require(layout.slots_per_block==205 && layout.blocks==1+(slots-1)/205 &&
+            layout.bytes==native_q8_weight_bytes(slots,SIZE_MAX),"whole-blob block/accounting boundary");
+        require((slots-1)%205*size_t(5222400)+5222400<=1ull<<30,"last blob exceeds owner");
+    }
+    for(auto limits:{std::pair<size_t,size_t>{1,5222399},{SIZE_MAX,1ull<<30}}) {
+        bool bad=false;try{expert_block_layout(limits.first,5222400,limits.second);}catch(const std::exception&){bad=true;}
+        require(bad,"invalid backend block/overflow admitted");
+    }
     Backend backend(ggml_backend_cpu_init(),ggml_backend_free);
     Context storage(ggml_init({4096,nullptr,true}),ggml_free),views(ggml_init({4096,nullptr,true}),ggml_free);
     auto* base=ggml_new_tensor_1d(storage.get(),GGML_TYPE_I32,16);
@@ -31,7 +42,11 @@ int main(int argc,char** argv){try {
     require(native_q8_groups(p,q).experts.size()==20,"full 20-expert request refused");
     q.T=3;q.K=10;q.mask.assign(30,0);q.ids.resize(30);for(int i=0;i<30;++i){q.ids[i]=i;q.mask[i]=i<24;}
     require(native_q8_groups(p,q).experts.size()==24,"24-group boundary refused");
-    q.mask[24]=1;refused(q);
+    q.mask[24]=1;require(native_q8_groups(p,q).experts.size()==25,"25-group boundary refused");
+    p.n_expert=128;for(int e=32;e<128;++e)p.assets.push_back({0,uint16_t(e),5222400,{}});
+    q.T=8;q.K=10;q.mask.assign(80,1);q.ids.resize(80);
+    for(int i=0;i<80;++i)q.ids[i]=127-i;
+    auto all=native_q8_groups(p,q);require(all.experts.size()==80 && all.asset_slots.front()==127 && all.asset_slots.back()==48 && all.start.back()==80,"80 distinct groups/high resident slot refused");
     // Native T8/K10 repeats assigned experts. Assert the complete stable
     // grouping and inverse reply association for full and interleaved masks.
     p.assets.resize(24);

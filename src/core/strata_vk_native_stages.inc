@@ -30,7 +30,7 @@ StrataVkNativeStages* strata_vk_native_stages_create(ggml_backend_t backend) {
     native_q8_require_float_controls(fp,properties.get<vk::PhysicalDeviceProperties2>().properties);
     g.metadata.reset(ggml_init({4096,nullptr,true}));
     logits_guard_need(bool(g.metadata),"native stages: metadata allocation failed");
-    g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,32);
+    g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,STRATA_Q8_STAGE_WORDS);
     g.buffer.reset(ggml_backend_alloc_ctx_tensors(g.metadata.get(),backend));
     logits_guard_need(bool(g.buffer),"native stages: metadata buffer failed");
     g.bytes=ggml_backend_buffer_get_size(g.buffer.get());
@@ -59,7 +59,7 @@ StrataVkNativeStages* strata_vk_native_stages_create_observation(ggml_backend_t 
         bool(fp.shaderRoundingModeRTEFloat16)==ctx->device->float_controls_rte_fp16,"observation: helper cached controls disagree with query");
     g.metadata.reset(ggml_init({4096,nullptr,true}));
     logits_guard_need(bool(g.metadata),"native stages: metadata allocation failed");
-    g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,32);
+    g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,STRATA_Q8_STAGE_WORDS);
     g.buffer.reset(ggml_backend_alloc_ctx_tensors(g.metadata.get(),backend));
     logits_guard_need(bool(g.buffer),"native stages: metadata buffer failed");
     g.bytes=ggml_backend_buffer_get_size(g.buffer.get());
@@ -91,7 +91,7 @@ static StrataVkNativeStages* strata_vk_native_stages_create_variant_observation(
         bool(fp.shaderRoundingModeRTEFloat16)==ctx->device->float_controls_rte_fp16,"observation: helper cached controls disagree with query");
     g.metadata.reset(ggml_init({4096,nullptr,true}));
     logits_guard_need(bool(g.metadata),"native stages: metadata allocation failed");
-    g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,32);
+    g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,STRATA_Q8_STAGE_WORDS);
     const auto bound=ggml_backend_alloc_ctx_tensors_from_buft_size(g.metadata.get(),ggml_backend_get_default_buffer_type(backend));
     logits_guard_need(bound<=budget,"native stages: aligned metadata budget exceeded");
     g.buffer.reset(ggml_backend_alloc_ctx_tensors(g.metadata.get(),backend));
@@ -127,7 +127,7 @@ void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggm
         gate->type==GGML_TYPE_F32 && up->type==GGML_TYPE_F32 && hidden->type==GGML_TYPE_F32 &&
         packed->type==GGML_TYPE_I32 && ggml_nelements(up)==n && ggml_nelements(hidden)==n &&
         ggml_nelements(packed)==n/32*9,"native stages: shape/type mismatch");
-    logits_guard_need(starts && n_starts>=1 && n_starts<=25,"native stages: bounded group starts required");
+    logits_guard_need(starts && n_starts>=1 && n_starts<=q8_entry_capacity+1,"native stages: bounded group starts required");
     for(size_t i=0;i<n_starts;++i) logits_guard_need(starts[i]>=0 && starts[i]<=n/n_ff &&
         (!i || starts[i]>=starts[i-1]),"native stages: invalid active interval");
     auto& g=*s->owner;auto* ctx=static_cast<ggml_backend_vk_context*>(g.backend->context);
@@ -152,8 +152,8 @@ void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggm
     logits_guard_need(!overlaps(packed,gate) && !overlaps(packed,up) && !overlaps(packed,hidden) &&
         (mode!=1 || (!overlaps(hidden,gate) && !overlaps(hidden,up))),
         "native stages: overlapping input/output regions");
-    // 25 start positions cover 24 groups; count stays outside their interval.
-    params[6]=params[5]+31;
+    // Count follows all 81 start positions in the shared request ABI.
+    params[6]=params[5]+STRATA_Q8_STAGE_COUNT_WORD;
     const auto metadata=q8_stage_metadata(starts,n_starts);
     ggml_backend_vk_synchronize(g.backend);
     ggml_backend_tensor_set(g.status,metadata.data(),0,sizeof(metadata));
