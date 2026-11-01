@@ -20,6 +20,9 @@ class PortableQsaAttention {
 struct PortableQsaOptions {
     static constexpr size_t native_hc_host_bound = PortableFfnOptions::native_hc_pending_host_bound + (128u<<10);
     static constexpr size_t native_norm_rope_host_bound=2u<<20;
+    static constexpr size_t native_indexer_host_bound=1u<<20;
+    bool native_indexer_weights=false, native_indexer_t1=false, native_indexer_record_first=false;
+    std::string native_indexer_receipt_prefix;
     bool native_norm_rope_weights=false; // matched explicit resident F32 roles/candidate reserve
     bool native_norm_rope_t1=false;
     bool native_norm_rope_record_first=false;
@@ -79,6 +82,8 @@ class PortableQsaLayer {
     bool step_pending(uint64_t position,const PortableHcPendingWrite& pending,const PortableExpertRows& dispatch,
                       PortableRoute& route,std::string& error,PortableQsaTrace* trace=nullptr);
     uint64_t native_norm_rope_calls() const;
+    uint64_t native_indexer_calls() const;
+    const std::vector<uint32_t>& native_indexer_state() const;
     uint64_t native_hc_pending_calls() const;
     uint64_t native_ffn_hc_pending_calls() const;
     uint64_t native_ffn_hc_write_calls() const;
@@ -106,8 +111,8 @@ class PortableQsaLayer {
     // [complete_block,128], followed by the moving spare/dead key:
     // weighted RMS of raw cell0, RoPE at position0. Zero only before first step.
     const std::vector<float> &pooled_keys() const;
-    // Four raw keys; unused entries are zero, including the whole tail at
-    // completion.
+    // Default: four F32 raw keys, cleared on completion. Native indexer opt-in:
+    // three FP16-rounded/F32-expanded rows, retained across block completion.
     const std::vector<float> &indexer_tail() const;
     const std::vector<float> &last_residual() const;
     const std::vector<PortablePlacement> &placements() const;

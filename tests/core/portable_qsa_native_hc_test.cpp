@@ -48,6 +48,39 @@ int main(){try{
  check(native_qsa->step(4,f.input(4),nr_dispatch,nr_route,error),error);check(native_qsa->reset(error)&&native_qsa->step(0,f.input(0),nr_dispatch,nr_route,error),error);check(native_qsa->last_residual()==nr_first,"native QSA reset/repeat changed state/output");
  auto nr_bad=nr;nr_bad.execution.weight_budget=native_qsa->weight_bytes()-1;nr_bad.native_norm_rope_receipt_prefix=(root/"nr-budget").string();check(!PortableQsaLayer::create(3,qf.views,nr_bad,error),"QSA one-byte-short weights admitted");
  nr_bad=nr;nr_bad.production=true;nr_bad.native_norm_rope_receipt_prefix=(root/"nr-production").string();check(!PortableQsaLayer::create(3,qf.views,nr_bad,error),"unsupported native QSA production mode accepted");
+ // Actual raw-key graph producer, native retained-tail candidate owner and
+ // existing FFN-success transaction. Arithmetic is the declared host mock.
+ auto ix=o;ix.native_indexer_weights=true;ix.native_indexer_receipt_prefix=(root/"idx-control").string();
+ auto idx_control=PortableQsaLayer::create(3,qf.views,ix,error);check(bool(idx_control),error);
+ ix.native_indexer_t1=true;ix.native_indexer_record_first=true;ix.native_indexer_receipt_prefix=(root/"idx-on").string();
+ auto idx=PortableQsaLayer::create(3,qf.views,ix,error);check(bool(idx),error);
+ check(idx_control->weight_bytes()==idx->weight_bytes()&&idx->weight_bytes()<=disabled->weight_bytes()+4096,"indexer resident F32 role duplicated/unequal");
+ check(idx->memory_usage().host_weights<disabled->memory_usage().host_weights&&idx->memory_usage().device_weights>disabled->memory_usage().device_weights,"resident indexer role did not replace host storage");
+ check(idx->memory_usage().host_extra_bound>=PortableQsaOptions::native_indexer_host_bound,"native indexer host allowance missing");
+ check(disabled->reset(error)&&idx_control->reset(error)&&idx->reset(error),error);std::vector<float>expected_tail(384),spare,idx_first;
+ for(size_t pos=0;pos<4;++pos){
+  check(disabled->step(pos,f.input(pos),nr_dispatch,nr_route,error),error);check(idx_control->step(pos,f.input(pos),nr_dispatch,nr_route,error),error);
+  check(disabled->last_residual()==idx_control->last_residual()&&disabled->pooled_keys()==idx_control->pooled_keys()&&disabled->indexer_tail()==idx_control->indexer_tail(),"matched indexer residency changed disabled arithmetic/state");
+  PortableQsaTrace tr;check(idx->step(pos,f.input(pos),nr_dispatch,nr_route,error,&tr),error);
+  if(pos<3)for(size_t d=0;d<128;++d)expected_tail[pos*128+d]=ggml_fp16_to_fp32(ggml_fp32_to_fp16(tr.index_raw_key[d]));
+  check(idx->indexer_tail()==expected_tail,"native three-row half-rounded tail differs or was cleared on completion");
+  check(idx->native_indexer_calls()==pos+1&&idx_control->native_indexer_calls()==0,"indexer work counters are not actual calls");
+  if(pos==0){spare=idx->pooled_keys();idx_first=idx->last_residual();}
+ }
+ check(std::vector<float>(idx->pooled_keys().begin()+128,idx->pooled_keys().end())==spare,"completed block lost persistent cell-zero spare");
+ for(size_t pos=0;pos<4;++pos){auto dir=root/("idx-on/first-"+std::to_string(pos));auto fixture=native_qsa_idx::read((dir/"fixture.bin").string());native_qsa_idx::check(fixture,dir);check(native_qsa_idx::words(dir/"state.u32le",fixture.before.size())==native_qsa_idx::words(dir/"accepted-state.u32le",fixture.before.size()),"serialized candidate/FFN commit link differs");}
+ auto idx_state=idx->native_indexer_state();auto idx_keys=idx->keys();auto idx_pool=idx->pooled_keys();auto idx_last=idx->last_residual();
+ auto idx_fail=[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="intentional post-indexer FFN refusal";return false;};
+ check(!idx->step(4,f.input(4),idx_fail,nr_route,error),"failed FFN published indexer candidate");
+ check(idx->native_indexer_calls()==5&&idx->tokens()==4&&idx->native_indexer_state()==idx_state&&idx->keys()==idx_keys&&idx->pooled_keys()==idx_pool&&idx->indexer_tail()==expected_tail&&idx->last_residual()==idx_last,"post-component failure changed committed native state/counters");
+ fail_qsa_indexer=true;check(!idx->step(4,f.input(4),nr_dispatch,nr_route,error),"indexer domain refusal accepted");fail_qsa_indexer=false;
+ check(std::filesystem::exists(root/"idx-on/failure-4-call-6-attempt-6/fixture.bin"),"current failed indexer input not retained");
+ check(idx->native_indexer_calls()==6&&idx->native_indexer_state()==idx_state&&!std::filesystem::exists(root/"idx-on/failure-4-call-6-attempt-6/state.u32le"),"failed component committed state or published stale output");
+ check(idx->step(4,f.input(4),nr_dispatch,nr_route,error),error);check(idx->reset(error)&&idx->step(0,f.input(0),nr_dispatch,nr_route,error),error);check(idx->last_residual()==idx_first&&idx->indexer_tail().size()==384,"indexer reset/retry changed result or native geometry");
+ auto ix_bad=ix;ix_bad.execution.graph_budget=1;ix_bad.native_indexer_receipt_prefix=(root/"idx-budget").string();check(!PortableQsaLayer::create(3,qf.views,ix_bad,error),"indexer banks bypassed graph admission");
+ ix_bad=ix;ix_bad.execution.weight_budget=idx->weight_bytes()-1;ix_bad.native_indexer_receipt_prefix=(root/"idx-weight-budget").string();check(!PortableQsaLayer::create(3,qf.views,ix_bad,error),"one-byte-short indexer weight allocation admitted");
+ ix_bad=ix;ix_bad.state_budget=idx->state_bytes()-1;ix_bad.native_indexer_receipt_prefix=(root/"idx-state-budget").string();check(!PortableQsaLayer::create(3,qf.views,ix_bad,error),"indexer host state allowance bypassed state budget");
+ ix_bad=ix;ix_bad.production=true;ix_bad.native_indexer_receipt_prefix=(root/"idx-production").string();check(!PortableQsaLayer::create(3,qf.views,ix_bad,error),"unsupported native indexer production accepted");
  check(disabled->reset(error),error);
  o.native_hc_read=true;o.native_hc_pending=true;o.native_hc_receipt_prefix=(root/"pending").string();
  auto active=PortableQsaLayer::create(3,qf.views,o,error);check(bool(active),error);check(active->reset(error),error);
