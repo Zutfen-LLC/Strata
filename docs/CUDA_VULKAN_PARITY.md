@@ -610,6 +610,13 @@ for each capability below.
    PR118 tests the existing Metal compensated positive expression against actual
    CUDA log1pf before any a/b integration; its tighter native accuracy requirement
    remains a gate even if the weaker Vulkan log primitive guarantee passes.
+   The PR118 hardware probe failed its frozen one-adjacent-step target: CUDA
+   log1pf passed all cases, while Vulkan's existing Metal compensated expression
+   was two steps low for a near-exp(20) boundary input. Its emitted module passed
+   validation; this is a numerical dependency STOP, not model qualification.
+   Native uses a strict v>20 bypass, so equality still consumes exp/log1pf.
+   Actual log/division intermediates are needed for attribution; no new
+   approximation, target relaxation or a/b integration is selected.
    The current model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
    projections also remain separate upstream work; do not attribute unequal model
    outputs to recurrence without equal inputs. Accepted-prefix commit and window
