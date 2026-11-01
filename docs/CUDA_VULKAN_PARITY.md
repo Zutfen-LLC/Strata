@@ -718,7 +718,10 @@ for each capability below.
    (Hermes 1793571148.601549). Samples are discrete, not continuous coverage.
    The default-disabled [model adapter](native-qsa-attention-model-t1.md) consumes
    actual query/selected-ID/current FP16 KV candidates and feeds gated output to
-   WO under existing FFN-success state authority; model validation is pending.
+   WO under existing FFN-success state authority. Initial model control passes;
+   on stopped before READY on an omitted output-leaf admission estimate. The
+   source-derived accounting correction has seven local regressions passing;
+   corrected on-model validation remains pending.
    Quantized KV, projections, accepted-prefix and window scheduling remain gaps.
 
 

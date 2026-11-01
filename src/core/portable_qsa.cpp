@@ -115,6 +115,7 @@ ggml_tensor *rope(ggml_context *c, ggml_tensor *x, ggml_tensor *position) {
 struct Phase {
     Context ctx{context()};
     ggml_cgraph *graph = ggml_new_graph(ctx.get());
+    std::vector<ggml_tensor *> outputs;
     portable_detail::Scheduler scheduler{nullptr, ggml_backend_sched_free};
     size_t workspace_highwater = 0;
     ggml_tensor *input(std::initializer_list<int64_t> dims, ggml_type type = GGML_TYPE_F32) {
@@ -126,6 +127,7 @@ struct Phase {
         ggml_set_name(t, name);
         ggml_set_output(t);
         ggml_build_forward_expand(graph, t);
+        outputs.push_back(t);
     }
     void schedule(const char *name, const PortableFfnOptions &opts, portable_detail::Backend &cpu,
                   std::vector<PortablePlacement> &placement, size_t &bytes, bool reuse = false) {
@@ -139,9 +141,9 @@ struct Phase {
         bytes += workspace;
         workspace_highwater = workspace;
         if (reuse)
-            portable_detail::schedule_reusing(graph, name, opts, cpu, placement, bytes, scheduler);
+            portable_detail::schedule_reusing(graph, name, opts, cpu, placement, bytes, scheduler, false, outputs);
         else
-            scheduler = portable_detail::schedule(graph, name, opts, cpu, placement, bytes);
+            scheduler = portable_detail::schedule(graph, name, opts, cpu, placement, bytes, false, outputs);
     }
     void rebuild() {
         // Execution is synchronous. Forget scheduler tensor identities before
@@ -149,6 +151,7 @@ struct Phase {
         if (scheduler)
             ggml_backend_sched_reset(scheduler.get());
         ggml_reset(ctx.get());
+        outputs.clear();
         graph = ggml_new_graph(ctx.get());
     }
     void run() {

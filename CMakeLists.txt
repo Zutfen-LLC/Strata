@@ -1795,6 +1795,10 @@ if(STRATA_NATIVE_EXPERTS)
         target_link_libraries(portable_hc_boundary_test PRIVATE ggml-base ggml-cpu Threads::Threads)
         add_test(NAME portable_hc_boundary_test COMMAND portable_hc_boundary_test)
         if(STRATA_PORTABLE_QSA)
+          add_executable(portable_graph_leaf_output_test tests/core/portable_graph_leaf_output_test.cpp)
+          target_include_directories(portable_graph_leaf_output_test PRIVATE include src/core)
+          target_link_libraries(portable_graph_leaf_output_test PRIVATE ggml-base ggml-cpu Threads::Threads)
+          add_test(NAME portable_graph_leaf_output_test COMMAND portable_graph_leaf_output_test)
           add_executable(portable_qsa_native_hc_test tests/core/portable_qsa_native_hc_test.cpp
             src/core/portable_qsa.cpp src/core/portable_gdn.cpp src/core/portable_ffn.cpp src/core/portable_ple.cpp
             src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp src/platform/memory.cpp)
