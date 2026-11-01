@@ -1,0 +1,20 @@
+#include "strata_vk_native_qsa_norm_rope.hpp"
+#include "native_qsa_norm_rope_layout.hpp"
+#include "strata_native_qsa_norm_rope_spv.hpp"
+namespace strata::core::portable_detail {
+struct StrataVkNativeQsaNormRope{std::unique_ptr<StrataVkLogitsGuard>owner;uint64_t calls=0;};
+StrataVkNativeQsaNormRope* strata_vk_native_qsa_norm_rope_create(ggml_backend_t b,const char*path,size_t budget){native_hc_need(b&&ggml_backend_is_vk(b),"native QSA norm/RoPE: Vulkan backend required");auto*ctx=static_cast<ggml_backend_vk_context*>(b->context);const auto&l=ctx->device->properties.limits;native_hc_need(l.maxComputeWorkGroupInvocations>=256&&l.maxComputeWorkGroupSize[0]>=256&&l.maxComputeSharedMemorySize>=1056&&l.maxPerStageDescriptorStorageBuffers>=7&&l.maxDescriptorSetStorageBuffers>=7,"native QSA norm/RoPE: workgroup/shared/descriptors unsupported");auto p=std::make_unique<StrataVkNativeQsaNormRope>();p->owner=strata_vk_q8_component_owner(b,strata_native_qsa_norm_rope_spv,sizeof(strata_native_qsa_norm_rope_spv)/4,NativeComponentAddressing::descriptor,"strata_native_qsa_norm_rope",7,10,path,budget);return p.release();}
+void strata_vk_native_qsa_norm_rope_destroy(StrataVkNativeQsaNormRope*p)noexcept{delete p;}
+size_t strata_vk_native_qsa_norm_rope_bytes(const StrataVkNativeQsaNormRope*p){return p?p->owner->bytes:0;}
+uint64_t strata_vk_native_qsa_norm_rope_calls(const StrataVkNativeQsaNormRope*p)noexcept{return p?p->calls:0;}
+uint32_t strata_vk_native_qsa_norm_rope_run(StrataVkNativeQsaNormRope*p,ggml_tensor*const t[6],uint32_t cols,uint32_t rows,uint32_t stride,uint32_t theta){
+ native_hc_need(p,"native QSA norm/RoPE: owner required");native_qsa_norm_rope_geometry(cols,rows,stride,theta);auto&g=*p->owner;auto*ctx=static_cast<ggml_backend_vk_context*>(g.backend->context);std::array<uint32_t,10>off{};const size_t n[]={size_t(rows)*stride,cols,rows,size_t(rows)*cols,size_t(rows)*cols,size_t(rows)*130};
+ for(size_t i=0;i<6;++i){auto*x=t[i];native_hc_need(x&&x->type==(i==2?GGML_TYPE_I32:GGML_TYPE_F32)&&ggml_nbytes(x)==n[i]*4&&ggml_is_contiguous(x)&&x->buffer&&ggml_backend_buffer_is_vk(x->buffer),"native QSA norm/RoPE: exact contiguous typed span");auto*b=static_cast<ggml_backend_vk_buffer_context*>(x->buffer->context);native_hc_need(b->device.lock()==ctx->device,"native QSA norm/RoPE: foreign device");auto bias=get_misalign_bytes(ctx,x);native_hc_need(bias%4==0,"native QSA norm/RoPE: alignment");off[i]=bias/4;
+  for(size_t j=0;j<i;++j)if(x->buffer==t[j]->buffer){auto a=reinterpret_cast<uintptr_t>(x->data),b=reinterpret_cast<uintptr_t>(t[j]->data);native_hc_need((a>=b?a-b>=ggml_nbytes(t[j]):b-a>=ggml_nbytes(x)),"native QSA norm/RoPE: partial or candidate/input alias");}}
+ ggml_backend_vk_synchronize(g.backend);
+ std::vector<float>input(n[0]),weight(cols);std::vector<int32_t>pos(rows);ggml_backend_tensor_get(t[0],input.data(),0,input.size()*4);ggml_backend_tensor_get(t[1],weight.data(),0,weight.size()*4);ggml_backend_tensor_get(t[2],pos.data(),0,pos.size()*4);
+ for(size_t r=0;r<rows;++r){native_hc_need(pos[r]>=0&&pos[r]<=255,"native QSA norm/RoPE: current text context positions0..255 required");for(size_t c=0;c<cols;++c)native_hc_normal(input[r*stride+c]);}for(float v:weight)native_hc_normal(v);
+ off[6]=get_misalign_bytes(ctx,g.status)/4;off[7]=cols;off[8]=stride;off[9]=theta;const uint32_t zero=0;ggml_backend_tensor_set(g.status,&zero,0,4);ggml_pipeline_request_descriptor_sets(ctx,g.pipeline,1);auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
+ ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,t[0],true),ggml_vk_tensor_subbuffer(ctx,t[1],true),ggml_vk_tensor_subbuffer(ctx,t[2],true),ggml_vk_tensor_subbuffer(ctx,t[3],true),ggml_vk_tensor_subbuffer(ctx,t[4],true),ggml_vk_tensor_subbuffer(ctx,t[5],true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},off,{rows,1,1});ggml_vk_sync_buffers(ctx,compute);compute.reset();ggml_backend_vk_synchronize(g.backend);uint32_t status;ggml_backend_tensor_get(g.status,&status,0,4);++p->calls;return status;
+}
+}

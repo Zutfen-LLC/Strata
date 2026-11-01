@@ -1,0 +1,34 @@
+#version 450
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427) float nfma(float a,float b,float c);
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer X{float x[];};
+layout(binding=1,std430) readonly buffer W{float gamma[];};
+layout(binding=2,std430) readonly buffer P{int positions[];};
+layout(binding=3,std430) writeonly buffer N{float normalized[];};
+layout(binding=4,std430) writeonly buffer O{float rotated[];};
+layout(binding=5,std430) writeonly buffer D{float diag[];};
+layout(binding=6,std430) buffer S{uint status[];};
+layout(push_constant) uniform Params{uint off[7];uint cols;uint stride;uint theta_scale;}p;
+shared float partial[256];shared float sums[8];
+float ck(float a){uint b=floatBitsToUint(a)&0x7fffffffu;if(b>=0x7f800000u||(b!=0u&&b<0x800000u))atomicOr(status[p.off[6]],1u);return a;}
+void main(){uint tid=gl_LocalInvocationID.x,row=gl_WorkGroupID.x,lane=tid&31u;
+ float v=tid<p.cols?x[p.off[0]+row*p.stride+tid]:0.0;
+ // Native norm<256> and norm_rope_kernel each read one element per thread
+ // for these widths. FMA(x,x,+0) has the same RNE value as their first square.
+ partial[tid]=ck(nfma(v,v,0.0));barrier();
+ for(uint delta=16u;delta>0u;delta>>=1u){precise float a=ck(partial[tid]+partial[tid^delta]);barrier();partial[tid]=a;barrier();}
+ if(lane==0u)sums[tid/32u]=partial[tid];barrier();
+ partial[tid]=lane<8u?sums[lane]:0.0;barrier();
+ for(uint delta=16u;delta>0u;delta>>=1u){precise float a=ck(partial[tid]+partial[tid^delta]);barrier();partial[tid]=a;barrier();}
+ precise float mean=ck(partial[tid]/float(p.cols));precise float arg=ck(mean+1e-6);float rs=ck(inversesqrt(arg));
+ if(tid==0u){diag[p.off[5]+row*130u]=arg;diag[p.off[5]+row*130u+1u]=rs;}
+ if(tid<p.cols){precise float a=ck(rs*v);precise float n=ck(a*gamma[p.off[1]+tid]);normalized[p.off[3]+row*p.cols+tid]=n;if(tid>=64u)rotated[p.off[4]+row*p.cols+tid]=n;}
+ if(tid<32u){precise float av=ck(rs*x[p.off[0]+row*p.stride+tid]);precise float a=ck(av*gamma[p.off[1]+tid]);precise float bv=ck(rs*x[p.off[0]+row*p.stride+tid+32u]);precise float b=ck(bv*gamma[p.off[1]+tid+32u]);
+  float freq=pow(uintBitsToFloat(p.theta_scale),float(tid));precise float angle=ck(float(positions[p.off[2]+row])*freq);float c=cos(angle),s=sin(angle);
+  if(!(freq>0.0&&freq<=1.0&&abs(c)<=1.003&&abs(s)<=1.003))atomicOr(status[p.off[6]],2u);
+  ck(freq);ck(c);ck(s);precise float bs=ck(b*s);precise float bc=ck(b*c);
+  rotated[p.off[4]+row*p.cols+tid]=ck(nfma(a,c,-bs));rotated[p.off[4]+row*p.cols+tid+32u]=ck(nfma(a,s,bc));
+  uint d=p.off[5]+row*130u+2u+tid;diag[d]=freq;diag[d+32u]=angle;diag[d+64u]=c;diag[d+96u]=s;
+ }
+}
