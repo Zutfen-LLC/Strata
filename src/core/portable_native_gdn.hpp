@@ -43,7 +43,7 @@ public:
  // Receipt failure after actual commit must not turn a completed transaction into
  // a rejected step with divergent host/device state. The offline checker requires
  // this proof; diagnostic I/O failures remain explicit in stderr/missing receipt.
- void record_commit(ggml_tensor*state,uint64_t position)noexcept{if(!record_||!recorded_||committed_||position!=0)return;try{file("committed-state.f32le",state);committed_=true;}catch(const std::exception&e){std::fprintf(stderr,"native GDN committed receipt: %s\n",e.what());}}
+ void record_commit(ggml_tensor*state,uint64_t position,ggml_tensor*history=nullptr)noexcept{if(!record_||!recorded_||committed_||position!=0)return;try{file("committed-state.f32le",state);if(history)file("committed-history.f32le",history);committed_=true;}catch(const std::exception&e){std::fprintf(stderr,"native GDN committed receipt: %s\n",e.what());}}
 
 };
 }

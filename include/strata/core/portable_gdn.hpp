@@ -19,6 +19,7 @@ class PortableGdnScratch {
 enum class PortableGdnPolicy { eager_diagnostic, device_production };
 struct PortableGdnOptions {
     static constexpr size_t native_recurrence_host_bound=4u<<20;
+    static constexpr size_t native_preparation_host_bound=2u<<20; // streamed conversion/preflight/first receipts
     static constexpr size_t native_hc_host_bound = 1u << 20; // explicit metadata/preflight/trace envelope
     // Largest streamed BF16 conversion/readback is 6,553,600 B, plus the
     // existing 1 MiB metadata/trace bound; no simultaneous down/up host banks.
@@ -27,6 +28,10 @@ struct PortableGdnOptions {
     PortableFfnOptions execution;
     // Experimental fixed T1 eager/resident-state path; private or shared serial scratch.
     bool native_recurrence_t1 = false;
+    bool native_preparation_t1=false;
+    bool native_preparation_weights=false; // shared control/on BF16 replacement, ordinary T1 only
+    std::string native_preparation_receipt;
+    bool native_preparation_record_first=false;
     std::string native_recurrence_receipt;
     bool native_recurrence_record_first=false; // bounded model layer0 own-input/commit receipt
     bool resident_ffn_weights = false; // selected FFN bank only; attention placement unchanged
@@ -123,6 +128,8 @@ class PortableGdnLayer {
     uint64_t native_ffn_hc_write_calls() const;
     const PortableHcPendingWrite& pending_write() const;
     uint64_t deferred_hc_outputs() const;
+    uint64_t native_convolution_calls() const;
+    uint64_t native_ab_calls() const;
     uint64_t native_recurrence_calls() const; // completed component work, even if later FFN refuses
     uint64_t native_hc_pending_calls() const; // paid successful work, including later graph/provider refusal
     uint64_t native_hc_mix_calls() const;

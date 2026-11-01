@@ -90,3 +90,35 @@ void strata_vk_native_gdn_run(StrataVkNativeGdn*,ggml_tensor*const t[13],ggml_te
  native_gdn_t1::Fixture f;for(size_t i=0;i<6;++i)f[i]=get(t[i]);std::vector<float>eg(48),rs(49,1.f),sig(6144),se(6144);for(size_t i=0;i<48;++i)eg[i]=std::exp(f[2][i]);for(size_t i=0;i<6144;++i){se[i]=std::exp(-f[4][i]);sig[i]=1.f/(1.f+se[i]);}rs[48]=1.f/std::sqrt(128.f);auto partial=native_gdn_t1::control(f,eg,rs,sig);for(size_t i=0;i<48;++i)rs[i]=1.f/std::sqrt(partial.arg[i]);auto ref=native_gdn_t1::control(f,eg,rs,sig);put(t[6],ref.state);put(t[7],ref.y);put(t[8],eg);put(t[9],ref.oc);put(t[10],rs);put(t[11],se);put(t[12],sig);gdn_fixture::check(!fail_gdn,"injected GDN candidate refusal");++gdn_calls;
 }
 }
+
+#include "strata_vk_native_gdn_conv.hpp"
+#include "strata_vk_native_gdn_ab.hpp"
+#include "../kernels/native_gdn_conv_fixture.hpp"
+#include "../kernels/native_gdn_ab_fixture.hpp"
+namespace {bool fail_prep_conv=false,fail_prep_ab=false;}
+namespace strata::core::portable_detail {
+struct StrataVkNativeGdnConv{uint64_t calls=0;uint32_t status=0;};
+struct StrataVkNativeGdnAb{uint64_t calls=0;};
+StrataVkNativeGdnConv* strata_vk_native_gdn_conv_create(ggml_backend_t,const char*p,size_t b){gdn_fixture::check(b>=512,"conv budget");std::ofstream(p)<<"mock convolution; not shader evidence\n";return new StrataVkNativeGdnConv;}
+void strata_vk_native_gdn_conv_destroy(StrataVkNativeGdnConv*p)noexcept{delete p;}
+size_t strata_vk_native_gdn_conv_bytes(const StrataVkNativeGdnConv*){return 512;}
+uint64_t strata_vk_native_gdn_conv_calls(const StrataVkNativeGdnConv*p)noexcept{return p->calls;}
+uint32_t strata_vk_native_gdn_conv_status(const StrataVkNativeGdnConv*p)noexcept{return p->status;}
+void strata_vk_native_gdn_conv_run(StrataVkNativeGdnConv*p,ggml_tensor*const t[10],bool commit){
+ native_gdn_conv::Fixture f;for(size_t i=0;i<3;++i)f[i]=get(t[i]);std::vector<float>ex(10240),rs(32,1.f);
+ for(size_t c=0;c<10240;++c){float v=std::fma(f[0][c*3],f[2][c*4],f[0][c*3+1]*f[2][c*4+1]);v=std::fma(f[0][c*3+2],f[2][c*4+2],v);v=std::fma(f[1][c],f[2][c*4+3],v);ex[c]=std::exp(-v);}
+ auto a=native_gdn_conv::control(f,ex,rs,commit);for(size_t i=0;i<32;++i)rs[i]=1.f/std::sqrt(a.arg[i]);a=native_gdn_conv::control(f,ex,rs,commit);
+ put(t[3],a.history);put(t[4],a.h);put(t[5],a.pre);put(t[6],ex);put(t[7],a.silu);put(t[8],rs);put(t[9],a.arg);++p->calls;p->status=fail_prep_conv?1:0;gdn_fixture::check(!p->status,"injected completed convolution refusal");
+}
+StrataVkNativeGdnAb* strata_vk_native_gdn_ab_create(ggml_backend_t,const char*p,size_t b){gdn_fixture::check(b>=512,"ab budget");std::ofstream(p)<<"mock a/b; not shader evidence\n";return new StrataVkNativeGdnAb;}
+void strata_vk_native_gdn_ab_destroy(StrataVkNativeGdnAb*p)noexcept{delete p;}
+size_t strata_vk_native_gdn_ab_bytes(const StrataVkNativeGdnAb*){return 512;}
+uint64_t strata_vk_native_gdn_ab_calls(const StrataVkNativeGdnAb*p)noexcept{return p->calls;}
+uint32_t strata_vk_native_gdn_ab_run(StrataVkNativeGdnAb*p,ggml_tensor*const t[8]){
+ native_gdn_ab::Fixture f;f.x=get(t[0]);f.dt=get(t[3]);f.a=get(t[4]);f.wa.resize(2560*48);f.wb.resize(2560*48);
+ for(size_t i=0;i<2;++i){gdn_fixture::check(t[i+1]->type==GGML_TYPE_BF16,"actual native replacement type");auto&w=i?f.wb:f.wa;ggml_backend_tensor_get(t[i+1],w.data(),0,w.size()*2);}
+ auto dots=native_gdn_ab::dot(f);std::vector<float>diag(336),gate(48),beta(48);
+ for(size_t h=0;h<48;++h){float v=dots[0][h]+f.dt[h],ex=v>20.f?0.f:std::exp(v),sp=v>20.f?v:std::log1p(ex),be=std::exp(-dots[1][h]),den=1.f+be;float a[]={dots[0][h],dots[1][h],v,ex,sp,be,den};for(size_t i=0;i<7;++i)diag[i*48+h]=a[i];gate[h]=sp*f.a[h];beta[h]=1.f/den;}
+ put(t[5],gate);put(t[6],beta);put(t[7],diag);++p->calls;return fail_prep_ab?1:0;
+}
+}
