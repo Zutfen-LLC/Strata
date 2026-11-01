@@ -1,12 +1,13 @@
 #pragma once
 #include "native_hc_fixture.hpp"
+#include "native_gdn_domain.hpp"
 #include <array>
 #include <cfenv>
 namespace native_gdn_t1 {
 using namespace native_hc_fixture;
 constexpr std::array<size_t,13> counts{786432,10240,48,48,6144,128,786432,6144,48,6144,49,6144,6144};
 using Fixture=std::array<std::vector<float>,6>;
-inline void validate(const Fixture&f){native_hc_need(std::fegetround()==FE_TONEAREST,"GDN source control requires RNE host");for(size_t i=0;i<6;++i){native_hc_need(f[i].size()==counts[i],"GDN fixture shape");for(float x:f[i]){native_hc_normal(x);if(i==2)native_hc_need(x<=0&&x>=-87.33651733398438f,"GDN decay domain");if(i==4)native_hc_need(std::fabs(x)<=87.33651733398438f,"GDN output gate domain");}}}
+inline void validate(const Fixture&f){native_hc_need(std::fegetround()==FE_TONEAREST,"GDN source control requires RNE host");for(size_t i=0;i<6;++i){native_hc_need(f[i].size()==counts[i],"GDN fixture shape");for(float x:f[i]){native_hc_normal(x);if(i==2)native_gdn_decay_input(x);if(i==4)native_gdn_sigmoid_input(x);}}}
 inline Fixture synthetic(unsigned mode){native_hc_need(mode<3,"GDN fixture case");Fixture f;for(size_t i=0;i<6;++i)f[i].resize(counts[i]);std::fill(f[3].begin(),f[3].end(),0.5f);std::fill(f[5].begin(),f[5].end(),1.f);
  if(mode==1){f[1][0]=0.5f;f[1][2048]=0.25f;f[1][4096]=2.f;}
  if(mode==2){for(size_t j=0;j<f[0].size();++j)f[0][j]=float(int(j*17%31)-15)/2048.f;for(size_t j=0;j<f[1].size();++j)f[1][j]=float(int(j*23%37)-18)/128.f;for(size_t j=0;j<48;++j){f[2][j]=-float(j%7+1)/16.f;f[3][j]=float(j%5+1)/8.f;}for(size_t j=0;j<6144;++j)f[4][j]=float(int(j*11%33)-16)/4.f;for(size_t j=0;j<128;++j)f[5][j]=0.5f+float(j%17)/16.f;}validate(f);return f;}

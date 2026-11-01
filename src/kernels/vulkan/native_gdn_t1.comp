@@ -1,5 +1,7 @@
 #version 450
 #extension GL_EXT_spirv_intrinsics : require
+#extension GL_GOOGLE_include_directive : require
+#include "../../core/native_hc_mix_limits.h"
 spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427) float nfma(float a,float b,float c);
 // verify_kernels.cu: S=128, RG=4, RPG=32. x=state column, y=row group.
 layout(local_size_x=128,local_size_y=4) in;
@@ -35,7 +37,14 @@ void main(){uint head=gl_WorkGroupID.x,col=gl_LocalInvocationID.x,rg=gl_LocalInv
  for(uint offset=16u;offset>0u;offset>>=1u){precise float next=ck(normpart[id]+normpart[rg*128u+(col^offset)]);barrier();normpart[id]=next;barrier();}
  if(rg==0u&&(col&31u)==0u)wsum[col>>5u]=normpart[id];barrier();
  if(rg==0u){precise float sum=ck(ck(ck(wsum[0]+wsum[1])+wsum[2])+wsum[3]);precise float mean=ck(sum/128.0);precise float shifted=ck(mean+0.000001);float scale=ck(inversesqrt(shifted));if(col==0u){aux[p.off[10]+head]=scale;if(head==0u)aux[p.off[10]+48u]=inversesqrt(128.0);}
-  float ev=ck(exp(-ck(z[p.off[4]+head*128u+col])));precise float denominator=ck(1.0+ev);precise float sigmoid=ck(1.0/denominator);aux[p.off[11]+head*128u+col]=ev;aux[p.off[12]+head*128u+col]=sigmoid;
+  // Same native expression, including natural exp underflow/+Inf and 1/0 tails.
+  // Class checks never assign replacements to exp, denominator or sigmoid.
+  float zz=ck(z[p.off[4]+head*128u+col]);float ev=exp(-zz);precise float denominator=1.0+ev;precise float sigmoid=1.0/denominator;
+  bool positive_tail=zz>uintBitsToFloat(STRATA_HC_MIX_ACTIVATION_LIMIT_BITS),overflow_tail=zz<=-89.0;
+  if(positive_tail){if(floatBitsToUint(ev)>0x33800000u||denominator!=1.0||floatBitsToUint(sigmoid)!=0x3f800000u)atomicOr(status[p.off[13]],2u);}
+  else if(overflow_tail){if(floatBitsToUint(ev)!=0x7f800000u||floatBitsToUint(denominator)!=0x7f800000u||floatBitsToUint(sigmoid)!=0u)atomicOr(status[p.off[13]],2u);}
+  else{ck(ev);ck(denominator);ck(sigmoid);if(!(ev>0.0)||denominator>uintBitsToFloat(STRATA_HC_MIX_MAX_DENOMINATOR_BITS)||sigmoid==0.0)atomicOr(status[p.off[13]],2u);}
+  aux[p.off[11]+head*128u+col]=ev;aux[p.off[12]+head*128u+col]=sigmoid;
   precise float a=ck(oc*scale);precise float b=ck(a*ck(gamma[p.off[5]+col]));precise float result=ck(b*sigmoid);y[p.off[7]+head*128u+col]=result;
  }
 }

@@ -88,3 +88,11 @@ run(['--native-hc-serial','/absent/no-residency'],False,'ordinary native HC requ
 for flags in [['--native-hc-serial-cycle','/absent/cycle'],['--dense-topology','split'],['--allow-cpu-fallback'],['--prompt-chunk-size','2']]:run([*ordinary,*flags],False)
 run(ordinary,False,'fused final head',dict(os.environ,STRATA_FUSE_HEAD_GR='1'))
 run(ordinary,True,env=dict(os.environ,STRATA_FUSE_HEAD_GR='0'))
+
+# The GDN family is explicit and default-disabled; complete residency is validated before model load.
+assert not a.get('native_gdn_t1',False)
+gdn=['--gdn-resident-weights','--gdn-resident-state','--dense-topology','primary','--native-gdn-t1','/tmp/native-gdn-options-only']
+r=run(gdn,True);assert r['native_gdn_t1'] and r['gdn_resident_state']
+for missing in ('--gdn-resident-weights','--gdn-resident-state'):
+ bad=[x for x in gdn if x!=missing];run(bad,False)
+run(gdn+['--allow-cpu-fallback'],False)

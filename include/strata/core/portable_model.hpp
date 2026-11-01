@@ -110,6 +110,8 @@ struct PortableModelOptions {
     size_t expert_native_primary_slots=0,expert_native_helper_slots=0;
     bool expert_timings = false; // opt-in coarse provider/executor host-call boundaries
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
+    bool native_gdn_t1 = false; // ordinary GDN recurrence/norm/gate only; PLE layer1 unchanged
+    std::string native_gdn_receipt_prefix;
     bool gdn_resident_weights = false; // opt-in GDN attention only
     bool gdn_resident_state = false; // opt-in; independent of weight residency
     bool dense_resident_weights = false; // opt-in attention, FFN and head weights
@@ -136,6 +138,7 @@ struct PortableExpertWork {
 // Whole-call wall totals are optional; head outcome counters are unconditional.
 // Layer totals include matched provider intervals.
 struct PortableModelWork {
+    std::array<uint64_t,48> native_gdn_t1_calls{},gdn_state_a{},gdn_state_b{};
     std::array<uint64_t,48> native_hc_serial_reads{}, native_hc_serial_ffn_calls{}, native_hc_serial_outputs{};
     uint64_t native_hc_serial_final_writes=0;
     std::array<uint64_t,2> native_hc_cycle_ffn_calls{};
@@ -214,7 +217,7 @@ class PortableModelSession {
     size_t vocabulary() const;
     // Cumulative across reset; digest_bytes counts input bytes, two FNV passes.
     PortableExpertWork expert_work() const;
-    PortableModelWork model_work() const;
+    PortableModelWork model_work(bool state_digests=false) const;
     const PortableModelReport &report() const;
     const std::vector<PortablePlacement> &placements() const;
 
