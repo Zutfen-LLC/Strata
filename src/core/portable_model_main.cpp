@@ -117,6 +117,8 @@ int main(int argc, char **argv) {
                              " [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
                              " [--qsa-reuse-attention (compatibility flag; session scratch is shared)]\n"
                              " [--gdn-resident-state (trial, default off)]\n"
+                             " [--native-hc-ffn-read-layer0 RECEIPT_PREFIX (experimental actual layer0 FFN read; explicit resident scope)]\n"
+                             " [--layer0-resident-weights (trial, only layer0 dense/FFN weights)]\n"
                              " [--native-hc-read-layer0 RECEIPT_PREFIX (experimental serial T1 attention read)]\n"
                              " [--native-hc-norm-inject-layer0 RECEIPT_PREFIX (experimental serial T1; partial HC)]\n"
                              " [--head-shape-admission (experimental metadata-only head preflight)]\n"
@@ -165,6 +167,7 @@ int main(int argc, char **argv) {
                 opts.gdn_resident_state = true;
                 continue;
             }
+            if (key == "--layer0-resident-weights") {opts.layer0_resident_weights=true;continue;}
             if (key == "--dense-resident-weights") {
                 opts.dense_resident_weights = true;
                 continue;
@@ -192,7 +195,8 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if(key=="--native-hc-read-layer0") {opts.native_hc_norm_inject_layer0=true;opts.native_hc_mix_layer0=true;opts.native_hc_receipt_prefix=value;}
+            if(key=="--native-hc-ffn-read-layer0") {opts.native_hc_ffn_read_layer0=true;opts.native_hc_norm_inject_layer0=true;opts.native_hc_mix_layer0=true;opts.native_hc_receipt_prefix=value;}
+            else if(key=="--native-hc-read-layer0") {opts.native_hc_norm_inject_layer0=true;opts.native_hc_mix_layer0=true;opts.native_hc_receipt_prefix=value;}
             else if(key=="--native-hc-norm-inject-layer0") {opts.native_hc_norm_inject_layer0=true;opts.native_hc_receipt_prefix=value;}
             else if(key=="--native-shared") {
                 opts.native_shared=true;opts.native_shared_receipt_prefix=value;
@@ -339,6 +343,8 @@ int main(int argc, char **argv) {
                      <<",\"head_shape_admission\":"<<(opts.head_shape_admission?"true":"false")
                      <<",\"gdn_resident_weights\":"<<(opts.gdn_resident_weights?"true":"false")
                      <<",\"dense_resident_weights\":"<<(opts.dense_resident_weights?"true":"false")
+                     <<",\"layer0_resident_weights\":"<<(opts.layer0_resident_weights?"true":"false")
+                     <<",\"native_hc_ffn_read_layer0\":"<<(opts.native_hc_ffn_read_layer0?"true":"false")
                      <<",\"native_hc_norm_inject_layer0\":"<<(opts.native_hc_norm_inject_layer0?"true":"false")
                      <<",\"native_hc_mix_layer0\":"<<(opts.native_hc_mix_layer0?"true":"false")<<"}\n";
             return 0;
@@ -451,6 +457,7 @@ int main(int argc, char **argv) {
                          "native_moe_combine_observation=true qualified=false quantizer_qualified=false fp32_denorm_mode=unspecified\n";
         else
             std::cerr << "resident Vulkan/CPU expert rows; host PLE; original-order host merge. Vulkan hybrid Q8 is not CPU bit parity.\n";
+        if(opts.native_hc_ffn_read_layer0)std::cerr<<"native_hc_ffn_read_layer0=true full_hc_parity=false qualified=false pending_contract=native-hc-pending-t1-v1\n";
         if(opts.native_hc_mix_layer0)std::cerr<<"native_hc_read_layer0=true full_hc_parity=false qualified=false mixing_contract=native-hc-mix-normal-v2\n";
         if(opts.native_hc_norm_inject_layer0)std::cerr<<"native_hc_norm_inject_layer0=true full_hc_parity=false qualified=false numerical_contract=native-hc-normal-v1\n";
         if(opts.native_shared)std::cerr<<"native_shared_method=true numerical_parity=false qualified=false fp32_denorm_mode=unspecified\n";
@@ -518,6 +525,7 @@ int main(int argc, char **argv) {
         const auto router_fields = [&](std::ostream& out) {
             if(opts.native_hc_norm_inject_layer0)out<<",\"native_hc_norm_inject_layer0\":true,\"full_hc_parity\":false,\"native_hc_layer0_calls_delta\":"
                 <<session->model_work().native_hc_layer0_calls-heads_before.native_hc_layer0_calls;
+            if(opts.native_hc_ffn_read_layer0)out<<",\"native_hc_ffn_read_layer0\":true,\"native_ffn_hc_layer0_calls_delta\":"<<session->model_work().native_ffn_hc_layer0_calls-heads_before.native_ffn_hc_layer0_calls;
             if(opts.native_hc_mix_layer0)out<<",\"native_hc_mix_layer0\":true,\"native_hc_mix_layer0_calls_delta\":"<<session->model_work().native_hc_mix_layer0_calls-heads_before.native_hc_mix_layer0_calls;
             if(opts.native_shared) {
                 const auto after=session->model_work();

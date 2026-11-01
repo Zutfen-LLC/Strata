@@ -33,6 +33,7 @@ struct PortableTensorView {
 };
 
 struct PortableFfnOptions {
+    static constexpr size_t native_hc_pending_host_bound = 8u << 20; // streamed conversion, trace and metadata
     bool native_hc_pending_read = false; // experimental serial layer-0 FFN read of actual producer tuple
     std::string native_hc_receipt_prefix;
     int threads = 1;

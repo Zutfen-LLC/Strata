@@ -220,7 +220,7 @@ struct PortableModelSession::Impl {
             o.native_moe_combine = !output && opts.native_moe_combine;
             if(o.native_moe_combine) o.native_moe_combine_receipt_prefix = opts.expert_native_q8_observation + ".combine";
             o.allow_cpu_fallback = opts.allow_cpu_fallback;
-            o.resident_dense_weights = opts.dense_resident_weights;
+            o.resident_dense_weights = portable_detail::model_resident_dense(opts,index,output);
             o.weight_budget = output ? opts.head_weight_cap : opts.layer_weight_cap;
             o.graph_budget = output ? opts.head_graph_cap : opts.layer_graph_cap;
             if (!opts.accelerators.empty()) {
@@ -262,7 +262,7 @@ struct PortableModelSession::Impl {
             const size_t graph_preflight=opts.layer_graph_cap*(opts.prompt_chunk_size?2:1);
             require(graph_preflight <= SIZE_MAX - private_workspace, "portable model: graph cap overflow");
             const bool resident = !opts.accelerators.empty() &&
-                                  (opts.dense_resident_weights || (opts.gdn_resident_weights && l % 4 != 3));
+                                  (portable_detail::model_resident_dense(opts,l,false) || (opts.gdn_resident_weights && l % 4 != 3));
             const size_t state_bound = portable_detail::layer_state_preflight_bytes(
                 opts, l, opts.accelerators.empty() ? nullptr : opts.accelerators[device(l)]);
             require(state_bound <= SIZE_MAX - graph_preflight - private_workspace,
@@ -275,7 +275,7 @@ struct PortableModelSession::Impl {
             // maxima may combine graph and unused-workspace high waters, so
             // reserve two graph caps plus the explicit FFN private allowance.
             preflight(device(l),l,l%4==3?"qsa":"gdn",opts.layer_weight_cap,
-                      graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+((l==0&&opts.native_hc_norm_inject_layer0)?(opts.native_hc_mix_layer0?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound):0));
+                      graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+portable_detail::model_hc_host_bound(opts,l));
             Layer layer;
             if (l % 4 == 3) {
                 PortableQsaOptions o;
@@ -294,9 +294,7 @@ struct PortableModelSession::Impl {
                 o.policy = opts.gdn_production ? PortableGdnPolicy::device_production : PortableGdnPolicy::eager_diagnostic;
                 o.resident_attention_weights = opts.gdn_resident_weights;
                 o.execution = execution(l, false);
-                o.native_hc_mix=opts.native_hc_mix_layer0 && l==0;
-                o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && l==0;
-                if(o.native_hc_norm_inject)o.native_hc_receipt_prefix=opts.native_hc_receipt_prefix;
+                portable_detail::model_gdn_hc_options(opts,l,o);
                 o.scratch = gdn_scratch.at(o.execution.accelerator);
                 layer.gdn = PortableGdnLayer::from_gguf(model, int64_t(l), o, error);
                 require(bool(layer.gdn), "portable model: layer " + std::to_string(l) + ": " + error);
@@ -314,7 +312,7 @@ struct PortableModelSession::Impl {
                     // Recheck the reserved module envelope before every shape
                     // allocation; no account-after-allocation admission gate.
                     preflight(device(l),l,l%4==3?"qsa-chunk-shape":"gdn-chunk-shape",opts.layer_weight_cap,
-                              graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+((l==0&&opts.native_hc_norm_inject_layer0)?(opts.native_hc_mix_layer0?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound):0));
+                              graph_preflight+private_workspace+resident_bound+state_bound,(128u<<20)+portable_detail::model_hc_host_bound(opts,l));
                     const bool prepared=layer.prepare(T,error);
                     require(prepared,"portable model: chunk preflight layer "+std::to_string(l)+": "+error);
                     include(layer.memory());
@@ -761,6 +759,8 @@ std::unique_ptr<PortableModelSession> PortableModelSession::open(const std::vect
                                                                  std::string &error) {
     error.clear();
     try {
+        // Match the CLI's mode refusal before model mapping or observer creation.
+        portable_detail::validate_model_modes(opts,opts.accelerators.size());
         return std::unique_ptr<PortableModelSession>(
             new PortableModelSession(std::make_unique<Impl>(shards, manifest, std::move(opts))));
     } catch (const std::exception &e) {
@@ -808,6 +808,7 @@ PortableExpertWork PortableModelSession::expert_work() const {
 PortableModelWork PortableModelSession::model_work() const {
     auto work=impl_->model_work;
     for(const auto& layer:impl_->layers) if(layer.gdn) {
+        work.native_ffn_hc_layer0_calls+=layer.gdn->native_ffn_hc_pending_calls();
         work.native_hc_mix_layer0_calls+=layer.gdn->native_hc_mix_calls();
         work.native_hc_layer0_calls+=layer.gdn->native_hc_calls();
         work.gdn_causal_submissions+=layer.gdn->causal_chunk_calls();

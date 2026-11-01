@@ -84,6 +84,8 @@ struct PortableModelOptions {
     size_t expert_staging_cap = 64ull << 20;
     bool expert_check_rows = false, expert_record_routes = false;
     bool native_hc_norm_inject_layer0 = false; // experimental serial T1; HC mixed stays GGML
+    bool layer0_resident_weights = false; // explicit dense residency only for layer 0, including FFN
+    bool native_hc_ffn_read_layer0 = false; // actual GDN producer -> FFN pending read, experimental T1
     bool native_hc_mix_layer0 = false; // experimental composed serial attention read, pending write unchanged
     std::string native_hc_receipt_prefix;
     bool native_shared = false;
@@ -122,6 +124,7 @@ struct PortableExpertWork {
 // Whole-call wall totals are optional; head outcome counters are unconditional.
 // Layer totals include matched provider intervals.
 struct PortableModelWork {
+    uint64_t native_ffn_hc_layer0_calls = 0; // actual successful component calls, including later provider failure
     uint64_t native_hc_mix_layer0_calls = 0;
     uint64_t native_hc_layer0_calls = 0; // actual component calls, including later failed forwards
     uint64_t native_shared_calls = 0, native_shared_rows = 0; // completed tagged forwards only

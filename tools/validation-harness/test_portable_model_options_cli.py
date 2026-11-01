@@ -33,4 +33,16 @@ assert not a['native_hc_mix_layer0'] and not b['native_hc_mix_layer0']
 run(read,False,'native HC layer0 requires')
 for flags in [['--allow-cpu-fallback'],['--gdn-production','--gdn-resident-state'],['--prompt-chunk-size','2']]:run([*read,'--gdn-resident-weights',*flags],False)
 run(['--native-hc-read-layer0','','--gdn-resident-weights'],False,'receipt prefix')
+ffn=['--native-hc-ffn-read-layer0','/absent/hc-ffn']
+assert not a['layer0_resident_weights'] and not a['native_hc_ffn_read_layer0']
+f=run([*ffn,'--layer0-resident-weights'],True)
+assert f['native_hc_ffn_read_layer0'] and f['native_hc_mix_layer0'] and f['native_hc_norm_inject_layer0'] and f['layer0_resident_weights']
+assert not f['dense_resident_weights'] and not f['gdn_resident_weights']
+run([*ffn,'--gdn-resident-weights'],False,'explicit layer0/dense resident weights')
+run(ffn,False,'explicit layer0/dense resident weights')
+run([*ffn,'--dense-resident-weights'],True)
+run(['--native-hc-ffn-read-layer0','','--layer0-resident-weights'],False,'receipt prefix')
+for flags in [['--allow-cpu-fallback'],['--gdn-production','--gdn-resident-state'],['--prompt-chunk-size','2']]:run([*ffn,'--layer0-resident-weights',*flags],False)
+run([*ffn,'--layer0-resident-weights'],False,'legacy observer',dict(os.environ,STRATA_LAYER0_OBSERVER='/absent/legacy.bin'))
+run([*ffn,'--layer0-resident-weights'],False,'recorded-unset HC mode',dict(os.environ,STRATA_HC_Q8='1'))
 print(str(count)+' actual product mode/parser preflights passed; no model/backend/memory admission performed')
