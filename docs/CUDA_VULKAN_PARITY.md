@@ -284,25 +284,35 @@ live/unverified/unknown events. This is bounded own-input integration, with no
 independent native capture, whole-state export or full-model numerical/quality
 qualification.
 
-The next bounded capability is the ordinary layer2 FFN to layer3 QSA attention
-pending read. The specification is `src/core/verify.cpp`,
-`Verifier::record_window()` and its `pre`/`gr_read_group(0, pending, inj2_, inj_)`
-path (lines 1215–1352 at the inspected source), backed by
-`src/kernels/cuda/fused_gr.cu::fused_gr_read_multi()`. It folds the previous FFN
-tuple into the first HC read for both layer families; `PortableQsaLayer` still takes a materialized
-residual and builds its HC normalization/mix in `src/core/portable_qsa.cpp`.
-Port that existing selected native pending/norm/mix order, with explicitly
-admitted HC-role storage; preserve QSA KV/indexer candidate/commit, provider rollback and reset.
-Start with a small synthetic T1 sequence and materialized same-backend control,
-then reuse the current fresh-planning/same-image model workflow and direct
-GGUF-role/own-input receipts. That question needs no new native capture.
-Vulkan allocation/buffer ownership and submission must express those same
-dependencies, not introduce a replacement algorithm or scheduler/placement
-policy. Existing GGML QSA/upstream methods and native captured-window scheduling
-remain explicit migration gaps; the current portable eager path is not claimed
-to reproduce them. Native-versus-Vulkan end-to-end comparison remains separate.
-Keep layer0's
-materialization before PLE and control/head rules unchanged. See the [earlier producer/read scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
+[PR109](https://github.com/Zutfen-LLC/Strata/pull/109), source
+`9a6d41029797304fbe1de79d5fb2bc311bae6c97`, adds the default-disabled ordinary
+layer2 FFN → layer3 QSA pending read. Its specification remains
+`src/core/verify.cpp::Verifier::record_window()` → `pre` →
+`gr_read_group(0, pending, inj2_, inj_)` and
+`src/kernels/cuda/fused_gr.cu::fused_gr_read_multi()`: apply the prior FFN
+FMA before native-method HC normalization, injection and mixing. Vulkan
+buffer ownership/submission expresses that dependency; it changes no placement
+policy or QSA projection/attention/indexer algorithm. Layer0 PLE materialization
+and control/head exceptions remain unchanged.
+
+The small Vulkan gate passes: actual GDN2 producer/QSA3 consumer, shared scratch,
+four-position pooled-block completion, materialized same-backend residual and
+KV/indexer equality, provider rollback/retry, reset and five effective HC module
+checks. Nine focused CTests pass. The probe checks five producer outputs and
+seven paid consumer calls, including work before intentional refusal. Its
+rebound layer0 HC operands are synthetic development roles, not actual layer3
+model provenance. Complete state equality is asserted by the probe; arrays are
+not exported. Guard sampling is discrete and does not establish continuous
+coverage. This is a functional synthetic gate, not full QSA/model parity.
+
+The next validation reuses fresh native-policy planning and same-image model
+control/on, holding layer0 and layer1→layer2 methods fixed in both arms and
+adding only layer2→layer3 in on. It reads actual layer3 HC roles from the same
+GGUF and validates the actual producer's own-input receipts; no separate native
+capture is required for that question. Model reset/replay, finite heads/routes,
+paid counters, resource admission and lifecycle checks remain required. Native
+captured-window scheduling and native-versus-Vulkan QSA arithmetic equivalence
+remain separate migration gaps. See the [implemented boundary scope](https://github.com/Zutfen-LLC/Strata/blob/9a6d41029797304fbe1de79d5fb2bc311bae6c97/docs/native-hc-pending-layer2-3-qsa.md).
 
 Do not attribute later route/head differences to down/up alone when upstream
 injection and internal state already differ, and do not invent a final-logit
