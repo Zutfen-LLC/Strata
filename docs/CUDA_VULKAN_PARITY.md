@@ -630,7 +630,12 @@ for each capability below.
    uses NCSA-licensed AMD builtin/expansion helpers; the required Vulkan accuracy
    is not established. Selecting either is a separate backend primitive port,
    preserving native's outer softplus method, not an already-qualified shader.
-   No new approximation, relaxed target or a/b integration is selected.
+   PR119 now implements a separate standalone adapter of pinned LLVM libc's
+   accurate non-FMA/RNE configuration, preserving original coefficients/tables
+   and in-domain hard cases. It requires actual logical FP64 and 64-bit RTE/signed
+   controls; CPU/source-oracle and SPIR-V checks pass, hardware qualification is
+   pending. It does not change the frozen gate, native outer softplus method or
+   PR118's failed result. No a/b integration or default enablement follows.
    The current model prefix still uses GGML convolution/L2 and a/b preparation. Dense quantized
    projections also remain separate upstream work; do not attribute unequal model
    outputs to recurrence without equal inputs. Accepted-prefix commit and window
