@@ -55,5 +55,10 @@ Local tests cover actual consumer identity, independent FMA/indexing, budget
 refusal, no duplicate weights/unused post graph, creation/runtime refusal,
 rollback/reset and counters, actual CLI/API preconditions, scoped host admission
 and full CPU model default-output regression. CPU component stubs are transaction
-controls, not GPU evidence. Hardware integration remains unrun until separately
-released; existing standalone real-component acceptance is not model parity.
+controls, not GPU evidence. The bounded physical coordinator and fresh same-image matched-model diagnostic
+now pass actual write participation, initial own-input numerical contracts and
+within-arm reset/replay checks. Generated IDs agree across control/on, while
+later routes and retained heads differ. This is limited layer-0 integration
+evidence, not model numerical, quality or full-HC parity. Whole-state arrays
+remain source asserted rather than exported; executable/runtime payloads remain
+host bound. Generic inter-layer pending carry remains unfinished.
