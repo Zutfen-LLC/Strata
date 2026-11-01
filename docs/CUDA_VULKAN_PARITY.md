@@ -712,10 +712,14 @@ for each capability below.
    Context 256 exercises identity selection only; full native attention/window
    parity remains unproven. See [model scope](native-qsa-score-select-model-t1.md).
    The next standalone [FP16 T1 attention component](native-qsa-attention-t1.md)
-   follows the existing native chunk/merge and separate gate launchers. Local
-   Vulkan/host/source-order/intrinsic/module/output-contract checks pass; native
-   compilation and physical comparison are pending. It does not enable a model
-   path or port quantized KV, projections, accepted-prefix or window scheduling.
+   follows the existing native chunk/merge and separate gate launchers. At
+   `56b01f6e`, native two CTests/eight GPU cases and Vulkan four CTests/eight cases
+   pass source-order, frozen exp/sigmoid, module protections, canaries and cleanup
+   (Hermes 1793571148.601549). Samples are discrete, not continuous coverage.
+   The default-disabled [model adapter](native-qsa-attention-model-t1.md) consumes
+   actual query/selected-ID/current FP16 KV candidates and feeds gated output to
+   WO under existing FFN-success state authority; model validation is pending.
+   Quantized KV, projections, accepted-prefix and window scheduling remain gaps.
 
 
 

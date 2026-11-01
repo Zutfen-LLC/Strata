@@ -172,10 +172,24 @@ size_t strata_vk_native_qsa_select_bytes(const StrataVkNativeQsaSelect*){return 
 uint64_t strata_vk_native_qsa_score_calls(const StrataVkNativeQsaSelect*p)noexcept{return p?p->scores:0;}
 uint64_t strata_vk_native_qsa_select_calls(const StrataVkNativeQsaSelect*p)noexcept{return p?p->selections:0;}
 uint32_t strata_vk_native_qsa_scores_run(StrataVkNativeQsaSelect*p,ggml_tensor*const t[5],uint32_t cells){
- check(t[2]->flags&GGML_TENSOR_FLAG_OUTPUT,"actual projected query lifetime missing");native_qsa_ss::Fixture f;f.cells=cells;ggml_backend_tensor_get(t[3],f.step.data(),0,16);f.pooled=get(t[0]);f.dead=get(t[1]);f.query=get(t[2]);f.seed.assign(qsa_select_blocks(cells),0);
+ check((t[2]->flags&GGML_TENSOR_FLAG_OUTPUT)||(t[2]->op==GGML_OP_NONE&&t[2]->buffer&&t[2]->data),"actual projected query lifetime missing");native_qsa_ss::Fixture f;f.cells=cells;ggml_backend_tensor_get(t[3],f.step.data(),0,16);f.pooled=get(t[0]);f.dead=get(t[1]);f.query=get(t[2]);f.seed.assign(qsa_select_blocks(cells),0);
  check(last_indexer_candidate.size()==qsa_idx_words(cells),"missing actual indexer candidate producer");check(std::memcmp(f.pooled.data(),last_indexer_candidate.data()+qsa_idx_pool,(last_indexer_candidate.size()-qsa_idx_pool-1)*4)==0,"score used old pooled state");check(std::memcmp(f.dead.data(),last_indexer_candidate.data()+384,512)==0,"score lost actual retained dead/spare");++p->scores;if(fail_qsa_score)return 1;auto out=native_qsa_ss::score_control(f);ggml_backend_tensor_set(t[4],out.data(),0,out.size()*4);return 0;
 }
 uint32_t strata_vk_native_qsa_select_run(StrataVkNativeQsaSelect*p,ggml_tensor*const t[3],uint32_t cells){
  native_qsa_ss::Fixture f;f.cells=cells;f.compute=0;ggml_backend_tensor_get(t[1],f.step.data(),0,16);f.pooled.assign(qsa_select_blocks(cells)*128,0);f.dead.assign(128,0);f.query.assign(512,0);f.seed.resize(qsa_select_blocks(cells));ggml_backend_tensor_get(t[0],f.seed.data(),0,f.seed.size()*4);++p->selections;if(fail_qsa_select)return 1;auto out=native_qsa_ss::select_control(f,f.seed);ggml_backend_tensor_set(t[2],out.data(),0,out.size()*4);return 0;
 }
 }
+
+#ifdef STRATA_PORTABLE_NATIVE_HC
+#include "../kernels/native_qsa_attention_fixture.hpp"
+#include "strata_vk_native_qsa_attention.hpp"
+namespace {bool fail_qsa_attention=false;std::vector<float>actual_native_gated;}
+namespace strata::core::portable_detail {
+struct StrataVkNativeQsaAttention{std::array<uint64_t,3>calls{};};
+StrataVkNativeQsaAttention* strata_vk_native_qsa_attention_create(ggml_backend_t,const char*a,const char*b,const char*c,size_t budget){check(budget>=3072,"QSA attention metadata budget");for(auto p:{a,b,c})std::ofstream(p)<<"mock, not GPU proof\n";return new StrataVkNativeQsaAttention;}
+void strata_vk_native_qsa_attention_destroy(StrataVkNativeQsaAttention*p)noexcept{delete p;}
+size_t strata_vk_native_qsa_attention_bytes(const StrataVkNativeQsaAttention*){return 3072;}
+uint64_t strata_vk_native_qsa_attention_calls(const StrataVkNativeQsaAttention*p,unsigned i)noexcept{return p&&i<3?p->calls[i]:0;}
+uint32_t strata_vk_native_qsa_attention_run(StrataVkNativeQsaAttention*p,ggml_tensor*const t[13],uint32_t cells){native_qsa_attn::Fixture f;f.cells=cells;auto n=native_qsa_attn::counts(cells);for(size_t i=0;i<7;++i){f.in[i].resize(n[i]);check(ggml_nbytes(t[i])==n[i]*4,"actual attention typed transport span");ggml_backend_tensor_get(t[i],f.in[i].data(),0,n[i]*4);}++p->calls[0];if(fail_qsa_attention)return 0x10001;auto out=native_qsa_attn::control(f);++p->calls[1];++p->calls[2];for(size_t i=0;i<6;++i)ggml_backend_tensor_set(t[i+7],out.out[i].data(),0,out.out[i].size()*4);actual_native_gated.resize(6144);std::memcpy(actual_native_gated.data(),out.out[5].data(),24576);return 0;}
+}
+#endif
