@@ -76,6 +76,9 @@ function(strata_enable_native_stages)
   endif()
   include(cmake/strata_native_router.cmake)
   strata_native_router_enable("${out}")
+  # Observe the core feature actually passed to successful creation; do not enable a new feature.
+  strata_native_q8_dot_replace(dot_patched "        device->device = device->physical_device.createDevice(device_create_info);"
+    "        device->device = device->physical_device.createDevice(device_create_info);\n        strata_q8_device->strata_float64_enabled = device_features2.features.shaderFloat64 != VK_FALSE;")
   file(WRITE "${out}/ggml-vulkan-guard.cpp" "${dot_patched}\n#include \"strata_vk_logits_guard.inc\"\n#include \"strata_vk_native_stages.inc\"\n")
   # Host test executes the actual patched feature-chain block with a mock
   # feature query and creation success/failure; no device or alternative chain.

@@ -7,6 +7,7 @@
 // The base ABI stays unchanged for other backend TUs. shared_ptr retains this
 // derived deleter; GPU resources and backend ownership remain the base's.
 struct StrataVkQ8Device final : vk_device_struct {
+    bool strata_float64_enabled=false; // Receipt only: unchanged core feature passed to successful create.
     strata::core::portable_detail::NativeQ8IntegerDotState strata_q8_dot;
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
     strata::core::portable_detail::NativeQ8StrictFmaState strata_q8_fma;

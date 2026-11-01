@@ -64,6 +64,21 @@ function(strata_native_hc_enable out)
   if(NOT MSVC)
     target_compile_options(native_gdn_log1p_component PRIVATE -fno-fast-math -ffp-contract=off)
   endif()
+  add_custom_command(OUTPUT "${out}/strata_native_llvm_log1p_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_llvm_log1p.comp" -o "${out}/native_llvm_log1p.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_llvm_log1p.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_llvm_log1p.spv" "-DOUTPUT=${out}/strata_native_llvm_log1p_spv.hpp"
+      -DARRAY_NAME=strata_native_llvm_log1p_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_llvm_log1p.comp src/kernels/vulkan/native_llvm_log1p.glsl cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_llvm_log1p_shader DEPENDS "${out}/strata_native_llvm_log1p_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_llvm_log1p_shader)
+  add_executable(native_llvm_log1p_component tests/kernels/native_llvm_log1p_component.cpp)
+  target_include_directories(native_llvm_log1p_component PRIVATE src/core tests/kernels)
+  target_link_libraries(native_llvm_log1p_component PRIVATE ggml-vulkan ggml-base)
+  if(NOT MSVC)
+    target_compile_options(native_llvm_log1p_component PRIVATE -fno-fast-math -ffp-contract=off)
+  endif()
   add_executable(native_hc_mix_component tests/kernels/native_hc_mix_component.cpp)
   target_include_directories(native_hc_mix_component PRIVATE src/core tests/kernels)
   target_link_libraries(native_hc_mix_component PRIVATE ggml-vulkan ggml-base)
@@ -110,6 +125,11 @@ function(strata_native_hc_enable out)
     target_link_libraries(native_gdn_log1p_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)
     add_dependencies(native_gdn_log1p_effective_shader_test strata_native_gdn_log1p_shader)
     add_test(NAME native_gdn_log1p_effective_shader_test COMMAND native_gdn_log1p_effective_shader_test)
+    add_executable(native_llvm_log1p_effective_shader_test tests/kernels/native_llvm_log1p_effective_shader_test.cpp)
+    target_include_directories(native_llvm_log1p_effective_shader_test PRIVATE src/core "${out}")
+    target_link_libraries(native_llvm_log1p_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)
+    add_dependencies(native_llvm_log1p_effective_shader_test strata_native_llvm_log1p_shader)
+    add_test(NAME native_llvm_log1p_effective_shader_test COMMAND native_llvm_log1p_effective_shader_test)
   endif()
   if(STRATA_BUILD_TESTS)
     add_test(NAME native_hc_write_fixture_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_hc_write_fixture.py" "$<TARGET_FILE:native_hc_write_component>")
