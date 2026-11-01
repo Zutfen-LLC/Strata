@@ -3131,6 +3131,13 @@ if(STRATA_BUILD_TESTS)
     target_compile_options(native_gdn_conv_t1_input_test PRIVATE -fno-fast-math -ffp-contract=off)
   endif()
   add_test(NAME native_gdn_conv_t1_input_test COMMAND native_gdn_conv_t1_input_test)
+  add_test(NAME native_component_output_contract_test COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_component_output_contract.py" "$<TARGET_FILE:native_gdn_conv_t1_input_test>")
+  add_test(NAME portable_native_stdout_contract_test COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_portable_native_methods_v1.py"
+    NativeMethods.test_actual_llvm_startup_receipt_through_suite
+    NativeMethods.test_stdout_classifier_rejects_malformed_unknown_and_error_output)
+
   add_test(NAME native_gdn_conv_t1_numeric_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_gdn_conv_t1_numeric.py")
   add_executable(native_gdn_log1p_input_test tests/kernels/native_gdn_log1p_input_test.cpp)
   target_include_directories(native_gdn_log1p_input_test PRIVATE src/core tests/kernels)

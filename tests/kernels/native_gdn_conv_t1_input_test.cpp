@@ -1,6 +1,7 @@
 #include "native_gdn_conv_fixture.hpp"
 using namespace native_gdn_conv;
 int main(int argc,char**argv){try{
+ if(argc==3&&std::string(argv[1])=="--contract"){contract(argv[2]);return 0;}
  if(argc==4&&std::string(argv[1])=="--synthetic"){write(argv[3],native_gdn_conv::synthetic(unsigned(std::stoul(argv[2]))));return 0;}
  if(argc==4&&std::string(argv[1])=="--check"){
   auto f=read(argv[2]);std::filesystem::path d=argv[3];auto get=[&](const char*name,size_t n){std::ifstream in(d/(std::string(name)+".f32le"),std::ios::binary);native_hc_need(bool(in),"GDN conv result missing");std::vector<float>a(n);for(float&x:a)x=value(word(in));native_hc_need(in.peek()==EOF,"GDN conv result shape");return a;};auto actual_silu=get("silu",10240);auto ref=control(f,get("exp",10240),get("rs",32),true,&actual_silu);
