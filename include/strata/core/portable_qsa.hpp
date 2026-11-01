@@ -19,9 +19,12 @@ class PortableQsaAttention {
 };
 struct PortableQsaOptions {
     static constexpr size_t native_hc_host_bound = PortableFfnOptions::native_hc_pending_host_bound + (128u<<10);
-    bool native_hc_read = false; // experimental layer3 T1; native pending/norm/mix method
+    bool native_hc_read = false; // opt-in serial family; native pending/norm/mix method
     bool native_hc_pending = false; // require explicit incoming R/BO/injection tuple
     std::string native_hc_receipt_prefix;
+    bool native_hc_ffn_read = false; // actual post-output-projection tuple
+    bool native_hc_ffn_write = false; // materialized endpoint/head control
+    bool defer_ffn_hc_write = false; // ordinary outgoing native boundary
 
     // graph_budget covers scheduler buffers/copies, CPU plans and a conservative
     // pinned-Vulkan tensor-workspace allowance. Larger active histories may
@@ -46,6 +49,8 @@ struct PortableQsaState {
 struct PortableQsaTrace {
     std::vector<float> query, key, value, gate, index_query, index_raw_key;
     std::vector<float> pooled_key, cell_scores, selected, attention, gated_attention, attention_residual;
+    PortableFfnHcTrace ffn_hc;
+    std::vector<float> projected_output; // actual post-attn_output.weight producer
     PortableFfnHcTrace hc; // existing HC tuple/own-input field representation
 };
 // Opt-in complete qwen4exp QSA layers 3/7/.../47, one text sequence, T1 or causal T1..8 chunks.
@@ -68,6 +73,9 @@ class PortableQsaLayer {
     bool step_pending(uint64_t position,const PortableHcPendingWrite& pending,const PortableExpertRows& dispatch,
                       PortableRoute& route,std::string& error,PortableQsaTrace* trace=nullptr);
     uint64_t native_hc_pending_calls() const;
+    uint64_t native_ffn_hc_pending_calls() const;
+    uint64_t deferred_hc_outputs() const;
+    const PortableHcPendingWrite& pending_write() const;
     // Opt-in T1..8 causal layer chunk. Token IDs bind the single-sequence
     // interface (QSA uses contiguous positions); rows are [H,HC,T]. Failure
     // preserves public receipts and poisons either policy until reset/replay.

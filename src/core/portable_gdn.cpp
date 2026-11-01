@@ -9,6 +9,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 #ifdef STRATA_PORTABLE_NATIVE_HC
 #include "portable_native_hc.hpp"
+#include "native_hc_boundary.hpp"
 #endif
 #include <algorithm>
 #include <cmath>
@@ -732,20 +733,21 @@ struct PortableGdnLayer::Impl {
         require(layer >= 0 && layer < 48 && layer % 4 != 3,
                 "portable GDN: expected a non-QSA layer in [0,47]");
         require(!options.execution.defer_hc_write,"portable GDN: configure deferred write through layer option");
-        require(!options.defer_ffn_hc_write || ((layer==1 || layer==2) && !options.native_hc_ffn_write && !production() &&
-            !options.batch_input_projections && !options.causal_chunk),"deferred HC write: eager layer1/2 only");
+        require(!options.defer_ffn_hc_write || (portable_detail::native_hc_boundary(int(layer)).defer_ffn && !options.native_hc_ffn_write && !production() &&
+            !options.batch_input_projections && !options.causal_chunk),"deferred HC write: eager ordinary native boundary only");
         require(!options.execution.native_hc_final_write,"portable GDN: configure FFN write through layer option");
         require(!options.native_hc_ffn_write||options.native_hc_ffn_read,"native FFN final write requires pending FFN read");
         require(!options.execution.native_hc_pending_read,"portable GDN: configure FFN read through layer option, not raw execution option");
-        require(!options.native_hc_ffn_read || (options.native_hc_mix && !options.native_hc_pending &&
+        require(!options.native_hc_ffn_read || (options.native_hc_mix &&
+                (!options.native_hc_pending || portable_detail::native_hc_boundary(int(layer)).pending_attention) &&
                 options.execution.resident_dense_weights && !options.execution.layer0_observer),
-                "native GDN-to-FFN: composed attention/resident dense required; diagnostic prior tuple/legacy observer unsupported");
+                "native GDN-to-FFN: composed attention/resident dense required; legacy observer unsupported");
         require(!options.native_hc_pending||options.native_hc_mix,"native HC pending: composed read required");
         require(!options.native_hc_pending||!options.execution.layer0_observer,"native HC pending: legacy observer lacks pending tuple schema; use bounded layer trace");
         require(!options.native_hc_mix||options.native_hc_norm_inject,"native HC read: norm/injection required");
         if(options.native_hc_norm_inject) {
-            require((layer==0 || (layer==2 && options.native_hc_pending)) && !options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk,
-                    "native HC serial: eager layer0 or explicit layer2 pending read only; PLE unsupported");
+            require((layer==0 || !options.native_hc_pending || portable_detail::native_hc_boundary(int(layer)).pending_attention) && !options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk,
+                    "native HC serial: eager native boundary only; PLE unsupported");
             require(options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback &&
                     (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_hc_receipt_prefix.empty(),
                     "native HC serial: strict accelerator, resident attention weights and receipt prefix required");
@@ -866,7 +868,7 @@ struct PortableGdnLayer::Impl {
                 w.at("hc_attn_inject.weight"),options.execution.graph_budget-graphs_size,options.native_hc_receipt_prefix,
                 options.native_hc_mix?w.at("hc_attn_down.weight"):nullptr,options.native_hc_mix?w.at("hc_attn_up.weight"):nullptr,options.native_hc_pending);
             graphs_size+=native_hc->bytes();
-            placement.push_back({"native-hc",options.native_hc_pending?"NATIVE_BF16_PENDING_READ_T1_DIAGNOSTIC":(options.native_hc_mix?"NATIVE_BF16_READ_SERIAL_T1":"NATIVE_BF16_NORM_INJECT_SERIAL_T1"),options.native_hc_pending?"explicit value-owned prior tuple; layer0 diagnostic or layer2 ordinary carry":(options.native_hc_mix?"layer-0 attention read only; pending write unchanged":"layer-0 only; GGML mixed remains"), "F32/BF16",ggml_backend_name(options.execution.accelerator),"",{H,HC,1}});
+            placement.push_back({"native-hc",options.native_hc_pending?"NATIVE_BF16_PENDING_READ_T1_DIAGNOSTIC":(options.native_hc_mix?"NATIVE_BF16_READ_SERIAL_T1":"NATIVE_BF16_NORM_INJECT_SERIAL_T1"),options.native_hc_pending?"explicit value-owned prior FFN tuple":(options.native_hc_mix?"serial attention read; FFN write mode explicit":"serial norm/injection; GGML mixed remains"), "F32/BF16",ggml_backend_name(options.execution.accelerator),"",{H,HC,1}});
         }
 #endif
         if (options.scratch) { Borrow borrow(*this); }

@@ -42,12 +42,12 @@ struct PortableHcPendingWrite {
 
 struct PortableFfnOptions {
     static constexpr size_t deferred_hc_host_bound = 1u << 20; // candidate/committed/caller tuple copies
-    bool defer_hc_write = false; // layer1 producer only; next layer owns native materialization
+    bool defer_hc_write = false; // ordinary native boundary; next attention owns materialization
 
     static constexpr size_t native_hc_pending_host_bound = 8u << 20; // streamed conversion, trace and metadata
     static constexpr size_t native_hc_write_host_bound = 1u << 20; // final preflight/candidate/receipt envelope
-    bool native_hc_final_write = false; // actual layer0 materialization, never cross-layer deferred carry
-    bool native_hc_pending_read = false; // experimental serial layer-0 FFN read of actual producer tuple
+    bool native_hc_final_write = false; // materialized native endpoint; incompatible with deferred carry
+    bool native_hc_pending_read = false; // opt-in serial FFN read of actual post-projection tuple
     std::string native_hc_receipt_prefix;
     int threads = 1;
     // Borrowed backend, e.g. ggml_backend_vk_init(die). Caller retains lifetime.

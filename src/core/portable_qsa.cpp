@@ -4,6 +4,7 @@
 #include "portable_graph.hpp"
 #include "portable_qsa_graph.hpp"
 #include "portable_native_hc.hpp"
+#include "native_hc_boundary.hpp"
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include <algorithm>
@@ -228,6 +229,8 @@ PortableMemoryUsage PortableQsaAttention::memory_usage() const {
 struct PortableQsaLayer::Impl {
     PortableQsaOptions options;
     portable_detail::Backend cpu{nullptr, ggml_backend_free};
+    PortableHcPendingWrite pending;
+    ggml_tensor* projected_output=nullptr;
     Context weights_ctx{nullptr, ggml_free};
     Buffer weights_buffer{nullptr, ggml_backend_buffer_free};
     Context hc_weights_ctx{nullptr,ggml_free};
@@ -247,7 +250,7 @@ struct PortableQsaLayer::Impl {
 
     void prepare(size_t T,std::string& error) {
         auto& s=*this;
-        require(!s.options.native_hc_read,"native QSA HC: chunk API unsupported");
+        require(!s.options.native_hc_read && !s.options.defer_ffn_hc_write,"native QSA HC: chunk API unsupported");
         require(T>=1&&T<=8,"portable layer: chunk size outside [1,8]");
         const size_t extra=(s.options.production?0:s.options.capacity*2*KV*sizeof(uint16_t)+
                             (s.options.capacity/4+6)*ID*sizeof(float))+(3*T*RES+RES)*sizeof(float);
@@ -277,6 +280,7 @@ struct PortableQsaLayer::Impl {
         size_t graphs;
         PortableQsaTrace trace;
         std::unique_ptr<Phase> temporary; // legacy T1 scratch stays live through FFN
+        std::vector<float> block,inject;
     };
     AttentionResult attend(uint64_t position,const std::vector<float>& residual,CursorView cursor,bool trace,const PortableHcPendingWrite* pending=nullptr) {
         auto& s = *this;
@@ -425,13 +429,15 @@ struct PortableQsaLayer::Impl {
         write(s.out_input, attn);
         write(s.out_gate, gate);
         write(s.out_residual, s.options.native_hc_read ? applied : residual);
-        write(s.out_inject, inject);
+        if(!s.options.native_hc_ffn_read)write(s.out_inject, inject);
         s.combine->run();
         auto next_residual = read(s.attn_residual);
         auto gated = read(s.gated);
+        auto block=s.options.native_hc_ffn_read?read(s.projected_output):std::vector<float>{};
         PortableQsaTrace next_trace;
         if (trace) {
             next_trace = {q, k, v, gate, iq, ik, new_pool, cell_scores, selection, attn, gated, next_residual};
+            next_trace.projected_output=block;
 #ifdef STRATA_PORTABLE_NATIVE_HC
             if(s.native_hc) {
                 auto& t=next_trace.hc;t.original=residual;t.residual=applied;
@@ -442,7 +448,7 @@ struct PortableQsaLayer::Impl {
 #endif
         }
         return {std::move(next_residual),std::move(hk),std::move(hv),std::move(next_pool),
-                std::move(next_tail),std::move(next_placement),next_graphs-s.chunk_graphs(),std::move(next_trace),std::move(temporary)};
+                std::move(next_tail),std::move(next_placement),next_graphs-s.chunk_graphs(),std::move(next_trace),std::move(temporary),std::move(block),std::move(inject)};
     }
 
     std::unique_ptr<Phase> project, pool, combine, attention;
@@ -530,15 +536,19 @@ struct PortableQsaLayer::Impl {
         const std::string prefix = "blk." + std::to_string(layer) + ".";
         require(!options.native_hc_pending || options.native_hc_read,"native QSA HC: pending requires composed read");
         if(options.native_hc_read) {
-            require(layer==3 && options.reuse_attention && !options.production && options.execution.request_accelerator &&
+            require(options.reuse_attention && !options.production && options.execution.request_accelerator &&
                 options.execution.accelerator && !options.execution.allow_cpu_fallback && !options.execution.layer0_observer && !options.native_hc_receipt_prefix.empty(),
-                "native QSA HC: eager layer3/T1/reuse/strict accelerator/receipt required");
+                "native QSA HC: eager QSA/T1/reuse/strict accelerator/receipt required");
 #ifndef STRATA_PORTABLE_NATIVE_HC
             throw std::runtime_error("native QSA HC: strict-FMA native-stage build required");
 #else
             portable_detail::native_hc_environment();
 #endif
         }
+        require(!options.native_hc_ffn_write || (options.native_hc_ffn_read && !options.defer_ffn_hc_write),"native QSA HC: conflicting outgoing write modes");
+        require(!options.native_hc_ffn_read || (options.native_hc_read && options.execution.resident_dense_weights),"native QSA FFN HC: composed read and resident FFN weights required");
+        require(!options.defer_ffn_hc_write || (portable_detail::native_hc_boundary(int(layer)).defer_ffn && !options.production),"native QSA HC: ordinary outgoing boundary required");
+        require(!options.execution.native_hc_pending_read && !options.execution.native_hc_final_write && !options.execution.defer_hc_write,"native QSA HC: configure FFN through layer options");
         require(options.capacity > 0 && options.capacity <= 262144, "portable QSA: capacity must be in [1,262144]");
         require(!options.production || (options.reuse_attention && options.execution.request_accelerator &&
                     options.execution.accelerator && !options.execution.allow_cpu_fallback),
@@ -569,7 +579,12 @@ struct PortableQsaLayer::Impl {
         }
         require(aw.size() == shapes().size() && fw.size() == 9, "portable QSA: missing/extra attention or FFN tensors");
         std::string error;
-        ffn = PortableFfn::create({H, HC, R, 640, 512, 10, 1e-6f}, layer, fw, options.execution, error);
+        auto ffn_options=options.execution;
+        ffn_options.native_hc_pending_read=options.native_hc_ffn_read;
+        ffn_options.native_hc_final_write=options.native_hc_ffn_write;
+        ffn_options.defer_hc_write=options.defer_ffn_hc_write;
+        if(options.native_hc_ffn_read)ffn_options.native_hc_receipt_prefix=options.native_hc_receipt_prefix+".ffn";
+        ffn = PortableFfn::create({H, HC, R, 640, 512, 10, 1e-6f}, layer, fw, ffn_options, error);
         require(bool(ffn), error);
         weights_size = ffn->weight_bytes();
         fixed_graphs = ffn->graph_bytes();
@@ -741,10 +756,16 @@ struct PortableQsaLayer::Impl {
         out_inject = combine->input({HC});
         gated = ggml_mul(c, out_input, ggml_sigmoid(c, out_gate));
         auto *projected = ggml_mul_mat(c, w.at("attn_output.weight"), gated);
+        projected_output=projected;
+        if(options.native_hc_ffn_read) {
+            attn_residual=out_residual;
+            combine->output(projected_output,"qsa-projected-output");
+        } else {
         auto *scatter =
             ggml_reshape_3d(c, ggml_scale(c, ggml_sigmoid(c, ggml_scale(c, out_inject, 0.25f)), 2.0f), 1, HC, 1);
         auto *repeat = ggml_repeat_4d(c, ggml_reshape_3d(c, projected, H, 1, 1), H, HC, 1, 1);
         attn_residual = ggml_add(c, out_residual, ggml_mul(c, repeat, scatter));
+        }
         combine->output(gated, "qsa-gated-attention");
         combine->output(attn_residual, "qsa-attention-residual");
         combine->schedule("qsa-combine", options.execution, cpu, fixed_placement, fixed_graphs);
@@ -772,6 +793,9 @@ struct PortableQsaLayer::Impl {
         }
     }
 };
+uint64_t PortableQsaLayer::native_ffn_hc_pending_calls() const {return impl_->ffn->native_hc_pending_calls();}
+uint64_t PortableQsaLayer::deferred_hc_outputs() const {return impl_->ffn->work().deferred_hc_outputs;}
+const PortableHcPendingWrite& PortableQsaLayer::pending_write() const {return impl_->pending;}
 uint64_t PortableQsaLayer::native_hc_pending_calls() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     return impl_->native_hc?impl_->native_hc->pending_calls():0;
@@ -934,9 +958,10 @@ bool PortableQsaLayer::step_impl(uint64_t position,const std::vector<float>& res
         auto next_trace = std::move(attended.trace);
         require(s.ffn->reset(next_residual, error), error);
         PortableRoute candidate;
-        require(s.ffn->step(dispatch, candidate, error), error);
+        require(s.options.native_hc_ffn_read ? s.ffn->step_pending(attended.block,attended.inject,dispatch,candidate,error,trace?&next_trace.ffn_hc:nullptr) : s.ffn->step(dispatch,candidate,error),error);
         next_residual = s.ffn->residual();
         finite(next_residual);
+        auto next_pending=s.ffn->pending_write();
         // Publish only after all computations succeed. Diagnostics append to
         // reserved host history here; production already appended device state
         // and poisons the layer on any failure before this point.
@@ -949,7 +974,7 @@ bool PortableQsaLayer::step_impl(uint64_t position,const std::vector<float>& res
             std::copy(next_pool.begin(), next_pool.end(), s.pooled.begin());
             s.tail.swap(next_tail);
         }
-        s.last.swap(next_residual);
+        s.last.swap(next_residual);s.pending.swap(next_pending);
         s.placement.swap(next_placement);
         s.graphs_size = next_graphs;
         ++s.count;
@@ -986,7 +1011,7 @@ bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t pos
     try {
         PortableQsaAttention::Impl::Borrow borrow(s.shared());
         require(s.healthy && !s.chunk_active,"portable QSA: poisoned or active chunk; reset required");
-        require(!s.options.native_hc_read,"native QSA HC: chunk API unsupported");
+        require(!s.options.native_hc_read && !s.options.defer_ffn_hc_write,"native QSA HC: chunk API unsupported");
         const size_t T=tokens.size();
         require(T>=1 && T<=8 && residual_rows.size()==T*RES && bool(dispatch),"portable QSA: invalid chunk shape/callback");
         require(position0==s.count && T<=s.options.capacity-s.count && T<=UINT64_MAX-s.chunk_work.tokens,
@@ -1066,7 +1091,7 @@ bool PortableQsaLayer::reset(std::string &error) {
             std::fill(s.pooled.begin(), s.pooled.end(), 0);
             std::fill(s.tail.begin(), s.tail.end(), 0);
         }
-        s.last.clear();
+        s.last.clear();s.pending={};
         s.count = 0;
         s.placement.swap(placement);
         s.graphs_size = s.fixed_graphs + s.retained_attention_bytes();

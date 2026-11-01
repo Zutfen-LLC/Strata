@@ -90,7 +90,7 @@ class PortableGdnLayer {
     // Diagnostic T1 pending tuple. Original caller R/bo/inject are immutable;
     // R-prime is used by BOTH HC and graph residual consumers. Public state and
     // last_residual commit only after the existing complete layer transaction.
-    // Requires native_hc_pending + composed attention roles (layer0 diagnostic or layer2 consumer).
+    // Requires native_hc_pending + composed attention roles (ordinary native boundary; PLE remains explicit).
     bool step_pending(const std::vector<float>& residual,const std::vector<float>& previous_output,
                       const std::vector<float>& previous_injection,const PortableExpertRows& dispatch,
                       PortableRoute& route,std::string& error,PortableGdnTrace* trace=nullptr,
