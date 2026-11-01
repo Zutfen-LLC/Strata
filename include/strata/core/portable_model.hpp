@@ -83,6 +83,8 @@ struct PortableModelOptions {
     bool expert_dispatch_oracle = false;
     size_t expert_staging_cap = 64ull << 20;
     bool expert_check_rows = false, expert_record_routes = false;
+    bool native_hc_pending_layer1_2 = false; // ordinary FFN -> next attention carry; default off
+    std::string native_hc_pending_receipt_prefix;
     bool native_hc_norm_inject_layer0 = false; // experimental serial T1; HC mixed stays GGML
     bool layer0_resident_weights = false; // explicit dense residency only for layer 0, including FFN
     bool native_hc_ffn_write_layer0 = false; // serial final materialization before layer1 PLE, experimental
@@ -125,6 +127,7 @@ struct PortableExpertWork {
 // Whole-call wall totals are optional; head outcome counters are unconditional.
 // Layer totals include matched provider intervals.
 struct PortableModelWork {
+    uint64_t deferred_ffn_layer1_outputs=0, native_hc_pending_layer2_calls=0;
     uint64_t native_ffn_hc_write_layer0_calls = 0; // actual successful final-write work, reset preserves paid work
     uint64_t native_ffn_hc_layer0_calls = 0; // actual successful component calls, including later provider failure
     uint64_t native_hc_mix_layer0_calls = 0;

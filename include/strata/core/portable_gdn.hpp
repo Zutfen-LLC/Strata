@@ -24,11 +24,12 @@ struct PortableGdnOptions {
     static constexpr size_t native_hc_read_host_bound = 8u << 20;
     static constexpr size_t native_hc_pending_host_bound = native_hc_read_host_bound + (128u << 10);
     PortableFfnOptions execution;
+    bool defer_ffn_hc_write = false; // layer1 outgoing ordinary boundary; PLE remains unchanged
     bool native_hc_norm_inject = false; // experimental layer-0 serial T1 only; mixed remains GGML
     bool native_hc_mix = false; // experimental attention read; requires native norm/injection
     bool native_hc_ffn_write = false; // materialize actual layer0 FFN output before next PLE consumer
     bool native_hc_ffn_read = false; // actual layer-0 GDN producer -> native pending FFN read, T1 only
-    bool native_hc_pending = false; // diagnostic explicit tuple only; no model CLI or FFN role binding
+    bool native_hc_pending = false; // explicit tuple: layer0 diagnostic or ordinary layer2 consumer
     std::string native_hc_receipt_prefix;
     bool causal_chunk = false; // production/non-PLE T2..8; requires batched projections
     bool batch_input_projections = false; // opt-in chunk T>1, non-PLE only; T1 stays serial
@@ -89,7 +90,7 @@ class PortableGdnLayer {
     // Diagnostic T1 pending tuple. Original caller R/bo/inject are immutable;
     // R-prime is used by BOTH HC and graph residual consumers. Public state and
     // last_residual commit only after the existing complete layer transaction.
-    // Requires native_hc_pending + composed layer0 attention roles, not FFN roles.
+    // Requires native_hc_pending + composed attention roles (layer0 diagnostic or layer2 consumer).
     bool step_pending(const std::vector<float>& residual,const std::vector<float>& previous_output,
                       const std::vector<float>& previous_injection,const PortableExpertRows& dispatch,
                       PortableRoute& route,std::string& error,PortableGdnTrace* trace=nullptr,
@@ -114,6 +115,8 @@ class PortableGdnLayer {
     uint64_t input_projection_calls() const;
     uint64_t native_ffn_hc_pending_calls() const;
     uint64_t native_ffn_hc_write_calls() const;
+    const PortableHcPendingWrite& pending_write() const;
+    uint64_t deferred_hc_outputs() const;
     uint64_t native_hc_pending_calls() const; // paid successful work, including later graph/provider refusal
     uint64_t native_hc_mix_calls() const;
     uint64_t native_hc_calls() const; // actual successful component calls; cumulative across reset

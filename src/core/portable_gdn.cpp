@@ -161,6 +161,7 @@ struct PortableGdnLayer::Impl {
     }
     portable_detail::Scheduler scheduler{nullptr, ggml_backend_sched_free};
     std::unique_ptr<PortableFfn> ffn, chunk_ffn;
+    PortableHcPendingWrite pending;
     bool chunk_active = false;
     size_t chunk_host_bound = 0;
     PortableLayerChunkWork chunk_work;
@@ -730,6 +731,9 @@ struct PortableGdnLayer::Impl {
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 != 3,
                 "portable GDN: expected a non-QSA layer in [0,47]");
+        require(!options.execution.defer_hc_write,"portable GDN: configure deferred write through layer option");
+        require(!options.defer_ffn_hc_write || (layer==1 && !options.native_hc_ffn_write && !production() &&
+            !options.batch_input_projections && !options.causal_chunk),"deferred HC write: eager layer1 only");
         require(!options.execution.native_hc_final_write,"portable GDN: configure FFN write through layer option");
         require(!options.native_hc_ffn_write||options.native_hc_ffn_read,"native FFN final write requires pending FFN read");
         require(!options.execution.native_hc_pending_read,"portable GDN: configure FFN read through layer option, not raw execution option");
@@ -740,8 +744,8 @@ struct PortableGdnLayer::Impl {
         require(!options.native_hc_pending||!options.execution.layer0_observer,"native HC pending: legacy observer lacks pending tuple schema; use bounded layer trace");
         require(!options.native_hc_mix||options.native_hc_norm_inject,"native HC read: norm/injection required");
         if(options.native_hc_norm_inject) {
-            require(layer==0 && !options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk,
-                    "native HC serial: only eager non-PLE layer 0 T1 supported");
+            require((layer==0 || (layer==2 && options.native_hc_pending)) && !options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk,
+                    "native HC serial: eager layer0 or explicit layer2 pending read only; PLE unsupported");
             require(options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback &&
                     (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_hc_receipt_prefix.empty(),
                     "native HC serial: strict accelerator, resident attention weights and receipt prefix required");
@@ -782,6 +786,7 @@ struct PortableGdnLayer::Impl {
         auto ffn_options=options.execution;
         ffn_options.native_hc_pending_read=options.native_hc_ffn_read;
         ffn_options.native_hc_final_write=options.native_hc_ffn_write;
+        ffn_options.defer_hc_write=options.defer_ffn_hc_write;
         ffn_options.native_hc_receipt_prefix=options.native_hc_receipt_prefix+".ffn";
         if(options.scratch) {
             const size_t retained=options.scratch->graph_bytes();
@@ -861,7 +866,7 @@ struct PortableGdnLayer::Impl {
                 w.at("hc_attn_inject.weight"),options.execution.graph_budget-graphs_size,options.native_hc_receipt_prefix,
                 options.native_hc_mix?w.at("hc_attn_down.weight"):nullptr,options.native_hc_mix?w.at("hc_attn_up.weight"):nullptr,options.native_hc_pending);
             graphs_size+=native_hc->bytes();
-            placement.push_back({"native-hc",options.native_hc_pending?"NATIVE_BF16_PENDING_READ_T1_DIAGNOSTIC":(options.native_hc_mix?"NATIVE_BF16_READ_SERIAL_T1":"NATIVE_BF16_NORM_INJECT_SERIAL_T1"),options.native_hc_pending?"explicit synthetic prior tuple, layer-0 attention roles; no model pending carry":(options.native_hc_mix?"layer-0 attention read only; pending write unchanged":"layer-0 only; GGML mixed remains"), "F32/BF16",ggml_backend_name(options.execution.accelerator),"",{H,HC,1}});
+            placement.push_back({"native-hc",options.native_hc_pending?"NATIVE_BF16_PENDING_READ_T1_DIAGNOSTIC":(options.native_hc_mix?"NATIVE_BF16_READ_SERIAL_T1":"NATIVE_BF16_NORM_INJECT_SERIAL_T1"),options.native_hc_pending?"explicit value-owned prior tuple; layer0 diagnostic or layer2 ordinary carry":(options.native_hc_mix?"layer-0 attention read only; pending write unchanged":"layer-0 only; GGML mixed remains"), "F32/BF16",ggml_backend_name(options.execution.accelerator),"",{H,HC,1}});
         }
 #endif
         if (options.scratch) { Borrow borrow(*this); }
@@ -993,7 +998,7 @@ bool PortableGdnLayer::reset(std::string &error) {
         std::fill(impl_->history.begin(), impl_->history.end(), 0);
         std::fill(impl_->ple_history.begin(), impl_->ple_history.end(), 0);
         impl_->previous = {{-1, -1}};
-        impl_->last.clear();
+        impl_->last.clear();impl_->pending={};
         impl_->count = 0;
         if(!next_placement.empty()) impl_->placement.swap(next_placement);
         impl_->state_healthy = true;
@@ -1049,6 +1054,7 @@ bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residua
             require(ok, error);
             next_residual = s.ffn->residual(); // allocate before the no-throw public commit
         }
+        auto next_pending=s.ffn->pending_write(); // allocate complete producer candidate before state commit
         std::vector<PortablePlacement> next_placement;
         if(s.chunk_host_bound) {
             next_placement=s.placement;
@@ -1064,7 +1070,7 @@ bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residua
             s.history.swap(s.candidate_history);
         }
         s.previous = next_previous;
-        s.last.swap(next_residual);
+        s.last.swap(next_residual);s.pending.swap(next_pending);
         ++s.count;
         if(!next_placement.empty()) s.placement.swap(next_placement);
         route = std::move(candidate);
@@ -1085,7 +1091,7 @@ bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residua
 }
 bool PortableGdnLayer::prepare_chunk(size_t tokens,std::string& error) {
     error.clear();
-    try { require(!impl_->options.native_hc_norm_inject,"native HC serial: chunk API unsupported"); Impl::Borrow borrow(*impl_); require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
+    try { require(!impl_->options.native_hc_norm_inject && !impl_->options.defer_ffn_hc_write,"native HC serial: chunk API unsupported"); Impl::Borrow borrow(*impl_); require(!impl_->chunk_active,"portable layer: active chunk"); impl_->prepare(tokens,error); return true; }
     catch(const std::exception& e) { error=e.what(); return false; }
 }
 bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t position0,
@@ -1094,7 +1100,7 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
     routes.clear(); error.clear();
     auto& s = *impl_;
     try {
-        require(!s.options.native_hc_norm_inject,"native HC serial: chunk API unsupported");
+        require(!s.options.native_hc_norm_inject && !s.options.defer_ffn_hc_write,"native HC serial: chunk API unsupported");
         Impl::Borrow borrow(s);
         require(s.state_healthy && !s.chunk_active, "portable GDN: poisoned or active chunk; reset required");
         const size_t T = tokens.size();
@@ -1203,6 +1209,8 @@ const std::vector<float> &PortableGdnLayer::last_residual() const { return impl_
 uint64_t PortableGdnLayer::tokens() const { return impl_->count; }
 uint64_t PortableGdnLayer::native_ffn_hc_write_calls() const {return impl_->ffn->native_hc_write_calls();}
 uint64_t PortableGdnLayer::native_ffn_hc_pending_calls() const {return impl_->ffn->native_hc_pending_calls();}
+const PortableHcPendingWrite& PortableGdnLayer::pending_write() const {return impl_->pending;}
+uint64_t PortableGdnLayer::deferred_hc_outputs() const {return impl_->ffn->work().deferred_hc_outputs;}
 uint64_t PortableGdnLayer::native_hc_pending_calls() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     return impl_->native_hc?impl_->native_hc->pending_calls():0;

@@ -60,6 +60,12 @@ struct Layer {
             residual = gdn ? gdn->last_residual() : qsa->last_residual();
         return ok;
     }
+    bool pending_step(const PortableHcPendingWrite& pending,std::vector<float>& residual,const PortableExpertRows& experts,std::string& error,PortableGdnWork* work) {
+        PortableRoute route;
+        if(!gdn){error="pending HC consumer must be GDN";return false;}
+        if(!gdn->step_pending(pending.residual,pending.block,pending.injection,experts,route,error,nullptr,work))return false;
+        residual=gdn->last_residual();return true;
+    }
     bool prepare(size_t T,std::string& error) { return gdn?gdn->prepare_chunk(T,error):qsa->prepare_chunk(T,error); }
     bool chunk(const std::vector<int32_t>& tokens,uint64_t pos,std::vector<float>& rows,
                const PortableExpertRowsBatch& experts,std::string& error) {
@@ -700,6 +706,7 @@ struct PortableModelSession::Impl {
 #endif
                 return experts->run(l, r, rows, e);
             };
+            PortableHcPendingWrite carry;
             for (size_t l = 0; l < layers.size(); ++l) {
                 const bool gdn = bool(layers[l].gdn);
                 const double provider_before = provider_ms;
@@ -707,10 +714,17 @@ struct PortableModelSession::Impl {
                     portable_detail::ScopedExpertTimer<> layer_timer(opts.expert_timings,
                         gdn ? model_work.gdn_ms : model_work.qsa_ms,
                         gdn ? model_work.gdn_calls : model_work.qsa_calls);
-                    const bool ok = layers[l].step(token, pos, residual, dispatch, error,
+                    const bool consume=opts.native_hc_pending_layer1_2 && l==2;
+                    require(consume ? !carry.empty() : carry.empty(),"portable model: stale/missing layer1-2 carry");
+                    const bool ok = consume ? layers[l].pending_step(carry,residual,dispatch,error,
+                        opts.expert_timings ? &model_work.gdn_phases : nullptr) : layers[l].step(token, pos, residual, dispatch, error,
                         opts.expert_timings ? &model_work.gdn_phases : nullptr);
                     require(ok, "portable model: token position " + std::to_string(pos) + " layer " + std::to_string(l) +
                                     ": " + error);
+                }
+                if(opts.native_hc_pending_layer1_2) {
+                    if(l==1) {carry=layers[l].gdn->pending_write();require(!carry.empty(),"portable model: missing actual FFN producer tuple");}
+                    else if(l==2)carry={};
                 }
                 if(l==0 && observer && observer->active()) {
                     const auto& state=layers[0].gdn->recurrent_state();
@@ -807,11 +821,15 @@ PortableExpertWork PortableModelSession::expert_work() const {
 }
 PortableModelWork PortableModelSession::model_work() const {
     auto work=impl_->model_work;
-    for(const auto& layer:impl_->layers) if(layer.gdn) {
+    for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(!layer.gdn)continue;
+        if(l==1)work.deferred_ffn_layer1_outputs+=layer.gdn->deferred_hc_outputs();
+        if(l==2)work.native_hc_pending_layer2_calls+=layer.gdn->native_hc_pending_calls();
+        if(l==0) {
         work.native_ffn_hc_layer0_calls+=layer.gdn->native_ffn_hc_pending_calls();
         work.native_ffn_hc_write_layer0_calls+=layer.gdn->native_ffn_hc_write_calls();
         work.native_hc_mix_layer0_calls+=layer.gdn->native_hc_mix_calls();
         work.native_hc_layer0_calls+=layer.gdn->native_hc_calls();
+        }
         work.gdn_causal_submissions+=layer.gdn->causal_chunk_calls();
         work.gdn_causal_residual_handoffs+=layer.gdn->causal_residual_handoffs();
         work.gdn_causal_state_commits+=layer.gdn->causal_state_commits();

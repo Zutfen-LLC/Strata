@@ -32,7 +32,18 @@ struct PortableTensorView {
     size_t bytes = 0;
 };
 
+struct PortableHcPendingWrite {
+    std::vector<float> residual, block, injection;
+    bool empty() const { return residual.empty() && block.empty() && injection.empty(); }
+    void swap(PortableHcPendingWrite& other) noexcept {
+        residual.swap(other.residual); block.swap(other.block); injection.swap(other.injection);
+    }
+};
+
 struct PortableFfnOptions {
+    static constexpr size_t deferred_hc_host_bound = 1u << 20; // candidate/committed/caller tuple copies
+    bool defer_hc_write = false; // layer1 producer only; next layer owns native materialization
+
     static constexpr size_t native_hc_pending_host_bound = 8u << 20; // streamed conversion, trace and metadata
     static constexpr size_t native_hc_write_host_bound = 1u << 20; // final preflight/candidate/receipt envelope
     bool native_hc_final_write = false; // actual layer0 materialization, never cross-layer deferred carry
@@ -97,6 +108,7 @@ using PortableExpertRowsBatch = std::function<bool(int64_t layer, const std::vec
                                                   std::vector<float>& rows, std::string& error)>;
 struct PortableFfnWork {
     uint64_t logical_rows = 0, completed_chunks = 0;
+    uint64_t deferred_hc_outputs = 0; // successful producer tuples, not write-kernel calls
     uint64_t native_shared_calls = 0, native_shared_rows = 0; // completed FFN calls only
     uint64_t native_router_calls = 0, native_router_rows = 0; // completed FFN calls only
     uint64_t pre_graph_calls = 0, provider_calls = 0, post_graph_calls = 0;
@@ -148,6 +160,7 @@ public:
     bool step_pending(const std::vector<float>& previous_output, const std::vector<float>& previous_injection,
                       const PortableExpertRows& dispatch, PortableRoute& route, std::string& error,
                       PortableFfnHcTrace* trace = nullptr);
+    const PortableHcPendingWrite& pending_write() const;
     uint64_t native_hc_pending_calls() const;
     uint64_t native_hc_write_calls() const;
     // reset takes [hidden,streams,tokens], with dimension zero fastest.

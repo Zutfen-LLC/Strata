@@ -222,6 +222,9 @@ struct PortableFfn::Impl {
                 tokens >= 1 && tokens <= 8 && g.selected > 0 && g.selected <= g.experts && g.selected <= 64 && layer >= 0 &&
                 std::isfinite(g.epsilon) && g.epsilon > 0 && options.threads > 0,
                 "portable FFN: invalid geometry/options");
+        require(!options.defer_hc_write || (layer==1 && tokens==1 && g.hidden==2560 && g.streams==4 &&
+            !options.native_hc_final_write && !options.layer0_observer),
+            "deferred HC write: layer1/T1/H2560 only, final write/observer unsupported");
         require(!options.native_hc_final_write||options.native_hc_pending_read,"native FFN final write requires pending read");
         if(options.native_hc_pending_read) {
             require(layer==0 && tokens==1 && g.hidden==2560 && g.streams==4 && g.rank==320 && g.epsilon==1e-6f &&
@@ -271,6 +274,7 @@ struct PortableFfn::Impl {
     ggml_tensor *input = nullptr, *mixed = nullptr, *inject = nullptr, *logits = nullptr, *shared = nullptr;
     ggml_tensor *post_input = nullptr, *post_inject = nullptr, *post_block = nullptr, *output = nullptr;
     std::vector<float> state;
+    PortableHcPendingWrite pending;
     std::vector<PortablePlacement> placement;
     size_t weights_size = 0, graphs_size = 0, device_weights = 0;
     bool initialized = false;
@@ -292,7 +296,7 @@ struct PortableFfn::Impl {
          std::shared_ptr<ChunkLease> lease = {})
         : g(weights->g), layer(weights->layer), tokens(count), options(opts),
           owned_weights(std::move(weights)), chunk_lease(std::move(lease)), cpu(owned_weights->cpu) {
-        pre_ctx = context(); if(!options.native_hc_final_write)post_ctx = context();
+        pre_ctx = context(); if(!options.native_hc_final_write && !options.defer_hc_write)post_ctx = context();
         weights_size = owned_weights->weights_size;
         device_weights = owned_weights->device_weights;
         const auto& w = owned_weights->w;
@@ -370,7 +374,7 @@ struct PortableFfn::Impl {
         for(auto* t:{mixed,inject,logits,shared})if(t){ggml_set_output(t);ggml_build_forward_expand(pre,t);}
         pre_sched = portable_detail::schedule(pre, "pre-experts", options, cpu, placement, graphs_size);
 
-        if(!options.native_hc_final_write) {
+        if(!options.native_hc_final_write && !options.defer_hc_write) {
         c = post_ctx.get();
         post_input = ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, tokens);
         post_inject = tokens == 1 ? ggml_new_tensor_1d(c, GGML_TYPE_F32, g.streams)
@@ -443,7 +447,7 @@ std::unique_ptr<PortableFfn> PortableFfn::create_chunk_execution(int64_t tokens,
     error.clear();
     try {
         auto& s = *impl_;
-        require(!s.options.native_hc_pending_read,"native FFN HC: chunk execution unsupported");
+        require(!s.options.native_hc_pending_read && !s.options.defer_hc_write,"native FFN HC: chunk execution unsupported");
         require(s.tokens == 1 && tokens >= 2 && tokens <= 8,
                 "portable FFN: shared chunk requires T1 owner and T in [2,8]");
         require(s.owned_weights->active_chunk.expired(),
@@ -493,7 +497,7 @@ bool PortableFfn::reset(const std::vector<float>& residual, std::string& error) 
     error.clear();
     try {
         require(residual.size() == size_t(impl_->g.hidden * impl_->g.streams * impl_->tokens), "portable FFN: residual size mismatch");
-        finite(residual); impl_->state = residual; impl_->initialized = true; return true;
+        finite(residual); impl_->state = residual; impl_->pending = {}; impl_->initialized = true; return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 bool PortableFfn::step(const PortableExpertRows& dispatch, PortableRoute& route, std::string& error) {
@@ -510,6 +514,7 @@ bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>
         auto& s = *impl_;
         require(s.tokens == 1, "portable FFN: multirow graph requires batch dispatch");
         require(s.initialized && bool(dispatch), "portable FFN: reset and expert callback required");
+        require(!s.options.defer_hc_write || s.pending.empty(),"deferred FFN: fresh residual reset required before another producer");
         require(s.options.native_hc_pending_read==bool(b&&i),"native FFN HC: complete fresh tuple required only in pending mode");
         PortableFfnHcTrace observed;
 #ifdef STRATA_PORTABLE_NATIVE_HC
@@ -579,6 +584,17 @@ bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>
         finite(block);
         if(observer && observer->active())observer->put(Layer0Observer::combined_output,block.data(),block.size());
         std::vector<float> next;
+        PortableHcPendingWrite pending;
+        if(s.options.defer_hc_write) {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            next=s.native_hc?read(s.native_hc->residual):s.state;
+#else
+            next=s.state;
+#endif
+            pending.residual=next;pending.block=std::move(block);pending.injection=read(s.inject);
+            finite(pending.injection);
+            require(s.work.deferred_hc_outputs<UINT64_MAX,"deferred HC producer counter exhausted");
+        } else {
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(s.options.native_hc_final_write) {
             write(s.native_hc->write_block,block);s.native_hc->run_write();
@@ -596,9 +612,12 @@ bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>
 #ifdef STRATA_PORTABLE_NATIVE_HC
         }
 #endif
+        }
         if(candidate.native_shared){++s.work.native_shared_calls;++s.work.native_shared_rows;}
         if(candidate.native_router){++s.work.native_router_calls;++s.work.native_router_rows;}
         ++s.work.logical_rows; ++s.work.completed_chunks;
+        if(s.options.defer_hc_write)++s.work.deferred_hc_outputs;
+        s.pending.swap(pending);
         s.state = std::move(next); route = std::move(candidate);if(trace)*trace=std::move(observed); error.clear(); return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
@@ -607,7 +626,7 @@ bool PortableFfn::step_batch(const PortableExpertRowsBatch& dispatch,
     error.clear(); routes.clear();
     try {
         auto& s = *impl_;
-        require(!s.options.native_hc_pending_read,"native FFN HC: batch execution unsupported");
+        require(!s.options.native_hc_pending_read && !s.options.defer_hc_write,"native FFN HC: batch execution unsupported");
         require(s.initialized && bool(dispatch), "portable FFN: reset and expert callback required");
         write(s.input, s.state);
         ++s.work.pre_graph_calls;
@@ -673,6 +692,7 @@ const std::vector<PortablePlacement>& PortableFfn::placements() const { return i
 size_t PortableFfn::weight_bytes() const { return impl_->weights_size; }
 size_t PortableFfn::graph_bytes() const { return impl_->graphs_size; }
 
+const PortableHcPendingWrite& PortableFfn::pending_write() const {return impl_->pending;}
 uint64_t PortableFfn::native_hc_pending_calls() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     return impl_->native_hc?impl_->native_hc->pending_calls():0;
@@ -713,6 +733,7 @@ PortableMemoryUsage PortableFfn::memory_usage() const {
     if(s.native_hc) {m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=PortableFfnOptions::native_hc_pending_host_bound;
         if(s.options.native_hc_final_write)m.host_extra_bound+=PortableFfnOptions::native_hc_write_host_bound;}
 #endif
+    if(s.options.defer_hc_write)m.host_extra_bound+=PortableFfnOptions::deferred_hc_host_bound;
     m.host_extra_bound+=s.owned_weights->shared_host_bound;
     m.host_extra_bound += 3*metadata_bytes; // three owning metadata contexts, plus token staging below
     m.host_extra_bound += size_t(s.g.hidden*s.g.streams*8 + s.g.selected*s.g.hidden) * sizeof(float);
