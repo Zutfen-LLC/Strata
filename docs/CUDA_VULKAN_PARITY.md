@@ -699,6 +699,14 @@ for each capability below.
    this run, diagnostic only. All three processes exit/reap and restore baseline
    across three observations; samples are discrete. qualified=false. Scores,
    selection, attention and native accepted-prefix/window authority remain gaps.
+   The next standalone score/selection slice follows native `qsa_select.cu`'s
+   default Ampere T1 multi scorer and register-radix selector, with exact
+   source-order scores and an independent cell-sort policy control. Local build,
+   eight fixture controls, effective modules and real output-contract checks pass;
+   physical CUDA/Vulkan qualification and model consumption are pending. Native
+   capacity is 2051, so short model contexts exercise identity selection only.
+   See [component scope](native-qsa-score-select-t1.md).
+
 
 3. **Replicate native state authority and commit/restore.** Native
    `Verifier::capture_commit()`/`Verifier::commit()` and restore paths handle GDN history/state and

@@ -1,0 +1,50 @@
+#version 450
+// Native qsa_select.cu::block_topk_reg_kernel<33>, default Ampere T1 path.
+// MIT License
+//
+// Copyright (c) 2026 Niko1221 and the Strata contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+layout(local_size_x=1024) in;
+layout(binding=0,std430) readonly buffer S{float scores[];};
+layout(binding=1,std430) readonly buffer T{int step[];};
+layout(binding=2,std430) writeonly buffer O{int ids[];};
+layout(binding=3,std430) buffer E{uint status[];};
+layout(push_constant) uniform Params{uint off[4];uint blocks;uint cap;}p;
+shared int hist[8192],sw[33],scan[1024],digit,above_out;
+uint order_key(float s){precise float v=s+0.0;if(isnan(v))return 0u;uint b=floatBitsToUint(v);return (b&0x80000000u)!=0u?~b:b|0x80000000u;}
+int warp_scan(int v){uint t=gl_LocalInvocationID.x,lane=t&31u;scan[t]=v;barrier();for(uint o=1u;o<32u;o<<=1u){int y=scan[t-(lane>=o?o:0u)];int x=scan[t]+(lane>=o?y:0);barrier();scan[t]=x;barrier();}int x=scan[t];barrier();return x;}
+int block_scan(int v,out int total){uint t=gl_LocalInvocationID.x,lane=t&31u,warp=t>>5;int x=warp_scan(v);if(lane==31u)sw[warp]=x;barrier();int w=warp==0u?sw[lane]:0;int z=warp_scan(w);if(warp==0u){sw[lane]=z-w;if(lane==31u)sw[32]=z;}barrier();int r=sw[warp]+x-v;total=sw[32];barrier();return r;}
+void main(){uint t=gl_LocalInvocationID.x,lane=t&31u,warp=t>>5;int n=step[p.off[1]+1u],nbid=step[p.off[1]+2u],width=step[p.off[1]+3u];
+ if(n<=width){for(uint j=t;j<uint(n);j+=1024u)ids[p.off[2]+j]=int(j);return;}
+ int nb=nbid+1,per=(nb+1023)/1024,b0=int(t)*per,b1=min(b0+per,nb);uint key[33];for(int j=0;j<33;++j)key[j]=b0+j<b1?order_key(scores[p.off[0]+uint(b0+j)]):0u;
+ uint prefix=0u;int above=0;
+ for(int shift=24;shift>=0;shift-=8){for(uint i=lane;i<256u;i+=32u)hist[warp*256u+i]=0;barrier();uint hi=shift==24?0u:0xffffffffu<<uint(shift+8);
+  for(int j=0;j<33;++j){int b=b0+j;if(b>=b1)break;int w=b<nbid?4:n-nbid*4;if(w!=0&&(key[j]&hi)==(prefix&hi))atomicAdd(hist[warp*256u+((key[j]>>uint(shift))&255u)],w);}
+  barrier();if(t<256u){int sum=0;for(uint w=0u;w<32u;++w)sum+=hist[w*256u+t];hist[t]=sum;}barrier();
+  int v=t<256u?hist[255u-min(t,255u)]:0;int x=warp_scan(v);if(t<256u&&lane==31u)sw[warp]=x;barrier();
+  if(t<256u){int inc=x;for(uint w=0u;w<warp;++w)inc+=sw[w];int before=above+inc-v;if(before<width&&(above+inc>=width||t==255u)){digit=255-int(t);above_out=before;}}
+  barrier();prefix|=uint(digit)<<uint(shift);above=above_out;barrier();
+ }
+ int eq_budget=width-above,gt=0,eq=0;
+ for(int j=0;j<33;++j){int b=b0+j;if(b>=b1)break;int w=b<nbid?4:n-nbid*4;if(w==0)continue;if(key[j]>prefix)gt+=w;else if(key[j]==prefix)eq+=w;}
+ int total;int eq_before=block_scan(eq,total),my_eq=clamp(eq_budget-eq_before,0,eq);int wpos=block_scan(gt+my_eq,total),left=my_eq;
+ if(t==0u&&total!=width)atomicOr(status[p.off[3]],1u);
+ for(int j=0;j<33;++j){int b=b0+j;if(b>=b1)break;int w=b<nbid?4:n-nbid*4;if(w==0)continue;if(key[j]>prefix){for(int c=0;c<w;++c)ids[p.off[2]+uint(wpos++)]=b*4+c;}else if(key[j]==prefix){for(int c=0;c<w&&left>0;++c,--left)ids[p.off[2]+uint(wpos++)]=b*4+c;}}
+}
