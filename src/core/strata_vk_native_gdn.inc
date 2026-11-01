@@ -2,7 +2,7 @@
 #include "strata_native_gdn_t1_spv.hpp"
 namespace strata::core::portable_detail {
 struct StrataVkNativeGdn {std::unique_ptr<StrataVkLogitsGuard> owner;};
-StrataVkNativeGdn* strata_vk_native_gdn_create(ggml_backend_t b,const char*path,size_t budget){auto p=std::make_unique<StrataVkNativeGdn>();p->owner=strata_vk_q8_component_owner(b,strata_native_gdn_t1_spv,sizeof(strata_native_gdn_t1_spv)/4,NativeComponentAddressing::descriptor,"strata_native_gdn_t1",11,14,path,budget);return p.release();}
+StrataVkNativeGdn* strata_vk_native_gdn_create(ggml_backend_t b,const char*path,size_t budget){native_hc_need(b&&ggml_backend_is_vk(b),"native GDN: Vulkan backend required");auto*ctx=static_cast<ggml_backend_vk_context*>(b->context);const auto&l=ctx->device->properties.limits;native_hc_need(l.maxComputeWorkGroupInvocations>=512&&l.maxComputeWorkGroupSize[0]>=128&&l.maxComputeWorkGroupSize[1]>=4&&l.maxComputeSharedMemorySize>=6160&&l.maxPerStageDescriptorStorageBuffers>=11&&l.maxDescriptorSetStorageBuffers>=11,"native GDN: unsupported workgroup/descriptors");auto p=std::make_unique<StrataVkNativeGdn>();p->owner=strata_vk_q8_component_owner(b,strata_native_gdn_t1_spv,sizeof(strata_native_gdn_t1_spv)/4,NativeComponentAddressing::descriptor,"strata_native_gdn_t1",11,14,path,budget);return p.release();}
 void strata_vk_native_gdn_destroy(StrataVkNativeGdn*p)noexcept{delete p;}
 size_t strata_vk_native_gdn_bytes(const StrataVkNativeGdn*p){return p?p->owner->bytes:0;}
 void strata_vk_native_gdn_run(StrataVkNativeGdn*p,ggml_tensor*const t[13],ggml_tensor*aux){
