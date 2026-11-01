@@ -33,6 +33,8 @@ struct NativeHcMixDomainRefusal : std::invalid_argument {
 StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char* effective_spv,size_t budget=65536);
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*);
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix*) noexcept;
+// Test-only identical preactivation probe; same production shader activation.
+void strata_vk_native_hc_sigmoid_probe(StrataVkNativeHcMix*,const ggml_tensor* pre,ggml_tensor* exponential,ggml_tensor* gate);
 void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor* normalized,
  const ggml_tensor* down,const ggml_tensor* up,ggml_tensor* low_pre,ggml_tensor* low,ggml_tensor* low_exp,
  ggml_tensor* up_pre,ggml_tensor* gates,ggml_tensor* up_exp,ggml_tensor* mixed);

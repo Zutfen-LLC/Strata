@@ -21,4 +21,16 @@ void strata_vk_native_hc_mix_run(StrataVkNativeHcMix* p,const ggml_tensor* input
   ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,tensors[m[0]],true),ggml_vk_tensor_subbuffer(ctx,tensors[m[1]],true),ggml_vk_tensor_subbuffer(ctx,tensors[m[2]],true),ggml_vk_tensor_subbuffer(ctx,tensors[m[3]],true),ggml_vk_tensor_subbuffer(ctx,tensors[m[4]],true),ggml_vk_tensor_subbuffer(ctx,tensors[m[5]],true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},params,{mode==0?320u:mode==1?10240u:10u,1,1});ggml_vk_sync_buffers(ctx,compute);compute.reset();}
  ggml_backend_vk_synchronize(g.backend);uint32_t status=0;ggml_backend_tensor_get(g.status,&status,0,4);if(status)throw NativeHcMixDomainRefusal(status);
 }
+void strata_vk_native_hc_sigmoid_probe(StrataVkNativeHcMix*p,const ggml_tensor*pre,ggml_tensor*exponential,ggml_tensor*gate){
+ native_hc_environment();native_hc_need(p&&std::fegetround()==FE_TONEAREST,"HC sigmoid probe: owner/RNE");auto&g=*p->owner;auto*ctx=static_cast<ggml_backend_vk_context*>(g.backend->context);
+ const ggml_tensor*t[]={pre,exponential,gate};uint32_t offsets[3];
+ for(size_t i=0;i<3;++i){native_hc_need(t[i]&&t[i]->type==GGML_TYPE_F32&&ggml_nbytes(t[i])==40960&&ggml_is_contiguous(t[i])&&t[i]->buffer&&ggml_backend_buffer_is_vk(t[i]->buffer),"HC sigmoid probe: spans");auto*b=static_cast<ggml_backend_vk_buffer_context*>(t[i]->buffer->context);native_hc_need(b->device.lock()==ctx->device,"HC sigmoid probe: foreign device");auto bias=get_misalign_bytes(ctx,t[i]);native_hc_need(bias%4==0,"HC sigmoid probe: alignment");offsets[i]=bias/4;
+ for(size_t j=0;j<i;++j)if(t[i]->buffer==t[j]->buffer){auto a=reinterpret_cast<uintptr_t>(t[i]->data),b=reinterpret_cast<uintptr_t>(t[j]->data);native_hc_need((a>b?a-b:b-a)>=40960,"HC sigmoid probe: overlapping spans");}}
+ std::vector<float> input(10240);ggml_backend_tensor_get(pre,input.data(),0,40960);for(float v:input)native_hc_normal(v);
+ const uint32_t zero=0;ggml_backend_tensor_set(g.status,&zero,0,4);std::array<uint32_t,9>params{3,1,offsets[0],offsets[0],offsets[0],offsets[0],offsets[2],offsets[1],uint32_t(get_misalign_bytes(ctx,g.status)/4)};
+ ggml_pipeline_request_descriptor_sets(ctx,g.pipeline,1);auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
+ ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,pre,true),ggml_vk_tensor_subbuffer(ctx,pre,true),ggml_vk_tensor_subbuffer(ctx,pre,true),ggml_vk_tensor_subbuffer(ctx,pre,true),ggml_vk_tensor_subbuffer(ctx,gate,true),ggml_vk_tensor_subbuffer(ctx,exponential,true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},params,{40,1,1});ggml_vk_sync_buffers(ctx,compute);compute.reset();ggml_backend_vk_synchronize(g.backend);
+ uint32_t status=0;ggml_backend_tensor_get(g.status,&status,0,4);if(status)throw NativeHcMixDomainRefusal(status);
+}
+
 }

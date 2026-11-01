@@ -5,6 +5,36 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'tools'))
 import native_hc_mix_numeric as m
 import native_hc_numeric as n
 class MixTests(unittest.TestCase):
+ def test_sigmoid_tail_source_identities(self):
+  from decimal import Decimal,localcontext
+  # Natural integer overflow boundary, independent of retained operands.
+  with localcontext() as c:
+   c.prec=100;maximum=(Decimal(2)-Decimal(2)**-23)*Decimal(2)**127
+   self.assertLess(Decimal(88).exp(),maximum);self.assertGreater(Decimal(89).exp(),maximum*Decimal('1.3'))
+   self.assertLess((-Decimal.from_float(n.value(m.ACTIVATION_LIMIT_BITS))).exp(),Decimal(2)**-24)
+  for backend in ['native','vulkan']:
+   for x in [-89.,-90.,-96.,-128.,-256.]:
+    v=n.bits(x);self.assertEqual(m.sigmoid_class(v),'overflow_tail');self.assertTrue(m.sigmoid_controls(v,0x7f800000,0,backend));self.assertEqual(m.activation_bounds(v,backend,False),(0,0))
+    for e,a in [(0x7f7fffff,0),(0x7fc00000,0),(0xff800000,0),(0x7f800000,1),(0x7f800000,0x80000000)]:
+     with self.assertRaises(ValueError):m.sigmoid_controls(v,e,a,backend)
+   for x in [96.,112.,128.,256.]:
+    v=n.bits(x);self.assertEqual(m.sigmoid_class(v),'positive_tail');self.assertTrue(m.sigmoid_controls(v,0,0x3f800000,backend));self.assertEqual(m.activation_bounds(v,backend,False),(0x3f800000,)*2)
+    for e,a in [(0x7f800000,0x3f800000),(n.bits(.001),0x3f800000),(0,0x3f7fffff),(0x80000000,0x3f800000)]:
+     with self.assertRaises(ValueError):m.sigmoid_controls(v,e,a,backend)
+   # Original normal domain and SiLU remain unchanged. We do not invent FTZ
+   # behavior for the finite-exp, subnormal-reciprocal transition gap.
+   for x in [-88.,-88.5]:
+    with self.assertRaises(ValueError):m.activation_bounds(n.bits(x),backend,False)
+   for x in [-90.,96.]:
+    with self.assertRaises(ValueError):m.activation_bounds(n.bits(x),backend,True)
+  for v in [1,0x7f800000,0xff800000,0x7fc00000]:
+   with self.assertRaises(ValueError):m.sigmoid_class(v)
+ def test_positive_tail_pointwise_exp_not_arbitrary_epsilon(self):
+  from decimal import Decimal
+  v=n.bits(96.);correct=n.bits(float(Decimal(-96).exp()))
+  self.assertTrue(m.sigmoid_exp_allowed(v,correct,'vulkan'))
+  self.assertFalse(m.sigmoid_exp_allowed(v,n.bits(1e-30),'vulkan'))
+  self.assertFalse(m.sigmoid_exp_allowed(v,0x80000000,'vulkan'))
  def test_warp_chunk_order_pinned(self):
   for width in [320,10240]:
    x=[0]*width;w=[0]*width
