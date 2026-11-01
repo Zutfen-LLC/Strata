@@ -1,0 +1,19 @@
+#include "native_gdn_ab_fixture.hpp"
+#include "strata/kernels/verify_kernels.hpp"
+#include <cuda_runtime.h>
+#include <stdexcept>
+using namespace native_gdn_ab;
+void cu(cudaError_t e){if(e!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(e));}
+struct Device{float*p=nullptr;~Device(){if(p)cudaFree(p);}void alloc(size_t n){cu(cudaMalloc((void**)&p,n*4));}void set(const std::vector<uint32_t>&v){cu(cudaMemcpy(p,v.data(),v.size()*4,cudaMemcpyHostToDevice));}std::vector<uint32_t>get(size_t n){std::vector<uint32_t>v(n);cu(cudaMemcpy(v.data(),p,n*4,cudaMemcpyDeviceToHost));return v;}};
+// Independent source control; production output always comes from unchanged launcher.
+__global__ void primitives(const float*x,const uint16_t*wa,const uint16_t*wb,const float*dt,const float*ssa,float*diag,float*g,float*b){int row=blockIdx.x*2+(threadIdx.x>>5),lane=threadIdx.x&31;bool beta=row>=48;int r=beta?row-48:row;const uint16_t*w=(beta?wb:wa)+r*2560;float a=0;
+ for(int j=lane;j<320;j+=32)for(int k=0;k<8;++k)a=fmaf(__uint_as_float(uint32_t(w[j*8+k])<<16),x[j*8+k],a);
+ for(int o=16;o;o>>=1)a+=__shfl_xor_sync(0xffffffffu,a,o);if(lane)return;
+ if(beta){float e=__expf(-a),d=1.f+e;b[r]=1.f/d;diag[48+r]=a;diag[240+r]=e;diag[288+r]=d;}
+ else{float v=a+dt[r],e=0,sp;if(v>20.f)sp=v;else{e=__expf(v);sp=log1pf(e);}g[r]=sp*ssa[r];diag[r]=a;diag[96+r]=v;diag[144+r]=e;diag[192+r]=sp;}}
+int main(int argc,char**argv){try{native_hc_need(argc==9&&std::string(argv[1])=="--device"&&std::string(argv[3])=="--expect-device"&&std::string(argv[5])=="--fixture"&&std::string(argv[7])=="--output","GDN ab native arguments");auto f=read(argv[6]);std::filesystem::path dir=argv[8];native_hc_need(std::filesystem::create_directory(dir),"GDN ab fresh output");std::filesystem::copy_file(argv[6],dir/"fixture.bin");cu(cudaSetDevice(std::stoi(argv[2])));cudaDeviceProp props{};cu(cudaGetDeviceProperties(&props,std::stoi(argv[2])));native_hc_need(std::string(props.name).find(argv[4])!=std::string::npos,"GDN ab actual native device");
+ std::array<Device,5>in;std::array<std::vector<uint32_t>,5>words;for(size_t i=0;i<5;++i){words[i].resize(counts[i]);in[i].alloc(counts[i]);}std::memcpy(words[0].data(),f.x.data(),N*4);std::memcpy(words[1].data(),f.wa.data(),N*H*2);std::memcpy(words[2].data(),f.wb.data(),N*H*2);std::memcpy(words[3].data(),f.dt.data(),H*4);std::memcpy(words[4].data(),f.a.data(),H*4);Device gate,beta,diag,dgate,dbeta;gate.alloc(H);beta.alloc(H);diag.alloc(7*H);dgate.alloc(H);dbeta.alloc(H);std::vector<uint32_t>g,b;
+ for(int r=0;r<2;++r){for(size_t i=0;i<5;++i)in[i].set(words[i]);strata::kernels::gdn_ab_multi(in[0].p,(uint16_t*)in[1].p,(uint16_t*)in[2].p,in[3].p,in[4].p,gate.p,beta.p,N,H,1,nullptr);cu(cudaGetLastError());cu(cudaDeviceSynchronize());auto gg=gate.get(H),bb=beta.get(H);if(r)native_hc_need(gg==g&&bb==b,"GDN ab native reset/repeat");g=gg;b=bb;for(size_t i=0;i<5;++i)native_hc_need(in[i].get(counts[i])==words[i],"GDN ab native input changed");}
+ primitives<<<48,64>>>(in[0].p,(uint16_t*)in[1].p,(uint16_t*)in[2].p,in[3].p,in[4].p,diag.p,dgate.p,dbeta.p);cu(cudaGetLastError());cu(cudaDeviceSynchronize());auto d=diag.get(7*H);
+ for(size_t i=0;i<9;++i){std::ofstream o(dir/(std::string(fields[i])+".f32le"),std::ios::binary);auto&v=i<7?d:(i==7?g:b);size_t at=i<7?i*H:0;for(size_t j=0;j<H;++j)word(o,v[at+j]);native_hc_need(bool(o),"GDN ab native output write");}
+ native_hc_need(g==dgate.get(H)&&b==dbeta.get(H),"GDN ab actual launcher differs from independent source/primitive control; inspect lowering");std::ofstream(dir/"report.json")<<"{\"actual_native_launcher\":true,\"T\":1,\"native_calls\":2,\"diagnostic_calls\":1,\"exact_source_primitive_gate_beta\":true,\"repeat_exact\":true,\"inputs_unchanged\":true,\"qualified\":false}\n";return 0;}catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}
