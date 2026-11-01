@@ -236,8 +236,14 @@ The standalone T1 final-write component now passes bounded synthetic and
 identical-input real-operand backend-local contracts with actual native/Vulkan
 execution and effective-module validation. Cross-backend differences remain;
 no output tolerance was fitted and component evidence is not model parity.
-Default-disabled actual model final materialization before PLE remains the
-next integration slice; product transaction/state behavior is not yet qualified.
+The default-disabled `--native-hc-ffn-write-layer0` model/layer seam now
+materializes the actual final FFN producer before the next layer/PLE consumer.
+It replaces the unused post graph, reuses retained inputs, preserves transaction
+commit/rollback and charges its storage/host bound with separate paid counters.
+Local actual-consumer/admission/parser/default-output regressions pass; its
+physical coordinator and matched-model state/PLE gates remain unrun. Generic
+cross-layer pending/control/head integration remains separate. See the
+[bounded implementation](https://github.com/Zutfen-LLC/Strata/blob/a2d36ce3d7153533ee9b3eee80cc38d044885f9a/docs/native-hc-ffn-write-layer0.md).
 Existing roles/operands support synthetic development; a real final-write replay
 still needs the actual post-combine FFN block output, not HC mixed or GDN BO.
 No new arithmetic, synchronization, method selection or model flag is added. See the [bounded scope](https://github.com/Zutfen-LLC/Strata/blob/f7c5441c2dfe45ecd1b7c60b28d5dd293dff9562/docs/native-hc-gdn-ffn-t1.md).
