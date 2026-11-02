@@ -20,7 +20,7 @@ void native_mmvq(int type,const void*weights,const void*x,float*y,int n,int rows
  for(int row=0;row<rows;++row){std::array<float,128>p{};
   for(size_t tid=0;tid<128;++tid)for(size_t b=tid/4;b<80;b+=32){size_t z=2*(tid%4),wi=size_t(row)*2720+b*34,xi=b*36;int dot=0;
    for(size_t j=0;j<8;++j)dot+=s8(w[wi+2+z*4+j])*s8(q[xi+4+z*4+j]);
-   p[tid]=checked(std::fma(checked(half(get16(w,wi))*input_half(get16(q,xi))),float(dot),p[tid]));}
+   p[tid]=checked(std::fma(checked(half(get16(w,wi))*input_half(get16(q,xi),InputScaleDomain::qkv_finite)),float(dot),p[tid]));}
   for(size_t lane=0;lane<32;++lane){float v=p[lane];for(size_t warp=1;warp<4;++warp)v=checked(v+p[warp*32+lane]);p[lane]=v;}
   for(size_t off=16;off;off>>=1){auto old=p;for(size_t lane=0;lane<32;++lane)p[lane]=checked(old[lane]+old[lane^off]);}y[row]=p[0];
  }} }
