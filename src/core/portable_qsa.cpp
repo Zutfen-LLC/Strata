@@ -325,12 +325,13 @@ struct PortableQsaLayer::Impl {
         write(s.input, residual);
 #ifdef STRATA_PORTABLE_NATIVE_HC
         portable_detail::PortableNativeQsaQkv::Candidate qkv_candidate;
+        auto norm_raw=s.norm_raw;
         if(s.options.native_qkv_t1){qkv_candidate=s.native_qkv->run(s.native_hc->mixed);for(size_t i=0;i<3;++i)write(s.qkv_leaves[i],qkv_candidate.output[i]);}
 #endif
         s.project->run();
 #ifdef STRATA_PORTABLE_NATIVE_HC
-        if(s.options.native_qkv_t1)s.native_qkv->consumed(position,s.native_hc->mixed,s.qkv_leaves,qkv_candidate);
-        if(s.options.native_norm_rope_t1)s.native_norm_rope->run(s.norm_raw,position);
+        if(s.options.native_qkv_t1){s.native_qkv->consumed(position,s.native_hc->mixed,s.qkv_leaves,qkv_candidate);norm_raw[0]=s.native_qkv->projection(0);norm_raw[1]=s.native_qkv->projection(1);}
+        if(s.options.native_norm_rope_t1)s.native_norm_rope->run(norm_raw,position);
 #endif
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(s.native_hc)s.native_hc->record_first();
@@ -439,7 +440,7 @@ struct PortableQsaLayer::Impl {
 #ifdef STRATA_PORTABLE_NATIVE_HC
         portable_detail::PortableNativeQsaAttention::Candidate attention_candidate;
         if(s.options.native_attention_t1){
-            attention_candidate=s.native_attention->run(s.q,s.norm_raw[0],next_keys,next_values,selection_candidate.ids,position);
+            attention_candidate=s.native_attention->run(s.q,norm_raw[0],next_keys,next_values,selection_candidate.ids,position);
             attn=attention_candidate.attention;cell_scores=selection_candidate.cell_scores;selection=selection_candidate.mask;
         }else
 #endif
