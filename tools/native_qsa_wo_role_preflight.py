@@ -34,7 +34,8 @@ def scan(paths):
         if expected_total is None:expected_total=total
         if total!=expected_total:raise ValueError('GGUF split tensor totals differ')
         split.append(number)
-    if set(split)!=set(range(6)) or sum(len(f.tensors) for f in files)!=expected_total:raise ValueError('incomplete GGUF split')
+    if split!=list(range(6)) or sum(len(f.tensors) for f in files)!=expected_total:raise ValueError('incomplete or unordered GGUF split')
+    if files[0].metadata.get('general.architecture')!='qwen4exp':raise ValueError('unsupported GGUF architecture')
     roles={}
     for f in files:
         for t in f.tensors:

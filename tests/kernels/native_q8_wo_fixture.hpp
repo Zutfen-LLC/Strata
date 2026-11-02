@@ -9,6 +9,7 @@ using namespace strata::core::portable_detail;
 constexpr size_t blocks=192, lanes=32, max_rows=2560;
 inline void set16(Bytes& b,size_t i,uint16_t v){b.at(i)=uint8_t(v);b.at(i+1)=uint8_t(v>>8);}
 inline uint16_t get16(const Bytes& b,size_t i){return uint16_t(b.at(i))|uint16_t(b.at(i+1))<<8;}
+inline uint16_t get16(const uint8_t* b,size_t i){return uint16_t(b[i])|uint16_t(b[i+1])<<8;}
 inline float half(uint16_t h){unsigned e=(h>>10)&31,m=h&1023;
     need(e!=31 && (e!=0 || m==0),"WO: unsupported half scale");
     return value((uint32_t(h&0x8000)<<16)|(e?(uint32_t(e+112)<<23)|(uint32_t(m)<<13):0));
@@ -39,19 +40,20 @@ inline Fixture synthetic(size_t rows){
     return f;
 }
 struct Result {float value;std::array<float,128> partial;};
-inline Result reference(const Fixture& f,size_t row){
-    need(row<f.rows,"WO: row");q8_wo_require_layout(f.rows,f.weights.size(),f.input.size(),f.rows*4);
+inline Result reference(const uint8_t* weights,size_t weights_size,const uint8_t* input,size_t input_size,size_t rows,size_t row){
+    need(weights&&input&&row<rows,"WO: row");q8_wo_require_layout(rows,weights_size,input_size,rows*4);
     std::array<float,128> partial{};
     for(size_t tid=0;tid<128;++tid)for(size_t b=tid/4;b<blocks;b+=32){
         size_t q=2*(tid%4),wi=row*q8_wo_row_bytes+b*34,xi=b*36;int sum=0;
-        for(size_t j=0;j<8;++j)sum+=s8(f.weights[wi+2+q*4+j])*s8(f.input[xi+4+q*4+j]);
-        float scale=checked(half(get16(f.weights,wi))*half(get16(f.input,xi)));
+        for(size_t j=0;j<8;++j)sum+=s8(weights[wi+2+q*4+j])*s8(input[xi+4+q*4+j]);
+        float scale=checked(half(get16(weights,wi))*half(get16(input,xi)));
         partial[tid]=checked(std::fma(scale,float(sum),partial[tid]));
     }
     auto mixed=partial;for(size_t lane=0;lane<32;++lane){float v=mixed[lane];for(size_t warp=1;warp<4;++warp)v=checked(v+partial[warp*32+lane]);mixed[lane]=v;}
     for(size_t offset=16;offset;offset>>=1){auto old=mixed;for(size_t lane=0;lane<32;++lane)mixed[lane]=checked(old[lane]+old[lane^offset]);}
     return {mixed[0],partial};
 }
+inline Result reference(const Fixture& f,size_t row){return reference(f.weights.data(),f.weights.size(),f.input.data(),f.input.size(),f.rows,row);}
 // Existing expert helper visits block indices in a different order.
 inline float expert_order(const Fixture& f,size_t row){
     std::array<float,32> p{};
