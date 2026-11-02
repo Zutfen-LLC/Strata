@@ -762,8 +762,19 @@ for each capability below.
    Inputs are from the portable model's actual gated candidate, supplied equally
    to each quantizer; this does not establish upstream native attention equality.
    Literal controls remain separate; no model rerun or integration was performed.
-   The remaining projection consumer is native T1 MMVQ: the portable combine
-   still calls GGML matrix multiplication and cannot use these packed bytes yet.
+   [PR135](https://github.com/Zutfen-LLC/Strata/pull/135) adds the standalone
+   ordinary unpacked Q8_0 T1 WO consumer at `ba1a8a8d`. The selected CUDA SASS
+   matches the candidate scale-multiply/FMA and ordered four-warp/XOR reduction
+   association in its supported finite fixture domain. The bounded physical
+   comparison passes: all 2,560 rows / 10,240 bytes are exact, with literal,
+   repeat/canary, actual module and lifecycle checks passing. Both hosts restore
+   baseline across three observations and have no selected owners; each has one
+   in-loop sample plus baseline, not continuous coverage. Collected output bytes
+   and retained receipt manifests were independently checked. Half-subnormal
+   scales remain unsupported. No producer composition or model integration has
+   run; portable combine still uses GGML matrix multiplication. Next compose
+   producer and consumer, then connect the native WO output to existing QSA/FFN
+   state authority with matched accounting and verified real-role support.
    Quantized KV, projections, accepted-prefix and window scheduling remain gaps.
 
 
