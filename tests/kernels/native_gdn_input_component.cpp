@@ -41,7 +41,7 @@ int main(int argc,char**argv){try {
             strata_vk_q8_wo_run(owner.get(),wt[i],stale,y[i],rows[i]);auto bad=contents(yb[i],yi[i].size());need(std::memcmp(bad.data()+8,output[i].data(),output[i].size())!=0,"GDN input: stale input not detected");
             need(contents(sb,si.size())==si&&contents(xb,xi.size())==xi&&contents(wb[i],wi[i].size())==wi[i]&&contents(qb,qi.size())==qr,"GDN input: stale test changed inputs");for(size_t j=0;j<8;++j)need(bad[j]==guard&&bad[bad.size()-1-j]==guard,"GDN input: stale output canary");
         }
-        output_controls(output);if(pass)need(packed_bytes==first_q&&output==first_y,"GDN input: repeat changed");first_q=packed_bytes;first_y=output;
+        output_controls(output,mode);if(pass)need(packed_bytes==first_q&&output==first_y,"GDN input: repeat changed");first_q=packed_bytes;first_y=output;
         save(dir/(pass?"qx-repeat.bin":"qx.bin"),packed_bytes.data(),packed_bytes.size());for(size_t i=0;i<2;++i)save(dir/(std::string(names[i])+(pass?"-repeat.f32le":".f32le")),output[i].data(),output[i].size());
     }
     std::ofstream(dir/"report.json")<<"{\"actual_vulkan_quantizer_and_mmvq\":true,\"one_packed_input\":true,\"stale_changes_output\":true,\"invalid_noncommit_retry\":true,\"immutable_canary_repeat\":true,\"qualified\":false}\n";return 0;

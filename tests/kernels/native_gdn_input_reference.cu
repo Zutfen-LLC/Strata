@@ -42,7 +42,7 @@ int main(int argc,char**argv){try {
             for(size_t j=0;j<8;++j)need(result[j]==guard&&result[result.size()-1-j]==guard,"GDN input: stale output canary");
         }
         std::vector<uint32_t> stale_after(stale.size());cu(cudaMemcpy(stale_after.data(),ds.p,stale_after.size()*4,cudaMemcpyDeviceToHost));need(stale_after==stale,"GDN input: stale input changed");
-        output_controls(output);if(pass)need(packed_bytes==first_q&&output==first_y,"GDN input: repeat changed");first_q=packed_bytes;first_y=output;
+        output_controls(output,mode);if(pass)need(packed_bytes==first_q&&output==first_y,"GDN input: repeat changed");first_q=packed_bytes;first_y=output;
         save(dir/(pass?"qx-repeat.bin":"qx.bin"),packed_bytes.data(),packed_bytes.size());for(size_t i=0;i<2;++i)save(dir/(std::string(names[i])+(pass?"-repeat.f32le":".f32le")),output[i].data(),output[i].size());
     }
     std::ofstream(dir/"report.json")<<"{\"actual_native_quantizer_and_mmvq\":true,\"one_packed_input\":true,\"stale_changes_output\":true,\"invalid_noncommit_retry\":true,\"immutable_canary_repeat\":true,\"qualified\":false}\n";return 0;

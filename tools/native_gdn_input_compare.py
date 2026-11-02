@@ -4,8 +4,8 @@ import argparse,hashlib,json,math,struct,subprocess,tempfile
 
 PINS={'input.bin':'aa76e6d501629f015285c703940589d5b23d91b460fb7ea7862c60067d9775b3',
       'dense.bin':'e762afab43438c6686a8471812281cebefc2872cf0918ed681c66759962ad073',
-      'qkv.bin':'bf42724ae50e9a01a8e17d455dee88d2dae0add9c9422e9c3d5ed82eaa9417b1',
-      'z.bin':'6fb19e7aa558c145b6a23b294a5bc3a50e4089c81d251b262e07ea7f8d1c3ec0'}
+      'qkv.bin':'1efdbbdd3a74c5bf8c3d8eb01e30d3444ec359d5d9930ef6bd8c63d63e984569',
+      'z.bin':'0ac563882329e2dc4f43bf9c3eb9246a653c8924d846888c43ab47cc41ec3a96'}
 SIZES={'qx.bin':2880,'qkv.f32le':40960,'z.f32le':24576}
 def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def packed_literals(data,case):
@@ -48,7 +48,7 @@ def compare(fixture,validator,validator_sha,native,vulkan,case):
   for name in ('qkv.f32le','z.f32le'):
    if not all(math.isfinite(v[0]) for v in struct.iter_unpack('<f',files[name])):raise ValueError(label+' nonfinite output')
   q=struct.unpack('<10240f',files['qkv.f32le']);z=struct.unpack('<6144f',files['z.f32le'])
-  if q[0]!=127.0 or q[1]!=-127.0 or q[5]!=0.0 or z[0]!=254.0 or z[1]!=-127.0:raise ValueError(label+' independent row/order literals differ')
+  if q[0]!=127.0 or q[1]!=-127.0 or q[2]!=-127.0 or q[3]!=(1.0 if case=='dense.bin' else -2.0) or q[5]!=0.0 or z[0]!=254.0 or z[1]!=-127.0 or z[2]!=-127.0 or z[3]!=(1.0 if case=='dense.bin' else -2.0):raise ValueError(label+' independent row/order literals differ')
   images[label]=files;hashes[label]={n:hashlib.sha256(data).hexdigest() for n,data in files.items()}
  differences={n:sum(a!=b for a,b in zip(images['native'][n],images['vulkan'][n])) for n in SIZES}
  return {'exact':all(v==0 for v in differences.values()),'different_bytes':differences,'sha256':hashes,'qualified':False}
