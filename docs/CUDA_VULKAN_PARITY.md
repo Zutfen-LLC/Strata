@@ -744,8 +744,16 @@ for each capability below.
    reciprocal/multiply rounds just below, then code 63. This supports a numerical
    mismatch in the RN candidate, not a demonstrated adapter defect or FTZ issue.
    It is not an independent capture of the native reciprocal intermediate.
-   The STOP and frozen exact gate remain; no model integration or candidate
-   qualification follows. Vulkan had no in-loop guard sample; cleanup passes.
+   The RN STOP and frozen exact gate remain. A separate reciprocal-then-multiply
+   observation at `32fa5015` subsequently passes the bounded Vulkan-only comparison
+   against retained native `ef63ef8f`, as reported by Hermes: all five frozen
+   fixtures match all 6,912 packed bytes, including dense. Seven build tests,
+   independent literal controls, repeat/canary/fixture/module checks and three
+   baseline cleanup observations pass; no native rerun. This covers only the
+   selected normal-domain fixtures and exact compiler/backend bindings. It does
+   not establish general MUFU.RCP equivalence or model integration. Vulkan had
+   no in-loop guard sample; qualified=false remains. Terra owns this separate
+   candidate; the prior RN implementation and failed result are unchanged.
    Quantized KV, projections, accepted-prefix and window scheduling remain gaps.
 
 
