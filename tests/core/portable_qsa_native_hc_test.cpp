@@ -176,6 +176,26 @@ int main(){try{
  check(!bf->step(1,f.input(1),[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="FFN failure";return false;},nr_route,error),"post-BF16 FFN failure accepted");
  check(bf->tokens()==1&&bf->keys()==bfkeys&&bf->native_indexer_state()==bfstate,"post-BF16 failure committed state");
  check(bf->step(1,f.input(1),nr_dispatch,nr_route,error),error);check(bf->reset(error)&&bf->step(0,f.input(0),nr_dispatch,nr_route,error),error);check(bf->last_residual()==bfres,"BF16 reset/retry changed result");
+ // The integrated flags must preserve all three norm/RoPE producer banks in
+ // one forward; testing each flag alone misses an overwritten local bank list.
+ auto combined=qn;combined.native_indexer_projection_t1=true;
+ combined.native_indexer_projection_receipt_prefix=(root/"combined-bf").string();
+ combined.native_qkv_receipt_prefix=(root/"combined-qkv").string();combined.native_wo_receipt_prefix=(root/"combined-wo").string();
+ combined.native_hc_receipt_prefix=(root/"combined-hc").string();fresh(combined,"combined-attention");
+ auto all=PortableQsaLayer::create(3,bfviews,combined,error);check(bool(all),error);check(all->reset(error),error);
+ qkv_norm_links=0;indexer_projection_links=0;observe_qkv_norm=true;observe_indexer_projection=true;
+ check(all->step(0,f.input(0),nr_dispatch,nr_route,error),error);observe_qkv_norm=false;observe_indexer_projection=false;
+ check(qkv_norm_links==2&&indexer_projection_links==2,"combined QKV/indexer producer banks were replaced");
+ auto all_keys=all->keys();auto all_state=all->native_indexer_state();auto all_residual=all->last_residual();
+ for(int failure:{0,1,2}){
+  fail_qsa_qkv=failure==0;fail_indexer_projection=failure;
+  check(!all->step(1,f.input(1),nr_dispatch,nr_route,error),"combined projection refusal accepted");
+  fail_qsa_qkv=false;fail_indexer_projection=0;
+  check(all->tokens()==1&&all->keys()==all_keys&&all->native_indexer_state()==all_state&&all->last_residual()==all_residual,"combined projection failure committed state");
+ }
+ check(all->step(1,f.input(1),nr_dispatch,nr_route,error),error);
+ check(all->reset(error)&&all->step(0,f.input(0),nr_dispatch,nr_route,error),error);
+ check(all->last_residual()==all_residual&&all->keys()==all_keys&&all->native_indexer_state()==all_state,"combined producer reset/retry changed state");
  auto bf_bad=bfo;bf_bad.native_indexer_projection_receipt_prefix=(root/"bf-invalid").string();check(!PortableQsaLayer::create(3,qf.views,bf_bad,error),"BF16 projection accepted non-BF16 weights");
  auto sb=ss;sb.native_indexer_t1=false;sb.native_select_receipt_prefix=(root/"ss-invalid").string();check(!PortableQsaLayer::create(3,qf.views,sb,error),"scores accepted nonnative indexer state");
  sb=ss;sb.execution.graph_budget=1;sb.native_select_receipt_prefix=(root/"ss-budget").string();check(!PortableQsaLayer::create(3,qf.views,sb,error),"score banks bypassed graph budget");
