@@ -20,8 +20,10 @@ bool inspect_producer=false;std::vector<float> actual_projected,actual_attention
 size_t write_owners=0,write_calls=0;bool fail_write_create=false,fail_write_run=false;
 const ggml_tensor* live_ffn_residual=nullptr;const ggml_tensor* live_ffn_inject=nullptr;std::vector<float> write_seen_block;
 size_t pending_owners=0,pending_calls=0;bool fail_pending_create=false,fail_pending_run=false;
+bool observe_wo_pending=false;size_t wo_pending_links=0;std::vector<float>actual_native_wo;
 size_t owners=0,calls=0,mix_owners=0,mix_calls=0;bool fail_mix_domain=false,fail_mix_domain_ffn=false,last_norm_ffn=false;bool fail_mix=false,fail_mix_create=false;float mixed_scale=1;const ggml_tensor* live_mixed=nullptr;size_t mixed_consumers=0;
 std::vector<uint16_t> expected_down,expected_up;bool fail_run=false,fail_create=false;float inject_bias=0,norm_scale=1;
+std::vector<uint16_t> expected_ffn_down,expected_ffn_up,expected_ffn_inject;
 std::vector<float> uploaded,expected_xn,expected_rs,expected_inject;
 std::vector<uint16_t> expected_weights;
 const ggml_tensor* bound_weight=nullptr;const ggml_tensor* live_normalized=nullptr;size_t direct_consumers=0;
@@ -42,6 +44,7 @@ size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*){return 
 StrataVkNativeHcPending* strata_vk_native_hc_write_create(ggml_backend_t,const char*path,size_t budget){check(!fail_write_create&&budget>=512,"injected write create/budget refusal");std::ofstream(path)<<"mock; not shader evidence\n";++write_owners;return new StrataVkNativeHcPending{true};}
 void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p)noexcept{if(p){if(p->final_write)--write_owners;else --pending_owners;}delete p;}
 void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*owner,const ggml_tensor*r,const ggml_tensor*b,const ggml_tensor*i,ggml_tensor*rp,ggml_tensor*g,ggml_tensor*e){
+ if(observe_wo_pending&&!actual_native_wo.empty()&&get(b)==actual_native_wo)++wo_pending_links;
  if(owner->final_write){
  check(!fail_write_run,"injected final write refusal");check(r==live_ffn_residual&&i==live_ffn_inject,"final write did not consume retained actual FFN operands");check(r!=rp&&b!=rp&&i!=rp,"final write producer/candidate alias");
  auto x=get(r),bo=get(b),inj=get(i);write_seen_block=bo;std::vector<float> result(10240),gate(4),exp(4);
@@ -56,7 +59,7 @@ size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*){return 512;}
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix*p)noexcept{if(p)--mix_owners;if(!mix_owners)live_mixed=nullptr;delete p;}
 void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*x,const ggml_tensor*down,const ggml_tensor*up,ggml_tensor*lp,ggml_tensor*low,ggml_tensor*le,ggml_tensor*upre,ggml_tensor*gates,ggml_tensor*ue,ggml_tensor*mixed){
  check(!fail_mix,"injected mix refusal");check(x==live_normalized,"composition normalized operand differs");
- size_t wi=0;for(auto*w:{down,up}){check(w->type==GGML_TYPE_I32&&ggml_nbytes(w)==6553600,"converted down/up span");std::vector<uint16_t> b(3276800);ggml_backend_tensor_get(w,b.data(),0,b.size()*2);check(b==(wi++?expected_up:expected_down),"original BF16 role conversion");}
+ size_t wi=0;for(auto*w:{down,up}){check(w->type==GGML_TYPE_I32&&ggml_nbytes(w)==6553600,"converted down/up span");std::vector<uint16_t> b(3276800);ggml_backend_tensor_get(w,b.data(),0,b.size()*2);const auto&want=last_norm_ffn&&!expected_ffn_down.empty()?(wi?expected_ffn_up:expected_ffn_down):(wi?expected_up:expected_down);++wi;check(b==want,"original BF16 role conversion");}
  for(auto*t:{lp,low,le,upre,gates,ue})put(t,std::vector<float>(size_t(ggml_nelements(t)),0));
  auto normalized=get(x);std::vector<float>values(2560);for(size_t i=0;i<values.size();++i)values[i]=normalized[i]*mixed_scale;
  put(mixed,values);live_mixed=mixed;if(fail_mix_domain||(fail_mix_domain_ffn&&last_norm_ffn))throw NativeHcMixDomainRefusal(8u<<8);++mix_calls;
@@ -69,7 +72,7 @@ void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*x,const ggml_te
  native_hc_environment();last_norm_ffn=std::string(ggml_get_name(wi)).ends_with(".hc_ffn_inject.weight");check(x->ne[0]==2560&&x->ne[1]==4&&!x->view_src&&xn->ne[0]==10240&&xn->ne[1]==1&&!xn->view_src,"original input/normalized geometry");live_normalized=xn;
  check(t==1&&wi->type==GGML_TYPE_I32&&ggml_nbytes(wi)==81920,"native weight/T binding");
  check(!fail_run,"injected HC failure");
- std::vector<uint16_t>weight(40960);ggml_backend_tensor_get(wi,weight.data(),0,81920);check(weight==expected_weights,"BF16 replacement differs from original pack conversion");
+ std::vector<uint16_t>weight(40960);ggml_backend_tensor_get(wi,weight.data(),0,81920);check(weight==(last_norm_ffn&&!expected_ffn_inject.empty()?expected_ffn_inject:expected_weights),"BF16 replacement differs from original pack conversion");
  if(std::string(ggml_get_name(wi))=="blk.0.hc_attn_inject.weight") {if(bound_weight)check(wi==bound_weight,"weight tensor identity changed");else bound_weight=wi;}
  uploaded=get(x);auto out=native_hc_oracle(uploaded,get(w),weight,1);for(float&v:out.inject)v+=inject_bias;for(float&v:out.xn)v*=norm_scale;
  expected_xn=out.xn;expected_rs=out.rs;expected_inject=out.inject;
@@ -183,8 +186,37 @@ uint32_t strata_vk_native_qsa_select_run(StrataVkNativeQsaSelect*p,ggml_tensor*c
 #ifdef STRATA_PORTABLE_NATIVE_HC
 #include "../kernels/native_qsa_attention_fixture.hpp"
 #include "strata_vk_native_qsa_attention.hpp"
+#include "strata_vk_native_stages.hpp"
+#include "strata_vk_q8_wo.hpp"
+#include "../kernels/native_q8_wo_fixture.hpp"
 namespace {bool fail_qsa_attention=false;std::vector<float>actual_native_gated;}
+namespace {bool fail_qsa_wo=false;const ggml_tensor*actual_packed_producer=nullptr;}
 namespace strata::core::portable_detail {
+struct StrataVkNativeStages{uint64_t submitted=0,completed=0;};
+StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"quantizer budget");std::ofstream(path)<<"host mock only\n";return new StrataVkNativeStages;}
+void strata_vk_native_stages_destroy(StrataVkNativeStages*p) noexcept{delete p;}
+size_t strata_vk_native_stages_bytes(const StrataVkNativeStages*){return 512;}
+uint64_t strata_vk_native_stages_quant_submitted(const StrataVkNativeStages*p) noexcept{return p?p->submitted:0;}
+uint64_t strata_vk_native_stages_quant_completed(const StrataVkNativeStages*p) noexcept{return p?p->completed:0;}
+uint64_t strata_vk_native_stages_quant_submission_uncertain(const StrataVkNativeStages*) noexcept{return 0;}
+void strata_vk_native_stages_run(StrataVkNativeStages*p,uint32_t mode,const ggml_tensor*gate,const ggml_tensor*,ggml_tensor*,ggml_tensor*packed,uint32_t n,const int32_t*,size_t){
+ check(mode==0&&n==6144&&get(gate)==actual_native_gated,"quantizer ignored actual native attention output");
+ ++p->submitted;auto bytes=native_q8_fixture::quantize(actual_native_gated);ggml_backend_tensor_set(packed,bytes.data(),0,bytes.size());actual_packed_producer=packed;++p->completed;
+}
+struct StrataVkQ8Wo{uint64_t submitted=0,completed=0,uncertain=0;};
+StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t,const char*path,size_t budget){check(budget>=16,"WO budget");std::ofstream(path)<<"host mock only\n";return new StrataVkQ8Wo;}
+void strata_vk_q8_wo_destroy(StrataVkQ8Wo*p)noexcept{delete p;}
+size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo*){return 16;}
+uint64_t strata_vk_q8_wo_submitted(const StrataVkQ8Wo*p)noexcept{return p?p->submitted:0;}
+uint64_t strata_vk_q8_wo_completed(const StrataVkQ8Wo*p)noexcept{return p?p->completed:0;}
+uint64_t strata_vk_q8_wo_submission_uncertain(const StrataVkQ8Wo*p)noexcept{return p?p->uncertain:0;}
+void strata_vk_q8_wo_run(StrataVkQ8Wo*p,const ggml_tensor*weights,const ggml_tensor*packed,ggml_tensor*out,size_t rows){
+ check(packed==actual_packed_producer&&rows==2560,"WO ignored actual packed producer");if(fail_qsa_wo){++p->uncertain;throw std::runtime_error("injected WO synchronize failure");}++p->submitted;
+ native_q8_wo_fixture::Fixture f{rows,native_q8_fixture::Bytes(rows*q8_wo_row_bytes),native_q8_fixture::Bytes(q8_wo_input_bytes)};
+ ggml_backend_tensor_get(weights,f.weights.data(),0,f.weights.size());ggml_backend_tensor_get(packed,f.input.data(),0,f.input.size());
+ actual_native_wo.resize(rows);for(size_t i=0;i<rows;++i)actual_native_wo[i]=native_q8_wo_fixture::reference(f,i).value;
+ ggml_backend_tensor_set(out,actual_native_wo.data(),0,rows*4);++p->completed;
+}
 struct StrataVkNativeQsaAttention{std::array<uint64_t,3>calls{};};
 StrataVkNativeQsaAttention* strata_vk_native_qsa_attention_create(ggml_backend_t,const char*a,const char*b,const char*c,size_t budget){check(budget>=3072,"QSA attention metadata budget");for(auto p:{a,b,c})std::ofstream(p)<<"mock, not GPU proof\n";return new StrataVkNativeQsaAttention;}
 void strata_vk_native_qsa_attention_destroy(StrataVkNativeQsaAttention*p)noexcept{delete p;}

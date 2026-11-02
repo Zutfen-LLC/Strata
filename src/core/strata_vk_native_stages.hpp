@@ -19,6 +19,9 @@ StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_b
 // reciprocal and separate multiply. Reciprocal accuracy remains unqualified.
 StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char* effective_spv_path,size_t metadata_budget=SIZE_MAX);
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages*);
+uint64_t strata_vk_native_stages_quant_submitted(const StrataVkNativeStages*) noexcept;
+uint64_t strata_vk_native_stages_quant_completed(const StrataVkNativeStages*) noexcept;
+uint64_t strata_vk_native_stages_quant_submission_uncertain(const StrataVkNativeStages*) noexcept;
 void strata_vk_native_stages_destroy(StrataVkNativeStages*) noexcept;
 // mode 0: quantize all input; 1: separate SwiGLU all capacity; 2: fused
 // SwiGLU + quantize [starts[0],starts[count]). Shape is bounded, rows % 32 == 0.

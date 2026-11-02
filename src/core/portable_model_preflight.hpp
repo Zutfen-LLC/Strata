@@ -39,12 +39,14 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         if(opts.qsa_norm_rope_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_norm_rope_host_bound;
         if(opts.qsa_indexer_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_indexer_host_bound;
         if(opts.qsa_attention_banks&&layer%4==3)b+=PortableQsaOptions::native_attention_host_bound;
+        if(opts.native_qsa_wo_t1&&layer%4==3)b+=PortableQsaOptions::native_wo_host_bound;
         if(opts.qsa_score_select_banks&&layer%4==3)b+=PortableQsaOptions::native_select_host_bound;
         return b;
     }
     size_t bound=opts.qsa_norm_rope_resident_weights&&layer%4==3?PortableQsaOptions::native_norm_rope_host_bound:0;
     if(opts.qsa_indexer_resident_weights&&layer%4==3)bound+=PortableQsaOptions::native_indexer_host_bound;
     if(opts.qsa_attention_banks&&layer%4==3)bound+=PortableQsaOptions::native_attention_host_bound;
+    if(opts.native_qsa_wo_t1&&layer%4==3)bound+=PortableQsaOptions::native_wo_host_bound;
     if(opts.qsa_score_select_banks&&layer%4==3)bound+=PortableQsaOptions::native_select_host_bound;
     if(opts.native_hc_pending_layer1_2 && layer==1)bound+=PortableFfnOptions::deferred_hc_host_bound;
     if(opts.native_hc_pending_layer1_2 && layer==2)bound+=PortableGdnOptions::native_hc_pending_host_bound;
@@ -93,6 +95,8 @@ inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,P
 }
 inline void model_qsa_hc_options(const PortableModelOptions& opts,size_t layer,PortableQsaOptions& o) {
     o.native_attention_banks=opts.qsa_attention_banks;o.native_attention_t1=opts.native_qsa_attention_t1;o.native_attention_record_first=layer==3;
+    o.native_wo_t1=opts.native_qsa_wo_t1;o.native_wo_record_first=layer==3;
+    if(o.native_wo_t1)o.native_wo_receipt_prefix=opts.qsa_attention_receipt_prefix+".wo.layer-"+std::to_string(layer);
     if(o.native_attention_banks)o.native_attention_receipt_prefix=opts.qsa_attention_receipt_prefix+".layer-"+std::to_string(layer);
     o.native_select_banks=opts.qsa_score_select_banks;o.native_select_t1=opts.native_qsa_score_select_t1;o.native_select_record_first=layer==3;
     if(o.native_select_banks)o.native_select_receipt_prefix=opts.qsa_score_select_receipt_prefix+".layer-"+std::to_string(layer);
@@ -177,6 +181,8 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
             "portable model: QSA production requires reuse and strict accelerators");
     if(opts.qsa_attention_banks)native_qsa_attention_environment();
     require(!opts.native_qsa_attention_t1||opts.qsa_attention_banks,"native QSA attention requires matched candidate banks");
+    require(!opts.native_qsa_wo_t1||(opts.native_qsa_attention_t1&&opts.native_hc_serial&&opts.dense_resident_weights),
+            "native QSA WO requires native attention, ordinary native HC and resident dense weights");
     require(!opts.qsa_attention_banks||(opts.native_qsa_score_select_t1&&opts.native_qsa_norm_rope_t1&&opts.qsa_score_select_banks&&selected_accelerators&&!opts.allow_cpu_fallback&&!opts.qsa_production&&!opts.prompt_chunk_size&&opts.dense_topology==PortableDenseTopology::primary&&!opts.qsa_attention_receipt_prefix.empty()),"native QSA attention requires native query/IDs serial eager primary strict accelerator and receipt");
     if(opts.qsa_score_select_banks)native_qsa_select_environment();
     require(!opts.native_qsa_score_select_t1||opts.qsa_score_select_banks,"native QSA scores/selection requires matched candidate banks");

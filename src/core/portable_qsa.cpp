@@ -5,12 +5,14 @@
 #include "portable_qsa_graph.hpp"
 #include "portable_native_hc.hpp"
 #include "native_hc_boundary.hpp"
+#include "native_qsa_wo_domain.hpp"
 #include "portable_native_qsa_policy.hpp"
 #ifdef STRATA_PORTABLE_NATIVE_HC
 #include "portable_native_qsa_norm_rope.hpp"
 #include "portable_native_qsa_indexer.hpp"
 #include "portable_native_qsa_select.hpp"
 #include "portable_native_qsa_attention.hpp"
+#include "portable_native_qsa_wo.hpp"
 #endif
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
@@ -251,6 +253,7 @@ struct PortableQsaLayer::Impl {
     std::unique_ptr<portable_detail::PortableNativeQsaIndexer> native_indexer;
     std::unique_ptr<portable_detail::PortableNativeQsaSelect> native_select;
     std::unique_ptr<portable_detail::PortableNativeQsaAttention> native_attention;
+    std::unique_ptr<portable_detail::PortableNativeQsaWo> native_wo;
     std::array<ggml_tensor*,3> norm_raw{};
 #endif
     std::map<std::string, ggml_tensor *> w;
@@ -484,7 +487,17 @@ struct PortableQsaLayer::Impl {
         if(!s.options.native_attention_t1)write(s.out_gate, gate);
         write(s.out_residual, s.options.native_hc_read ? applied : residual);
         if(!s.options.native_hc_ffn_read)write(s.out_inject, inject);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        portable_detail::PortableNativeQsaWo::Candidate wo_candidate;
+        if(s.options.native_wo_t1){
+            wo_candidate=s.native_wo->run(s.native_attention->gated_tensor(),attention_candidate.gated);
+            write(s.projected_output,wo_candidate.output);
+        }
+#endif
         s.combine->run();
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(s.options.native_wo_t1)s.native_wo->consumed(position,attention_candidate.gated,s.projected_output,wo_candidate);
+#endif
         auto next_residual = read(s.attn_residual);
         auto gated = read(s.gated);
         auto block=s.options.native_hc_ffn_read?read(s.projected_output):std::vector<float>{};
@@ -588,6 +601,10 @@ struct PortableQsaLayer::Impl {
     Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableQsaOptions opts) : options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 == 3, "portable QSA: expected a QSA layer 3/7/.../47");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
+        require(!options.native_wo_t1 || (options.native_attention_t1 && options.native_hc_ffn_read &&
+                options.execution.resident_dense_weights && options.reuse_attention && !options.production &&
+                options.execution.accelerator && options.execution.request_accelerator && !options.execution.allow_cpu_fallback &&
+                !options.native_wo_receipt_prefix.empty()),"native QSA WO requires native attention, pending FFN, resident weights and eager strict accelerator");
         require(!options.native_attention_t1||(options.native_attention_banks&&options.native_select_t1&&options.native_norm_rope_t1),"native QSA attention requires actual native IDs/query and matched banks");
         if(options.native_attention_banks){
             portable_detail::native_qsa_attention_environment();
@@ -661,13 +678,18 @@ struct PortableQsaLayer::Impl {
         if (options.production)
             states_size -= options.capacity * (4 * KV * sizeof(uint16_t) + 8 * sizeof(float)) +
                            (options.capacity / 4 + 2) * ID * 3 * sizeof(float);
-        require(states_size <= options.state_budget && ((options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0)<=options.state_budget-states_size), "portable QSA: host state budget exceeded");
+        require(states_size <= options.state_budget && ((options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0)+(options.native_wo_t1?PortableQsaOptions::native_wo_host_bound:0)<=options.state_budget-states_size), "portable QSA: host state budget exceeded");
         std::vector<PortableTensorView> aw, fw;
         for (const auto &t : tensors) {
             require(t.name.rfind(prefix, 0) == 0, "portable QSA: tensor belongs to another layer");
             (shapes().count(t.name.substr(prefix.size())) ? aw : fw).push_back(t);
         }
         require(aw.size() == shapes().size() && fw.size() == 9, "portable QSA: missing/extra attention or FFN tensors");
+        if(options.native_wo_t1){
+            auto i=std::find_if(aw.begin(),aw.end(),[&](const auto&v){return v.name==prefix+"attn_output.weight";});
+            require(i!=aw.end()&&i->type==8&&i->shape==std::vector<int64_t>({6144,2560}),"native QSA WO: expected unpacked Q8_0 role");
+            portable_detail::qsa_wo_weight_domain(i->data,i->bytes,i->name);
+        }
         std::string error;
         auto ffn_options=options.execution;
         ffn_options.resident_dense_weights=options.execution.resident_dense_weights || options.resident_ffn_weights;
@@ -782,6 +804,13 @@ struct PortableQsaLayer::Impl {
             native_attention=std::make_unique<portable_detail::PortableNativeQsaAttention>(options.execution.accelerator,uint32_t(options.capacity),options.native_attention_receipt_prefix,options.execution.graph_budget-fixed_graphs,options.native_attention_record_first);
             fixed_graphs+=native_attention->bytes();
         }
+        if(options.native_wo_t1){
+            require(fixed_graphs<options.execution.graph_budget,"native QSA WO: no graph room");
+            const auto role=std::find_if(aw.begin(),aw.end(),[&](const auto&v){return v.name==prefix+"attn_output.weight";});
+            require(role!=aw.end(),"native QSA WO: missing model role");
+            native_wo=std::make_unique<portable_detail::PortableNativeQsaWo>(options.execution.accelerator,w.at("attn_output.weight"),role->data,role->bytes,options.native_wo_receipt_prefix,options.execution.graph_budget-fixed_graphs,options.native_wo_record_first);
+            fixed_graphs+=native_wo->bytes();
+        }
         if(options.native_select_banks){
             require(fixed_graphs<options.execution.graph_budget,"native QSA selection no graph room");
             native_select=std::make_unique<portable_detail::PortableNativeQsaSelect>(options.execution.accelerator,uint32_t(options.capacity),options.native_select_receipt_prefix,options.execution.graph_budget-fixed_graphs,options.native_select_record_first);
@@ -876,7 +905,7 @@ struct PortableQsaLayer::Impl {
         out_residual = combine->input({H, HC, 1});
         out_inject = combine->input({HC});
         gated = options.native_attention_t1 ? out_input : ggml_mul(c, out_input, ggml_sigmoid(c, out_gate));
-        auto *projected = ggml_mul_mat(c, w.at("attn_output.weight"), gated);
+        auto *projected = options.native_wo_t1 ? combine->input({H}) : ggml_mul_mat(c, w.at("attn_output.weight"), gated);
         projected_output=projected;
         if(options.native_hc_ffn_read) {
             attn_residual=out_residual;
@@ -928,6 +957,13 @@ uint64_t PortableQsaLayer::native_score_calls()const{
 uint64_t PortableQsaLayer::native_attention_calls(unsigned stage)const{
 #ifdef STRATA_PORTABLE_NATIVE_HC
  return impl_->native_attention?impl_->native_attention->calls(stage):0;
+#else
+ (void)stage;return 0;
+#endif
+}
+uint64_t PortableQsaLayer::native_wo_calls(unsigned stage)const{
+#ifdef STRATA_PORTABLE_NATIVE_HC
+ return impl_->native_wo?impl_->native_wo->calls(stage):0;
 #else
  (void)stage;return 0;
 #endif
@@ -1300,7 +1336,7 @@ size_t PortableQsaLayer::graph_bytes() const {
     return (impl_->attention_phase() ? impl_->fixed_graphs+impl_->retained_attention_bytes() : impl_->graphs_size)+impl_->chunk_graphs();
 }
 size_t PortableQsaLayer::state_bytes() const {
-    return impl_->states_size+impl_->chunk_host_bound+(impl_->options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(impl_->options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(impl_->options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0) + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
+    return impl_->states_size+impl_->chunk_host_bound+(impl_->options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(impl_->options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(impl_->options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0)+(impl_->options.native_wo_t1?PortableQsaOptions::native_wo_host_bound:0) + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
 }
 bool PortableQsaLayer::poisoned() const { return !impl_->healthy; }
 bool PortableQsaLayer::inspect_state(PortableQsaState &state, std::string &error) const {
@@ -1345,6 +1381,7 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     if(s.native_norm_rope){m.device_graph+=s.native_norm_rope->bytes();m.host_extra_bound+=PortableQsaOptions::native_norm_rope_host_bound;}
     if(s.native_attention){m.device_graph+=s.native_attention->bytes();m.host_extra_bound+=PortableQsaOptions::native_attention_host_bound;}
+    if(s.native_wo){m.device_graph+=s.native_wo->bytes();m.host_extra_bound+=PortableQsaOptions::native_wo_host_bound;}
     if(s.native_select){m.device_graph+=s.native_select->bytes();m.host_extra_bound+=PortableQsaOptions::native_select_host_bound;}
     if(s.native_indexer){m.device_graph+=s.native_indexer->bytes();m.host_extra_bound+=PortableQsaOptions::native_indexer_host_bound;}
     if(s.native_hc){m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=PortableQsaOptions::native_hc_host_bound;}

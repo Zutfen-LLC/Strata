@@ -5,7 +5,7 @@
 #endif
 #include <limits>
 namespace strata::core::portable_detail {
-struct StrataVkQ8Wo {std::unique_ptr<StrataVkLogitsGuard> owner;size_t budget;};
+struct StrataVkQ8Wo {std::unique_ptr<StrataVkLogitsGuard> owner;size_t budget;uint64_t submitted=0,completed=0,submission_uncertain=0;};
 StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t backend,const char* path,size_t budget) {
 #ifndef STRATA_NATIVE_Q8_STRICT_FMA
     (void)backend;(void)path;(void)budget;
@@ -18,6 +18,9 @@ StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t backend,const char* path,siz
 #endif
 }
 size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo* p){return p?p->owner->bytes:0;}
+uint64_t strata_vk_q8_wo_submitted(const StrataVkQ8Wo* p) noexcept{return p?p->submitted:0;}
+uint64_t strata_vk_q8_wo_completed(const StrataVkQ8Wo* p) noexcept{return p?p->completed:0;}
+uint64_t strata_vk_q8_wo_submission_uncertain(const StrataVkQ8Wo* p) noexcept{return p?p->submission_uncertain:0;}
 void strata_vk_q8_wo_destroy(StrataVkQ8Wo* p) noexcept {delete p;}
 void strata_vk_q8_wo_run(StrataVkQ8Wo* s,const ggml_tensor* weights,const ggml_tensor* packed,
                          ggml_tensor* output,size_t rows) {
@@ -45,6 +48,9 @@ void strata_vk_q8_wo_run(StrataVkQ8Wo* s,const ggml_tensor* weights,const ggml_t
     auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
     ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,weights,true),
         ggml_vk_tensor_subbuffer(ctx,packed,true),ggml_vk_tensor_subbuffer(ctx,output,true)},params,{uint32_t(rows),1,1});
-    ggml_vk_sync_buffers(ctx,compute);compute.reset();ggml_backend_vk_synchronize(g.backend);
+    ggml_vk_sync_buffers(ctx,compute);compute.reset();
+    try { ggml_backend_vk_synchronize(g.backend); }
+    catch(...) { ++s->submission_uncertain;throw; }
+    ++s->submitted;++s->completed;
 }
 }

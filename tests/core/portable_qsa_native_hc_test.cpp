@@ -15,6 +15,7 @@ ggml_status qsa_compute(ggml_backend_t b,ggml_cgraph*g){
 int main(){try{
  qsa_fixture::Fixture qf;auto&f=qf.base;std::string error;auto root=std::filesystem::temp_directory_path()/("qsa-pending-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));check(std::filesystem::create_directory(root),"fresh root");
  for(auto&v:qf.views){if(v.name=="blk.3.hc_attn_inject.weight")expected_weights=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,40960);if(v.name=="blk.3.hc_attn_down.weight")expected_down=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);if(v.name=="blk.3.hc_attn_up.weight")expected_up=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);}
+ for(auto&v:qf.views){if(v.name=="blk.3.hc_ffn_inject.weight")expected_ffn_inject=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,40960);if(v.name=="blk.3.hc_ffn_down.weight")expected_ffn_down=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);if(v.name=="blk.3.hc_ffn_up.weight")expected_ffn_up=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);}
  std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>cpu(ggml_backend_cpu_init(),ggml_backend_free);original_compute=cpu->iface.graph_compute;cpu->iface.graph_compute=qsa_compute;
  PortableFfnOptions exec;exec.threads=1;exec.accelerator=cpu.get();exec.request_accelerator=true;
  PortableGdnOptions p;p.execution=exec;p.defer_ffn_hc_write=true;p.scratch=PortableGdnScratch::create(exec,error);check(bool(p.scratch),error);
@@ -100,6 +101,33 @@ int main(){try{
  auto ab=at;ab.execution.graph_budget=1;fresh(ab,"attn-budget");check(!PortableQsaLayer::create(3,qf.views,ab,error),"attention budget refusal missing");ab=at;ab.native_select_t1=false;fresh(ab,"attn-no-ids");check(!PortableQsaLayer::create(3,qf.views,ab,error),"attention accepted missing native IDs");
  auto composed=at;composed.native_hc_read=true;composed.native_hc_ffn_read=true;composed.defer_ffn_hc_write=true;composed.resident_ffn_weights=true;composed.native_hc_receipt_prefix=(root/"attn-composed-hc").string();fresh(composed,"attn-composed");auto actual_composed=PortableQsaLayer::create(3,qf.views,composed,error);check(bool(actual_composed),error);check(actual_composed->reset(error),error);
  check(actual_composed->graph_bytes()>0&&actual_composed->native_attention_calls(0)==0,"actual composed on-arm allocation dispatched work or omitted graph storage");
+ // The default-off WO path feeds the actual producer image directly to the
+ // consumer; the device primitive is a host mock and is not GPU parity proof.
+ auto wc=composed;wc.execution.resident_dense_weights=true;wc.native_hc_receipt_prefix=(root/"wo-control-hc").string();fresh(wc,"wo-control");
+ auto wo_control=PortableQsaLayer::create(3,qf.views,wc,error);check(bool(wo_control),error);
+ auto wn=wc;wn.native_wo_t1=true;wn.native_wo_record_first=true;wn.native_wo_receipt_prefix=(root/"wo-on").string();wn.native_hc_receipt_prefix=(root/"wo-on-hc").string();fresh(wn,"wo-on-attention");
+ auto wo_on=PortableQsaLayer::create(3,qf.views,wn,error);check(bool(wo_on),error);
+ check(wo_on->weight_bytes()==wo_control->weight_bytes(),"WO duplicated resident weights");
+ check(wo_on->state_bytes()>=wo_control->state_bytes()+PortableQsaOptions::native_wo_host_bound,"WO host admission omitted");
+ check(wo_on->graph_bytes()>wo_control->graph_bytes(),"WO output bank not accounted");
+ check(wo_on->reset(error)&&wo_control->reset(error)&&actual_composed->reset(error),error);
+ check(wo_control->step(0,f.input(0),nr_dispatch,nr_route,error)&&actual_composed->step(0,f.input(0),nr_dispatch,nr_route,error),error);
+ check(wo_control->last_residual()==actual_composed->last_residual()&&wo_control->keys()==actual_composed->keys()&&wo_control->pending_write().block==actual_composed->pending_write().block,"disabled WO or matched residency changed bytes");
+ check(wo_control->reset(error),error);PortableQsaTrace wt;observe_wo_pending=true;
+ check(wo_on->step(0,f.input(0),nr_dispatch,nr_route,error,&wt),error);observe_wo_pending=false;
+ check(wt.projected_output==actual_native_wo&&wo_pending_links>0,"native WO output did not reach FFN pending consumer");
+ for(unsigned i=0;i<4;++i)check(wo_on->native_wo_calls(i)==1&&wo_control->native_wo_calls(i)==0,"native WO paid-work counters wrong");
+ auto wk=wo_on->keys(),wv=wo_on->values();auto wp=wo_on->pooled_keys(),wl=wo_on->last_residual();auto first_wo=wl;
+ fail_qsa_wo=true;check(!wo_on->step(1,f.input(1),nr_dispatch,nr_route,error),"WO failure accepted");fail_qsa_wo=false;
+ check(wo_on->tokens()==1&&wo_on->keys()==wk&&wo_on->values()==wv&&wo_on->pooled_keys()==wp&&wo_on->last_residual()==wl,"WO failure committed state");
+ check(wo_on->native_wo_calls(0)==2&&wo_on->native_wo_calls(1)==2&&wo_on->native_wo_calls(2)==1&&wo_on->native_wo_calls(3)==1&&wo_on->native_wo_calls(5)==1,"WO failure did not record uncertain submission");
+ check(!wo_on->step(1,f.input(1),[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="FFN failure";return false;},nr_route,error),"post-WO FFN failure accepted");
+ check(wo_on->tokens()==1&&wo_on->keys()==wk&&wo_on->values()==wv&&wo_on->pooled_keys()==wp&&wo_on->last_residual()==wl,"post-WO FFN failure committed state");
+ check(wo_on->native_wo_calls(0)==3&&wo_on->native_wo_calls(1)==3&&wo_on->native_wo_calls(2)==2&&wo_on->native_wo_calls(3)==2&&wo_on->native_wo_calls(5)==1,"post-WO failure counters wrong");
+ check(wo_on->step(1,f.input(1),nr_dispatch,nr_route,error),error);check(wo_on->reset(error)&&wo_on->step(0,f.input(0),nr_dispatch,nr_route,error),error);
+ check(wo_on->last_residual()==first_wo,"WO reset/retry changed output");
+ check(std::filesystem::file_size(root/"wo-on/first-0/qx.bin")==6912&&std::filesystem::file_size(root/"wo-on/first-0/projected.f32le")==10240,"WO receipt spans differ");
+ auto bad_wo=wn;bad_wo.native_attention_t1=false;bad_wo.native_wo_receipt_prefix=(root/"wo-invalid").string();check(!PortableQsaLayer::create(3,qf.views,bad_wo,error),"WO accepted nonnative attention");
  auto sb=ss;sb.native_indexer_t1=false;sb.native_select_receipt_prefix=(root/"ss-invalid").string();check(!PortableQsaLayer::create(3,qf.views,sb,error),"scores accepted nonnative indexer state");
  sb=ss;sb.execution.graph_budget=1;sb.native_select_receipt_prefix=(root/"ss-budget").string();check(!PortableQsaLayer::create(3,qf.views,sb,error),"score banks bypassed graph budget");
  auto idx_state=idx->native_indexer_state();auto idx_keys=idx->keys();auto idx_pool=idx->pooled_keys();auto idx_last=idx->last_residual();
