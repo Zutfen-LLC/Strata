@@ -1,0 +1,22 @@
+"""Frozen synthetic Q8_1 scale-case fixture identities."""
+PINS = {
+    'case-00.bin': '1693e58d9d2405a3cbff297a76c135e95b581794ba97e05fe8f876eeec697ef7',
+    'case-01.bin': '38fea2346e9367452e34b81d2fb51b8c8cffedc27ba65c6600f4349cbb618f89',
+    'case-02.bin': '06a75e93e91aaaa387e73ec4230d4bcb11bc320d75b09cd3ffee06408d809b4d',
+    'case-03.bin': '13a0b110eee0201e423cc32544c1f8cfea5de833445ec108901abab4fd009046',
+    'case-04.bin': '01e5e859bff8e9bde182865a0efeac58021c312273ea0d5cfa69d057b619f38f',
+    'case-05.bin': '9ae0fd33fa527dd2712a6094d57665253ad0d5d3505b68ee4724496487eca6f5',
+    'case-06.bin': '7564041c2e883eedbbacd2384fe40450fb4fd906dfe3eeaa8626b67398581628',
+    'case-07.bin': 'b6aa04a756bcab87707efc07a5bccb75b6154278ce8f8c8f2e6ad39fab8ed8fc',
+    'case-08.bin': '4e586b1d58e5a6f2ccef10de073f68d3f9138ef78e7a55fde0bf06b63176b06d',
+    'case-09.bin': '11421b53df9edad42b0a0e6c072e80e0b937e7ea6ca01193f0164cd09a991760',
+    'case-10.bin': '1a06ae0db93ca69d50aea70402354e123207058e5f4fb7a3f18ed0a87beba276',
+    'case-11.bin': 'd09fcc5f909a9ad7a8ba551fd513cf1bb0ca38a720c76f738680f5a34ca2887d',
+    'case-12.bin': 'b65653feb05ef99204b0ce0135e14e5aa82982ff11f3958156d93152ca1e096f',
+    'case-13.bin': '06f2e83d6ad10e2282fcc1a0e1273a0aa0c79ae17f8adf673b51c73d09dfa16d',
+    'case-14.bin': '332f9231f8e616ea3ce08f08846bc259960f22d1c0fc71b591b4fcf273d54a83',
+    'case-15.bin': '7d3dfd457adc6f32dbd612d0fb47d55a7833912e42a60fc691f081a4185dc7fa',
+    'k.bin': 'd204d49a19cfd077a4c8faf36f649b2edfa53d11e4e1da8df252f839438bda43',
+    'q.bin': '0b3ea2d689085bca64d830d3d0bffd4dcf26924de082846bca4fb3273220cb82',
+    'v.bin': 'de9d1edf0c2f9698d6115cb3b2be6f1b599a90c67b40d9351f1f1894772c4992',
+}

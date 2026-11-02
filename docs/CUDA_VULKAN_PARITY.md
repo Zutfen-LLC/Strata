@@ -719,10 +719,172 @@ for each capability below.
    The default-disabled [model adapter](native-qsa-attention-model-t1.md) consumes
    actual query/selected-ID/current FP16 KV candidates and feeds gated output to
    WO under existing FFN-success state authority. Initial model control passes;
-   on stopped before READY on an omitted output-leaf admission estimate. The
-   source-derived accounting correction has seven local regressions passing;
-   corrected on-model validation remains pending.
-   Quantized KV, projections, accepted-prefix and window scheduling remain gaps.
+   on initially stopped before READY on an omitted output-leaf admission estimate.
+   At corrected source `0079b358`, Hermes reports the bounded on-only recovery
+   passes fresh admission against retained native-selected ownership and two
+   reset-separated requests, both generating `[18,24,16]`. Each ordinary QSA
+   layer runs 28 chunk/merge/gate calls per request. Layer3 positions 0..7
+   own-input contracts and exact query/ID/gate-to-WO links, 72 attention plus
+   566 preceding modules and within-arm state/route reset pass. The control is
+   reused historical source-compatible evidence, not a new same-image pair.
+   Owned exit/reap, empty owners and three baseline cleanup observations pass;
+   922 resource samples are discrete, not continuous coverage. Offline compact
+   packaging also passes under the unchanged 128 MiB cap, retaining authenticated
+   historical references; original allocation, runner and packaging STOPs remain.
+   This remains bounded experimental model evidence with qualified=false.
+   [PR134](https://github.com/Zutfen-LLC/Strata/pull/134) tests the existing RN
+   projection-input Q8_1 candidate against the unchanged native fast-math
+   quantizer. Hermes reports native five-fixture controls pass; Vulkan producers
+   and cleanup pass, but the exact packed-byte gate stops on six dense int8 code
+   bytes (of 6,912), with half headers unchanged. Zero/sparse are exact;
+   order/adversarial cross-backend checks were not reached. Native compiled
+   scale uses reciprocal-constant multiply; ratio uses reciprocal then multiply.
+   Offline exact-rounding calculations on the deterministic fixture reproduce
+   all six offsets/signs: RN division rounds magnitude to 63.5, then code 64;
+   reciprocal/multiply rounds just below, then code 63. This supports a numerical
+   mismatch in the RN candidate, not a demonstrated adapter defect or FTZ issue.
+   It is not an independent capture of the native reciprocal intermediate.
+   The RN STOP and frozen exact gate remain. A separate reciprocal-then-multiply
+   observation at `32fa5015` subsequently passes the bounded Vulkan-only comparison
+   against retained native `ef63ef8f`, as reported by Hermes: all five frozen
+   fixtures match all 6,912 packed bytes, including dense. Seven build tests,
+   independent literal controls, repeat/canary/fixture/module checks and three
+   baseline cleanup observations pass; no native rerun. This covers only the
+   selected normal-domain fixtures and exact compiler/backend bindings. It does
+   not establish general MUFU.RCP equivalence or model integration. Vulkan had
+   no in-loop guard sample; qualified=false remains. Terra owns this separate
+   candidate; the prior RN implementation and failed result are unchanged.
+   The subsequent same-input replay at `e9ed479c` also passes, as reported by
+   Hermes: eight retained layer3 gated inputs, positions 0..7, match all 55,296
+   packed output bytes across native CUDA and Vulkan. Exact input echoes,
+   canaries, repeats, modules, process exit/reap and three baseline cleanup
+   observations pass; native has eight in-loop samples and Vulkan none.
+   Inputs are from the portable model's actual gated candidate, supplied equally
+   to each quantizer; this does not establish upstream native attention equality.
+   Literal controls remain separate; no model rerun or integration was performed.
+   [PR135](https://github.com/Zutfen-LLC/Strata/pull/135) adds the standalone
+   ordinary unpacked Q8_0 T1 WO consumer at `ba1a8a8d`. The selected CUDA SASS
+   matches the candidate scale-multiply/FMA and ordered four-warp/XOR reduction
+   association in its supported finite fixture domain. The bounded physical
+   comparison passes: all 2,560 rows / 10,240 bytes are exact, with literal,
+   repeat/canary, actual module and lifecycle checks passing. Both hosts restore
+   baseline across three observations and have no selected owners; each has one
+   in-loop sample plus baseline, not continuous coverage. Collected output bytes
+   and retained receipt manifests were independently checked. This original
+   component excluded half-subnormal scales and did not compose the producer.
+   [PR136](https://github.com/Zutfen-LLC/Strata/pull/136) subsequently connects
+   the actual gated tensor through one retained packed buffer to native WO and
+   the existing FFN commit boundary. Nine component cases match both packed and
+   projected outputs exactly. Real-role preflight first refused 193 finite
+   half-subnormal weight scales; [PR137](https://github.com/Zutfen-LLC/Strata/pull/137)
+   faithfully admits them while retaining nonfinite refusal and the Q8_1 input
+   restrictions. Native/Vulkan qualification matches all 2,560 literal output
+   words, including all 2,046 signed nonzero half-subnormal encodings and the
+   boundary, multiplication and cancellation controls. Kernels and shaders are
+   unchanged; all twelve real WO role identities and scale counts are preserved.
+   At source `51c4e65f`, the same-image model comparison passes 36 CPU tests,
+   fresh native planning/frozen ownership/admission, and two reset-separated
+   25-prompt-token GEN3 requests per arm. Both arms generate `[18,24,16]`.
+   Twelve WO owners, 24 modules, eight layer3 own-input native packed buffers
+   and mapped-role WO outputs, and within-arm state/route/reset replay pass.
+   Owned exit/reap, restored baseline/clocks and empty owner scans pass. The
+   sealed manifest and 23 retained-file references were independently checked;
+   referenced original outputs must remain available. Earlier preflight/build
+   stops remain preserved. Cross-arm logits differ (maximum retained matching-
+   history absolute difference 1.3866307735); the first route-order difference
+   is position 0 / layer 34, swapping IDs 9 and 163 within the same selected set.
+   The arms deliberately compare GGML WO with the native method. Exact equality
+   is not their acceptance criterion; these differences alone establish no new
+   defect or full-model parity.
+   Its precise downstream attribution has not been established. Sampling is
+   discrete, not continuous; qualified=false and full_model_parity=false remain.
+   [PR138](https://github.com/Zutfen-LLC/Strata/pull/138) adds default-disabled
+   native T1 Q/K/V quantization and Q8_0 projections before norm/RoPE. One
+   actual HC-mixed input produces the shared packed buffer for all three
+   projections; Q/K producer-owned Vulkan banks feed normalization and the
+   interleaved Q/gate bank feeds attention. The original component comparison
+   passes exact packed and projected bytes. Its model attempt first exposed
+   scheduler-owned input leaves, then a conservative Q8_1 half-scale refusal;
+   both STOPs remain preserved. [PR140](https://github.com/Zutfen-LLC/Strata/pull/140)
+   supports finite stored half-subnormal scales only for the 80-block QKV path,
+   preserving full-F32 restrictions and the separate WO producer/reference
+   domain. All 16 native-first constructed cases pass exact packed/projected
+   comparisons and direct-consumer controls, covering all 1,023 positive
+   half-subnormal scale encodings plus boundaries. This does not establish
+   general reciprocal equivalence or replay the unretained rejected input.
+   At corrected source `02c6d2b5`, fresh planning admits 96 primary / 1,490 helper
+   experts; both same-image arms complete two reset-separated requests. Final
+   checks pass all eight layer3 QKV and eight WO positions: same-input native
+   packed bytes, mapped-role projections, actual consumer links, work counters,
+   state/reset replay, modules, admission and owned exit/reap/cleanup. The QKV
+   check covers twelve owners and 24 modules; WO checks cover 24 owners and
+   48 modules. An owner-aware checker-path repair completed finalization offline,
+   resolving the authenticated runtime owner rather than hard-coding its suffix.
+   Ten resolver regressions pass; the 192-byte regenerated GDN derivative
+   exactly matches the retained one. No model/GPU/replay/build rerun was needed
+   for that repair, and prior failures remain preserved. The final result has
+   6,096 manifest members and 25 host-retained references, totaling 133,578,533
+   copied bytes including the manifest, below the unchanged 128 MiB cap.
+   Cross-arm differences remain: first route-order difference position 0 /
+   layer 8; largest retained matching-history absolute logit difference
+   1.538769781589508 at position 24. These are diagnostics without a final-logit
+   tolerance or quality/performance claim. Full state arrays are not exported;
+   qualified=false, full_model_parity=false and native_window_parity=false remain.
+   [PR141](https://github.com/Zutfen-LLC/Strata/pull/141) adds the ordinary T1
+   BF16 indexer key/query projections from one actual HC-mixed input, with packed
+   BF16 banks and producer-owned buffers feeding key append and query norm/RoPE.
+   The native-first constructed component compares 5,120 output bytes exactly.
+   At corrected model source `f61573b7`, two reset-separated 25-token / GEN3
+   requests pass with QKV/WO experiments off. This uses a historical compatible
+   control at `6c593d49`, not a same-image control. Fresh admission selects
+   96 primary / 1,490 helper experts under the original bounds and frozen plans.
+   Each request records 672 projection completions across twelve QSA layers.
+   Checks pass twelve BF16 modules in addition to the existing 566 modules,
+   eight actual producer/consumer positions, accepted state links and reset replay.
+   All eight executed-head hashes match the retained control; matching-history
+   logits at positions 24–27 are exact, with no route difference observed.
+   These bounded observations do not establish general numerical or model parity.
+   Offline import/receipt repairs completed checking and sealing without repeating
+   model, component or GPU execution; original STOPs and 6,644 raw files remain
+   preserved. Owned children exited/reaped, owner scans were clear, three baseline
+   observations and automatic clocks were restored. The final seal contains 6,611
+   members and 35 retained references, totaling 134,091,830 copied bytes including
+   the manifest, below the unchanged 128 MiB cap. Normal-or-zero input/intermediate
+   restrictions remain explicit; stored BF16 role scans alone do not qualify all
+   inputs. The path remains diagnostic and default-disabled: qualified=false and
+   full_model_parity=false, with no quality or performance claim.
+   [PR142](https://github.com/Zutfen-LLC/Strata/pull/142) adds ordinary T1 GDN
+   QKV and gate-input projections from one shared packed HC-mixed input. Actual
+   producer banks feed convolution and recurrence; a/b retains the mixed F32
+   input. Existing resident Q8_0 weights are reused, with added aligned banks and
+   host controls charged to admission. The native-first component passes both
+   frozen cases exactly: 2,880 packed bytes, 40,960 QKV bytes and 24,576 z bytes
+   per case. Compiled native instruction review confirms the selected quantizer,
+   DP4A/FMA association, reduction order and FTZ scope; it does not establish
+   general reciprocal equivalence. All seventy real Q8_0 roles pass the finite
+   stored-scale scan, including 825 half-subnormal scales; activation/intermediate
+   domain checks remain separate.
+   At `f5ec799c`, fresh same-image control/on planning selects 96 primary /
+   1,490 helper experts under unchanged policy. Each arm completes two
+   reset-separated 25-token / GEN3 requests, with QSA QKV, WO and BF16-indexer
+   projection experiments off in both arms. The dedicated checker passes thirty-five
+   GDN input owners / seventy modules, eight layer0 same-input native packed replays,
+   mapped-role outputs and actual convolution/recurrence/a-b links. Existing checks
+   also pass 566 HC module entries and the separate numerical-family receipts,
+   within-arm state/reset/routes, admission, owned exit/reap and three baseline
+   cleanup observations. Offline finalization passes without a GPU rerun; the
+   retained final manifest has 6,732 entries and 37 large-artifact references.
+   Whole-model divergence remains: first route-order difference position 0 /
+   layer 1 swaps the order within the same expert set; largest retained
+   matching-history absolute logit difference is 1.5297669172286987 at position 27.
+   These diagnostics are not a final-logit tolerance or proof of defect attribution.
+   The path stays default-disabled, qualified=false, full_model_parity=false and
+   native_window_parity=false; no quality or performance claim is made. Full state
+   arrays are omitted. Current resident snapshots preserve long-lived non-kworker
+   identities; seven model-host kworkers ended. Historical CPU snapshot gaps,
+   inaccessible root-cgroup fields and discrete monitoring remain explicit limits.
+   GDN output projection, quantized KV, other projection families, accepted-prefix
+   and native window scheduling remain separate gaps.
 
 
 

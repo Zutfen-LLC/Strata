@@ -49,7 +49,7 @@ source-order partials/output, exact query/ID/gate and WO links. Within-arm raw
 heads/routes/state digests must replay exactly. Cross-arm differences are
 reported without a new final-logit tolerance.
 
-Model validation is pending. `qualified=false` remains. This does not port output
+Bounded on-only model validation passes as reported below. `qualified=false` remains. This does not port output
 projection quantization/MMVQ, quantized/rotated KV, competitive model selection
 above capacity 2051, native accepted-prefix/window scheduling or full model parity.
 
@@ -64,3 +64,23 @@ rules and caps are unchanged. Materialized control/native gated allocation in
 the isolated regression is 90,112/75,776 bytes both before and after correction;
 only the latter's admission previously failed. Reused control evidence is
 historical source-compatible evidence, not a newly executed same-image pair.
+
+Hermes reports the corrected bounded continuation passes at `0079b358`: fresh
+admission with retained native-selected plans, one on-model load and two
+reset-separated fixed 25-prompt-token GEN3 requests, both `[18,24,16]`. Each
+ordinary QSA layer runs 28 chunk, merge and gate calls per request. Layer3
+positions 0..7 pass own-input numerical contracts and exact query/ID/gate-to-WO
+links; 72 attention and 566 preceding modules validate. Within-arm state and
+routes replay exactly. The historical source-compatible control is reused;
+this is not a new same-image comparison. All owned processes exit/reap, no
+GPU owners remain, and three cleanup observations restore baseline. The 922
+resource samples are discrete; sampled owned swap is zero.
+
+The first sealing attempt exceeded the evidence-copy bound. Offline completion
+passes without a workload rerun or cap increase: copied evidence is 75.31 MiB,
+sealed evidence 75.60 MiB, with 2,701 manifest entries, 3,076 authenticated
+historical control/planning references and five large current-artifact references.
+All originals and partial outputs remain unchanged. Earlier allocation and
+runner STOPs remain recorded. These are operator-reported results, not a claim
+of independently rerun hardware validation. Full native numerical/state/window,
+quality and performance parity remain unproven; defaults remain disabled.

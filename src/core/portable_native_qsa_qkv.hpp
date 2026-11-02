@@ -45,7 +45,7 @@ public:
         bool duplicate=false;for(size_t j=0;j<i;++j)duplicate|=seen[j]==w->buffer;seen[i]=w->buffer;
         if(!duplicate){size_t amount=ggml_backend_buffer_get_size(w->buffer);if(amount>SIZE_MAX-borrowed)throw std::runtime_error("QSA QKV: weight budget overflow");borrowed+=amount;}
     }
-    packed_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_I32,qsa_qkv_packed_bytes/4);for(size_t i=0;i<3;++i)output_[i]=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,rows_[i]);
+    packed_=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_I32,qsa_qkv_packed_bytes/4);for(size_t i=0;i<3;++i){output_[i]=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,rows_[i]);ggml_set_output(output_[i]);}
     size_t bank=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),ggml_backend_get_default_buffer_type(b));if(bank>=budget)throw std::runtime_error("QSA QKV: no owner budget");
     quant_.reset(strata_vk_native_stages_create_quant_rcp_observation(b,(dir_/"quant-effective.spv").c_str(),budget-bank));
     const size_t qb=strata_vk_native_stages_bytes(quant_.get());if(qb>budget-bank||borrowed>SIZE_MAX-(budget-qb))throw std::runtime_error("QSA QKV: owner budget");
@@ -55,13 +55,14 @@ public:
     if(bytes_>estimate(b)||bytes_>budget)throw std::runtime_error("QSA QKV: allocation exceeds bound");
  }
  size_t bytes()const{return bytes_;}
+ ggml_tensor* projection(size_t role) const { return output_.at(role); }
  uint64_t calls(unsigned i)const{switch(i){case 0:return strata_vk_native_stages_quant_submitted(quant_.get());case 1:return strata_vk_native_stages_quant_completed(quant_.get());case 2:return strata_vk_q8_wo_submitted(component_.get());case 3:return strata_vk_q8_wo_completed(component_.get());case 4:return strata_vk_native_stages_quant_submission_uncertain(quant_.get());case 5:return strata_vk_q8_wo_submission_uncertain(component_.get());default:return 0;}}
  Candidate run(ggml_tensor* mixed){
     if(!mixed||ggml_nbytes(mixed)!=2560*4)throw std::runtime_error("QSA QKV: actual mixed input unavailable");
-    std::vector<float>actual(2560);ggml_backend_tensor_get(mixed,actual.data(),0,actual.size()*4);qsa_q8_input_domain(actual,qsa_qkv_blocks);
+    std::vector<float>actual(2560);ggml_backend_tensor_get(mixed,actual.data(),0,actual.size()*4);qsa_q8_input_domain(actual,qsa_qkv_blocks,"QSA QKV");
     const int32_t starts[]={0,1};strata_vk_native_stages_run(quant_.get(),0,mixed,mixed,mixed,packed_,2560,starts,2);
     Candidate c;ggml_backend_tensor_get(packed_,c.packed.data(),0,c.packed.size());
-    qsa_wo_require_scales(qsa_wo_scale_classes(c.packed.data(),qsa_qkv_blocks,36),"producer Q8_1");
+    qsa_qkv_packed_domain(c.packed.data(),c.packed.size());
     for(size_t i=0;i<3;++i){c.output[i].resize(rows_[i]);strata_vk_q8_wo_run(component_.get(),weight_[i],packed_,output_[i],rows_[i]);
         ggml_backend_tensor_get(output_[i],c.output[i].data(),0,c.output[i].size()*4);
         for(float v:c.output[i])if(!qsa_wo_normal_or_zero(v))throw std::runtime_error("QSA QKV: unsupported output");}
