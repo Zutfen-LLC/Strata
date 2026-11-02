@@ -36,22 +36,33 @@ inline void qsa_wo_packed_domain(const void* bytes,size_t size) {
     if(size!=192u*36u || !bytes)throw std::runtime_error("QSA WO: unsupported Q8_1 byte span");
     qsa_wo_require_scales(qsa_wo_scale_classes(static_cast<const uint8_t*>(bytes),192,36),"producer Q8_1");
 }
+// Q/K/V has 80 blocks. A finite stored binary16 scale, including a
+// subnormal, widens exactly to normal F32 before the native Q8_0 dot.
+inline void qsa_qkv_packed_domain(const void* bytes,size_t size) {
+    constexpr size_t blocks=80;
+    if(size!=blocks*36 || !bytes)throw std::runtime_error("QSA QKV: unsupported Q8_1 byte span (80 blocks)");
+    auto c=qsa_wo_scale_classes(static_cast<const uint8_t*>(bytes),blocks,36);
+    if(c.nonfinite)throw std::runtime_error("QSA QKV: producer Q8_1 unsupported half scales: blocks=80 zero="+
+        std::to_string(c.zero)+" normal="+std::to_string(c.normal)+" subnormal="+std::to_string(c.subnormal)+
+        " nonfinite="+std::to_string(c.nonfinite));
+}
 inline bool qsa_wo_normal_or_zero(float x) { return std::isfinite(x) && (x==0.f || std::isnormal(x)); }
-inline void qsa_q8_input_domain(const std::vector<float>& input,size_t blocks) {
-    if(input.size()!=blocks*32)throw std::runtime_error("QSA WO: gated input shape");
+inline void qsa_q8_input_domain(const std::vector<float>& input,size_t blocks,const char* owner="QSA WO") {
+    const std::string prefix=std::string(owner)+": ";
+    if(input.size()!=blocks*32)throw std::runtime_error(prefix+(blocks==192?"gated input shape":"input shape"));
     for(size_t b=0;b<blocks;++b){std::array<float,32> sums{},maxima{};
         for(size_t lane=0;lane<32;++lane){float x=input[b*32+lane];
-            if(!qsa_wo_normal_or_zero(x))throw std::runtime_error("QSA WO: nonfinite or subnormal gated input");
+            if(!qsa_wo_normal_or_zero(x))throw std::runtime_error(prefix+(blocks==192?"nonfinite or subnormal gated input":"nonfinite or subnormal input"));
             sums[lane]=x;maxima[lane]=std::fabs(x);
         }
         for(size_t offset=16;offset;offset>>=1){const auto old=sums,oldmax=maxima;
             for(size_t lane=0;lane<32;++lane){sums[lane]=old[lane]+old[lane^offset];maxima[lane]=std::fmax(oldmax[lane],oldmax[lane^offset]);
-                if(!qsa_wo_normal_or_zero(sums[lane]))throw std::runtime_error("QSA WO: unsupported reduction sum");
+                if(!qsa_wo_normal_or_zero(sums[lane]))throw std::runtime_error(prefix+"unsupported reduction sum");
             }
         }
         if(maxima[0]){float d=std::min(maxima[0]/127.f,65504.f);
-            if(!std::isnormal(d))throw std::runtime_error("QSA WO: unsupported full scale");
-            for(size_t lane=0;lane<32;++lane)if(!qsa_wo_normal_or_zero(input[b*32+lane]/d))throw std::runtime_error("QSA WO: unsupported ratio");
+            if(!std::isnormal(d))throw std::runtime_error(prefix+"unsupported full scale");
+            for(size_t lane=0;lane<32;++lane)if(!qsa_wo_normal_or_zero(input[b*32+lane]/d))throw std::runtime_error(prefix+"unsupported ratio");
         }
     }
 }

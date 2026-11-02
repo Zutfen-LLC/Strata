@@ -15,7 +15,7 @@ inline float half(uint16_t h){unsigned e=(h>>10)&31,m=h&1023;
     if(e==0 && m){float v=std::ldexp(float(m),-24);return h&0x8000?-v:v;}
     return value((uint32_t(h&0x8000)<<16)|(e?(uint32_t(e+112)<<23)|(uint32_t(m)<<13):0));
 }
-inline float input_half(uint16_t h){need(((h>>10)&31)!=0 || (h&1023)==0,"WO: unsupported half scale in Q8_1 input");return half(h);}
+inline float input_half(uint16_t h){return half(h);}
 inline float checked(float x){need(std::isfinite(x)&&(x==0.f||std::isnormal(x)),"WO: unsupported intermediate");return x;}
 inline int s8(uint8_t x){return x<128?int(x):int(x)-256;}
 struct Fixture {size_t rows;Bytes weights,input;};
