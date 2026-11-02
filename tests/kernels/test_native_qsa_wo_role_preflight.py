@@ -27,6 +27,11 @@ with tempfile.TemporaryDirectory(prefix='wo-role-test-') as tmp:
         r=subprocess.run(command,capture_output=True,text=True,timeout=60);assert r.returncode and 'projected byte mismatch' in r.stderr
     with paths[0].open('r+b') as f:f.seek(starts[0]);f.write(b'\x01\x00')
     report=m.scan(paths);assert report['supported'] and report['roles'][names[0]]['scale_classes']['subnormal']==1
+    if len(sys.argv)>1:
+        index=names.index('blk.3.attn_output.weight');shard=index//2
+        with paths[shard].open('r+b') as f:f.seek(starts[shard]+(index%2)*m.BYTES);f.write(b'\x01\x00')
+        out.write_bytes(bytes(10240));r=subprocess.run(command,capture_output=True,text=True,timeout=60)
+        assert r.returncode==0 and json.loads(r.stdout)['exact'] is True,r.stderr
     with paths[0].open('r+b') as f:f.seek(starts[0]);f.write(b'\x00\x7c')
     report=m.scan(paths);assert not report['supported'] and report['roles'][names[0]]['scale_classes']['nonfinite']==1
     # Type field in the first directory entry, while keeping a valid GGUF header.
