@@ -853,8 +853,38 @@ for each capability below.
    restrictions remain explicit; stored BF16 role scans alone do not qualify all
    inputs. The path remains diagnostic and default-disabled: qualified=false and
    full_model_parity=false, with no quality or performance claim.
-   GDN QKV/gate/output projections, quantized KV, other projection families,
-   accepted-prefix and native window scheduling remain separate gaps.
+   [PR142](https://github.com/Zutfen-LLC/Strata/pull/142) adds ordinary T1 GDN
+   QKV and gate-input projections from one shared packed HC-mixed input. Actual
+   producer banks feed convolution and recurrence; a/b retains the mixed F32
+   input. Existing resident Q8_0 weights are reused, with added aligned banks and
+   host controls charged to admission. The native-first component passes both
+   frozen cases exactly: 2,880 packed bytes, 40,960 QKV bytes and 24,576 z bytes
+   per case. Compiled native instruction review confirms the selected quantizer,
+   DP4A/FMA association, reduction order and FTZ scope; it does not establish
+   general reciprocal equivalence. All seventy real Q8_0 roles pass the finite
+   stored-scale scan, including 825 half-subnormal scales; activation/intermediate
+   domain checks remain separate.
+   At `f5ec799c`, fresh same-image control/on planning selects 96 primary /
+   1,490 helper experts under unchanged policy. Each arm completes two
+   reset-separated 25-token / GEN3 requests, with QSA QKV, WO and BF16-indexer
+   projection experiments off in both arms. The dedicated checker passes thirty-five
+   GDN input owners / seventy modules, eight layer0 same-input native packed replays,
+   mapped-role outputs and actual convolution/recurrence/a-b links. Existing checks
+   also pass 566 HC module entries and the separate numerical-family receipts,
+   within-arm state/reset/routes, admission, owned exit/reap and three baseline
+   cleanup observations. Offline finalization passes without a GPU rerun; the
+   retained final manifest has 6,732 entries and 37 large-artifact references.
+   Whole-model divergence remains: first route-order difference position 0 /
+   layer 1 swaps the order within the same expert set; largest retained
+   matching-history absolute logit difference is 1.5297669172286987 at position 27.
+   These diagnostics are not a final-logit tolerance or proof of defect attribution.
+   The path stays default-disabled, qualified=false, full_model_parity=false and
+   native_window_parity=false; no quality or performance claim is made. Full state
+   arrays are omitted. Current resident snapshots preserve long-lived non-kworker
+   identities; seven model-host kworkers ended. Historical CPU snapshot gaps,
+   inaccessible root-cgroup fields and discrete monitoring remain explicit limits.
+   GDN output projection, quantized KV, other projection families, accepted-prefix
+   and native window scheduling remain separate gaps.
 
 
 
