@@ -54,11 +54,11 @@ inline Fixture subnormal_fixture(){
     return f;
 }
 struct Result {float value;std::array<float,128> partial;};
-inline Result reference(const uint8_t* weights,size_t weights_size,const uint8_t* input,size_t input_size,size_t rows,size_t row){
-    need(weights&&input&&row<rows,"WO: row");q8_wo_require_layout(rows,weights_size,input_size,rows*4);
+inline Result reference_blocks(const uint8_t* weights,size_t weights_size,const uint8_t* input,size_t input_size,size_t rows,size_t row,size_t block_count){
+    need(weights&&input&&row<rows&&block_count&&weights_size==rows*block_count*34&&input_size==block_count*36,"WO: row or block span");
     std::array<float,128> partial{};
-    for(size_t tid=0;tid<128;++tid)for(size_t b=tid/4;b<blocks;b+=32){
-        size_t q=2*(tid%4),wi=row*q8_wo_row_bytes+b*34,xi=b*36;int sum=0;
+    for(size_t tid=0;tid<128;++tid)for(size_t b=tid/4;b<block_count;b+=32){
+        size_t q=2*(tid%4),wi=row*block_count*34+b*34,xi=b*36;int sum=0;
         for(size_t j=0;j<8;++j)sum+=s8(weights[wi+2+q*4+j])*s8(input[xi+4+q*4+j]);
         float scale=checked(half(get16(weights,wi))*input_half(get16(input,xi)));
         partial[tid]=checked(std::fma(scale,float(sum),partial[tid]));
@@ -66,6 +66,10 @@ inline Result reference(const uint8_t* weights,size_t weights_size,const uint8_t
     auto mixed=partial;for(size_t lane=0;lane<32;++lane){float v=mixed[lane];for(size_t warp=1;warp<4;++warp)v=checked(v+partial[warp*32+lane]);mixed[lane]=v;}
     for(size_t offset=16;offset;offset>>=1){auto old=mixed;for(size_t lane=0;lane<32;++lane)mixed[lane]=checked(old[lane]+old[lane^offset]);}
     return {mixed[0],partial};
+}
+inline Result reference(const uint8_t* weights,size_t weights_size,const uint8_t* input,size_t input_size,size_t rows,size_t row){
+    q8_wo_require_layout(rows,weights_size,input_size,rows*4);
+    return reference_blocks(weights,weights_size,input,input_size,rows,row,blocks);
 }
 inline Result reference(const Fixture& f,size_t row){return reference(f.weights.data(),f.weights.size(),f.input.data(),f.input.size(),f.rows,row);}
 // Existing expert helper visits block indices in a different order.
