@@ -75,6 +75,8 @@ int main(int argc,char**argv){try{
         cu(cudaGetLastError());cu(cudaStreamSynchronize(stream.p));cu(cudaMemcpy(bad.data(),dy.p,bad.size()*4,cudaMemcpyDeviceToHost));
         Bytes direct_out(rows*4);std::memcpy(direct_out.data(),bad.data()+8,direct_out.size());direct_controls(direct_out);
         for(size_t i=0;i<8;++i)need(bad[i]==guard&&bad[bad.size()-1-i]==guard,"GDN output: direct canary changed");
+        cu(cudaMemcpy(stale_after.data(),ds.p,stale_after.size()*4,cudaMemcpyDeviceToHost));cu(cudaMemcpy(wread.data(),dw.p,wread.size()*4,cudaMemcpyDeviceToHost));
+        need(std::equal(stale_after.begin(),stale_after.end(),direct_image.begin())&&wread==wi,"GDN output: direct input or weights mutated");
         if(pass)need(direct_out==first_direct,"GDN output: direct repeat changed");else{first_direct=direct_out;save(dir/"direct-qx.bin",direct.data(),direct.size());save(dir/"direct-out.f32le",direct_out.data(),direct_out.size());}
 #endif
         if(pass)need(packed==first_q&&result==first_y,"composition: reset/repeat changed");

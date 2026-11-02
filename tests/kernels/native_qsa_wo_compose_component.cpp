@@ -72,6 +72,7 @@ int main(int argc,char**argv){try{
         strata_vk_q8_wo_run(wo.get(),wt,stale,y,rows);bad=contents(yb,yi.size());
         Bytes direct_out(rows*4);std::memcpy(direct_out.data(),bad.data()+8,direct_out.size());direct_controls(direct_out);
         for(size_t i=0;i<8;++i)need(bad[i]==guard&&bad[bad.size()-1-i]==guard,"GDN output: direct canary changed");
+        auto direct_after=contents(sb,si.size());need(std::equal(direct_after.begin(),direct_after.end(),direct_image.begin())&&contents(wb,wi.size())==wi,"GDN output: direct input or weights mutated");
         if(pass)need(direct_out==first_direct,"GDN output: direct repeat changed");else{first_direct=direct_out;save(dir/"direct-qx.bin",direct.data(),direct.size());save(dir/"direct-out.f32le",direct_out.data(),direct_out.size());}
 #endif
         if(pass)need(packed_bytes==first_q&&result==first_y,"composition: reset/repeat changed");
