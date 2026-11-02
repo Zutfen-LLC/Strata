@@ -237,15 +237,16 @@ uint32_t strata_vk_native_qsa_attention_run(StrataVkNativeQsaAttention*p,ggml_te
 }
 #endif
 namespace strata::core::portable_detail {
-struct StrataVkNativeShared {uint64_t submitted=0,completed=0,uncertain=0;};
-StrataVkNativeShared* strata_vk_qsa_indexer_bf16_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"indexer projection budget");std::ofstream(path)<<"host mock only\n";return new StrataVkNativeShared;}
+struct StrataVkNativeShared {uint64_t submitted=0,completed=0,uncertain=0;size_t budget=0;};
+StrataVkNativeShared* strata_vk_qsa_indexer_bf16_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"indexer projection budget");std::ofstream(path)<<"host mock only\n";auto*p=new StrataVkNativeShared;p->budget=budget;return p;}
 size_t strata_vk_native_shared_bytes(const StrataVkNativeShared*){return 512;}
 void strata_vk_native_shared_destroy(StrataVkNativeShared*p)noexcept{delete p;}
 uint64_t strata_vk_native_shared_submitted(const StrataVkNativeShared*p)noexcept{return p?p->submitted:0;}
 uint64_t strata_vk_native_shared_completed(const StrataVkNativeShared*p)noexcept{return p?p->completed:0;}
 uint64_t strata_vk_native_shared_uncertain(const StrataVkNativeShared*p)noexcept{return p?p->uncertain:0;}
-void strata_vk_native_shared_run(StrataVkNativeShared*p,uint32_t mode,const ggml_tensor*w,const ggml_tensor*x,ggml_tensor*out,ggml_tensor*,uint32_t ni,uint32_t no,uint32_t tokens){
+void strata_vk_native_shared_run(StrataVkNativeShared*p,uint32_t mode,const ggml_tensor*w,const ggml_tensor*x,ggml_tensor*out,ggml_tensor*aux,uint32_t ni,uint32_t no,uint32_t tokens){
  check(mode==1&&ni==2560&&tokens==1&&(no==128||no==512)&&x==live_mixed,"indexer projection did not consume actual HC mixed tensor");
+ std::array<ggml_backend_buffer_t,4>seen{};size_t nseen=0,used=512;for(auto*t:std::array<const ggml_tensor*,4>{{w,x,out,aux}}){bool duplicate=false;for(size_t i=0;i<nseen;++i)duplicate|=seen[i]==t->buffer;if(!duplicate){seen[nseen++]=t->buffer;used+=ggml_backend_buffer_get_size(t->buffer);}}check(used<=p->budget,"indexer projection aggregate budget exceeded");
  const size_t role=no==128?0:1;if(fail_indexer_projection==int(role+1)){++p->uncertain;throw std::runtime_error("injected indexer projection failure");}
  auto in=get(x);std::vector<uint16_t>weights(size_t(no)*2560);ggml_backend_tensor_get(w,weights.data(),0,weights.size()*2);
  actual_indexer_projection[role]=qsa_indexer_bf16_control(in.data(),weights.data(),no);ggml_backend_tensor_set(out,actual_indexer_projection[role].data(),0,no*4);++p->submitted;++p->completed;

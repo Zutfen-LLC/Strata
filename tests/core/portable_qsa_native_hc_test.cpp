@@ -1,6 +1,7 @@
 // Actual GDN producer/QSA consumer, shared attention arena, mocked HC device only.
 #include "portable_native_hc_test_backend.hpp"
 #include "portable_qsa_fixture.hpp"
+#include "portable_native_qsa_indexer_bf16.hpp"
 namespace {
 bool inspect_qsa=false,inspect_native_selection=false;size_t qsa_consumers=0,selection_consumers=0;bool inspect_native_attention=false;size_t output_consumers=0;
 ggml_status qsa_compute(ggml_backend_t b,ggml_cgraph*g){
@@ -147,6 +148,19 @@ int main(){try{
  auto bad_qkv=qn;bad_qkv.native_wo_t1=false;bad_qkv.native_qkv_receipt_prefix=(root/"qkv-invalid").string();check(!PortableQsaLayer::create(3,qf.views,bad_qkv,error),"QKV accepted missing native WO");
  // Raw BF16 indexer projections replace the exact-widened control storage.
  std::vector<uint16_t> bfkey(2560*128,0),bfquery(2560*512,0);bfkey[0]=0x3f80;bfkey.back()=0xbf80;bfquery[0]=0x3f80;bfquery.back()=0x3f00;
+ // Exercise owner admission through the same aggregate dispatch accounting.
+ {using Owner=strata::core::portable_detail::PortableNativeQsaIndexerBf16;
+  std::unique_ptr<ggml_context,decltype(&ggml_free)> c(ggml_init({32768,nullptr,true}),ggml_free);
+  auto* k=ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,bfkey.size()/2);auto* q=ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,bfquery.size()/2);auto* m=ggml_new_tensor_1d(c.get(),GGML_TYPE_F32,2560);
+  std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)> b(ggml_backend_alloc_ctx_tensors(c.get(),cpu.get()),ggml_backend_buffer_free);
+  check(bool(b),"BF16 direct owner bank");ggml_backend_tensor_set(k,bfkey.data(),0,bfkey.size()*2);ggml_backend_tensor_set(q,bfquery.data(),0,bfquery.size()*2);
+  std::vector<float> zeros(2560,0.f);ggml_backend_tensor_set(m,zeros.data(),0,zeros.size()*4);auto* old_mixed=live_mixed;live_mixed=m;
+  const std::array<ggml_tensor*,2> ws{{k,q}};const std::array<const void*,2> raw{{bfkey.data(),bfquery.data()}};const std::array<size_t,2> sizes{{bfkey.size()*2,bfquery.size()*2}};
+  const size_t exact=Owner::estimate(cpu.get());Owner owner(cpu.get(),ws,m,raw,sizes,(root/"bf-exact-budget").string(),exact,false);
+  owner.run(m);check(owner.calls(1)==2,"exact BF16 owner budget did not dispatch both roles");
+  bool short_rejected=false;try{Owner short_owner(cpu.get(),ws,m,raw,sizes,(root/"bf-short-budget").string(),exact-1,false);}catch(const std::invalid_argument&){short_rejected=true;}
+  check(short_rejected,"one-byte-short BF16 owner budget accepted");live_mixed=old_mixed;
+ }
  auto bfviews=qf.views;for(auto&v:bfviews){if(v.name=="blk.3.indexer.k_proj.weight"){v.type=30;v.data=bfkey.data();v.bytes=bfkey.size()*2;}if(v.name=="blk.3.indexer.q_proj.weight"){v.type=30;v.data=bfquery.data();v.bytes=bfquery.size()*2;}}
  auto bfc=composed;bfc.execution.resident_dense_weights=true;bfc.native_hc_receipt_prefix=(root/"bf-control-hc").string();fresh(bfc,"bf-control");
  auto bfcontrol=PortableQsaLayer::create(3,bfviews,bfc,error);check(bool(bfcontrol),error);

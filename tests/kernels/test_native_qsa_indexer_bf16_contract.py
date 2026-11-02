@@ -40,6 +40,12 @@ namespace strata::kernels {void bf16_gemv_fp32_mmvf(const float*x,const uint16_t
  shutil.copyfile(output/'query.f32le',fake/'query.f32le');shutil.copyfile(output/'query-repeat.f32le',fake/'query-repeat.f32le')
  wrong=compare.copy();wrong[wrong.index('--control-sha256')+1]='0'*64
  assert subprocess.run(wrong,cwd='/',capture_output=True).returncode!=0
+ dense=d/'dense-fixture';subprocess.run([str(control),'--write-dense',str(dense)],cwd='/',check=True)
+ for name,exe in [('dense-input',control),('dense-native',native),('dense-vulkan',vulkan)]:
+  out=d/(name+'.json');p=subprocess.run([str(exe),'--contract',str(dense),str(out)],cwd='/',capture_output=True,text=True);assert p.returncode==0 and not p.stdout and not p.stderr,p.stderr
+  assert json.loads(out.read_text())=={'fields':{'key.f32le':512,'query.f32le':2048},'qualified':False}
+ dense_out=d/'dense-native-out';p=subprocess.run([str(native),'--device','0','--expect-device','signature-fixture GPU','--fixture',str(dense),'--output',str(dense_out)],cwd='/',capture_output=True,text=True);assert p.returncode==0,p.stderr
+ subprocess.run([str(control),'--check',str(dense),str(dense_out/'key.f32le'),str(dense_out/'query.f32le')],cwd='/',check=True)
  bad=fixture/'key.bf16le';data=bytearray(bad.read_bytes());data[0:2]=b'\x01\x00';bad.write_bytes(data)
  assert subprocess.run([str(vulkan),'--contract',str(fixture),str(d/'bad.json')],cwd='/',capture_output=True).returncode!=0
  assert subprocess.run(compare,cwd='/',capture_output=True).returncode!=0

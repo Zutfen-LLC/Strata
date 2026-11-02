@@ -87,6 +87,7 @@ int main() {try {
     rejects([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,127,1);});
     rejects([&]{strata_vk_native_shared_run(&matrix,0,mw,mx,my,ma,2560,128,1);});
     auto* saved=my->data;my->data=mx->data;rejects([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);});my->data=saved;
-    matrix.budget=512;rejects([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);});
+    matrix.budget=buffer.size+matrix.owner->bytes;strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);
+    --matrix.budget;rejects([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);});
     puts("native shared actual dispatch validation passed (mock submission)");return 0;
 }catch(const std::exception& e){fprintf(stderr,"%s\n",e.what());return 1;}}

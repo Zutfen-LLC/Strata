@@ -31,8 +31,8 @@ public:
    std::vector<uint16_t> check(n/2);ggml_backend_tensor_get(w,check.data(),0,n);native_shared_need(std::memcmp(check.data(),raw[i],n)==0,"QSA indexer BF16: resident role differs");qsa_indexer_bf16_weights(check.data(),check.size());
    bool duplicate=false;for(size_t j=0;j<=i;++j)duplicate|=seen[j]==w->buffer;seen[i+1]=w->buffer;if(!duplicate){size_t amount=ggml_backend_buffer_get_size(w->buffer);native_shared_need(amount<=SIZE_MAX-borrowed,"QSA indexer BF16: borrowed buffer overflow");borrowed+=amount;}}
   ctx_=context();leaves(ctx_.get(),outputs_,aux_);size_t bank=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),ggml_backend_get_default_buffer_type(b));
-  native_shared_need(bank<budget && borrowed<=SIZE_MAX-(budget-bank),"QSA indexer BF16: owner budget");
-  component_.reset(strata_vk_qsa_indexer_bf16_create(b,(directory_/"effective.spv").c_str(),budget-bank+borrowed));
+  native_shared_need(bank<=budget && borrowed<=SIZE_MAX-budget,"QSA indexer BF16: owner budget");
+  component_.reset(strata_vk_qsa_indexer_bf16_create(b,(directory_/"effective.spv").c_str(),budget+borrowed));
   buffer_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),b));native_shared_need(bool(buffer_),"QSA indexer BF16: output allocation");
   bytes_=ggml_backend_buffer_get_size(buffer_.get())+strata_vk_native_shared_bytes(component_.get());native_shared_need(bytes_<=estimate(b)&&bytes_<=budget,"QSA indexer BF16: allocation exceeds admission");
  }
