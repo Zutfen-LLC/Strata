@@ -7,6 +7,11 @@ struct StrataVkNativeShared;
 // Standalone opt-in observation. Owner/weights/scratch must survive synchronous
 // calls; caller serializes this component and its backend. Model use is opt-in.
 StrataVkNativeShared* strata_vk_native_shared_create(ggml_backend_t,const char* effective_spv_path,size_t metadata_budget=65536);
+// Separate matrix variant: exactly one 2560-wide input and 128 or 512 BF16 rows.
+StrataVkNativeShared* strata_vk_qsa_indexer_bf16_create(ggml_backend_t,const char* effective_spv_path,size_t budget);
+uint64_t strata_vk_native_shared_submitted(const StrataVkNativeShared*) noexcept;
+uint64_t strata_vk_native_shared_completed(const StrataVkNativeShared*) noexcept;
+uint64_t strata_vk_native_shared_uncertain(const StrataVkNativeShared*) noexcept;
 size_t strata_vk_native_shared_bytes(const StrataVkNativeShared*);
 void strata_vk_native_shared_destroy(StrataVkNativeShared*) noexcept;
 // mode0: dense Q8_0/I32 weights, Q8_1/I32 input -> F32 output; aux F32[1].

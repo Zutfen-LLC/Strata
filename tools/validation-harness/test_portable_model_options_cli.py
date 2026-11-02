@@ -165,3 +165,10 @@ assert run([*wo,'--native-qsa-qkv-t1'],True)['native_qsa_qkv_t1']
 for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:
     run([*wo,'--native-qsa-qkv-t1',*bad],False)
 print('native QSA QKV CLI default and matched native WO preconditions pass')
+
+assert not run([],True).get('native_qsa_indexer_projection_t1',False)
+run(['--native-qsa-indexer-projection-t1'],False,'native QSA indexer projections require')
+idx_projection=[*ordinary,*indexer,'--native-qsa-indexer-t1',*nr,'--native-qsa-norm-rope-t1','--dense-resident-weights','--native-qsa-indexer-projection-t1']
+assert run(idx_projection,True)['native_qsa_indexer_projection_t1']
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:run([*idx_projection,*bad],False)
+print('native BF16 indexer projection CLI default and strict producer/consumer preconditions pass')

@@ -14,6 +14,7 @@
 #include "portable_native_qsa_attention.hpp"
 #include "portable_native_qsa_wo.hpp"
 #include "portable_native_qsa_qkv.hpp"
+#include "portable_native_qsa_indexer_bf16.hpp"
 #endif
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
@@ -256,6 +257,8 @@ struct PortableQsaLayer::Impl {
     std::unique_ptr<portable_detail::PortableNativeQsaAttention> native_attention;
     std::unique_ptr<portable_detail::PortableNativeQsaWo> native_wo;
     std::unique_ptr<portable_detail::PortableNativeQsaQkv> native_qkv;
+    std::unique_ptr<portable_detail::PortableNativeQsaIndexerBf16> native_indexer_projection;
+    std::array<ggml_tensor*,2> indexer_projection_leaves{};
     std::array<ggml_tensor*,3> qkv_leaves{};
     std::array<ggml_tensor*,3> norm_raw{};
 #endif
@@ -325,12 +328,15 @@ struct PortableQsaLayer::Impl {
         write(s.input, residual);
 #ifdef STRATA_PORTABLE_NATIVE_HC
         portable_detail::PortableNativeQsaQkv::Candidate qkv_candidate;
-        auto norm_raw=s.norm_raw;
         if(s.options.native_qkv_t1){qkv_candidate=s.native_qkv->run(s.native_hc->mixed);for(size_t i=0;i<3;++i)write(s.qkv_leaves[i],qkv_candidate.output[i]);}
+        portable_detail::PortableNativeQsaIndexerBf16::Candidate indexer_projection_candidate;
+        auto norm_raw=s.norm_raw;
+        if(s.options.native_indexer_projection_t1){indexer_projection_candidate=s.native_indexer_projection->run(s.native_hc->mixed);for(size_t i=0;i<2;++i)write(s.indexer_projection_leaves[i],indexer_projection_candidate.values[i]);}
 #endif
         s.project->run();
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(s.options.native_qkv_t1){s.native_qkv->consumed(position,s.native_hc->mixed,s.qkv_leaves,qkv_candidate);norm_raw[0]=s.native_qkv->projection(0);norm_raw[1]=s.native_qkv->projection(1);}
+        if(s.options.native_indexer_projection_t1){s.native_indexer_projection->consumed(position,s.native_hc->mixed,s.indexer_projection_leaves,indexer_projection_candidate);norm_raw[2]=s.native_indexer_projection->projection(1);}
         if(s.options.native_norm_rope_t1)s.native_norm_rope->run(norm_raw,position);
 #endif
 #ifdef STRATA_PORTABLE_NATIVE_HC
@@ -382,7 +388,7 @@ struct PortableQsaLayer::Impl {
         } else {
 #ifdef STRATA_PORTABLE_NATIVE_HC
             if(s.options.native_indexer_t1){
-                native_indexer_candidate=s.native_indexer->run(s.ik,position);
+                native_indexer_candidate=s.native_indexer->run(s.options.native_indexer_projection_t1?s.native_indexer_projection->projection(0):s.ik,position);
                 next_tail.resize(3*ID);std::memcpy(next_tail.data(),native_indexer_candidate.data(),3*ID*4);
                 next_pool.resize((complete+1)*ID);std::memcpy(next_pool.data(),native_indexer_candidate.data()+portable_detail::qsa_idx_pool,next_pool.size()*4);
                 if(n%4==0)new_pool.assign(next_pool.begin()+(complete-1)*ID,next_pool.begin()+complete*ID);
@@ -615,6 +621,7 @@ struct PortableQsaLayer::Impl {
                 options.execution.accelerator && options.execution.request_accelerator && !options.execution.allow_cpu_fallback &&
                 !options.native_wo_receipt_prefix.empty()),"native QSA WO requires native attention, pending FFN, resident weights and eager strict accelerator");
         require(!options.native_qkv_t1||(options.native_wo_t1&&options.native_hc_read&&options.native_norm_rope_t1&&!options.native_qkv_receipt_prefix.empty()),"native QSA QKV requires native WO, HC mixed input and norm/RoPE");
+        require(!options.native_indexer_projection_t1||(options.native_hc_read&&options.native_indexer_t1&&options.native_norm_rope_t1&&options.execution.resident_dense_weights&&!options.native_indexer_projection_receipt_prefix.empty()),"native QSA indexer projections require HC mixed input, native indexer, norm/RoPE and resident weights");
         require(!options.native_attention_t1||(options.native_attention_banks&&options.native_select_t1&&options.native_norm_rope_t1),"native QSA attention requires actual native IDs/query and matched banks");
         if(options.native_attention_banks){
             portable_detail::native_qsa_attention_environment();
@@ -688,7 +695,7 @@ struct PortableQsaLayer::Impl {
         if (options.production)
             states_size -= options.capacity * (4 * KV * sizeof(uint16_t) + 8 * sizeof(float)) +
                            (options.capacity / 4 + 2) * ID * 3 * sizeof(float);
-        require(states_size <= options.state_budget && ((options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0)+(options.native_wo_t1?PortableQsaOptions::native_wo_host_bound:0)+(options.native_qkv_t1?PortableQsaOptions::native_qkv_host_bound:0)<=options.state_budget-states_size), "portable QSA: host state budget exceeded");
+        require(states_size <= options.state_budget && ((options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0)+(options.native_wo_t1?PortableQsaOptions::native_wo_host_bound:0)+(options.native_qkv_t1?PortableQsaOptions::native_qkv_host_bound:0)+(options.native_indexer_projection_t1?PortableQsaOptions::native_indexer_projection_host_bound:0)<=options.state_budget-states_size), "portable QSA: host state budget exceeded");
         std::vector<PortableTensorView> aw, fw;
         for (const auto &t : tensors) {
             require(t.name.rfind(prefix, 0) == 0, "portable QSA: tensor belongs to another layer");
@@ -704,6 +711,10 @@ struct PortableQsaLayer::Impl {
             auto i=std::find_if(aw.begin(),aw.end(),[&](const auto&v){return v.name==prefix+spec.first;});
             require(i!=aw.end()&&i->type==8&&i->shape==std::vector<int64_t>({2560,int64_t(spec.second)})&&i->data&&i->bytes==spec.second*80u*34u,"native QSA QKV: expected Q8_0 role");
             portable_detail::qsa_wo_require_scales(portable_detail::qsa_wo_scale_classes(static_cast<const uint8_t*>(i->data),spec.second*80u,34),i->name,true);
+        }
+        if(options.native_indexer_projection_t1)for(const auto& spec:std::array<std::pair<const char*,size_t>,2>{{{"indexer.k_proj.weight",128},{"indexer.q_proj.weight",512}}}){
+            auto i=std::find_if(aw.begin(),aw.end(),[&](const auto&v){return v.name==prefix+spec.first;});
+            require(i!=aw.end()&&i->type==30&&i->shape==std::vector<int64_t>({2560,int64_t(spec.second)})&&i->data&&i->bytes==spec.second*2560u*2u,"native QSA indexer projections: expected raw BF16 role");
         }
         std::string error;
         auto ffn_options=options.execution;
@@ -735,7 +746,7 @@ struct PortableQsaLayer::Impl {
         ggml_backend_cpu_set_n_threads(cpu.get(), options.execution.threads);
         weights_ctx = context();if(options.native_hc_read||options.native_norm_rope_weights||options.native_indexer_weights)hc_weights_ctx=context();
         auto hc_role=[&](const std::string& key){return options.native_hc_read && key.rfind("hc_attn_",0)==0;};
-        auto device_role=[&](const std::string&key){return hc_role(key)||(options.native_indexer_weights&&key=="indexer.k_norm.weight")||(options.native_norm_rope_weights&&(key=="attn_q_norm.weight"||key=="attn_k_norm.weight"||key=="indexer.q_norm.weight"));};
+        auto device_role=[&](const std::string&key){return hc_role(key)||(options.native_indexer_projection_t1&&(key=="indexer.k_proj.weight"||key=="indexer.q_proj.weight"))||(options.native_indexer_weights&&key=="indexer.k_norm.weight")||(options.native_norm_rope_weights&&(key=="attn_q_norm.weight"||key=="attn_k_norm.weight"||key=="indexer.q_norm.weight"));};
         auto native_elements=[&](const std::string& key)->size_t {
             return hc_role(key) && key!="hc_attn_norm.weight" ? (key=="hc_attn_inject.weight"?40960:3276800) : 0;
         };
@@ -744,15 +755,16 @@ struct PortableQsaLayer::Impl {
             const auto &shape = shapes().at(key);
             require(!w.count(key) && view.shape == shape, "portable QSA: bad/duplicate tensor shape: " + view.name);
             const bool indexer = key == "indexer.q_proj.weight" || key == "indexer.k_proj.weight";
-            const bool widen = indexer && view.type == 30;
+            const bool raw_indexer=indexer && options.native_indexer_projection_t1;
+            const bool widen = indexer && view.type == 30 && !raw_indexer;
             // Real fleet indexer projections are BF16; legacy Q8 fixtures and
             // exact F32 references remain supported for these two roles only.
-            require(view.data && (view.type == (shape.size() == 2 ? 8u : 0u) || widen || (indexer && view.type == 0)),
+            require(view.data && (view.type == (shape.size() == 2 ? 8u : 0u) || widen || (indexer && view.type == 0) || (raw_indexer && view.type==30)),
                     "portable QSA: unsupported encoding for role: " + view.name);
             const size_t rows = shape.size() == 2 ? size_t(shape[1]) : 1;
             const size_t source_bytes = ggml_row_size(ggml_type(view.type), shape[0]) * rows;
             const size_t count=native_elements(key);auto* ctx=device_role(key)?hc_weights_ctx.get():weights_ctx.get();
-            auto *t = count?ggml_new_tensor_1d(ctx,GGML_TYPE_I32,int64_t(count/2)):
+            auto *t = raw_indexer?ggml_new_tensor_1d(ctx,GGML_TYPE_I32,int64_t(shape[0]*shape[1]/2)):count?ggml_new_tensor_1d(ctx,GGML_TYPE_I32,int64_t(count/2)):
                 ggml_new_tensor(ctx, widen ? GGML_TYPE_F32 : ggml_type(view.type),int(shape.size()),shape.data());
             ggml_set_name(t, view.name.c_str());
             const size_t storage_bytes = ggml_nbytes(t);
@@ -782,7 +794,7 @@ struct PortableQsaLayer::Impl {
 #ifdef STRATA_PORTABLE_NATIVE_HC
             if(native_elements(key)) {auto converted=portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(view.data),view.bytes,native_elements(key));ggml_backend_tensor_set(target,converted.data(),0,converted.size()*2);continue;}
 #endif
-            if (view.type != 30) {
+            if (view.type != 30 || (options.native_indexer_projection_t1 && (key=="indexer.k_proj.weight"||key=="indexer.q_proj.weight"))) {
                 ggml_backend_tensor_set(target, view.data, 0, view.bytes);
                 continue;
             }
@@ -813,6 +825,13 @@ struct PortableQsaLayer::Impl {
             require(fixed_graphs<options.execution.graph_budget,"native QSA indexer no graph room");
             native_indexer=std::make_unique<portable_detail::PortableNativeQsaIndexer>(options.execution.accelerator,w.at("indexer.k_norm.weight"),uint32_t(options.capacity),options.native_indexer_receipt_prefix,options.execution.graph_budget-fixed_graphs,options.native_indexer_record_first);
             fixed_graphs+=native_indexer->bytes();
+        }
+        if(options.native_indexer_projection_t1){
+            require(fixed_graphs<options.execution.graph_budget,"native QSA indexer projection: no graph room");
+            std::array<ggml_tensor*,2>weights{};std::array<const void*,2>raw{};std::array<size_t,2>sizes{};const std::array<const char*,2>names{{"indexer.k_proj.weight","indexer.q_proj.weight"}};
+            for(size_t i=0;i<2;++i){auto role=std::find_if(aw.begin(),aw.end(),[&](const auto&v){return v.name==prefix+names[i];});require(role!=aw.end(),"native QSA indexer projection: missing role");weights[i]=w.at(names[i]);raw[i]=role->data;sizes[i]=role->bytes;}
+            native_indexer_projection=std::make_unique<portable_detail::PortableNativeQsaIndexerBf16>(options.execution.accelerator,weights,native_hc->mixed,raw,sizes,options.native_indexer_projection_receipt_prefix,options.execution.graph_budget-fixed_graphs,options.native_indexer_projection_record_first);
+            fixed_graphs+=native_indexer_projection->bytes();
         }
         if(options.native_attention_banks){
             require(fixed_graphs<options.execution.graph_budget,"native QSA attention no graph room");
@@ -882,17 +901,18 @@ struct PortableQsaLayer::Impl {
         if(options.native_qkv_t1)qkv_leaves={{full,key_projection,v}};
         if(options.native_qkv_t1)project->output(key_projection,"qsa-qkv-key-leaf");
 #endif
-        auto *index_query = ggml_mul_mat(c, w.at("indexer.q_proj.weight"), mixed);
-        ik = ggml_mul_mat(c, w.at("indexer.k_proj.weight"), mixed);
+        auto *index_query = options.native_indexer_projection_t1 ? project->input({512}) : ggml_mul_mat(c, w.at("indexer.q_proj.weight"), mixed);
+        ik = options.native_indexer_projection_t1 ? project->input({128}) : ggml_mul_mat(c, w.at("indexer.k_proj.weight"), mixed);
         // F32 storage must not select a lower-precision accumulation path.
-        if (w.at("indexer.q_proj.weight")->type == GGML_TYPE_F32)
+        if (!options.native_indexer_projection_t1 && w.at("indexer.q_proj.weight")->type == GGML_TYPE_F32)
             ggml_mul_mat_set_prec(index_query, GGML_PREC_F32);
-        if (w.at("indexer.k_proj.weight")->type == GGML_TYPE_F32)
+        if (!options.native_indexer_projection_t1 && w.at("indexer.k_proj.weight")->type == GGML_TYPE_F32)
             ggml_mul_mat_set_prec(ik, GGML_PREC_F32);
         iq = ggml_reshape_3d(c, index_query, ID, IH, 1);
         auto* raw_iq=iq;
         if(!options.native_norm_rope_t1)iq = rope(c, ggml_mul(c, ggml_rms_norm(c, iq, 1e-6f), w.at("indexer.q_norm.weight")), pos);
 #ifdef STRATA_PORTABLE_NATIVE_HC
+        if(options.native_indexer_projection_t1)indexer_projection_leaves={{ik,index_query}};
         if(options.native_norm_rope_t1){
             norm_raw={{full,raw_k,raw_iq}};
             for(size_t i=0;i<3;++i)project->output(norm_raw[i],std::array<const char*,3>{{"qsa-raw-query","qsa-raw-key","qsa-raw-index-query"}}[i]);
@@ -1015,6 +1035,13 @@ uint64_t PortableQsaLayer::native_indexer_calls()const{
  return impl_->native_indexer?impl_->native_indexer->calls():0;
 #else
  return 0;
+#endif
+}
+uint64_t PortableQsaLayer::native_indexer_projection_calls(unsigned stage)const{
+#ifdef STRATA_PORTABLE_NATIVE_HC
+ return impl_->native_indexer_projection?impl_->native_indexer_projection->calls(stage):0;
+#else
+ (void)stage;return 0;
 #endif
 }
 const std::vector<uint32_t>& PortableQsaLayer::native_indexer_state()const{
@@ -1371,7 +1398,7 @@ size_t PortableQsaLayer::graph_bytes() const {
     return (impl_->attention_phase() ? impl_->fixed_graphs+impl_->retained_attention_bytes() : impl_->graphs_size)+impl_->chunk_graphs();
 }
 size_t PortableQsaLayer::state_bytes() const {
-    return impl_->states_size+impl_->chunk_host_bound+(impl_->options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(impl_->options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(impl_->options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0)+(impl_->options.native_wo_t1?PortableQsaOptions::native_wo_host_bound:0)+(impl_->options.native_qkv_t1?PortableQsaOptions::native_qkv_host_bound:0) + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
+    return impl_->states_size+impl_->chunk_host_bound+(impl_->options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(impl_->options.native_indexer_projection_t1?PortableQsaOptions::native_indexer_projection_host_bound:0)+(impl_->options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(impl_->options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0)+(impl_->options.native_wo_t1?PortableQsaOptions::native_wo_host_bound:0)+(impl_->options.native_qkv_t1?PortableQsaOptions::native_qkv_host_bound:0) + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
 }
 bool PortableQsaLayer::poisoned() const { return !impl_->healthy; }
 bool PortableQsaLayer::inspect_state(PortableQsaState &state, std::string &error) const {
@@ -1420,6 +1447,7 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
     if(s.native_qkv){m.device_graph+=s.native_qkv->bytes();m.host_extra_bound+=PortableQsaOptions::native_qkv_host_bound;}
     if(s.native_select){m.device_graph+=s.native_select->bytes();m.host_extra_bound+=PortableQsaOptions::native_select_host_bound;}
     if(s.native_indexer){m.device_graph+=s.native_indexer->bytes();m.host_extra_bound+=PortableQsaOptions::native_indexer_host_bound;}
+    if(s.native_indexer_projection){m.device_graph+=s.native_indexer_projection->bytes();m.host_extra_bound+=PortableQsaOptions::native_indexer_projection_host_bound;}
     if(s.native_hc){m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=PortableQsaOptions::native_hc_host_bound;}
 #endif
     // Keep the existing host envelope: the unchanged fixed schedulers also

@@ -36,11 +36,13 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         b+=layer==47 ? PortableFfnOptions::native_hc_write_host_bound : PortableFfnOptions::deferred_hc_host_bound;
         if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_recurrence_host_bound;
         if(opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_preparation_host_bound;
+        if(opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_input_projection_host_bound;
         if(opts.qsa_norm_rope_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_norm_rope_host_bound;
         if(opts.qsa_indexer_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_indexer_host_bound;
         if(opts.qsa_attention_banks&&layer%4==3)b+=PortableQsaOptions::native_attention_host_bound;
         if(opts.native_qsa_wo_t1&&layer%4==3)b+=PortableQsaOptions::native_wo_host_bound;
         if(opts.native_qsa_qkv_t1&&layer%4==3)b+=PortableQsaOptions::native_qkv_host_bound;
+        if(opts.native_qsa_indexer_projection_t1&&layer%4==3)b+=PortableQsaOptions::native_indexer_projection_host_bound;
         if(opts.qsa_score_select_banks&&layer%4==3)b+=PortableQsaOptions::native_select_host_bound;
         return b;
     }
@@ -49,6 +51,7 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
     if(opts.qsa_attention_banks&&layer%4==3)bound+=PortableQsaOptions::native_attention_host_bound;
     if(opts.native_qsa_wo_t1&&layer%4==3)bound+=PortableQsaOptions::native_wo_host_bound;
     if(opts.native_qsa_qkv_t1&&layer%4==3)bound+=PortableQsaOptions::native_qkv_host_bound;
+    if(opts.native_qsa_indexer_projection_t1&&layer%4==3)bound+=PortableQsaOptions::native_indexer_projection_host_bound;
     if(opts.qsa_score_select_banks&&layer%4==3)bound+=PortableQsaOptions::native_select_host_bound;
     if(opts.native_hc_pending_layer1_2 && layer==1)bound+=PortableFfnOptions::deferred_hc_host_bound;
     if(opts.native_hc_pending_layer1_2 && layer==2)bound+=PortableGdnOptions::native_hc_pending_host_bound;
@@ -62,6 +65,7 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         (opts.native_hc_ffn_write_layer0 ? PortableFfnOptions::native_hc_write_host_bound : 0);
     if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_recurrence_host_bound;
     if(opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_preparation_host_bound;
+    if(opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_input_projection_host_bound;
     return bound;
 }
 inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,PortableGdnOptions& o) {
@@ -69,6 +73,8 @@ inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,P
     o.native_preparation_t1=opts.native_gdn_preparation_t1&&model_gdn_t1_layer(layer);
     if(o.native_preparation_weights)o.state_budget+=PortableGdnOptions::native_preparation_host_bound;
     if(o.native_preparation_t1){o.native_preparation_receipt=opts.native_gdn_preparation_receipt_prefix+".layer-"+std::to_string(layer);o.native_preparation_record_first=layer==0;}
+    o.native_input_projection_t1=opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(layer);
+    if(o.native_input_projection_t1){o.state_budget+=PortableGdnOptions::native_input_projection_host_bound;o.native_input_projection_receipt=opts.native_gdn_input_projection_receipt_prefix+".layer-"+std::to_string(layer);o.native_input_projection_record_first=layer==0;}
     o.native_recurrence_t1=opts.native_gdn_t1 && model_gdn_t1_layer(layer);
     if(o.native_recurrence_t1){o.state_budget+=PortableGdnOptions::native_recurrence_host_bound;o.native_recurrence_receipt=opts.native_gdn_receipt_prefix+".layer-"+std::to_string(layer)+"/effective.spv";o.native_recurrence_record_first=layer==0;}
     o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && layer==0;
@@ -106,6 +112,9 @@ inline void model_qsa_hc_options(const PortableModelOptions& opts,size_t layer,P
     if(o.native_select_banks)o.native_select_receipt_prefix=opts.qsa_score_select_receipt_prefix+".layer-"+std::to_string(layer);
     o.native_indexer_weights=opts.qsa_indexer_resident_weights;
     o.native_indexer_t1=opts.native_qsa_indexer_t1;
+    o.native_indexer_projection_t1=opts.native_qsa_indexer_projection_t1;
+    o.native_indexer_projection_record_first=layer==3;
+    if(o.native_indexer_projection_t1)o.native_indexer_projection_receipt_prefix=opts.qsa_indexer_receipt_prefix+".projection.layer-"+std::to_string(layer);
     o.native_indexer_record_first=layer==3;
     if(o.native_indexer_weights)o.native_indexer_receipt_prefix=opts.qsa_indexer_receipt_prefix+".layer-"+std::to_string(layer);
     o.native_norm_rope_weights=opts.qsa_norm_rope_resident_weights;
@@ -186,6 +195,7 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
     if(opts.qsa_attention_banks)native_qsa_attention_environment();
     require(!opts.native_qsa_attention_t1||opts.qsa_attention_banks,"native QSA attention requires matched candidate banks");
     require(!opts.native_qsa_qkv_t1||opts.native_qsa_wo_t1,"native QSA QKV requires the matched native QSA WO path");
+    require(!opts.native_qsa_indexer_projection_t1||(opts.native_hc_serial&&opts.native_qsa_indexer_t1&&opts.native_qsa_norm_rope_t1&&opts.dense_resident_weights),"native QSA indexer projections require ordinary HC, native indexer, norm/RoPE and resident weights");
     require(!opts.native_qsa_wo_t1||(opts.native_qsa_attention_t1&&opts.native_hc_serial&&opts.dense_resident_weights),
             "native QSA WO requires native attention, ordinary native HC and resident dense weights");
     require(!opts.qsa_attention_banks||(opts.native_qsa_score_select_t1&&opts.native_qsa_norm_rope_t1&&opts.qsa_score_select_banks&&selected_accelerators&&!opts.allow_cpu_fallback&&!opts.qsa_production&&!opts.prompt_chunk_size&&opts.dense_topology==PortableDenseTopology::primary&&!opts.qsa_attention_receipt_prefix.empty()),"native QSA attention requires native query/IDs serial eager primary strict accelerator and receipt");
@@ -204,6 +214,7 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
             "native GDN T1 requires serial eager primary dense, resident state/attention, strict accelerator and receipt prefix");
     require(!opts.native_gdn_preparation_weights||opts.native_gdn_t1,"native GDN preparation weights require ordinary native recurrence");
     require(!opts.native_gdn_preparation_t1||(opts.native_gdn_preparation_weights&&!opts.native_gdn_preparation_receipt_prefix.empty()),"native GDN preparation requires explicit BF16 residency and receipt");
+    require(!opts.native_gdn_input_projection_t1||(opts.native_gdn_preparation_t1&&opts.native_hc_serial&&opts.native_hc_mix_layer0&&!opts.native_gdn_input_projection_receipt_prefix.empty()),"native GDN input projections require ordinary HC, layer0 HC mix, native preparation and receipt");
     if(opts.native_gdn_t1)require(PortableGdnLayer::native_hc_compiled(),"native GDN T1: strict-FMA native stage build required");
     require(!opts.gdn_production || (opts.gdn_resident_state && selected_accelerators && !opts.allow_cpu_fallback),
             "portable model: GDN production requires resident state and strict accelerators");
