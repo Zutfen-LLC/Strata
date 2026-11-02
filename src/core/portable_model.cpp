@@ -4,6 +4,7 @@
 #include "portable_shared_work.hpp"
 #include "portable_memory.hpp"
 #include "portable_model_preflight.hpp"
+#include "native_qsa_wo_domain.hpp"
 #include "portable_native_capacity.hpp"
 #include "strata/core/layer0_observer.hpp"
 #include "strata/core/expert_profile.hpp"
@@ -171,6 +172,27 @@ struct PortableModelSession::Impl {
             10 * (3 * (H * FF / 32 * 34)) + (32u << 20) + size_t(opts.expert_workers + 1) * (9u << 20);
         require(expert_host_bound <= opts.host_cap, "portable model: host cap cannot admit expert staging/pool");
         inventory(model);
+        if(opts.native_qsa_qkv_t1){
+            for(size_t l=3;l<48;l+=4)for(const auto& spec:std::array<std::pair<const char*,size_t>,3>{{{"attn_q.weight",12288},{"attn_k.weight",512},{"attn_v.weight",512}}}){
+                auto role=view(model,"blk."+std::to_string(l)+"."+spec.first);
+                require(role.type==8&&role.shape==std::vector<int64_t>({2560,int64_t(spec.second)})&&role.data&&role.bytes==spec.second*80u*34u,"QSA QKV: unsupported role: "+role.name);
+                auto classes=portable_detail::qsa_wo_scale_classes(static_cast<const uint8_t*>(role.data),spec.second*80u,34);
+                portable_detail::qsa_wo_require_scales(classes,role.name,true);
+                std::clog<<"qsa_qkv_role "<<role.name<<" type=Q8_0 bytes="<<role.bytes<<" zero="<<classes.zero<<" normal="<<classes.normal<<" subnormal="<<classes.subnormal<<" nonfinite="<<classes.nonfinite<<'\n';
+            }
+        }
+        if(opts.native_qsa_wo_t1){
+            // Scan all selected role bytes before allocating layers or executing
+            // a request. Do not silently omit an unsupported QSA layer.
+            for(size_t l=3;l<48;l+=4){
+                auto role=view(model,"blk."+std::to_string(l)+".attn_output.weight");
+                require(role.type==8 && role.shape==std::vector<int64_t>({6144,2560}),"QSA WO: unsupported role type or shape: "+role.name);
+                portable_detail::qsa_wo_weight_domain(role.data,role.bytes,role.name);
+                auto classes=portable_detail::qsa_wo_scale_classes(static_cast<const uint8_t*>(role.data),2560u*192u,34);
+                std::clog<<"qsa_wo_role "<<role.name<<" type=Q8_0 bytes="<<role.bytes<<" zero="<<classes.zero
+                         <<" normal="<<classes.normal<<" subnormal="<<classes.subnormal<<" nonfinite="<<classes.nonfinite<<'\n';
+            }
+        }
         embedding = view(model, "token_embd.weight");
         require(embedding.type == 8 && embedding.shape.size() == 2 && embedding.shape[0] == H &&
                     embedding.shape[1] > 0 && embedding.shape[1] <= 1048576,
@@ -834,7 +856,8 @@ PortableModelWork PortableModelSession::model_work(bool state_digests) const {
         work.native_hc_cycle_outputs=impl_->layers[3].qsa->deferred_hc_outputs();
         work.native_hc_cycle_reads=impl_->layers[4].gdn->native_hc_pending_calls();
     }
-    for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(layer.qsa){work.native_qsa_attention_chunk_calls[l]=layer.qsa->native_attention_calls(0);work.native_qsa_attention_merge_calls[l]=layer.qsa->native_attention_calls(1);work.native_qsa_attention_gate_calls[l]=layer.qsa->native_attention_calls(2);work.native_qsa_norm_rope_calls[l]=layer.qsa->native_norm_rope_calls();work.native_qsa_indexer_calls[l]=layer.qsa->native_indexer_calls();work.native_qsa_score_calls[l]=layer.qsa->native_score_calls();work.native_qsa_select_calls[l]=layer.qsa->native_select_calls();}if(layer.qsa&&state_digests&&(impl_->opts.qsa_norm_rope_resident_weights||impl_->opts.qsa_indexer_resident_weights)&&!impl_->opts.qsa_production){
+    for(size_t l=0;l<impl_->layers.size();++l)if(const auto& q=impl_->layers[l].qsa){work.native_qsa_qkv_quant_submitted[l]=q->native_qkv_calls(0);work.native_qsa_qkv_quant_completed[l]=q->native_qkv_calls(1);work.native_qsa_qkv_submitted[l]=q->native_qkv_calls(2);work.native_qsa_qkv_completed[l]=q->native_qkv_calls(3);work.native_qsa_qkv_quant_submission_uncertain[l]=q->native_qkv_calls(4);work.native_qsa_qkv_submission_uncertain[l]=q->native_qkv_calls(5);}
+    for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(layer.qsa){work.native_qsa_wo_quant_submitted[l]=layer.qsa->native_wo_calls(0);work.native_qsa_wo_quant_completed[l]=layer.qsa->native_wo_calls(1);work.native_qsa_wo_submitted[l]=layer.qsa->native_wo_calls(2);work.native_qsa_wo_completed[l]=layer.qsa->native_wo_calls(3);work.native_qsa_wo_quant_submission_uncertain[l]=layer.qsa->native_wo_calls(4);work.native_qsa_wo_submission_uncertain[l]=layer.qsa->native_wo_calls(5);work.native_qsa_attention_chunk_calls[l]=layer.qsa->native_attention_calls(0);work.native_qsa_attention_merge_calls[l]=layer.qsa->native_attention_calls(1);work.native_qsa_attention_gate_calls[l]=layer.qsa->native_attention_calls(2);work.native_qsa_norm_rope_calls[l]=layer.qsa->native_norm_rope_calls();work.native_qsa_indexer_calls[l]=layer.qsa->native_indexer_calls();work.native_qsa_score_calls[l]=layer.qsa->native_score_calls();work.native_qsa_select_calls[l]=layer.qsa->native_select_calls();}if(layer.qsa&&state_digests&&(impl_->opts.qsa_norm_rope_resident_weights||impl_->opts.qsa_indexer_resident_weights)&&!impl_->opts.qsa_production){
             std::array<uint64_t,10>parts{};size_t at=0;
             auto add=[&](const auto&v){auto d=worker::blob_digest(v.data(),v.size()*sizeof(v[0]));parts[at++]=d.a;parts[at++]=d.b;};
             add(layer.qsa->keys());add(layer.qsa->values());add(layer.qsa->pooled_keys());add(layer.qsa->indexer_tail());if(!layer.qsa->native_indexer_state().empty())add(layer.qsa->native_indexer_state());auto d=worker::blob_digest(parts.data(),at*sizeof(uint64_t));work.qsa_state_a[l]=d.a;work.qsa_state_b[l]=d.b;

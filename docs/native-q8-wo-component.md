@@ -1,0 +1,9 @@
+# Standalone Q8_0 WO candidate
+
+This opt-in component consumes a 6,912-byte Q8_1 input and a row-major Q8_0 matrix with 192 blocks of 34 bytes per row. It targets the native T1 `native_small_mmvq_kernel<Q80Block,8,false>` partition: four logical 32-lane warps per row, two signed packed dot operations per block, ordered cross-warp addition and an XOR reduction. It does not use the expert row-dot partition. The Q8_1 sum half is retained and ignored by this Q8_0 dot.
+
+The shader uses a strict FMA observation candidate and requires the existing strict-FMA build and device feature. The actual selected CUDA kernel's compiled operations and FTZ behavior must be inspected before a native/Vulkan exact-byte run. A mismatch is a stop, not permission to change native flags or introduce a tolerance. The supported fixture domain rejects half-subnormal and nonfinite half scales and nonfinite or subnormal host reference intermediates. This does not establish general CUDA/Vulkan equivalence.
+
+The standalone synthetic fixture supports up to 2,560 rows, including full 6,144-by-2,560 geometry. Its literal controls cover zero, an isolated lane, signed extremes, half-scale multiplication, separately pinned first and second DP4A fragments, cross-warp cancellation, and a case that distinguishes the dense partition from the expert helper. Native and Vulkan probes accept only this bounded fixture, retain canaries and repeat their output. The Vulkan owner requires disjoint, correctly sized tensors and charges actual distinct backend buffers plus its own allocation against the caller's budget before submission.
+
+This is not connected to model inference. Direct packed-consumer comparison must pass before a separate component composition with the previously tested reciprocal producer. No native WO type or dispatch is inferred from a model filename. The previous reciprocal replay results and RN stop remain separate.

@@ -150,3 +150,18 @@ run(['--qsa-attention-banks','/absent/attention'],False,'native query/IDs')
 for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:run([*attention,'--native-qsa-attention-t1',*bad],False)
 run(attention,False,'alternative native attention',dict(os.environ,STRATA_ATTN_MERGE_V2='1'))
 print('native FP16 attention/gate actual CLI/default/matched-bank/native producer/mode preconditions pass')
+
+assert not run([],True)['native_qsa_wo_t1']
+run(['--native-qsa-wo-t1'],False,'native QSA WO requires')
+run([*attention,'--native-qsa-attention-t1','--native-qsa-wo-t1'],False,'native QSA WO requires')
+wo=[*ordinary,*attention,'--native-qsa-attention-t1','--dense-resident-weights','--native-qsa-wo-t1']
+assert run(wo,True)['native_qsa_wo_t1']
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:run([*wo,*bad],False)
+print('native QSA WO CLI default and ordinary eager native-attention/residency preconditions pass')
+
+assert not run([],True).get('native_qsa_qkv_t1',False)
+run(['--native-qsa-qkv-t1'],False,'native QSA QKV requires')
+assert run([*wo,'--native-qsa-qkv-t1'],True)['native_qsa_qkv_t1']
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:
+    run([*wo,'--native-qsa-qkv-t1',*bad],False)
+print('native QSA QKV CLI default and matched native WO preconditions pass')

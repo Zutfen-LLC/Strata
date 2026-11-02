@@ -112,6 +112,8 @@ struct PortableModelOptions {
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
     bool native_qsa_indexer_t1=false, qsa_indexer_resident_weights=false;
     bool native_qsa_attention_t1=false,qsa_attention_banks=false;
+    bool native_qsa_wo_t1=false; // default-off QSA output projection experiment
+    bool native_qsa_qkv_t1=false; // default-off ordinary Q/K/V projection experiment
     std::string qsa_attention_receipt_prefix;
     bool native_qsa_score_select_t1=false,qsa_score_select_banks=false;
     std::string qsa_score_select_receipt_prefix;
@@ -150,6 +152,10 @@ struct PortableExpertWork {
 // Whole-call wall totals are optional; head outcome counters are unconditional.
 // Layer totals include matched provider intervals.
 struct PortableModelWork {
+    std::array<uint64_t,48> native_qsa_qkv_quant_submitted{},native_qsa_qkv_quant_completed{},native_qsa_qkv_submitted{},native_qsa_qkv_completed{};
+    std::array<uint64_t,48> native_qsa_qkv_quant_submission_uncertain{},native_qsa_qkv_submission_uncertain{};
+    std::array<uint64_t,48> native_qsa_wo_quant_submitted{},native_qsa_wo_quant_completed{},native_qsa_wo_submitted{},native_qsa_wo_completed{};
+    std::array<uint64_t,48> native_qsa_wo_quant_submission_uncertain{},native_qsa_wo_submission_uncertain{};
     std::array<uint64_t,48> native_qsa_attention_chunk_calls{},native_qsa_attention_merge_calls{},native_qsa_attention_gate_calls{};
     std::array<uint64_t,48> native_qsa_score_calls{},native_qsa_select_calls{},native_qsa_indexer_calls{},native_qsa_norm_rope_calls{},qsa_state_a{},qsa_state_b{};
     std::array<uint64_t,48> native_gdn_conv_calls{},native_gdn_ab_calls{},native_gdn_t1_calls{},gdn_state_a{},gdn_state_b{};
