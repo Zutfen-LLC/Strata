@@ -830,7 +830,30 @@ for each capability below.
    1.538769781589508 at position 24. These are diagnostics without a final-logit
    tolerance or quality/performance claim. Full state arrays are not exported;
    qualified=false, full_model_parity=false and native_window_parity=false remain.
-   BF16 indexer projections, quantized KV, other projection families,
+   [PR141](https://github.com/Zutfen-LLC/Strata/pull/141) adds the ordinary T1
+   BF16 indexer key/query projections from one actual HC-mixed input, with packed
+   BF16 banks and producer-owned buffers feeding key append and query norm/RoPE.
+   The native-first constructed component compares 5,120 output bytes exactly.
+   At corrected model source `f61573b7`, two reset-separated 25-token / GEN3
+   requests pass with QKV/WO experiments off. This uses a historical compatible
+   control at `6c593d49`, not a same-image control. Fresh admission selects
+   96 primary / 1,490 helper experts under the original bounds and frozen plans.
+   Each request records 672 projection completions across twelve QSA layers.
+   Checks pass twelve BF16 modules in addition to the existing 566 modules,
+   eight actual producer/consumer positions, accepted state links and reset replay.
+   All eight executed-head hashes match the retained control; matching-history
+   logits at positions 24–27 are exact, with no route difference observed.
+   These bounded observations do not establish general numerical or model parity.
+   Offline import/receipt repairs completed checking and sealing without repeating
+   model, component or GPU execution; original STOPs and 6,644 raw files remain
+   preserved. Owned children exited/reaped, owner scans were clear, three baseline
+   observations and automatic clocks were restored. The final seal contains 6,611
+   members and 35 retained references, totaling 134,091,830 copied bytes including
+   the manifest, below the unchanged 128 MiB cap. Normal-or-zero input/intermediate
+   restrictions remain explicit; stored BF16 role scans alone do not qualify all
+   inputs. The path remains diagnostic and default-disabled: qualified=false and
+   full_model_parity=false, with no quality or performance claim.
+   GDN QKV/gate/output projections, quantized KV, other projection families,
    accepted-prefix and native window scheduling remain separate gaps.
 
 
