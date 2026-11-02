@@ -1,0 +1,12 @@
+#pragma once
+#include "ggml-backend.h"
+#include <cstddef>
+namespace strata::core::portable_detail {
+// Standalone native T1 Q8_0 candidate. All tensors/backend are borrowed.
+struct StrataVkQ8Wo;
+StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t,const char* effective_spv_path,size_t budget);
+size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo*);
+void strata_vk_q8_wo_destroy(StrataVkQ8Wo*) noexcept;
+void strata_vk_q8_wo_run(StrataVkQ8Wo*,const ggml_tensor* weights,const ggml_tensor* packed,
+                         ggml_tensor* output,size_t rows);
+}
