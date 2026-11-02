@@ -770,12 +770,38 @@ for each capability below.
    repeat/canary, actual module and lifecycle checks passing. Both hosts restore
    baseline across three observations and have no selected owners; each has one
    in-loop sample plus baseline, not continuous coverage. Collected output bytes
-   and retained receipt manifests were independently checked. Half-subnormal
-   scales remain unsupported. No producer composition or model integration has
-   run; portable combine still uses GGML matrix multiplication. Next compose
-   producer and consumer, then connect the native WO output to existing QSA/FFN
-   state authority with matched accounting and verified real-role support.
-   Quantized KV, projections, accepted-prefix and window scheduling remain gaps.
+   and retained receipt manifests were independently checked. This original
+   component excluded half-subnormal scales and did not compose the producer.
+   [PR136](https://github.com/Zutfen-LLC/Strata/pull/136) subsequently connects
+   the actual gated tensor through one retained packed buffer to native WO and
+   the existing FFN commit boundary. Nine component cases match both packed and
+   projected outputs exactly. Real-role preflight first refused 193 finite
+   half-subnormal weight scales; [PR137](https://github.com/Zutfen-LLC/Strata/pull/137)
+   faithfully admits them while retaining nonfinite refusal and the Q8_1 input
+   restrictions. Native/Vulkan qualification matches all 2,560 literal output
+   words, including all 2,046 signed nonzero half-subnormal encodings and the
+   boundary, multiplication and cancellation controls. Kernels and shaders are
+   unchanged; all twelve real WO role identities and scale counts are preserved.
+   At source `51c4e65f`, the same-image model comparison passes 36 CPU tests,
+   fresh native planning/frozen ownership/admission, and two reset-separated
+   25-prompt-token GEN3 requests per arm. Both arms generate `[18,24,16]`.
+   Twelve WO owners, 24 modules, eight layer3 own-input native packed buffers
+   and mapped-role WO outputs, and within-arm state/route/reset replay pass.
+   Owned exit/reap, restored baseline/clocks and empty owner scans pass. The
+   sealed manifest and 23 retained-file references were independently checked;
+   referenced original outputs must remain available. Earlier preflight/build
+   stops remain preserved. Cross-arm logits differ (maximum retained matching-
+   history absolute difference 1.3866307735); the first route-order difference
+   is position 0 / layer 34, swapping IDs 9 and 163 within the same selected set.
+   The arms deliberately compare GGML WO with the native method. Exact equality
+   is not their acceptance criterion; these differences alone establish no new
+   defect or full-model parity.
+   Its precise downstream attribution has not been established. Sampling is
+   discrete, not continuous; qualified=false and full_model_parity=false remain.
+   Next replicate native T1 Q/K/V input quantization and Q8_0 projections from
+   `Verifier::record_window()` before the already ported norm/RoPE consumers.
+   Quantized KV, other projection families, accepted-prefix and native window
+   scheduling remain separate gaps.
 
 
 
