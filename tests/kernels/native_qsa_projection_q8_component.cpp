@@ -31,7 +31,14 @@ int main(int argc,char**argv){try{
     reset();for(auto*out:{shortq,alias}){bool refused=false;try{run(out);}catch(...){refused=true;}need(refused,"projection q8: invalid call accepted");need(contents(xb,xi.size())==xi&&contents(qb,qi.size())==qi,"projection q8: refusal mutated buffers");}
     Bytes first;for(int pass=0;pass<2;++pass){reset();run(q);auto a=contents(xb,xi.size()),b=contents(qb,qi.size());Bytes out(bytes);std::memcpy(out.data(),b.data()+8,bytes);save(dir/(pass?"qx-repeat.bin":"qx.bin"),out);need(a==xi,"projection q8: input mutated");for(size_t i=0;i<8;++i)need(b[i]==canary&&b[b.size()-1-i]==canary,"projection q8: canary changed");if(pass)need(out==first,"projection q8: reset/repeat mismatch");first=out;}
 #if defined(STRATA_PROJECTION_Q8_RCP_OBSERVATION)
-    pinned(first);std::ofstream(dir/"report.json")<<"{\"actual_vulkan\":true,\"mode\":0,\"rcp_observation_candidate\":true,\"immutable_canary_repeat_refusal\":true,\"qualified\":false}\n";return 0;
+#ifndef STRATA_PROJECTION_Q8_REPLAY
+    pinned(first);
+#endif
+    std::ofstream(dir/"report.json")<<"{\"actual_vulkan\":true,\"mode\":0,\"rcp_observation_candidate\":true,\"immutable_canary_repeat_refusal\":true,"
+#ifdef STRATA_PROJECTION_Q8_REPLAY
+      "\"replay_fixture\":true,"
+#endif
+      "\"qualified\":false}\n";return 0;
 #else
     pinned(first);std::ofstream(dir/"report.json")<<"{\"actual_vulkan\":true,\"mode\":0,\"rn_candidate\":true,\"immutable_canary_repeat_refusal\":true,\"qualified\":false}\n";return 0;
 #endif

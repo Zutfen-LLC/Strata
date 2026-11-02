@@ -13,7 +13,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / 'src/kernels/cuda/native_mmvq.cu'
 
-def build(destination):
+def build(destination, replay=False):
     destination = Path(destination)
     header = destination / 'cuda_runtime.h'
     header.write_text(r'''#pragma once
@@ -76,7 +76,7 @@ void native_quantize_q8_1(const float* x,void* q,int n,int cols,void* stream){
 ''')
     output = destination / 'native-producer-provider-test'
     subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-fno-fast-math',
-                    '-ffp-contract=off', '-I'+str(destination), '-I'+str(ROOT/'include'),
+                    '-ffp-contract=off', *(['-DSTRATA_PROJECTION_Q8_REPLAY=1'] if replay else []), '-I'+str(destination), '-I'+str(ROOT/'include'),
                     '-I'+str(ROOT/'tests/kernels'), '-x', 'c++',
                     str(ROOT/'tests/kernels/native_qsa_projection_q8_reference.cu'),
                     str(provider), '-o', str(output)], check=True)

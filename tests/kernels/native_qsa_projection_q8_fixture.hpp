@@ -10,6 +10,7 @@ constexpr size_t elements=6144, blocks=elements/32, bytes=blocks*36;
 constexpr uint32_t canary=0xa5a5a5a5;
 inline void validate(const std::vector<float>& x) {
     need(x.size()==elements,"projection q8: expected exactly 6144 values");
+#ifndef STRATA_PROJECTION_Q8_REPLAY
     std::array<uint32_t,8*32> fixed{};
     std::fill(fixed.begin()+32,fixed.begin()+64,0x80000000u);
     fixed[64]=bits(127.f);fixed[65]=bits(.5f);fixed[66]=bits(-.5f);fixed[67]=bits(1.5f);fixed[68]=bits(-1.5f);
@@ -18,6 +19,7 @@ inline void validate(const std::vector<float>& x) {
     fixed[160]=bits(2e7f);fixed[192]=bits(-127.f);fixed[193]=bits(-.03125f);
     fixed[224]=bits(127.06201171875f);
     for(size_t i=0;i<fixed.size();++i)need(bits(x[i])==fixed[i],"projection q8: pinned input changed");
+ #endif
     for(size_t b=0;b<blocks;++b) {
         std::array<float,32> sum{},maximum{};
         for(size_t i=0;i<32;++i) {
@@ -55,13 +57,18 @@ inline std::vector<float> synthetic(unsigned mode) {
     clear(7);x[224]=127.06201171875f; // scale is exactly halfway above one
     validate(x);return x;
 }
+#ifdef STRATA_PROJECTION_Q8_REPLAY
+constexpr uint32_t fixture_version=2;
+#else
+constexpr uint32_t fixture_version=1;
+#endif
 inline void write(const std::string& path,const std::vector<float>& x) {
     validate(x);need(!std::filesystem::exists(path),"projection q8: fixture exists");
-    std::ofstream o(path,std::ios::binary);word(o,0x31513850);word(o,1);word(o,uint32_t(x.size()));
+    std::ofstream o(path,std::ios::binary);word(o,0x31513850);word(o,fixture_version);word(o,uint32_t(x.size()));
     for(float v:x)word(o,bits(v));need(bool(o),"projection q8: fixture write");
 }
 inline std::vector<float> read(const std::string& path) {
-    std::ifstream i(path,std::ios::binary);need(bool(i)&&word(i)==0x31513850&&word(i)==1&&word(i)==elements,"projection q8: bad fixture header");
+    std::ifstream i(path,std::ios::binary);need(bool(i)&&word(i)==0x31513850&&word(i)==fixture_version&&word(i)==elements,"projection q8: bad fixture header");
     std::vector<float>x(elements);for(float&v:x)v=value(word(i));need(i.peek()==EOF,"projection q8: trailing fixture data");validate(x);return x;
 }
 inline void contract(const std::vector<float>& x,const std::string& path) {

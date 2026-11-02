@@ -12,5 +12,12 @@ int main(int argc,char**argv){try{
     std::filesystem::path dir=argv[8];need(std::filesystem::create_directory(dir),"projection q8: output exists");std::filesystem::copy_file(argv[6],dir/"fixture.bin");trace(input,dir/"host-rne-trace.csv");
     std::vector<uint32_t>xi(elements+16,canary),qi(bytes/4+16,canary);std::memcpy(xi.data()+8,input.data(),elements*4);Device dx(xi.size()*4),dq(qi.size()*4);Stream stream;Bytes first;
     for(int pass=0;pass<2;++pass){cu(cudaMemcpy(dx.p,xi.data(),xi.size()*4,cudaMemcpyHostToDevice));cu(cudaMemcpy(dq.p,qi.data(),qi.size()*4,cudaMemcpyHostToDevice));strata::kernels::native_quantize_q8_1((float*)dx.p+8,(uint32_t*)dq.p+8,elements,1,stream.p);cu(cudaGetLastError());cu(cudaStreamSynchronize(stream.p));std::vector<uint32_t>a(xi.size()),b(qi.size());cu(cudaMemcpy(a.data(),dx.p,a.size()*4,cudaMemcpyDeviceToHost));cu(cudaMemcpy(b.data(),dq.p,b.size()*4,cudaMemcpyDeviceToHost));Bytes out(bytes);std::memcpy(out.data(),b.data()+8,bytes);save(dir/(pass?"qx-repeat.bin":"qx.bin"),out);need(a==xi,"projection q8: native input mutated");for(size_t i=0;i<8;++i)need(b[i]==canary&&b[b.size()-1-i]==canary,"projection q8: native canary changed");if(pass)need(out==first,"projection q8: native repeat mismatch");first=out;}
-    pinned(first);std::ofstream(dir/"report.json")<<"{\"actual_unchanged_native_launcher\":true,\"immutable_canary_repeat\":true,\"qualified\":false}\n";return 0;
+#ifndef STRATA_PROJECTION_Q8_REPLAY
+    pinned(first);
+#endif
+    std::ofstream(dir/"report.json")<<"{\"actual_unchanged_native_launcher\":true,\"immutable_canary_repeat\":true,"
+#ifdef STRATA_PROJECTION_Q8_REPLAY
+      "\"replay_fixture\":true,"
+#endif
+      "\"qualified\":false}\n";return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}
