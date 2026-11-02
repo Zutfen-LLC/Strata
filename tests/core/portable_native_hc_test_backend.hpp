@@ -4,6 +4,8 @@
 #include "strata_vk_native_hc.hpp"
 #include "native_hc_layout.hpp"
 #include "native_hc_pending.hpp"
+#include "strata_vk_native_shared.hpp"
+#include "native_qsa_indexer_bf16.hpp"
 #include "portable_model_preflight.hpp"
 #include "strata/core/layer0_observer.hpp"
 #include "ggml-cpu.h"
@@ -22,6 +24,7 @@ const ggml_tensor* live_ffn_residual=nullptr;const ggml_tensor* live_ffn_inject=
 size_t pending_owners=0,pending_calls=0;bool fail_pending_create=false,fail_pending_run=false;
 bool observe_wo_pending=false;size_t wo_pending_links=0;std::vector<float>actual_native_wo;
 bool observe_qkv_norm=false;size_t qkv_norm_links=0;std::array<std::vector<float>,3>actual_qkv;
+bool observe_indexer_projection=false;int fail_indexer_projection=0;size_t indexer_projection_links=0;std::array<std::vector<float>,2>actual_indexer_projection;
 size_t owners=0,calls=0,mix_owners=0,mix_calls=0;bool fail_mix_domain=false,fail_mix_domain_ffn=false,last_norm_ffn=false;bool fail_mix=false,fail_mix_create=false;float mixed_scale=1;const ggml_tensor* live_mixed=nullptr;size_t mixed_consumers=0;
 std::vector<uint16_t> expected_down,expected_up;bool fail_run=false,fail_create=false;float inject_bias=0,norm_scale=1;
 std::vector<uint16_t> expected_ffn_down,expected_ffn_up,expected_ffn_inject;
@@ -140,6 +143,7 @@ uint32_t strata_vk_native_qsa_norm_rope_run(StrataVkNativeQsaNormRope*p,ggml_ten
  check(t[0]->flags&GGML_TENSOR_FLAG_OUTPUT,"actual QSA projection lifetime missing OUTPUT");
  native_qsa_nr::Fixture f;f.cols=cols;f.rows=rows;f.stride=stride;f.theta=theta;f.x=get(t[0]);f.gamma=get(t[1]);f.pos.resize(rows);ggml_backend_tensor_get(t[2],f.pos.data(),0,rows*4);native_qsa_nr::validate(f);qsa_last_raw=f.x;
  if(observe_qkv_norm&&cols==256){const size_t role=rows==24?0:1;check(f.x==actual_qkv[role],"native norm/RoPE ignored QKV candidate");++qkv_norm_links;}
+ if(observe_indexer_projection&&cols==128&&rows==4){check(f.x==actual_indexer_projection[1],"native norm ignored indexer query projection");++indexer_projection_links;}
  ++p->calls;++qsa_norm_calls;if(fail_qsa_norm)return 1;
  // Independent host primitive provider, not Vulkan/CUDA numerical evidence.
  std::vector<float>d(rows*130);
@@ -160,6 +164,7 @@ uint64_t strata_vk_native_qsa_indexer_calls(const StrataVkNativeQsaIndexer*p)noe
 uint32_t strata_vk_native_qsa_indexer_run(StrataVkNativeQsaIndexer*p,ggml_tensor*const t[5],uint32_t cells,int32_t pos,int32_t base,uint32_t theta){
  check(t[0]->flags&GGML_TENSOR_FLAG_OUTPUT,"actual raw indexer projection lifetime missing OUTPUT");
  native_qsa_idx::Fixture f;f.cells=cells;f.base=base;f.first=pos;f.steps=1;f.theta=theta;f.raw=get(t[0]);f.gamma=get(t[1]);f.before.resize(qsa_idx_words(cells));ggml_backend_tensor_get(t[2],f.before.data(),0,f.before.size()*4);native_qsa_idx::validate(f);++p->calls;if(fail_qsa_indexer)return 1;
+ if(observe_indexer_projection){check(f.raw==actual_indexer_projection[0],"indexer append ignored key projection");++indexer_projection_links;}
  std::vector<float>d(386);native_qsa_nr::Fixture n;n.cols=128;n.rows=1;n.stride=128;n.gamma=f.gamma;n.x.resize(128);n.pos={pos==0?0:base+4*(pos/4)};
  for(size_t i=0;i<128;++i){d[i]=native_qsa_idx::rounded(f.raw[i]);float sum=pos==0?d[i]:native_qsa_idx::value(f.before[i]);for(int j=1;j<4;++j)sum=sum+(pos==0||j==3?d[i]:native_qsa_idx::value(f.before[j*128+i]));n.x[i]=std::fma(.25f,sum,0.f);if(pos==0||pos%4==3)d[128+i]=n.x[i];}
  if(pos==0||pos%4==3){std::vector<float>nd(130);auto z=native_qsa_nr::control(n,nd);nd[0]=z.arg[0];nd[1]=1.f/std::sqrt(nd[0]);for(size_t i=0;i<32;++i){float freq=::powf(native_qsa_idx::value(theta),float(i)),angle=float(n.pos[0])*freq;nd[2+i]=freq;nd[34+i]=angle;nd[66+i]=::cosf(angle);nd[98+i]=::sinf(angle);}std::copy(nd.begin(),nd.end(),d.begin()+256);}
@@ -231,3 +236,18 @@ uint64_t strata_vk_native_qsa_attention_calls(const StrataVkNativeQsaAttention*p
 uint32_t strata_vk_native_qsa_attention_run(StrataVkNativeQsaAttention*p,ggml_tensor*const t[13],uint32_t cells){native_qsa_attn::Fixture f;f.cells=cells;auto n=native_qsa_attn::counts(cells);for(size_t i=0;i<7;++i){f.in[i].resize(n[i]);check(ggml_nbytes(t[i])==n[i]*4,"actual attention typed transport span");ggml_backend_tensor_get(t[i],f.in[i].data(),0,n[i]*4);}++p->calls[0];if(fail_qsa_attention)return 0x10001;auto out=native_qsa_attn::control(f);++p->calls[1];++p->calls[2];for(size_t i=0;i<6;++i)ggml_backend_tensor_set(t[i+7],out.out[i].data(),0,out.out[i].size()*4);actual_native_gated.resize(6144);std::memcpy(actual_native_gated.data(),out.out[5].data(),24576);return 0;}
 }
 #endif
+namespace strata::core::portable_detail {
+struct StrataVkNativeShared {uint64_t submitted=0,completed=0,uncertain=0;};
+StrataVkNativeShared* strata_vk_qsa_indexer_bf16_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"indexer projection budget");std::ofstream(path)<<"host mock only\n";return new StrataVkNativeShared;}
+size_t strata_vk_native_shared_bytes(const StrataVkNativeShared*){return 512;}
+void strata_vk_native_shared_destroy(StrataVkNativeShared*p)noexcept{delete p;}
+uint64_t strata_vk_native_shared_submitted(const StrataVkNativeShared*p)noexcept{return p?p->submitted:0;}
+uint64_t strata_vk_native_shared_completed(const StrataVkNativeShared*p)noexcept{return p?p->completed:0;}
+uint64_t strata_vk_native_shared_uncertain(const StrataVkNativeShared*p)noexcept{return p?p->uncertain:0;}
+void strata_vk_native_shared_run(StrataVkNativeShared*p,uint32_t mode,const ggml_tensor*w,const ggml_tensor*x,ggml_tensor*out,ggml_tensor*,uint32_t ni,uint32_t no,uint32_t tokens){
+ check(mode==1&&ni==2560&&tokens==1&&(no==128||no==512)&&x==live_mixed,"indexer projection did not consume actual HC mixed tensor");
+ const size_t role=no==128?0:1;if(fail_indexer_projection==int(role+1)){++p->uncertain;throw std::runtime_error("injected indexer projection failure");}
+ auto in=get(x);std::vector<uint16_t>weights(size_t(no)*2560);ggml_backend_tensor_get(w,weights.data(),0,weights.size()*2);
+ actual_indexer_projection[role]=qsa_indexer_bf16_control(in.data(),weights.data(),no);ggml_backend_tensor_set(out,actual_indexer_projection[role].data(),0,no*4);++p->submitted;++p->completed;
+}
+}

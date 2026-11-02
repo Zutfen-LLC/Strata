@@ -5,6 +5,7 @@
 #include "portable_memory.hpp"
 #include "portable_model_preflight.hpp"
 #include "native_qsa_wo_domain.hpp"
+#include "native_qsa_indexer_bf16.hpp"
 #include "portable_native_capacity.hpp"
 #include "strata/core/layer0_observer.hpp"
 #include "strata/core/expert_profile.hpp"
@@ -172,6 +173,14 @@ struct PortableModelSession::Impl {
             10 * (3 * (H * FF / 32 * 34)) + (32u << 20) + size_t(opts.expert_workers + 1) * (9u << 20);
         require(expert_host_bound <= opts.host_cap, "portable model: host cap cannot admit expert staging/pool");
         inventory(model);
+        if(opts.native_qsa_indexer_projection_t1){
+            for(size_t l=3;l<48;l+=4)for(const auto& spec:std::array<std::pair<const char*,size_t>,2>{{{"indexer.k_proj.weight",128},{"indexer.q_proj.weight",512}}}){
+                auto role=view(model,"blk."+std::to_string(l)+"."+spec.first);
+                require(role.type==30&&role.shape==std::vector<int64_t>({2560,int64_t(spec.second)})&&role.data&&role.bytes==spec.second*2560u*2u,"QSA indexer projections: unsupported BF16 role: "+role.name);
+                portable_detail::qsa_indexer_bf16_raw_weights(role.data,spec.second*2560u);
+                std::clog<<"qsa_indexer_projection_role "<<role.name<<" type=BF16 bytes="<<role.bytes<<'\n';
+            }
+        }
         if(opts.native_qsa_qkv_t1){
             for(size_t l=3;l<48;l+=4)for(const auto& spec:std::array<std::pair<const char*,size_t>,3>{{{"attn_q.weight",12288},{"attn_k.weight",512},{"attn_v.weight",512}}}){
                 auto role=view(model,"blk."+std::to_string(l)+"."+spec.first);
@@ -856,7 +865,7 @@ PortableModelWork PortableModelSession::model_work(bool state_digests) const {
         work.native_hc_cycle_outputs=impl_->layers[3].qsa->deferred_hc_outputs();
         work.native_hc_cycle_reads=impl_->layers[4].gdn->native_hc_pending_calls();
     }
-    for(size_t l=0;l<impl_->layers.size();++l)if(const auto& q=impl_->layers[l].qsa){work.native_qsa_qkv_quant_submitted[l]=q->native_qkv_calls(0);work.native_qsa_qkv_quant_completed[l]=q->native_qkv_calls(1);work.native_qsa_qkv_submitted[l]=q->native_qkv_calls(2);work.native_qsa_qkv_completed[l]=q->native_qkv_calls(3);work.native_qsa_qkv_quant_submission_uncertain[l]=q->native_qkv_calls(4);work.native_qsa_qkv_submission_uncertain[l]=q->native_qkv_calls(5);}
+    for(size_t l=0;l<impl_->layers.size();++l)if(const auto& q=impl_->layers[l].qsa){work.native_qsa_qkv_quant_submitted[l]=q->native_qkv_calls(0);work.native_qsa_qkv_quant_completed[l]=q->native_qkv_calls(1);work.native_qsa_qkv_submitted[l]=q->native_qkv_calls(2);work.native_qsa_qkv_completed[l]=q->native_qkv_calls(3);work.native_qsa_qkv_quant_submission_uncertain[l]=q->native_qkv_calls(4);work.native_qsa_qkv_submission_uncertain[l]=q->native_qkv_calls(5);work.native_qsa_indexer_projection_submitted[l]=q->native_indexer_projection_calls(0);work.native_qsa_indexer_projection_completed[l]=q->native_indexer_projection_calls(1);work.native_qsa_indexer_projection_uncertain[l]=q->native_indexer_projection_calls(2);}
     for(size_t l=0;l<impl_->layers.size();++l) {const auto& layer=impl_->layers[l];if(layer.qsa){work.native_qsa_wo_quant_submitted[l]=layer.qsa->native_wo_calls(0);work.native_qsa_wo_quant_completed[l]=layer.qsa->native_wo_calls(1);work.native_qsa_wo_submitted[l]=layer.qsa->native_wo_calls(2);work.native_qsa_wo_completed[l]=layer.qsa->native_wo_calls(3);work.native_qsa_wo_quant_submission_uncertain[l]=layer.qsa->native_wo_calls(4);work.native_qsa_wo_submission_uncertain[l]=layer.qsa->native_wo_calls(5);work.native_qsa_attention_chunk_calls[l]=layer.qsa->native_attention_calls(0);work.native_qsa_attention_merge_calls[l]=layer.qsa->native_attention_calls(1);work.native_qsa_attention_gate_calls[l]=layer.qsa->native_attention_calls(2);work.native_qsa_norm_rope_calls[l]=layer.qsa->native_norm_rope_calls();work.native_qsa_indexer_calls[l]=layer.qsa->native_indexer_calls();work.native_qsa_score_calls[l]=layer.qsa->native_score_calls();work.native_qsa_select_calls[l]=layer.qsa->native_select_calls();}if(layer.qsa&&state_digests&&(impl_->opts.qsa_norm_rope_resident_weights||impl_->opts.qsa_indexer_resident_weights)&&!impl_->opts.qsa_production){
             std::array<uint64_t,10>parts{};size_t at=0;
             auto add=[&](const auto&v){auto d=worker::blob_digest(v.data(),v.size()*sizeof(v[0]));parts[at++]=d.a;parts[at++]=d.b;};

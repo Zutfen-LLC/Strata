@@ -145,6 +145,24 @@ int main(){try{
  check(qkv_on->step(1,f.input(1),nr_dispatch,nr_route,error),error);check(qkv_on->reset(error)&&qkv_on->step(0,f.input(0),nr_dispatch,nr_route,error),error);
  check(qkv_on->last_residual()==ql&&std::filesystem::file_size(root/"qkv-on/first-0/qx.bin")==2880,"QKV reset/retry or packed receipt differs");
  auto bad_qkv=qn;bad_qkv.native_wo_t1=false;bad_qkv.native_qkv_receipt_prefix=(root/"qkv-invalid").string();check(!PortableQsaLayer::create(3,qf.views,bad_qkv,error),"QKV accepted missing native WO");
+ // Raw BF16 indexer projections replace the exact-widened control storage.
+ std::vector<uint16_t> bfkey(2560*128,0),bfquery(2560*512,0);bfkey[0]=0x3f80;bfkey.back()=0xbf80;bfquery[0]=0x3f80;bfquery.back()=0x3f00;
+ auto bfviews=qf.views;for(auto&v:bfviews){if(v.name=="blk.3.indexer.k_proj.weight"){v.type=30;v.data=bfkey.data();v.bytes=bfkey.size()*2;}if(v.name=="blk.3.indexer.q_proj.weight"){v.type=30;v.data=bfquery.data();v.bytes=bfquery.size()*2;}}
+ auto bfc=composed;bfc.execution.resident_dense_weights=true;bfc.native_hc_receipt_prefix=(root/"bf-control-hc").string();fresh(bfc,"bf-control");
+ auto bfcontrol=PortableQsaLayer::create(3,bfviews,bfc,error);check(bool(bfcontrol),error);
+ auto bfo=bfc;bfo.native_indexer_projection_t1=true;bfo.native_indexer_projection_record_first=true;bfo.native_indexer_projection_receipt_prefix=(root/"bf-projection").string();bfo.native_hc_receipt_prefix=(root/"bf-on-hc").string();fresh(bfo,"bf-on");
+ auto bf=PortableQsaLayer::create(3,bfviews,bfo,error);check(bool(bf),error);
+ check(bfcontrol->weight_bytes()==bf->weight_bytes()+3276800,"BF16 raw bank duplicated or widened");
+ check(bf->state_bytes()>=bfcontrol->state_bytes()+PortableQsaOptions::native_indexer_projection_host_bound&&bf->graph_bytes()>bfcontrol->graph_bytes(),"BF16 graph or host scratch not admitted");
+ check(bf->reset(error),error);observe_indexer_projection=true;check(bf->step(0,f.input(0),nr_dispatch,nr_route,error),error);observe_indexer_projection=false;
+ check(indexer_projection_links==2&&bf->native_indexer_projection_calls(0)==2&&bf->native_indexer_projection_calls(1)==2,"BF16 producers or consumers differ");
+ auto bfkeys=bf->keys();auto bfstate=bf->native_indexer_state();auto bfres=bf->last_residual();
+ for(int fail:{1,2}){fail_indexer_projection=fail;check(!bf->step(1,f.input(1),nr_dispatch,nr_route,error),"BF16 projection failure accepted");fail_indexer_projection=0;check(bf->tokens()==1&&bf->keys()==bfkeys&&bf->native_indexer_state()==bfstate&&bf->last_residual()==bfres,"BF16 projection failure committed state");}
+ check(bf->native_indexer_projection_calls(2)==2,"BF16 uncertain submissions lost");
+ check(!bf->step(1,f.input(1),[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="FFN failure";return false;},nr_route,error),"post-BF16 FFN failure accepted");
+ check(bf->tokens()==1&&bf->keys()==bfkeys&&bf->native_indexer_state()==bfstate,"post-BF16 failure committed state");
+ check(bf->step(1,f.input(1),nr_dispatch,nr_route,error),error);check(bf->reset(error)&&bf->step(0,f.input(0),nr_dispatch,nr_route,error),error);check(bf->last_residual()==bfres,"BF16 reset/retry changed result");
+ auto bf_bad=bfo;bf_bad.native_indexer_projection_receipt_prefix=(root/"bf-invalid").string();check(!PortableQsaLayer::create(3,qf.views,bf_bad,error),"BF16 projection accepted non-BF16 weights");
  auto sb=ss;sb.native_indexer_t1=false;sb.native_select_receipt_prefix=(root/"ss-invalid").string();check(!PortableQsaLayer::create(3,qf.views,sb,error),"scores accepted nonnative indexer state");
  sb=ss;sb.execution.graph_budget=1;sb.native_select_receipt_prefix=(root/"ss-budget").string();check(!PortableQsaLayer::create(3,qf.views,sb,error),"score banks bypassed graph budget");
  auto idx_state=idx->native_indexer_state();auto idx_keys=idx->keys();auto idx_pool=idx->pooled_keys();auto idx_last=idx->last_residual();

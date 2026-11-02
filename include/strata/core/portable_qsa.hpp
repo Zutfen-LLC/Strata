@@ -22,6 +22,9 @@ struct PortableQsaOptions {
     static constexpr size_t native_norm_rope_host_bound=2u<<20;
     static constexpr size_t native_indexer_host_bound=1u<<20;
     bool native_indexer_weights=false, native_indexer_t1=false, native_indexer_record_first=false;
+    static constexpr size_t native_indexer_projection_host_bound=4u<<20;
+    bool native_indexer_projection_t1=false,native_indexer_projection_record_first=false;
+    std::string native_indexer_projection_receipt_prefix;
     std::string native_indexer_receipt_prefix;
     static constexpr size_t native_attention_host_bound=8u<<20;
     bool native_attention_banks=false,native_attention_t1=false,native_attention_record_first=false;
@@ -95,6 +98,7 @@ class PortableQsaLayer {
                       PortableRoute& route,std::string& error,PortableQsaTrace* trace=nullptr);
     uint64_t native_norm_rope_calls() const;
     uint64_t native_indexer_calls() const;
+    uint64_t native_indexer_projection_calls(unsigned stage) const;
     uint64_t native_score_calls() const;
     uint64_t native_select_calls() const;
     uint64_t native_attention_calls(unsigned stage) const;

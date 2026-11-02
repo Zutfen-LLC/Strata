@@ -14,10 +14,12 @@ struct ggml_backend_vk_context {std::shared_ptr<MockDevice> device=std::make_sha
 struct ggml_backend_vk_buffer_context {std::weak_ptr<MockDevice> device;};
 namespace strata::core::portable_detail {
 struct StrataVkLogitsGuard {ggml_backend_t backend;size_t bytes=512;int pipeline=1;};
+enum class NativeComponentAddressing {descriptor};
 static size_t submissions=0;
+static bool fail_submission=false;
 static std::array<uint32_t,9> last_params{};
 static std::array<uint32_t,3> last_grid{};
-static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_backend_t backend,const uint32_t*,size_t,
+static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_backend_t backend,const uint32_t*,size_t,NativeComponentAddressing,
     const char*,uint32_t,uint32_t,const char*,size_t) {return std::make_unique<StrataVkLogitsGuard>(StrataVkLogitsGuard{backend});}
 static bool ggml_backend_buffer_is_vk(ggml_backend_buffer_t) {return true;}
 static uint32_t get_misalign_bytes(ggml_backend_vk_context*,const ggml_tensor* t) {return uint32_t(reinterpret_cast<uintptr_t>(t->data)%256);}
@@ -27,7 +29,7 @@ static std::shared_ptr<int> ggml_vk_get_compute_ctx(ggml_backend_vk_context*) {r
 static void ggml_vk_sync_buffers(ggml_backend_vk_context*,const std::shared_ptr<int>&) {}
 static int ggml_vk_tensor_subbuffer(ggml_backend_vk_context*,const ggml_tensor*,bool) {return 0;}
 static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context*,const std::shared_ptr<int>&,int,std::initializer_list<int>,
-    const std::array<uint32_t,9>& params,const std::array<uint32_t,3>& grid) {++submissions;last_params=params;last_grid=grid;}
+    const std::array<uint32_t,9>& params,const std::array<uint32_t,3>& grid) {++submissions;if(fail_submission)throw std::runtime_error("injected submission failure");last_params=params;last_grid=grid;}
 }
 #include "strata_vk_native_shared.inc"
 using namespace strata::core::portable_detail;
@@ -67,5 +69,24 @@ int main() {try {
     strata_vk_native_shared_run(&component,2,raw,xf,out,sig,2560,1,8);
     need(last_grid==std::array<uint32_t,3>{10,8,1});
     rejects([&]{strata_vk_native_shared_run(&component,1,ws,xf,raw,aux,2560,2,8);});
+    // The separate matrix pipeline must not widen the scalar API.
+    StrataVkNativeShared matrix;matrix.owner=std::make_unique<StrataVkLogitsGuard>(StrataVkLogitsGuard{&backend});matrix.matrix=true;matrix.budget=8u<<20;buffer.size=6u<<20;
+    auto* mw=tensor(GGML_TYPE_I32,2560*128/2,0x100000);
+    auto* mx=tensor(GGML_TYPE_F32,2560,0x500000);
+    auto* my=tensor(GGML_TYPE_F32,128,0x600000);
+    auto* ma=tensor(GGML_TYPE_F32,1,0x700000);
+    strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);
+    need(last_grid==std::array<uint32_t,3>{128,1,1} && last_params[8]==256);
+    need(strata_vk_native_shared_submitted(&matrix)==1 && strata_vk_native_shared_completed(&matrix)==1 && strata_vk_native_shared_uncertain(&matrix)==0);
+    auto* qw=tensor(GGML_TYPE_I32,2560*512/2,0x100000);
+    auto* qy=tensor(GGML_TYPE_F32,512,0x600000);
+    strata_vk_native_shared_run(&matrix,1,qw,mx,qy,ma,2560,512,1);
+    need(last_grid==std::array<uint32_t,3>{512,1,1});
+    fail_submission=true;bool failed=false;try{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);}catch(const std::runtime_error&){failed=true;}fail_submission=false;
+    need(failed&&strata_vk_native_shared_submitted(&matrix)==2&&strata_vk_native_shared_completed(&matrix)==2&&strata_vk_native_shared_uncertain(&matrix)==1);
+    rejects([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,127,1);});
+    rejects([&]{strata_vk_native_shared_run(&matrix,0,mw,mx,my,ma,2560,128,1);});
+    auto* saved=my->data;my->data=mx->data;rejects([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);});my->data=saved;
+    matrix.budget=512;rejects([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);});
     puts("native shared actual dispatch validation passed (mock submission)");return 0;
 }catch(const std::exception& e){fprintf(stderr,"%s\n",e.what());return 1;}}
