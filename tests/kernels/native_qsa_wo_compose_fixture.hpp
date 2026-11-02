@@ -42,8 +42,9 @@ inline void packed_domain(const Bytes& weights,const Bytes& packed) {
     w::validate(f);
 #endif
 }
+inline std::vector<float> read_input(const std::string& path);
 inline void contract(const std::string& weights_path,const std::string& input_path,const std::string& path) {
-    (void)weights(weights_path);(void)q::read(input_path);
+    (void)weights(weights_path);(void)read_input(input_path);
     need(!std::filesystem::exists(path),"composition: contract exists");
     std::ofstream o(path);o<<"{\"fields\":{\"qx.bin\":6912,\"out.f32le\":10240";
 #ifdef STRATA_GDN_OUTPUT_SCALE_SUITE
@@ -91,4 +92,14 @@ inline void fixture_scale_words(const std::string& path,const std::vector<float>
     throw std::runtime_error("GDN output: unknown scale fixture");
 }
 #endif
+inline std::vector<float> read_input(const std::string& path){
+    auto input=q::read(path);
+#ifdef STRATA_GDN_OUTPUT_SCALE_SUITE
+    auto name=std::filesystem::path(path).filename().string();if(name.rfind("case-",0)==0){
+        for(size_t i=0;i<scale_cases;++i)if(name==case_name(i)){auto expected=scale_input(i);need(std::memcmp(input.data(),expected.data(),input.size()*4)==0,"GDN output: fixture changed");return input;}
+        throw std::runtime_error("GDN output: unknown scale fixture");
+    }
+#endif
+    return input;
+}
 }

@@ -52,6 +52,10 @@ void native_mmvq(int type,const void* weights,const void* x,float* y,int n,int r
         out=d/(exe.name+'.json');r=subprocess.run([str(exe),'--contract',str(weights),str(fixture),str(out)],cwd='/',capture_output=True,text=True)
         assert r.returncode==0 and not r.stdout and not r.stderr,(exe,r.stderr)
         assert json.loads(out.read_text())=={'fields':{'qx.bin':6912,'out.f32le':10240,'direct-qx.bin':6912,'direct-out.f32le':10240},'qualified':False}
+    tampered=d/'tampered';tampered.mkdir();changed=bytearray(fixture.read_bytes());changed[12+64*4]^=1;(tampered/fixture.name).write_bytes(changed)
+    for exe in (control,native,vulkan):
+        r=subprocess.run([str(exe),'--contract',str(weights),str(tampered/fixture.name),str(tampered/(exe.name+'.json'))],cwd='/',capture_output=True,text=True)
+        assert r.returncode and 'fixture changed' in r.stderr,(exe,r.stderr)
     out=d/'native-out';trace=d/'trace'
     r=subprocess.run([str(native),'--device','0','--expect-device','signature-fixture GPU','--weights',str(weights),'--fixture',str(fixture),'--output',str(out)],cwd='/',env=dict(os.environ,Q8_TEST_TRACE=str(trace)),capture_output=True,text=True,timeout=120)
     assert r.returncode==0,r.stderr

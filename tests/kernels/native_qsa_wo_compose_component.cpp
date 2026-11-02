@@ -10,7 +10,7 @@ int main(int argc,char**argv){try{
     if(argc==5&&std::string(argv[1])=="--contract"){contract(argv[2],argv[3],argv[4]);return 0;}
     need(argc==11&&std::string(argv[1])=="--device"&&std::string(argv[3])=="--expect-device"&&
          std::string(argv[5])=="--weights"&&std::string(argv[7])=="--fixture"&&std::string(argv[9])=="--output","composition: invalid Vulkan arguments");
-    auto ww=weights(argv[6]);auto input=q::read(argv[8]);std::string idx=argv[2];
+    auto ww=weights(argv[6]);auto input=read_input(argv[8]);std::string idx=argv[2];
     need(!idx.empty()&&idx.find_first_not_of("0123456789")==std::string::npos,"composition: invalid device");
     auto device=std::stoull(idx);need(device<size_t(ggml_backend_vk_get_device_count()),"composition: missing Vulkan device");
     std::filesystem::path dir=argv[10];need(std::filesystem::create_directory(dir),"composition: output exists");std::filesystem::copy_file(argv[8],dir/"fixture.bin");

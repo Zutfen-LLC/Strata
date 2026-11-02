@@ -9,7 +9,7 @@ int main(int argc,char**argv){try{
     if(argc==5&&std::string(argv[1])=="--contract"){contract(argv[2],argv[3],argv[4]);return 0;}
     need(argc==11&&std::string(argv[1])=="--device"&&std::string(argv[3])=="--expect-device"&&
          std::string(argv[5])=="--weights"&&std::string(argv[7])=="--fixture"&&std::string(argv[9])=="--output","composition: invalid native arguments");
-    auto ww=weights(argv[6]);auto input=q::read(argv[8]);std::string idx=argv[2];
+    auto ww=weights(argv[6]);auto input=read_input(argv[8]);std::string idx=argv[2];
     need(!idx.empty()&&idx.find_first_not_of("0123456789")==std::string::npos,"composition: invalid device");
     cu(cudaSetDevice(std::stoi(idx)));cudaDeviceProp prop{};cu(cudaGetDeviceProperties(&prop,std::stoi(idx)));
     need(std::string(argv[4]).size()&&std::string(prop.name).find(argv[4])!=std::string::npos&&prop.major==8&&prop.minor==6,"composition: unexpected native device");

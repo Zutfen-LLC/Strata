@@ -22,10 +22,10 @@ int main(int argc,char** argv){try{
     if(argc==3 && std::string(argv[1])=="--synthetic-input") {q::write(argv[2],deterministic());return 0;}
     if(argc==5 && std::string(argv[1])=="--contract") {contract(argv[2],argv[3],argv[4]);return 0;}
     if(argc==5 && std::string(argv[1])=="--validate-packed") {
-        auto ww=weights(argv[2]);(void)q::read(argv[3]);auto packed=w::load(argv[4],q::bytes);
+        auto ww=weights(argv[2]);auto input=read_input(argv[3]);auto packed=w::load(argv[4],q::bytes);
         packed_domain(ww,packed);
 #ifdef STRATA_GDN_OUTPUT_SCALE_SUITE
-        fixture_scale_words(argv[3],q::read(argv[3]),packed);
+        fixture_scale_words(argv[3],input,packed);
 #endif
         return 0;
     }
