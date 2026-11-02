@@ -732,6 +732,20 @@ for each capability below.
    packaging also passes under the unchanged 128 MiB cap, retaining authenticated
    historical references; original allocation, runner and packaging STOPs remain.
    This remains bounded experimental model evidence with qualified=false.
+   [PR134](https://github.com/Zutfen-LLC/Strata/pull/134) tests the existing RN
+   projection-input Q8_1 candidate against the unchanged native fast-math
+   quantizer. Hermes reports native five-fixture controls pass; Vulkan producers
+   and cleanup pass, but the exact packed-byte gate stops on six dense int8 code
+   bytes (of 6,912), with half headers unchanged. Zero/sparse are exact;
+   order/adversarial cross-backend checks were not reached. Native compiled
+   scale uses reciprocal-constant multiply; ratio uses reciprocal then multiply.
+   Offline exact-rounding calculations on the deterministic fixture reproduce
+   all six offsets/signs: RN division rounds magnitude to 63.5, then code 64;
+   reciprocal/multiply rounds just below, then code 63. This supports a numerical
+   mismatch in the RN candidate, not a demonstrated adapter defect or FTZ issue.
+   It is not an independent capture of the native reciprocal intermediate.
+   The STOP and frozen exact gate remain; no model integration or candidate
+   qualification follows. Vulkan had no in-loop guard sample; cleanup passes.
    Quantized KV, projections, accepted-prefix and window scheduling remain gaps.
 
 
