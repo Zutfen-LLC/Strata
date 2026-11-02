@@ -19,7 +19,7 @@ int main(int argc,char**argv){try{
   strata::kernels::native_mmvq(8,(uint32_t*)dw.p+8,(uint32_t*)dx.p+8,(float*)((uint32_t*)dy.p+8),6144,int(f.rows),1,stream.p);cu(cudaGetLastError());cu(cudaStreamSynchronize(stream.p));
   std::vector<uint32_t>rw(w.size()),rx(x.size()),ry(y.size());cu(cudaMemcpy(rw.data(),dw.p,rw.size()*4,cudaMemcpyDeviceToHost));cu(cudaMemcpy(rx.data(),dx.p,rx.size()*4,cudaMemcpyDeviceToHost));cu(cudaMemcpy(ry.data(),dy.p,ry.size()*4,cudaMemcpyDeviceToHost));
   need(rw==w&&rx==x,"WO: native input mutated");for(size_t i=0;i<8;++i)need(ry[i]==0xa5a5a5a5&&ry[ry.size()-1-i]==0xa5a5a5a5,"WO: native output canary changed");
-  std::vector<float> result(f.rows);std::memcpy(result.data(),ry.data()+8,f.rows*4);output_literals(result);if(pass)need(std::memcmp(result.data(),first.data(),result.size()*4)==0,"WO: native repeat differs");first=result;
+  std::vector<float> result(f.rows);std::memcpy(result.data(),ry.data()+8,f.rows*4);output_literals(result);subnormal_output_literals(f,result);if(pass)need(std::memcmp(result.data(),first.data(),result.size()*4)==0,"WO: native repeat differs");first=result;
   Bytes data(f.rows*4);std::memcpy(data.data(),result.data(),data.size());save(dir/(pass?"out-repeat.f32le":"out.f32le"),data);
  }
  std::ofstream(dir/"report.json")<<"{\"actual_native_mmvq_type8\":true,\"immutable_canary_repeat\":true,\"qualified\":false}\n";return 0;

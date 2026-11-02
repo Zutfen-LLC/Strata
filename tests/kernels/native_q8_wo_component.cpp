@@ -37,7 +37,7 @@ int main(int argc,char**argv){try{
  low.reset();
  std::vector<uint32_t> first;for(int pass=0;pass<2;++pass){reset();strata_vk_q8_wo_run(stage.get(),w,x,y,f.rows);auto rw=contents(wb,iw.size()),rx=contents(xb,ix.size()),ry=contents(yb,iy.size());
   need(rw==iw&&rx==ix,"WO: input mutated");for(size_t i=0;i<8;++i)need(ry[i]==0xa5a5a5a5&&ry[ry.size()-1-i]==0xa5a5a5a5,"WO: output canary changed");
-  std::vector<uint32_t>out(ry.begin()+8,ry.begin()+8+f.rows);std::vector<float>values(f.rows);std::memcpy(values.data(),out.data(),f.rows*4);output_literals(values);if(pass)need(out==first,"WO: repeat differs");first=out;
+  std::vector<uint32_t>out(ry.begin()+8,ry.begin()+8+f.rows);std::vector<float>values(f.rows);std::memcpy(values.data(),out.data(),f.rows*4);output_literals(values);subnormal_output_literals(f,values);if(pass)need(out==first,"WO: repeat differs");first=out;
   Bytes data(f.rows*4);std::memcpy(data.data(),out.data(),data.size());save(dir/(pass?"out-repeat.f32le":"out.f32le"),data);
  }
  std::ofstream(dir/"report.json")<<"{\"actual_vulkan_wo_candidate\":true,\"immutable_canary_retry\":true,\"tensor_buffer_bytes\":"<<allocated<<",\"owner_bytes\":"<<strata_vk_q8_wo_bytes(stage.get())<<",\"qualified\":false}\n";return 0;

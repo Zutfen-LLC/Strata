@@ -47,7 +47,7 @@ def scan(paths):
             counts,sha=inspect_role(f.path,start,BLOCKS)
             roles[t.name]={'type':'Q8_0','shape':t.shape,'bytes':BYTES,'sha256':sha,'scale_classes':counts}
     if set(roles)!=NAMES:raise ValueError('missing WO roles: '+', '.join(sorted(NAMES-set(roles))))
-    return {'roles':dict(sorted(roles.items())),'supported':all(not r['scale_classes']['subnormal'] and not r['scale_classes']['nonfinite'] for r in roles.values()),'qualified':False}
+    return {'roles':dict(sorted(roles.items())),'supported':all(not r['scale_classes']['nonfinite'] for r in roles.values()),'qualified':False}
 
 if __name__=='__main__':
     try:

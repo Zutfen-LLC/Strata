@@ -21,8 +21,7 @@ inline Bytes weights(const std::string& path) {
     return actual;
 }
 inline void packed_domain(const Bytes& weights,const Bytes& packed) {
-    // Includes finite half-scale and intermediate checks for the actual packed
-    // bytes. Half-subnormal scales remain outside the established WO domain.
+    // Checks the actual Q8_1 packed scales and the WO intermediate domain.
     w::Fixture f{rows,weights,packed};w::validate(f);
 }
 inline void contract(const std::string& weights_path,const std::string& input_path,const std::string& path) {

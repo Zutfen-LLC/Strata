@@ -9,6 +9,12 @@ int main(){
     auto c=qsa_wo_scale_classes(blocks.data(),4,34);
     assert(c.zero==1&&c.normal==1&&c.subnormal==1&&c.nonfinite==1);
     refuses([&]{qsa_wo_require_scales(c,"test");});
+    refuses([&]{qsa_wo_require_scales(c,"weight",true);});
+    c.nonfinite=0;qsa_wo_require_scales(c,"weight",true);
+    refuses([&]{qsa_wo_require_scales(c,"producer");});
+    std::vector<uint8_t> weight(2560u*192u*34u);weight[0]=1;weight[34]=1;weight[35]=0x80;
+    qsa_wo_weight_domain(weight.data(),weight.size(),"weight");
+    weight[35]=0x7c;refuses([&]{qsa_wo_weight_domain(weight.data(),weight.size(),"weight");});
     std::array<uint8_t,192*36> packed{};qsa_wo_packed_domain(packed.data(),packed.size());
     packed[36]=1;refuses([&]{qsa_wo_packed_domain(packed.data(),packed.size());});
     refuses([&]{qsa_wo_packed_domain(packed.data(),packed.size()-1);});

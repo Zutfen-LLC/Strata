@@ -26,7 +26,9 @@ with tempfile.TemporaryDirectory(prefix='wo-role-test-') as tmp:
         bad=bytearray(out.read_bytes());bad[0]=1;out.write_bytes(bad)
         r=subprocess.run(command,capture_output=True,text=True,timeout=60);assert r.returncode and 'projected byte mismatch' in r.stderr
     with paths[0].open('r+b') as f:f.seek(starts[0]);f.write(b'\x01\x00')
-    report=m.scan(paths);assert not report['supported'] and report['roles'][names[0]]['scale_classes']['subnormal']==1
+    report=m.scan(paths);assert report['supported'] and report['roles'][names[0]]['scale_classes']['subnormal']==1
+    with paths[0].open('r+b') as f:f.seek(starts[0]);f.write(b'\x00\x7c')
+    report=m.scan(paths);assert not report['supported'] and report['roles'][names[0]]['scale_classes']['nonfinite']==1
     # Type field in the first directory entry, while keeping a valid GGUF header.
     bad=m.GGUFFile(paths[0]);assert bad.tensors[0].type_id==8
     with paths[0].open('rb') as f:blob=f.read(starts[0])

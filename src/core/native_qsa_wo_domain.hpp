@@ -22,15 +22,15 @@ inline QsaWoScaleClasses qsa_wo_scale_classes(const uint8_t* data,size_t blocks,
     }
     return c;
 }
-inline void qsa_wo_require_scales(const QsaWoScaleClasses& c,const std::string& role) {
-    if(c.subnormal || c.nonfinite)throw std::runtime_error("QSA WO: "+role+" unsupported half scales: zero="+
+inline void qsa_wo_require_scales(const QsaWoScaleClasses& c,const std::string& role,bool allow_subnormal=false) {
+    if((c.subnormal && !allow_subnormal) || c.nonfinite)throw std::runtime_error("QSA WO: "+role+" unsupported half scales: zero="+
         std::to_string(c.zero)+" normal="+std::to_string(c.normal)+" subnormal="+std::to_string(c.subnormal)+
         " nonfinite="+std::to_string(c.nonfinite));
 }
 inline void qsa_wo_weight_domain(const void* bytes,size_t size,const std::string& role) {
     constexpr size_t blocks=2560u*192u;
     if(size!=blocks*34 || !bytes)throw std::runtime_error("QSA WO: unsupported Q8_0 byte span for "+role);
-    qsa_wo_require_scales(qsa_wo_scale_classes(static_cast<const uint8_t*>(bytes),blocks,34),role);
+    qsa_wo_require_scales(qsa_wo_scale_classes(static_cast<const uint8_t*>(bytes),blocks,34),role,true);
 }
 inline void qsa_wo_packed_domain(const void* bytes,size_t size) {
     if(size!=192u*36u || !bytes)throw std::runtime_error("QSA WO: unsupported Q8_1 byte span");
