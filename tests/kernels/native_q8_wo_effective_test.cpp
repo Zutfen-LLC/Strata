@@ -1,11 +1,17 @@
 #include "native_q8_gu_spirv.hpp"
 #include <vulkan/vulkan.hpp>
+#ifdef STRATA_QSA_QKV_EFFECTIVE
+#include "strata_qsa_qkv_spv.hpp"
+#define STRATA_TEST_SPV strata_qsa_qkv_spv
+#else
 #include "strata_q8_wo_spv.hpp"
+#define STRATA_TEST_SPV strata_q8_wo_spv
+#endif
 #include "strata_native_observe_test_helper.hpp"
 #include <set>
 using namespace strata::core::portable_detail;
 int main(int argc,char** argv){try{
- auto code=native_component_float_controls(strata_q8_wo_spv,sizeof(strata_q8_wo_spv)/4,NativeComponentAddressing::descriptor);
+ auto code=native_component_float_controls(STRATA_TEST_SPV,sizeof(STRATA_TEST_SPV)/4,NativeComponentAddressing::descriptor);
  size_t dots=0,fmas=0,adds=0,muls=0;std::set<uint32_t> precise;
  for(size_t p=5;p<code.size();p+=code[p]>>16){auto n=code[p]>>16,op=code[p]&65535;native_spirv_need(n&&p+n<=code.size(),"WO malformed module");
   if(op==spv::OpDecorate&&n>=3&&code[p+2]==spv::DecorationNoContraction)precise.insert(code[p+1]);
