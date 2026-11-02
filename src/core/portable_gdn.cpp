@@ -11,6 +11,7 @@
 #include "portable_native_hc.hpp"
 #include "portable_native_gdn.hpp"
 #include "portable_native_gdn_preparation.hpp"
+#include "portable_native_gdn_input.hpp"
 #include "native_hc_boundary.hpp"
 #endif
 #include <algorithm>
@@ -158,6 +159,7 @@ struct PortableGdnLayer::Impl {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     std::unique_ptr<portable_detail::PortableNativeGdn> native_gdn;
     std::unique_ptr<portable_detail::PortableNativeGdnPreparation> native_preparation;
+    std::unique_ptr<portable_detail::PortableNativeGdnInput> native_input_projection;
 #endif
     ggml_cgraph* native_prefix_graph=nullptr;
     ggml_tensor* preparation_mixed=nullptr;
@@ -171,7 +173,7 @@ struct PortableGdnLayer::Impl {
     }
     size_t native_gdn_bytes()const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
-        return (native_gdn?native_gdn->bytes():0)+(native_preparation?native_preparation->bytes():0);
+        return (native_gdn?native_gdn->bytes():0)+(native_preparation?native_preparation->bytes():0)+(native_input_projection?native_input_projection->bytes():0);
 #else
         return 0;
 #endif
@@ -229,7 +231,7 @@ struct PortableGdnLayer::Impl {
             native_prefix_graph=ggml_new_graph(c);
             // Actual borrowed inputs remain outputs through prefix completion.
             for(auto*t:{qkv,preparation_mixed}){ggml_set_output(t);ggml_build_forward_expand(native_prefix_graph,t);}
-            ggml_build_forward_expand(native_prefix_graph,ggml_cpy(c,z,native_gdn->t[4]));
+            if(!options.native_input_projection_t1)ggml_build_forward_expand(native_prefix_graph,ggml_cpy(c,z,native_gdn->t[4]));
             history_output=native_gdn->history;state_output=native_gdn->t[6];
             attention=ggml_reshape_2d(c,native_gdn->t[9],D,HV);
             gated_output=ggml_reshape_1d(c,native_gdn->t[7],INNER);
@@ -446,9 +448,12 @@ struct PortableGdnLayer::Impl {
                     timing.attention_compute_ms, timing.attention_compute_calls);
 #ifdef STRATA_PORTABLE_NATIVE_HC
                 if(s.native_gdn) {
+                    portable_detail::PortableNativeGdnInput::Candidate candidate;
+                    if(s.native_input_projection)candidate=s.native_input_projection->run(s.native_hc->mixed);
                     require(ggml_backend_sched_graph_compute(s.projection_scheduler.get(),s.native_prefix_graph)==GGML_STATUS_SUCCESS,"native GDN: prefix graph failed");
                     if(s.native_preparation)s.native_preparation->run(s.history_input,s.qkv,s.preparation_mixed,s.weights.at("ssm_conv1d.weight"),s.count);
                     s.native_gdn->run(s.state_input,s.weights.at("ssm_norm.weight"),s.count);
+                    if(s.native_input_projection)s.native_input_projection->consumed(s.count,s.native_hc->mixed,{s.qkv,s.native_gdn->t[4]},candidate);
                 }
 #endif
                 status = ggml_backend_sched_graph_compute(projected?s.tail_scheduler.get():s.scheduler.get(), projected?s.tail_graph:s.graph);
@@ -557,7 +562,7 @@ struct PortableGdnLayer::Impl {
 
     bool production() const { return options.policy == PortableGdnPolicy::device_production; }
     size_t host_state_bytes() const {
-        return (options.native_preparation_weights?PortableGdnOptions::native_preparation_host_bound:0)+(options.native_recurrence_t1?PortableGdnOptions::native_recurrence_host_bound:0)+(options.native_hc_norm_inject?(options.native_hc_pending?PortableGdnOptions::native_hc_pending_host_bound:(options.native_hc_mix?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound)):0)+HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
+        return (options.native_input_projection_t1?PortableGdnOptions::native_input_projection_host_bound:0)+(options.native_preparation_weights?PortableGdnOptions::native_preparation_host_bound:0)+(options.native_recurrence_t1?PortableGdnOptions::native_recurrence_host_bound:0)+(options.native_hc_norm_inject?(options.native_hc_pending?PortableGdnOptions::native_hc_pending_host_bound:(options.native_hc_mix?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound)):0)+HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
             (options.ple_table ? PLE_STATE_BYTES - (production() ? 2 * PLE_HISTORY * sizeof(float) : 0) : 0);
     }
 
@@ -687,8 +692,13 @@ struct PortableGdnLayer::Impl {
             auto leaf=[&](int64_t n) {auto* t=ggml_new_tensor_1d(c,GGML_TYPE_F32,n);ggml_set_input(t);return t;};
             if(external) for(size_t i=0;i<5;++i) projection_inputs[i]=leaf(std::array<int64_t,5>{HC,CHANNELS,INNER,HV,HV}[i]);
             if(external) inject=projection_inputs[0];
-            qkv = external ? projection_inputs[1] : ggml_mul_mat(c, w.at("attn_qkv.weight"), mixed);
-            auto *z = external ? projection_inputs[2] : ggml_mul_mat(c, w.at("attn_gate.weight"), mixed);
+            ggml_tensor *z=nullptr;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            if(native_input_projection){qkv=native_input_projection->projection(0);z=native_input_projection->projection(1);}
+            else
+#endif
+            {qkv = external ? projection_inputs[1] : ggml_mul_mat(c, w.at("attn_qkv.weight"), mixed);
+             z = external ? projection_inputs[2] : ggml_mul_mat(c, w.at("attn_gate.weight"), mixed);}
             auto* beta_input=options.native_preparation_t1 ? nullptr : external ? projection_inputs[4] : ggml_mul_mat(c,w.at("ssm_beta.weight"),mixed);
             auto* alpha=options.native_preparation_t1 ? nullptr : external ? projection_inputs[3] : ggml_mul_mat(c,w.at("ssm_alpha.weight"),mixed);
             preparation_mixed=mixed;
@@ -810,6 +820,7 @@ struct PortableGdnLayer::Impl {
         require(!options.native_hc_ffn_write||options.native_hc_ffn_read,"native FFN final write requires pending FFN read");
         require(!options.native_preparation_weights || (layer!=1 && options.native_recurrence_t1),"native GDN preparation weights: ordinary native recurrence required; PLE unsupported");
         require(!options.native_preparation_t1 || (options.native_preparation_weights&&!options.native_preparation_receipt.empty()),"native GDN preparation: explicit matched BF16 residency and receipt required");
+        require(!options.native_input_projection_t1 || (layer!=1 && options.native_hc_mix && options.native_preparation_t1 && options.native_recurrence_t1 && !options.native_input_projection_receipt.empty()),"native GDN input projection: ordinary native HC, preparation, recurrence and receipt required");
         if(options.native_recurrence_t1) {
             require(!options.ple_table&&!options.batch_input_projections&&!options.causal_chunk&&!production(),"native GDN T1: eager ordinary graph only");
             require(options.resident_state && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback &&
@@ -963,6 +974,14 @@ struct PortableGdnLayer::Impl {
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(options.native_preparation_weights){preparation_reserved=portable_detail::PortableNativeGdnPreparation::estimate(options.execution.accelerator);require(graphs_size<=options.execution.graph_budget&&preparation_reserved<=options.execution.graph_budget-graphs_size,"native GDN preparation reserved graph admission");}
         if(options.native_preparation_t1){native_preparation=std::make_unique<portable_detail::PortableNativeGdnPreparation>(options.execution.accelerator,*native_gdn,w.at("ssm_alpha.weight"),w.at("ssm_beta.weight"),w.at("ssm_dt.bias"),w.at("ssm_a"),options.native_preparation_receipt,options.execution.graph_budget-graphs_size,options.native_preparation_record_first);graphs_size+=native_preparation->bytes();}
+        if(options.native_input_projection_t1){
+            require(graphs_size<options.execution.graph_budget,"native GDN input projection: no graph room");
+            std::array<ggml_tensor*,2> weights{{w.at("attn_qkv.weight"),w.at("attn_gate.weight")}};
+            std::array<const void*,2> raw{};std::array<size_t,2> sizes{};const std::array<const char*,2> names{{"attn_qkv.weight","attn_gate.weight"}};
+            for(size_t i=0;i<2;++i){auto role=std::find_if(aw.begin(),aw.end(),[&](const auto&v){return v.name==prefix+names[i];});require(role!=aw.end()&&role->type==8,"native GDN input projection: Q8_0 role required");raw[i]=role->data;sizes[i]=role->bytes;}
+            native_input_projection=std::make_unique<portable_detail::PortableNativeGdnInput>(options.execution.accelerator,weights,raw,sizes,options.native_input_projection_receipt,options.execution.graph_budget-graphs_size,options.native_input_projection_record_first);
+            graphs_size+=native_input_projection->bytes();native_gdn->t[4]=native_input_projection->projection(1);
+        }
 #endif
         if (options.scratch) { Borrow borrow(*this); }
         else build_graphs();
@@ -1338,6 +1357,21 @@ size_t PortableGdnLayer::graph_bytes() const {
 }
 const PortableGdnScratch* PortableGdnLayer::scratch_owner() const { return impl_->options.scratch.get(); }
 size_t PortableGdnLayer::state_bytes() const { return impl_->host_state_bytes()+impl_->chunk_host_bound; }
+size_t PortableGdnLayer::native_input_projection_bytes() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_input_projection ? impl_->native_input_projection->bytes() : 0;
+#else
+    return 0;
+#endif
+}
+uint64_t PortableGdnLayer::native_input_projection_calls(unsigned counter) const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_input_projection ? impl_->native_input_projection->calls(counter) : 0;
+#else
+    (void)counter;
+    return 0;
+#endif
+}
 PortableMemoryUsage PortableGdnLayer::memory_usage() const {
     const auto &s = *impl_;
     auto m = s.ffn->memory_usage();

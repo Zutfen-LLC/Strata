@@ -25,6 +25,13 @@ size_t pending_owners=0,pending_calls=0;bool fail_pending_create=false,fail_pend
 bool observe_wo_pending=false;size_t wo_pending_links=0;std::vector<float>actual_native_wo;
 bool observe_qkv_norm=false;size_t qkv_norm_links=0;std::array<std::vector<float>,3>actual_qkv;
 bool observe_indexer_projection=false;int fail_indexer_projection=0;size_t indexer_projection_links=0;std::array<std::vector<float>,2>actual_indexer_projection;
+bool observe_gdn_input=false;int fail_gdn_input=0;size_t gdn_input_links=0;std::array<ggml_tensor*,2> actual_gdn_input_banks{};ggml_backend_t gdn_input_backend=nullptr;
+void check_gdn_input_bank(ggml_tensor*t,size_t role,size_t bytes){
+ check(t==actual_gdn_input_banks[role],"GDN input consumer did not receive producer bank");
+ check(t->type==GGML_TYPE_F32&&ggml_nbytes(t)==bytes&&ggml_is_contiguous(t)&&t->buffer,"GDN input producer span invalid");
+ auto type=ggml_backend_buffer_get_type(t->buffer);auto device=ggml_backend_buft_get_device(type);auto owner=ggml_backend_get_device(gdn_input_backend);
+ check(type==ggml_backend_get_default_buffer_type(gdn_input_backend)&&owner&&(device?device==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"GDN input producer device differs");
+}
 std::array<ggml_tensor*,2> actual_indexer_projection_banks{};ggml_backend_t indexer_projection_backend=nullptr;
 void check_indexer_bank(ggml_tensor* t,size_t role,size_t bytes){
  check(t==actual_indexer_projection_banks[role],"indexer consumer did not receive producer bank");
@@ -101,6 +108,7 @@ StrataVkNativeGdn* strata_vk_native_gdn_create(ggml_backend_t,const char*path,si
 void strata_vk_native_gdn_destroy(StrataVkNativeGdn*p)noexcept{delete p;}
 size_t strata_vk_native_gdn_bytes(const StrataVkNativeGdn*){return 512;}
 void strata_vk_native_gdn_run(StrataVkNativeGdn*,ggml_tensor*const t[13],ggml_tensor*){
+ if(observe_gdn_input){check_gdn_input_bank(t[4],1,6144*4);++gdn_input_links;}
  native_gdn_t1::Fixture f;for(size_t i=0;i<6;++i)f[i]=get(t[i]);std::vector<float>eg(48),rs(49,1.f),sig(6144),se(6144);for(size_t i=0;i<48;++i)eg[i]=std::exp(f[2][i]);for(size_t i=0;i<6144;++i){se[i]=std::exp(-f[4][i]);sig[i]=1.f/(1.f+se[i]);}rs[48]=1.f/std::sqrt(128.f);auto partial=native_gdn_t1::control(f,eg,rs,sig);for(size_t i=0;i<48;++i)rs[i]=1.f/std::sqrt(partial.arg[i]);auto ref=native_gdn_t1::control(f,eg,rs,sig);put(t[6],ref.state);put(t[7],ref.y);put(t[8],eg);put(t[9],ref.oc);put(t[10],rs);put(t[11],se);put(t[12],sig);gdn_fixture::check(!fail_gdn,"injected GDN candidate refusal");++gdn_calls;
 }
 }
@@ -119,6 +127,7 @@ size_t strata_vk_native_gdn_conv_bytes(const StrataVkNativeGdnConv*){return 512;
 uint64_t strata_vk_native_gdn_conv_calls(const StrataVkNativeGdnConv*p)noexcept{return p->calls;}
 uint32_t strata_vk_native_gdn_conv_status(const StrataVkNativeGdnConv*p)noexcept{return p->status;}
 void strata_vk_native_gdn_conv_run(StrataVkNativeGdnConv*p,ggml_tensor*const t[10],bool commit){
+ if(observe_gdn_input){check_gdn_input_bank(t[1],0,10240*4);++gdn_input_links;}
  native_gdn_conv::Fixture f;for(size_t i=0;i<3;++i)f[i]=get(t[i]);std::vector<float>ex(10240),rs(32,1.f);
  for(size_t c=0;c<10240;++c){float v=std::fma(f[0][c*3],f[2][c*4],f[0][c*3+1]*f[2][c*4+1]);v=std::fma(f[0][c*3+2],f[2][c*4+2],v);v=std::fma(f[1][c],f[2][c*4+3],v);ex[c]=std::exp(-v);}
  auto a=native_gdn_conv::control(f,ex,rs,commit);for(size_t i=0;i<32;++i)rs[i]=1.f/std::sqrt(a.arg[i]);a=native_gdn_conv::control(f,ex,rs,commit);
@@ -129,6 +138,7 @@ void strata_vk_native_gdn_ab_destroy(StrataVkNativeGdnAb*p)noexcept{delete p;}
 size_t strata_vk_native_gdn_ab_bytes(const StrataVkNativeGdnAb*){return 512;}
 uint64_t strata_vk_native_gdn_ab_calls(const StrataVkNativeGdnAb*p)noexcept{return p->calls;}
 uint32_t strata_vk_native_gdn_ab_run(StrataVkNativeGdnAb*p,ggml_tensor*const t[8]){
+ if(observe_gdn_input)check(t[0]==live_mixed,"GDN a/b ignored original HC mixed input");
  native_gdn_ab::Fixture f;f.x=get(t[0]);f.dt=get(t[3]);f.a=get(t[4]);f.wa.resize(2560*48);f.wb.resize(2560*48);
  for(size_t i=0;i<2;++i){gdn_fixture::check(t[i+1]->type==GGML_TYPE_BF16,"actual native replacement type");auto&w=i?f.wb:f.wa;ggml_backend_tensor_get(t[i+1],w.data(),0,w.size()*2);}
  auto dots=native_gdn_ab::dot(f);std::vector<float>diag(336),gate(48),beta(48);
@@ -219,15 +229,17 @@ void strata_vk_native_stages_run(StrataVkNativeStages*p,uint32_t mode,const ggml
  else check(gate==live_mixed,"QKV quantizer ignored actual HC mixed output");
  ++p->submitted;auto bytes=native_q8_fixture::quantize(values);ggml_backend_tensor_set(packed,bytes.data(),0,bytes.size());if(n==6144)actual_packed_producer=packed;else actual_qkv_packed=packed;++p->completed;
 }
-struct StrataVkQ8Wo{uint64_t submitted=0,completed=0,uncertain=0;bool qkv=false;};
+struct StrataVkQ8Wo{uint64_t submitted=0,completed=0,uncertain=0;bool qkv=false,gdn=false;};
 StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t,const char*path,size_t budget){check(budget>=16,"WO budget");std::ofstream(path)<<"host mock only\n";return new StrataVkQ8Wo;}
 StrataVkQ8Wo* strata_vk_qsa_qkv_create(ggml_backend_t,const char*path,size_t budget){check(budget>=16,"QKV budget");std::ofstream(path)<<"host mock only\n";auto*p=new StrataVkQ8Wo;p->qkv=true;return p;}
+StrataVkQ8Wo* strata_vk_gdn_input_create(ggml_backend_t b,const char*path,size_t budget){check(budget>=16,"GDN input budget");gdn_input_backend=b;std::ofstream(path)<<"host mock only\n";auto*p=new StrataVkQ8Wo;p->gdn=true;return p;}
 void strata_vk_q8_wo_destroy(StrataVkQ8Wo*p)noexcept{delete p;}
 size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo*){return 16;}
 uint64_t strata_vk_q8_wo_submitted(const StrataVkQ8Wo*p)noexcept{return p?p->submitted:0;}
 uint64_t strata_vk_q8_wo_completed(const StrataVkQ8Wo*p)noexcept{return p?p->completed:0;}
 uint64_t strata_vk_q8_wo_submission_uncertain(const StrataVkQ8Wo*p)noexcept{return p?p->uncertain:0;}
 void strata_vk_q8_wo_run(StrataVkQ8Wo*p,const ggml_tensor*weights,const ggml_tensor*packed,ggml_tensor*out,size_t rows){
+ if(p->gdn){check(packed==actual_qkv_packed&&(rows==10240||rows==6144),"GDN projections did not share actual packed input");const size_t role=rows==6144?1:0;if(fail_gdn_input==int(role+1)){++p->uncertain;throw std::runtime_error("injected GDN projection failure");}++p->submitted;actual_gdn_input_banks[role]=out;std::vector<float>v(rows);for(size_t i=0;i<rows;++i)v[i]=float(int((i+role)%17)-8)*0.03125f;ggml_backend_tensor_set(out,v.data(),0,v.size()*4);++p->completed;return;}
  if(p->qkv){check(packed==actual_qkv_packed&&(rows==12288||rows==512),"QKV ignored actual packed producer");if(fail_qsa_qkv){++p->uncertain;throw std::runtime_error("injected QKV synchronize failure");}size_t role=size_t(p->completed%3);check((role==0&&rows==12288)||(role>0&&rows==512),"QKV role order");++p->submitted;actual_qkv[role].resize(rows);for(size_t i=0;i<rows;++i)actual_qkv[role][i]=float(int((i+role*3)%17)-8)*0.03125f;ggml_backend_tensor_set(out,actual_qkv[role].data(),0,rows*4);++p->completed;return;}
  check(packed==actual_packed_producer&&rows==2560,"WO ignored actual packed producer");if(fail_qsa_wo){++p->uncertain;throw std::runtime_error("injected WO synchronize failure");}++p->submitted;
  native_q8_wo_fixture::Fixture f{rows,native_q8_fixture::Bytes(rows*q8_wo_row_bytes),native_q8_fixture::Bytes(q8_wo_input_bytes)};

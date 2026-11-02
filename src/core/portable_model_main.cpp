@@ -219,6 +219,7 @@ int main(int argc, char **argv) {
             else if(key=="--qsa-indexer-resident-weights"){opts.qsa_indexer_resident_weights=true;opts.qsa_indexer_receipt_prefix=value;}
             else if(key=="--qsa-norm-rope-resident-weights"){opts.qsa_norm_rope_resident_weights=true;opts.qsa_norm_rope_receipt_prefix=value;}
             else if(key=="--native-gdn-prep-t1") {opts.native_gdn_preparation_t1=true;opts.native_gdn_preparation_receipt_prefix=value;}
+            else if(key=="--native-gdn-input-projection-t1") {opts.native_gdn_input_projection_t1=true;opts.native_gdn_input_projection_receipt_prefix=value;}
             else if(key=="--native-gdn-t1") {opts.native_gdn_t1=true;opts.native_gdn_receipt_prefix=value;}
             else if(key=="--native-hc-serial") {opts.native_hc_serial=true;opts.native_hc_serial_receipt_prefix=value;}
             else if(key=="--native-hc-serial-cycle") {
@@ -383,6 +384,7 @@ int main(int argc, char **argv) {
                      <<",\"native_qsa_attention_t1\":"<<(opts.native_qsa_attention_t1?"true":"false")<<",\"qsa_attention_banks\":"<<(opts.qsa_attention_banks?"true":"false")
                      <<",\"native_qsa_wo_t1\":"<<(opts.native_qsa_wo_t1?"true":"false")
                      <<(opts.native_qsa_qkv_t1?",\"native_qsa_qkv_t1\":true":"")
+                     <<(opts.native_gdn_input_projection_t1?",\"native_gdn_input_projection_t1\":true":"")
                      <<(opts.native_qsa_indexer_projection_t1?",\"native_qsa_indexer_projection_t1\":true":"")
                      <<",\"native_qsa_score_select_t1\":"<<(opts.native_qsa_score_select_t1?"true":"false")<<",\"qsa_score_select_banks\":"<<(opts.qsa_score_select_banks?"true":"false")
                      <<",\"native_qsa_indexer_t1\":"<<(opts.native_qsa_indexer_t1?"true":"false")<<",\"qsa_indexer_resident_weights\":"<<(opts.qsa_indexer_resident_weights?"true":"false")
@@ -587,6 +589,7 @@ int main(int argc, char **argv) {
                 auto array=[&](const char*name,const auto&a){out<<",\""<<name<<"\":[";for(size_t l=0;l<48;++l){if(l)out<<",";out<<a[l];}out<<"]";};
                 array("gdn_state_before_a",heads_before.gdn_state_a);array("gdn_state_before_b",heads_before.gdn_state_b);array("gdn_state_after_a",w.gdn_state_a);array("gdn_state_after_b",w.gdn_state_b);
                 std::array<uint64_t,48>delta{};for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_t1_calls[l]-heads_before.native_gdn_t1_calls[l];array("native_gdn_t1_calls_delta",delta);for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_conv_calls[l]-heads_before.native_gdn_conv_calls[l];array("native_gdn_conv_calls_delta",delta);for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_ab_calls[l]-heads_before.native_gdn_ab_calls[l];array("native_gdn_ab_calls_delta",delta);
+                if(opts.native_gdn_input_projection_t1){const char* names[]={"native_gdn_input_quant_submitted_delta","native_gdn_input_quant_completed_delta","native_gdn_input_dot_submitted_delta","native_gdn_input_dot_completed_delta","native_gdn_input_quant_uncertain_delta","native_gdn_input_dot_uncertain_delta"};for(unsigned i=0;i<6;++i){for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_input_projection_calls[i][l]-heads_before.native_gdn_input_projection_calls[i][l];array(names[i],delta);}out<<",\"native_gdn_input_projection_t1\":true";}
                 out<<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false")
                      <<",\"native_gdn_preparation_t1\":"<<(opts.native_gdn_preparation_t1?"true":"false")<<",\"native_gdn_preparation_weights\":"<<(opts.native_gdn_preparation_weights?"true":"false");
             }

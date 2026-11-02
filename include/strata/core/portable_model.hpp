@@ -125,6 +125,8 @@ struct PortableModelOptions {
     bool native_gdn_t1 = false; // ordinary GDN recurrence/norm/gate only; PLE layer1 unchanged
     std::string native_gdn_receipt_prefix;
     bool native_gdn_preparation_t1=false;
+    bool native_gdn_input_projection_t1=false;
+    std::string native_gdn_input_projection_receipt_prefix;
     bool native_gdn_preparation_weights=false;
     std::string native_gdn_preparation_receipt_prefix;
     bool gdn_resident_weights = false; // opt-in GDN attention only
@@ -153,6 +155,7 @@ struct PortableExpertWork {
 // Whole-call wall totals are optional; head outcome counters are unconditional.
 // Layer totals include matched provider intervals.
 struct PortableModelWork {
+    std::array<std::array<uint64_t,48>,6> native_gdn_input_projection_calls{};
     std::array<uint64_t,48> native_qsa_indexer_projection_submitted{},native_qsa_indexer_projection_completed{},native_qsa_indexer_projection_uncertain{};
     std::array<uint64_t,48> native_qsa_qkv_quant_submitted{},native_qsa_qkv_quant_completed{},native_qsa_qkv_submitted{},native_qsa_qkv_completed{};
     std::array<uint64_t,48> native_qsa_qkv_quant_submission_uncertain{},native_qsa_qkv_submission_uncertain{};

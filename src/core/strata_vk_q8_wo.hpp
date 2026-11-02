@@ -8,6 +8,8 @@ struct StrataVkQ8Wo;
 StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t,const char* effective_spv_path,size_t budget);
 // Same native ordering for the distinct 2,560-input Q/K/V projection geometry.
 StrataVkQ8Wo* strata_vk_qsa_qkv_create(ggml_backend_t,const char* effective_spv_path,size_t budget);
+// Same 80-block native ordering for ordinary GDN QKV and gate-input projections.
+StrataVkQ8Wo* strata_vk_gdn_input_create(ggml_backend_t,const char* effective_spv_path,size_t budget);
 size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo*);
 uint64_t strata_vk_q8_wo_submitted(const StrataVkQ8Wo*) noexcept;
 uint64_t strata_vk_q8_wo_completed(const StrataVkQ8Wo*) noexcept;
