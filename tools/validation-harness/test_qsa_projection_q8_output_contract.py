@@ -23,7 +23,8 @@ with tempfile.TemporaryDirectory() as tmp:
         r = subprocess.run([program, '--contract', str(truncated), str(invalid)], cwd=root,
                            capture_output=True, text=True)
         assert r.returncode != 0 and not invalid.exists()
-    assert (root / 'contract-0.json').read_bytes() == (root / 'contract-1.json').read_bytes()
+    for i in range(1, len(sys.argv) - 1):
+        assert (root / 'contract-0.json').read_bytes() == (root / f'contract-{i}.json').read_bytes()
     fields = json.loads((root / 'contract-0.json').read_text())['fields']
     assert fields == {'qx.bin': 6912}
     (root / 'qx.bin').write_bytes(bytes(6912))

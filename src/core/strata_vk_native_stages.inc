@@ -3,7 +3,9 @@
 #include "strata_native_stages_spv.hpp"
 #include "strata_native_quant_trace_spv.hpp"
 #include "strata_native_quant_rn_spv.hpp"
+#include "strata_native_quant_rcp_spv.hpp"
 #include "native_q8_quant_trace.hpp"
+#include "native_q8_rcp_shape.hpp"
 #include "native_q8_gu_layout.hpp"
 #include "native_q8_spirv.hpp"
 #include "native_q8_float_controls.hpp"
@@ -15,6 +17,7 @@ struct StrataVkNativeStages {
     // holds bounded group metadata; no extra allocator or device is introduced.
     std::unique_ptr<StrataVkLogitsGuard> owner;
     bool quant_trace=false;
+    bool quant_rcp=false;
 };
 StrataVkNativeStages* strata_vk_native_stages_create(ggml_backend_t backend) {
     logits_guard_need(backend && ggml_backend_is_vk(backend),"native stages: Vulkan required");
@@ -115,12 +118,18 @@ StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_b
     return strata_vk_native_stages_create_variant_observation(backend,path,strata_native_quant_rn_spv,sizeof(strata_native_quant_rn_spv)/4,
         "strata_native_q8_quant_rn_observation",false,budget);
 }
+StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t backend,const char* path,size_t budget) {
+    auto* stage=strata_vk_native_stages_create_variant_observation(backend,path,strata_native_quant_rcp_spv,sizeof(strata_native_quant_rcp_spv)/4,
+        "strata_native_q8_quant_rcp_observation",false,budget);
+    stage->quant_rcp=true;return stage;
+}
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}
 void strata_vk_native_stages_destroy(StrataVkNativeStages* s) noexcept {delete s;}
 void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggml_tensor* gate,
     const ggml_tensor* up,ggml_tensor* hidden,ggml_tensor* packed,uint32_t n_ff,
     const int32_t* starts,size_t n_starts) {
     logits_guard_need(s && mode<=2 && gate && up && hidden && packed,"native stages: invalid call");
+    if(s->quant_rcp)native_q8_rcp_require_mode(mode);
     const int64_t n=ggml_nelements(gate);
     if(s->quant_trace)native_q8_quant_trace_shape(mode,n,n_ff,starts,n_starts);
     logits_guard_need(n>0 && n<=1048576 && n_ff>0 && n_ff%32==0 && n%n_ff==0 &&

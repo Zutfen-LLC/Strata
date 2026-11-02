@@ -62,3 +62,25 @@ runner lifecycle must also pass. Preserve raw outputs and failure receipts.
 This component is experimental and `qualified=false`. A pass applies only to
 these fixed inputs and the tested native compiler and Vulkan stack. It does not
 establish WO matrix parity, integrated attention parity or model behavior.
+
+## Reciprocal observation candidate
+
+A separately named `native_qsa_projection_q8_rcp_component` selects a new
+mode-0-only observation module. It uses the existing shader, owner, layout,
+finite clamp, XOR reductions, `roundf`-style ties and half metadata conversion.
+Only the scale and ratio operations change: the full F32 maximum is multiplied
+by the binary32 constant `0x3c010204`, the resulting full F32 scale is clamped,
+then `1.0 / d` and `xi * reciprocal` execute as separate protected operations.
+The F32 scale is converted to half only in the original metadata store; the
+quantizer never uses the half-rounded scale. No replacement reciprocal or
+output tolerance is added.
+
+The existing RN component and its captured failure remain separate and
+unchanged. The five frozen fixture hashes, independent packed controls and exact
+6,912-byte comparator gate apply to both. The reciprocal observation is a
+candidate, not an equivalence claim: Vulkan does not guarantee bit identity
+with the native CUDA `MUFU.RCP` instruction. The host operation-boundary tests
+use host nearest-even arithmetic only as diagnostic controls, not as an oracle
+for either device's reciprocal. Source and effective-module contracts require
+review before a bounded device comparison; retained native results may be
+reused only after their source, fixture, binary and receipt bindings pass.
