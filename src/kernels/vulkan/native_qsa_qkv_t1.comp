@@ -1,0 +1,40 @@
+#version 450
+#extension GL_EXT_integer_dot_product : require
+#extension GL_EXT_spirv_intrinsics : require
+// Q/K/V observation candidate: four logical native warps, one Q8_0 row.
+// Actual CUDA FFMA/FADD lowering must be reviewed before exact qualification.
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427)
+float wo_fma(float a,float b,float c);
+layout(local_size_x=128) in;
+layout(binding=0,std430) readonly buffer W { uint weights[]; };
+layout(binding=1,std430) readonly buffer X { uint input_q8[]; };
+layout(binding=2,std430) writeonly buffer Y { float output_values[]; };
+layout(push_constant) uniform P { uint rows,wb,xb,yb; } p;
+shared float partial[128];
+uint load_word(uint byte_offset) {
+    uint word=byte_offset/4u,shift=(byte_offset%4u)*8u;
+    return shift==0u?weights[word]:(weights[word]>>shift)|(weights[word+1u]<<(32u-shift));
+}
+void main() {
+    uint tid=gl_LocalInvocationID.x,lane=tid%32u,row=gl_WorkGroupID.x;
+    precise float sum=0.0;
+    for(uint kbx=tid/4u;kbx<80u;kbx+=32u) {
+        uint kqs=2u*(tid%4u),base=p.wb*4u+row*2720u+kbx*34u;
+        uint xi=p.xb+kbx*9u;
+        int dot=dotPacked4x8EXT(int(load_word(base+2u+kqs*4u)),int(input_q8[xi+1u+kqs]));
+        dot+=dotPacked4x8EXT(int(load_word(base+6u+kqs*4u)),int(input_q8[xi+2u+kqs]));
+        precise float scale=unpackHalf2x16(load_word(base)).x*unpackHalf2x16(input_q8[xi]).x;
+        sum=wo_fma(scale,float(dot),sum);
+    }
+    partial[tid]=sum;barrier();
+    if(tid<32u){
+        precise float value=partial[tid]+partial[32u+tid];
+        value=value+partial[64u+tid];value=value+partial[96u+tid];partial[tid]=value;
+    }
+    barrier();
+    for(uint offset=16u;offset>0u;offset>>=1u){
+        float next=0.0;if(tid<32u){precise float value=partial[tid]+partial[tid^offset];next=value;}
+        barrier();if(tid<32u)partial[tid]=next;barrier();
+    }
+    if(tid==0u && row<p.rows)output_values[p.yb+row]=partial[0];
+}

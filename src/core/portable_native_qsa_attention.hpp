@@ -1,0 +1,38 @@
+#pragma once
+#include "portable_native_qsa_select.hpp"
+#include "native_qsa_attention_layout.hpp"
+#include "strata_vk_native_qsa_attention.hpp"
+namespace strata::core::portable_detail {
+// Detached FP16 transport/output bank. The existing FFN-success transaction,
+// not this submission owner, remains authoritative for KV/indexer state.
+class PortableNativeQsaAttention {
+ using Context=std::unique_ptr<ggml_context,decltype(&ggml_free)>;
+ using Buffer=std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>;
+ Context ctx_{nullptr,ggml_free};Buffer buffer_{nullptr,ggml_backend_buffer_free};
+ std::unique_ptr<StrataVkNativeQsaAttention,decltype(&strata_vk_native_qsa_attention_destroy)> kernel_{nullptr,strata_vk_native_qsa_attention_destroy};
+ std::array<ggml_tensor*,13>t_{};uint32_t cells_;size_t bytes_=0;std::filesystem::path dir_;bool record_;std::array<bool,8>recorded_{};uint64_t attempts_=0;
+ static Context context(){Context c(ggml_init({65536,nullptr,true}),ggml_free);native_hc_need(bool(c),"native QSA attention metadata");return c;}
+ static void leaves(ggml_context*c,uint32_t cells,std::array<ggml_tensor*,13>&t){size_t np=(cells+3)/4;const size_t n[]={np*2048,np*2048,6144,np,2051,4,12288,204400,101376,6984,6144,12288,6144};for(size_t i=0;i<13;++i)t[i]=ggml_new_tensor_1d(c,i<2?GGML_TYPE_F16:i>=3&&i<=5?GGML_TYPE_I32:GGML_TYPE_F32,n[i]);}
+ static void word(std::ostream&o,uint32_t v){for(unsigned j=0;j<4;++j)o.put(char(v>>(j*8)));}
+ static void tensor(std::ostream&o,ggml_tensor*t){std::vector<uint32_t>v(ggml_nbytes(t)/4);ggml_backend_tensor_get(t,v.data(),0,v.size()*4);for(auto x:v)word(o,x);native_hc_need(bool(o),"native QSA attention receipt write");}
+ void capture(uint64_t position,const char*prefix,uint32_t status){auto d=dir_/(std::string(prefix)+std::to_string(position)+(std::string(prefix)=="failure-"?"-attempt-"+std::to_string(attempts_):""));native_hc_need(std::filesystem::create_directory(d),"native QSA attention fresh receipt");std::ofstream f(d/"fixture.bin",std::ios::binary);for(uint32_t v:{0x3141514eu,1u,cells_})word(f,v);for(size_t i=0;i<7;++i)tensor(f,t_[i]);f.close();native_hc_need(bool(f),"native QSA attention fixture close");if(!status){const char*names[]={"scratch.f32le","chunk.f32le","merge.f32le","attn.f32le","gate.f32le","gated.f32le"};for(size_t i=0;i<6;++i){std::ofstream o(d/names[i],std::ios::binary);tensor(o,t_[i+7]);}}std::ofstream(d/"status.json")<<"{\"position\":"<<position<<",\"status\":"<<status<<",\"qualified\":false}\n";}
+public:
+ struct Candidate{std::vector<float>attention,gated;};
+ static size_t estimate(ggml_backend_t b,uint32_t cells){native_hc_need(cells>=1&&cells<=256,"native QSA attention eager capacity");auto c=context();std::array<ggml_tensor*,13>t;leaves(c.get(),cells,t);size_t n=ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(b));auto m=context();for(int i=0;i<6;++i)ggml_new_tensor_1d(m.get(),GGML_TYPE_I32,128);return n+ggml_backend_alloc_ctx_tensors_from_buft_size(m.get(),ggml_backend_get_default_buffer_type(b));}
+ PortableNativeQsaAttention(ggml_backend_t b,uint32_t cells,const std::string&directory,size_t budget,bool record):cells_(cells),dir_(directory),record_(record){native_hc_need(b&&!directory.empty()&&estimate(b,cells)<=budget,"native QSA attention aligned admission");native_hc_need(std::filesystem::create_directory(dir_),"native QSA attention fresh namespace");ctx_=context();leaves(ctx_.get(),cells,t_);size_t n=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),ggml_backend_get_default_buffer_type(b));native_hc_need(n<budget,"native QSA attention metadata room");kernel_.reset(strata_vk_native_qsa_attention_create(b,(dir_/"chunk-effective.spv").c_str(),(dir_/"merge-effective.spv").c_str(),(dir_/"gate-effective.spv").c_str(),budget-n));buffer_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),b));native_hc_need(bool(buffer_),"native QSA attention banks");bytes_=ggml_backend_buffer_get_size(buffer_.get())+strata_vk_native_qsa_attention_bytes(kernel_.get());native_hc_need(bytes_<=estimate(b,cells)&&bytes_<=budget,"native QSA attention actual allocation exceeds bound");}
+ size_t bytes()const{return bytes_;}uint64_t calls(unsigned stage)const{return strata_vk_native_qsa_attention_calls(kernel_.get(),stage);}
+ // The output bank belongs to this owner and stays live through the caller's
+ // serial candidate submission. It is not committed KV or indexer state.
+ ggml_tensor* gated_tensor()const{return t_[12];}
+ Candidate run(ggml_tensor*query,ggml_tensor*full,const std::vector<uint16_t>&keys,const std::vector<uint16_t>&values,const std::vector<int32_t>&ids,uint64_t position){
+  ++attempts_;native_hc_need(position<cells_&&keys.size()==(position+1)*512&&values.size()==keys.size()&&ids.size()==2051,"native QSA attention actual candidate spans");native_hc_need(full&&(full->flags&GGML_TENSOR_FLAG_OUTPUT),"native QSA raw projected query/gate lifetime");native_hc_need(query&&full&&ggml_nbytes(query)==6144*4&&ggml_nbytes(full)==12288*4,"native QSA attention projection spans");size_t np=(cells_+3)/4;
+  for(size_t side=0;side<2;++side){const auto&v=side?values:keys;std::vector<uint16_t>pool(np*2048,0);for(size_t cell=0;cell<=position;++cell)for(size_t h=0;h<2;++h)std::copy_n(v.begin()+cell*512+h*256,256,pool.begin()+((cell/4*2+h)*4+cell%4)*256);ggml_backend_tensor_set(t_[side],pool.data(),0,pool.size()*2);}
+  for(auto pair:{std::make_pair(t_[2],query),std::make_pair(t_[6],full)}){std::vector<float>v(ggml_nbytes(pair.first)/4);ggml_backend_tensor_get(pair.second,v.data(),0,v.size()*4);ggml_backend_tensor_set(pair.first,v.data(),0,v.size()*4);}
+  std::vector<int32_t>pages(np);for(size_t i=0;i<np;++i)pages[i]=int32_t(i);ggml_backend_tensor_set(t_[3],pages.data(),0,np*4);ggml_backend_tensor_set(t_[4],ids.data(),0,2051*4);std::array<int32_t,4>s{{int32_t(position),int32_t(position+1),int32_t((position+1)/4),int32_t(std::min<uint64_t>(position+1,2051))}};ggml_backend_tensor_set(t_[5],s.data(),0,16);
+  for(size_t i=7;i<13;++i){std::vector<uint32_t>v(ggml_nbytes(t_[i])/4,0x4acaf00d);ggml_backend_tensor_set(t_[i],v.data(),0,v.size()*4);}
+  uint32_t status=UINT32_MAX;try{status=strata_vk_native_qsa_attention_run(kernel_.get(),t_.data(),cells_);native_hc_need(!status,"native QSA attention candidate refused");}catch(...){try{capture(position,"failure-",status);}catch(const std::exception&e){std::fprintf(stderr,"native QSA attention receipt: %s\n",e.what());}throw;}
+  Candidate out;out.attention.resize(6144);out.gated.resize(6144);ggml_backend_tensor_get(t_[10],out.attention.data(),0,24576);ggml_backend_tensor_get(t_[12],out.gated.data(),0,24576);if(record_&&position<8&&!recorded_[position]){capture(position,"first-",0);recorded_[position]=true;}return out;
+ }
+ void consumed(uint64_t position,ggml_tensor*leaf,const Candidate&candidate){std::vector<float>actual(6144);ggml_backend_tensor_get(leaf,actual.data(),0,24576);native_hc_need(std::memcmp(actual.data(),candidate.gated.data(),24576)==0,"native QSA output projection ignored gated candidate");if(record_&&position<8){std::ofstream o(dir_/("first-"+std::to_string(position))/"consumed-gated.f32le",std::ios::binary);for(float v:actual){uint32_t w;std::memcpy(&w,&v,4);word(o,w);}native_hc_need(bool(o),"native QSA actual consumer receipt");}}
+};
+}

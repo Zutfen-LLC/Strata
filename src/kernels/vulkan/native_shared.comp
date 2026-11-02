@@ -63,7 +63,11 @@ void main() {
         // native_bf16.cu: two ordered FMAs per float2, original F32 input.
         if(tid<32)warps[tid]=0.0;
         if(tid<p.block_size)for(uint pair=tid;pair<p.ni/2;pair+=p.block_size) {
+#ifdef STRATA_QSA_INDEXER_BF16_MATRIX
+            uint weight=w[p.wb+row*(p.ni/2)+pair],xx=p.xb+token*p.ni+2*pair;
+#else
             uint weight=w[p.wb+pair],xx=p.xb+token*p.ni+2*pair;
+#endif
             acc=native_shared_fma(uintBitsToFloat((weight&65535u)<<16),uintBitsToFloat(x[xx]),acc);
             acc=native_shared_fma(uintBitsToFloat(weight&0xffff0000u),uintBitsToFloat(x[xx+1]),acc);
         }
@@ -73,6 +77,10 @@ void main() {
         if(p.block_size>32) {
             partial[tid]=tid<32?warps[tid]:0.0;barrier();xor_reduce(tid);
         }
+#ifdef STRATA_QSA_INDEXER_BF16_MATRIX
+        if(tid==0)output_values[p.ob+token*p.no+row]=partial[0];
+#else
         if(tid==0)output_values[p.ob+token]=partial[0];
+#endif
     }
 }

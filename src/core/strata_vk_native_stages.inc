@@ -3,7 +3,9 @@
 #include "strata_native_stages_spv.hpp"
 #include "strata_native_quant_trace_spv.hpp"
 #include "strata_native_quant_rn_spv.hpp"
+#include "strata_native_quant_rcp_spv.hpp"
 #include "native_q8_quant_trace.hpp"
+#include "native_q8_rcp_shape.hpp"
 #include "native_q8_gu_layout.hpp"
 #include "native_q8_spirv.hpp"
 #include "native_q8_float_controls.hpp"
@@ -15,7 +17,12 @@ struct StrataVkNativeStages {
     // holds bounded group metadata; no extra allocator or device is introduced.
     std::unique_ptr<StrataVkLogitsGuard> owner;
     bool quant_trace=false;
+    bool quant_rcp=false;
+    uint64_t quant_submitted=0,quant_completed=0,quant_submission_uncertain=0;
 };
+uint64_t strata_vk_native_stages_quant_submitted(const StrataVkNativeStages* s) noexcept{return s?s->quant_submitted:0;}
+uint64_t strata_vk_native_stages_quant_completed(const StrataVkNativeStages* s) noexcept{return s?s->quant_completed:0;}
+uint64_t strata_vk_native_stages_quant_submission_uncertain(const StrataVkNativeStages* s) noexcept{return s?s->quant_submission_uncertain:0;}
 StrataVkNativeStages* strata_vk_native_stages_create(ggml_backend_t backend) {
     logits_guard_need(backend && ggml_backend_is_vk(backend),"native stages: Vulkan required");
     auto result=std::make_unique<StrataVkNativeStages>();
@@ -115,12 +122,18 @@ StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_b
     return strata_vk_native_stages_create_variant_observation(backend,path,strata_native_quant_rn_spv,sizeof(strata_native_quant_rn_spv)/4,
         "strata_native_q8_quant_rn_observation",false,budget);
 }
+StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t backend,const char* path,size_t budget) {
+    auto* stage=strata_vk_native_stages_create_variant_observation(backend,path,strata_native_quant_rcp_spv,sizeof(strata_native_quant_rcp_spv)/4,
+        "strata_native_q8_quant_rcp_observation",false,budget);
+    stage->quant_rcp=true;return stage;
+}
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}
 void strata_vk_native_stages_destroy(StrataVkNativeStages* s) noexcept {delete s;}
 void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggml_tensor* gate,
     const ggml_tensor* up,ggml_tensor* hidden,ggml_tensor* packed,uint32_t n_ff,
     const int32_t* starts,size_t n_starts) {
     logits_guard_need(s && mode<=2 && gate && up && hidden && packed,"native stages: invalid call");
+    if(s->quant_rcp)native_q8_rcp_require_mode(mode);
     const int64_t n=ggml_nelements(gate);
     if(s->quant_trace)native_q8_quant_trace_shape(mode,n,n_ff,starts,n_starts);
     logits_guard_need(n>0 && n<=1048576 && n_ff>0 && n_ff%32==0 && n%n_ff==0 &&
@@ -163,13 +176,19 @@ void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggm
         {ggml_vk_tensor_subbuffer(ctx,gate,true),ggml_vk_tensor_subbuffer(ctx,up,true),
          ggml_vk_tensor_subbuffer(ctx,g.status,true),ggml_vk_tensor_subbuffer(ctx,g.status,true),
          ggml_vk_tensor_subbuffer(ctx,hidden,true),ggml_vk_tensor_subbuffer(ctx,packed,true)},params,{uint32_t(n/32),1,1});
-    ggml_vk_sync_buffers(ctx,compute);compute.reset();ggml_backend_vk_synchronize(g.backend);
+    ggml_vk_sync_buffers(ctx,compute);compute.reset();
+    try { ggml_backend_vk_synchronize(g.backend); }
+    catch(...) { if(mode==0)++s->quant_submission_uncertain;throw; }
+    // The pinned synchronizer submits and waits in one call. A successful
+    // return confirms both events; on failure it does not expose which occurred.
+    if(mode==0){++s->quant_submitted;++s->quant_completed;}
 }
 }
 
 #include "strata_vk_q8_gu.inc"
 
 #include "strata_vk_q8_down.inc"
+#include "strata_vk_q8_wo.inc"
 
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
 #include "strata_vk_native_moe_combine.inc"

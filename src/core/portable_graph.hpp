@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <memory>
 #include <stdexcept>
+#include <unordered_set>
 namespace strata::core::portable_detail {
 using Backend = std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)>;
 using Scheduler = std::unique_ptr<ggml_backend_sched, decltype(&ggml_backend_sched_free)>;
@@ -40,7 +41,7 @@ inline bool metadata_only(ggml_tensor *t) {
     return t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;
 }
 inline void schedule_reusing(ggml_cgraph *graph, const char *phase, const PortableFfnOptions &options, Backend &cpu,
-                             std::vector<PortablePlacement> &placement, size_t &graphs_size, Scheduler &sched, bool resident_weight_credit = false) {
+                             std::vector<PortablePlacement> &placement, size_t &graphs_size, Scheduler &sched, bool resident_weight_credit = false, const std::vector<ggml_tensor *> &outputs = {}) {
     ggml_backend_t backends[] = {options.accelerator, cpu.get()};
     auto *list = options.accelerator && options.request_accelerator ? backends : backends + 1;
     const int count = list == backends ? 2 : 1;
@@ -112,6 +113,7 @@ inline void schedule_reusing(ggml_cgraph *graph, const char *phase, const Portab
             if (assignments[size_t(i)])
                 ggml_backend_sched_set_tensor_backend(sched.get(), ggml_graph_node(graph, i), assignments[size_t(i)]);
     };
+    std::unordered_set<ggml_tensor *> source_storage;
     for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
         auto *node = ggml_graph_node(graph, i);
         auto *backend = assignments[size_t(i)] ? assignments[size_t(i)] : cpu.get();
@@ -133,10 +135,22 @@ inline void schedule_reusing(ggml_cgraph *graph, const char *phase, const Portab
                 if(!shared_weight) account(backend, src);
                 // Unallocated graph inputs can get original storage on either
                 // backend as well as the consumer copy accounted above.
-                if (root->op == GGML_OP_NONE && !root->buffer)
+                if (root->op == GGML_OP_NONE && !root->buffer) {
+                    source_storage.insert(root);
                     for (int b = 0; b < count; ++b)
                         account(list[b], root);
+                }
             }
+    }
+    // GGML allocates output leaves even when no computation consumes them.
+    // Its public graph API does not enumerate leaves, so owning phases supply
+    // their actual forward roots. Source roots above already include original
+    // storage; charge only missing unallocated leaf roots, not another copy.
+    for (auto *root : outputs) {
+        while (root->view_src) root = root->view_src;
+        if (root->op == GGML_OP_NONE && !root->buffer && source_storage.insert(root).second)
+            for (int b = 0; b < count; ++b)
+                account(list[b], root);
     }
     assign();
     // alloc_graph reserves or reuses backing buffers internally. This
@@ -166,13 +180,15 @@ inline void schedule_reusing(ggml_cgraph *graph, const char *phase, const Portab
     for (int i = 0; i < count; ++i)
         allocated += ggml_backend_sched_get_buffer_size(sched.get(), list[i]);
     require(allocated <= std::max(bound, retained) && allocated <= remaining,
-            "portable graph: allocated graph exceeds admitted bound");
+            std::string("portable graph: allocated graph exceeds admitted bound phase=")+phase+
+                " allocated="+std::to_string(allocated)+" bound="+std::to_string(bound)+
+                " retained="+std::to_string(retained)+" remaining="+std::to_string(remaining));
     graphs_size += allocated;
 }
 inline Scheduler schedule(ggml_cgraph *graph, const char *phase, const PortableFfnOptions &options, Backend &cpu,
-                          std::vector<PortablePlacement> &placement, size_t &graphs_size, bool resident_weight_credit = false) {
+                          std::vector<PortablePlacement> &placement, size_t &graphs_size, bool resident_weight_credit = false, const std::vector<ggml_tensor *> &outputs = {}) {
     Scheduler sched{nullptr, ggml_backend_sched_free};
-    schedule_reusing(graph, phase, options, cpu, placement, graphs_size, sched, resident_weight_credit);
+    schedule_reusing(graph, phase, options, cpu, placement, graphs_size, sched, resident_weight_credit, outputs);
     return sched;
 }
 

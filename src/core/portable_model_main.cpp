@@ -122,6 +122,9 @@ int main(int argc, char **argv) {
                              " [--native-hc-ffn-write-layer0 RECEIPT_PREFIX (experimental final materialization before PLE)]\n"
                              " [--native-hc-ffn-read-layer0 RECEIPT_PREFIX (experimental actual layer0 FFN read; explicit resident scope)]\n"
                              " [--qsa-norm-rope-resident-weights PREFIX --native-qsa-norm-rope-t1 (trial, eager text T1)]\n"
+                             " [--native-qsa-wo-t1 (trial, ordinary QSA output projection)]\n"
+                             " [--native-qsa-qkv-t1 (trial, ordinary QSA Q/K/V projections)]\n"
+                             " [--native-qsa-indexer-projection-t1 (trial, BF16 indexer projections)]\n"
                              " [--native-hc-serial PREFIX --hc-serial-resident-weights (trial, ordinary serial boundaries)]\n"
                              " [--native-hc-serial-cycle PREFIX --hc-cycle-resident-weights (trial, bounded GDN/QSA cycle)]\n"
                              " [--layer0-resident-weights (trial, only layer0 dense/FFN weights)]\n"
@@ -188,6 +191,11 @@ int main(int argc, char **argv) {
                 opts.gdn_batch_input_projections = true;
                 continue;
             }
+            if(key=="--native-qsa-attention-t1"){opts.native_qsa_attention_t1=true;continue;}
+            if(key=="--native-qsa-wo-t1"){opts.native_qsa_wo_t1=true;continue;}
+            if(key=="--native-qsa-qkv-t1"){opts.native_qsa_qkv_t1=true;continue;}
+            if(key=="--native-qsa-indexer-projection-t1"){opts.native_qsa_indexer_projection_t1=true;continue;}
+            if(key=="--native-qsa-score-select-t1"){opts.native_qsa_score_select_t1=true;continue;}
             if(key=="--native-qsa-indexer-t1"){opts.native_qsa_indexer_t1=true;continue;}
             if(key=="--native-qsa-norm-rope-t1"){opts.native_qsa_norm_rope_t1=true;continue;}
             if(key=="--gdn-native-prep-bf16") {opts.native_gdn_preparation_weights=true;continue;}
@@ -206,9 +214,12 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if(key=="--qsa-indexer-resident-weights"){opts.qsa_indexer_resident_weights=true;opts.qsa_indexer_receipt_prefix=value;}
+            if(key=="--qsa-attention-banks"){opts.qsa_attention_banks=true;opts.qsa_attention_receipt_prefix=value;}
+            else if(key=="--qsa-score-select-banks"){opts.qsa_score_select_banks=true;opts.qsa_score_select_receipt_prefix=value;}
+            else if(key=="--qsa-indexer-resident-weights"){opts.qsa_indexer_resident_weights=true;opts.qsa_indexer_receipt_prefix=value;}
             else if(key=="--qsa-norm-rope-resident-weights"){opts.qsa_norm_rope_resident_weights=true;opts.qsa_norm_rope_receipt_prefix=value;}
             else if(key=="--native-gdn-prep-t1") {opts.native_gdn_preparation_t1=true;opts.native_gdn_preparation_receipt_prefix=value;}
+            else if(key=="--native-gdn-input-projection-t1") {opts.native_gdn_input_projection_t1=true;opts.native_gdn_input_projection_receipt_prefix=value;}
             else if(key=="--native-gdn-t1") {opts.native_gdn_t1=true;opts.native_gdn_receipt_prefix=value;}
             else if(key=="--native-hc-serial") {opts.native_hc_serial=true;opts.native_hc_serial_receipt_prefix=value;}
             else if(key=="--native-hc-serial-cycle") {
@@ -370,6 +381,12 @@ int main(int argc, char **argv) {
                      <<",\"dense_resident_weights\":"<<(opts.dense_resident_weights?"true":"false")
                      <<",\"layer0_resident_weights\":"<<(opts.layer0_resident_weights?"true":"false")
                      <<",\"native_hc_serial_cycle\":"<<(opts.native_hc_serial_cycle?"true":"false")
+                     <<",\"native_qsa_attention_t1\":"<<(opts.native_qsa_attention_t1?"true":"false")<<",\"qsa_attention_banks\":"<<(opts.qsa_attention_banks?"true":"false")
+                     <<",\"native_qsa_wo_t1\":"<<(opts.native_qsa_wo_t1?"true":"false")
+                     <<(opts.native_qsa_qkv_t1?",\"native_qsa_qkv_t1\":true":"")
+                     <<(opts.native_gdn_input_projection_t1?",\"native_gdn_input_projection_t1\":true":"")
+                     <<(opts.native_qsa_indexer_projection_t1?",\"native_qsa_indexer_projection_t1\":true":"")
+                     <<",\"native_qsa_score_select_t1\":"<<(opts.native_qsa_score_select_t1?"true":"false")<<",\"qsa_score_select_banks\":"<<(opts.qsa_score_select_banks?"true":"false")
                      <<",\"native_qsa_indexer_t1\":"<<(opts.native_qsa_indexer_t1?"true":"false")<<",\"qsa_indexer_resident_weights\":"<<(opts.qsa_indexer_resident_weights?"true":"false")
                      <<",\"native_qsa_norm_rope_t1\":"<<(opts.native_qsa_norm_rope_t1?"true":"false")<<",\"qsa_norm_rope_resident_weights\":"<<(opts.qsa_norm_rope_resident_weights?"true":"false")
                      <<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false")
@@ -572,6 +589,7 @@ int main(int argc, char **argv) {
                 auto array=[&](const char*name,const auto&a){out<<",\""<<name<<"\":[";for(size_t l=0;l<48;++l){if(l)out<<",";out<<a[l];}out<<"]";};
                 array("gdn_state_before_a",heads_before.gdn_state_a);array("gdn_state_before_b",heads_before.gdn_state_b);array("gdn_state_after_a",w.gdn_state_a);array("gdn_state_after_b",w.gdn_state_b);
                 std::array<uint64_t,48>delta{};for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_t1_calls[l]-heads_before.native_gdn_t1_calls[l];array("native_gdn_t1_calls_delta",delta);for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_conv_calls[l]-heads_before.native_gdn_conv_calls[l];array("native_gdn_conv_calls_delta",delta);for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_ab_calls[l]-heads_before.native_gdn_ab_calls[l];array("native_gdn_ab_calls_delta",delta);
+                if(opts.native_gdn_input_projection_t1){const char* names[]={"native_gdn_input_quant_submitted_delta","native_gdn_input_quant_completed_delta","native_gdn_input_dot_submitted_delta","native_gdn_input_dot_completed_delta","native_gdn_input_quant_uncertain_delta","native_gdn_input_dot_uncertain_delta"};for(unsigned i=0;i<6;++i){for(size_t l=0;l<48;++l)delta[l]=w.native_gdn_input_projection_calls[i][l]-heads_before.native_gdn_input_projection_calls[i][l];array(names[i],delta);}out<<",\"native_gdn_input_projection_t1\":true";}
                 out<<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false")
                      <<",\"native_gdn_preparation_t1\":"<<(opts.native_gdn_preparation_t1?"true":"false")<<",\"native_gdn_preparation_weights\":"<<(opts.native_gdn_preparation_weights?"true":"false");
             }
@@ -579,6 +597,18 @@ int main(int argc, char **argv) {
                 const auto w=session->model_work(true);out<<",\"qsa_norm_rope_resident_weights\":"<<(opts.qsa_norm_rope_resident_weights?"true":"false")<<",\"native_qsa_norm_rope_t1\":"<<(opts.native_qsa_norm_rope_t1?"true":"false");
                 auto array=[&](const char*name,const auto&a){out<<",\""<<name<<"\":[";for(size_t l=0;l<48;++l){if(l)out<<",";out<<a[l];}out<<"]";};
                 out<<",\"qsa_indexer_resident_weights\":"<<(opts.qsa_indexer_resident_weights?"true":"false")<<",\"native_qsa_indexer_t1\":"<<(opts.native_qsa_indexer_t1?"true":"false");
+                out<<",\"native_qsa_score_select_t1\":"<<(opts.native_qsa_score_select_t1?"true":"false")<<",\"qsa_score_select_banks\":"<<(opts.qsa_score_select_banks?"true":"false");
+                out<<",\"native_qsa_attention_t1\":"<<(opts.native_qsa_attention_t1?"true":"false")<<",\"qsa_attention_banks\":"<<(opts.qsa_attention_banks?"true":"false");
+                out<<",\"native_qsa_wo_t1\":"<<(opts.native_qsa_wo_t1?"true":"false");
+                if(opts.native_qsa_indexer_projection_t1){out<<",\"native_qsa_indexer_projection_t1\":true";std::array<uint64_t,48>a{},b{},c{};for(size_t l=0;l<48;++l){a[l]=w.native_qsa_indexer_projection_submitted[l]-heads_before.native_qsa_indexer_projection_submitted[l];b[l]=w.native_qsa_indexer_projection_completed[l]-heads_before.native_qsa_indexer_projection_completed[l];c[l]=w.native_qsa_indexer_projection_uncertain[l]-heads_before.native_qsa_indexer_projection_uncertain[l];}array("native_qsa_indexer_projection_submitted_delta",a);array("native_qsa_indexer_projection_completed_delta",b);array("native_qsa_indexer_projection_uncertain_delta",c);}
+                if(opts.native_qsa_qkv_t1){out<<",\"native_qsa_qkv_t1\":true";
+                std::array<uint64_t,48>qis{},qic{},qks{},qkc{},qiu{},qku{};for(size_t l=0;l<48;++l){qis[l]=w.native_qsa_qkv_quant_submitted[l]-heads_before.native_qsa_qkv_quant_submitted[l];qic[l]=w.native_qsa_qkv_quant_completed[l]-heads_before.native_qsa_qkv_quant_completed[l];qks[l]=w.native_qsa_qkv_submitted[l]-heads_before.native_qsa_qkv_submitted[l];qkc[l]=w.native_qsa_qkv_completed[l]-heads_before.native_qsa_qkv_completed[l];qiu[l]=w.native_qsa_qkv_quant_submission_uncertain[l]-heads_before.native_qsa_qkv_quant_submission_uncertain[l];qku[l]=w.native_qsa_qkv_submission_uncertain[l]-heads_before.native_qsa_qkv_submission_uncertain[l];}array("native_qsa_qkv_quant_submitted_delta",qis);array("native_qsa_qkv_quant_completed_delta",qic);array("native_qsa_qkv_submitted_delta",qks);array("native_qsa_qkv_completed_delta",qkc);array("native_qsa_qkv_quant_submission_uncertain_delta",qiu);array("native_qsa_qkv_submission_uncertain_delta",qku);
+                }
+                std::array<uint64_t,48>qs{},qc{},ws{},wc{};for(size_t l=0;l<48;++l){qs[l]=w.native_qsa_wo_quant_submitted[l]-heads_before.native_qsa_wo_quant_submitted[l];qc[l]=w.native_qsa_wo_quant_completed[l]-heads_before.native_qsa_wo_quant_completed[l];ws[l]=w.native_qsa_wo_submitted[l]-heads_before.native_qsa_wo_submitted[l];wc[l]=w.native_qsa_wo_completed[l]-heads_before.native_qsa_wo_completed[l];}
+                array("native_qsa_wo_quant_submitted_delta",qs);array("native_qsa_wo_quant_completed_delta",qc);array("native_qsa_wo_submitted_delta",ws);array("native_qsa_wo_completed_delta",wc);
+                std::array<uint64_t,48>qu{},wu{};for(size_t l=0;l<48;++l){qu[l]=w.native_qsa_wo_quant_submission_uncertain[l]-heads_before.native_qsa_wo_quant_submission_uncertain[l];wu[l]=w.native_qsa_wo_submission_uncertain[l]-heads_before.native_qsa_wo_submission_uncertain[l];}array("native_qsa_wo_quant_submission_uncertain_delta",qu);array("native_qsa_wo_submission_uncertain_delta",wu);
+                std::array<uint64_t,48>ac{},am{},ag{};for(size_t l=0;l<48;++l){ac[l]=w.native_qsa_attention_chunk_calls[l]-heads_before.native_qsa_attention_chunk_calls[l];am[l]=w.native_qsa_attention_merge_calls[l]-heads_before.native_qsa_attention_merge_calls[l];ag[l]=w.native_qsa_attention_gate_calls[l]-heads_before.native_qsa_attention_gate_calls[l];}array("native_qsa_attention_chunk_calls_delta",ac);array("native_qsa_attention_merge_calls_delta",am);array("native_qsa_attention_gate_calls_delta",ag);
+                std::array<uint64_t,48>score_delta{},select_delta{};for(size_t l=0;l<48;++l){score_delta[l]=w.native_qsa_score_calls[l]-heads_before.native_qsa_score_calls[l];select_delta[l]=w.native_qsa_select_calls[l]-heads_before.native_qsa_select_calls[l];}array("native_qsa_score_calls_delta",score_delta);array("native_qsa_select_calls_delta",select_delta);
                 std::array<uint64_t,48>idx_delta{};for(size_t l=0;l<48;++l)idx_delta[l]=w.native_qsa_indexer_calls[l]-heads_before.native_qsa_indexer_calls[l];array("native_qsa_indexer_calls_delta",idx_delta);
                 array("qsa_state_before_a",heads_before.qsa_state_a);array("qsa_state_before_b",heads_before.qsa_state_b);array("qsa_state_after_a",w.qsa_state_a);array("qsa_state_after_b",w.qsa_state_b);
                 std::array<uint64_t,48>d{};for(size_t l=0;l<48;++l)d[l]=w.native_qsa_norm_rope_calls[l]-heads_before.native_qsa_norm_rope_calls[l];array("native_qsa_norm_rope_calls_delta",d);

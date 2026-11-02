@@ -128,3 +128,47 @@ for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'
 run(['--qsa-indexer-resident-weights',''],False,'receipt')
 run([*indexer,'--native-qsa-indexer-t1'],False,'analytic fused text',dict(os.environ,STRATA_ROPE_TABLE='1'))
 print('native indexer actual CLI/default/residency/mode preconditions pass')
+
+score=[*indexer,'--native-qsa-indexer-t1','--qsa-score-select-banks','/absent/scores']
+r=run(score,True);assert r['qsa_score_select_banks'] and not r['native_qsa_score_select_t1']
+r=run([*score,'--native-qsa-score-select-t1'],True);assert r['native_qsa_score_select_t1']
+assert not run([],True)['qsa_score_select_banks'] and not run([],True)['native_qsa_score_select_t1']
+run(['--native-qsa-score-select-t1'],False,'matched candidate banks')
+run(['--qsa-score-select-banks','/absent/scores'],False,'actual native indexer')
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:run([*score,'--native-qsa-score-select-t1',*bad],False)
+run([*indexer,'--native-qsa-indexer-t1','--qsa-score-select-banks',''],False,'receipt')
+print('native score/selection actual CLI/default/banks/native producer/mode preconditions pass')
+
+run(score,False,'alternative native dispatch',dict(os.environ,STRATA_TOPK_OLD='1'))
+
+attention=[*score,'--native-qsa-score-select-t1','--qsa-norm-rope-resident-weights','/absent/norm','--native-qsa-norm-rope-t1','--qsa-attention-banks','/absent/attention']
+a=run(attention,True);assert a['qsa_attention_banks'] and not a['native_qsa_attention_t1']
+assert run([*attention,'--native-qsa-attention-t1'],True)['native_qsa_attention_t1']
+assert not run([],True)['qsa_attention_banks'] and not run([],True)['native_qsa_attention_t1']
+run(['--native-qsa-attention-t1'],False,'matched candidate banks')
+run(['--qsa-attention-banks','/absent/attention'],False,'native query/IDs')
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:run([*attention,'--native-qsa-attention-t1',*bad],False)
+run(attention,False,'alternative native attention',dict(os.environ,STRATA_ATTN_MERGE_V2='1'))
+print('native FP16 attention/gate actual CLI/default/matched-bank/native producer/mode preconditions pass')
+
+assert not run([],True)['native_qsa_wo_t1']
+run(['--native-qsa-wo-t1'],False,'native QSA WO requires')
+run([*attention,'--native-qsa-attention-t1','--native-qsa-wo-t1'],False,'native QSA WO requires')
+wo=[*ordinary,*attention,'--native-qsa-attention-t1','--dense-resident-weights','--native-qsa-wo-t1']
+assert run(wo,True)['native_qsa_wo_t1']
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:run([*wo,*bad],False)
+print('native QSA WO CLI default and ordinary eager native-attention/residency preconditions pass')
+
+assert not run([],True).get('native_qsa_qkv_t1',False)
+run(['--native-qsa-qkv-t1'],False,'native QSA QKV requires')
+assert run([*wo,'--native-qsa-qkv-t1'],True)['native_qsa_qkv_t1']
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:
+    run([*wo,'--native-qsa-qkv-t1',*bad],False)
+print('native QSA QKV CLI default and matched native WO preconditions pass')
+
+assert not run([],True).get('native_qsa_indexer_projection_t1',False)
+run(['--native-qsa-indexer-projection-t1'],False,'native QSA indexer projections require')
+idx_projection=[*ordinary,*indexer,'--native-qsa-indexer-t1',*nr,'--native-qsa-norm-rope-t1','--dense-resident-weights','--native-qsa-indexer-projection-t1']
+assert run(idx_projection,True)['native_qsa_indexer_projection_t1']
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:run([*idx_projection,*bad],False)
+print('native BF16 indexer projection CLI default and strict producer/consumer preconditions pass')
