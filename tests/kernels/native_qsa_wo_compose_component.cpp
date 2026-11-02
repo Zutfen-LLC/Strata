@@ -44,10 +44,16 @@ int main(int argc,char**argv){try{
     refused=false;try{strata_vk_q8_wo_run(wo.get(),wt,shortq,y,rows);}catch(...){refused=true;}
     need(refused&&contents(qb,qi.size())==qi&&contents(wb,wi.size())==wi&&contents(yb,yi.size())==yi,"composition: WO invalid call committed");
     Bytes first_q,first_y;
+#ifdef STRATA_GDN_OUTPUT_SCALE_SUITE
+    Bytes first_direct;
+#endif
     for(int pass=0;pass<2;++pass){
         reset();quantify(packed);
         auto qr=contents(qb,qi.size());Bytes packed_bytes(q::bytes);std::memcpy(packed_bytes.data(),qr.data()+8,packed_bytes.size());
         packed_domain(ww,packed_bytes);
+#ifdef STRATA_GDN_OUTPUT_SCALE_SUITE
+        fixture_scale_words(argv[8],input,packed_bytes);
+#endif
         for(size_t i=0;i<8;++i)need(qr[i]==guard&&qr[qr.size()-1-i]==guard,"composition: packed canary changed");
         // The same tensor written above is passed directly to the WO owner.
         strata_vk_q8_wo_run(wo.get(),wt,packed,y,rows);
@@ -60,6 +66,14 @@ int main(int argc,char**argv){try{
         auto bad=contents(yb,yi.size());need(std::memcmp(bad.data()+8,result.data(),result.size())!=0,"composition: stale packed input did not change output");
         need(contents(sb,si.size())==si&&contents(xb,xi.size())==xi&&contents(wb,wi.size())==wi&&contents(qb,qi.size())==qr,"composition: stale test mutated inputs");
         for(size_t i=0;i<8;++i)need(bad[i]==guard&&bad[bad.size()-1-i]==guard,"composition: stale output canary changed");
+#ifdef STRATA_GDN_OUTPUT_SCALE_SUITE
+        auto direct=direct_packed();std::array<uint32_t,q::bytes/4+16> direct_image{};direct_image.fill(guard);std::memcpy(direct_image.data()+8,direct.data(),q::bytes);
+        ggml_backend_tensor_set(sb,direct_image.data(),0,direct_image.size()*4);ggml_backend_tensor_set(yb,yi.data(),0,yi.size()*4);
+        strata_vk_q8_wo_run(wo.get(),wt,stale,y,rows);bad=contents(yb,yi.size());
+        Bytes direct_out(rows*4);std::memcpy(direct_out.data(),bad.data()+8,direct_out.size());direct_controls(direct_out);
+        for(size_t i=0;i<8;++i)need(bad[i]==guard&&bad[bad.size()-1-i]==guard,"GDN output: direct canary changed");
+        if(pass)need(direct_out==first_direct,"GDN output: direct repeat changed");else{first_direct=direct_out;save(dir/"direct-qx.bin",direct.data(),direct.size());save(dir/"direct-out.f32le",direct_out.data(),direct_out.size());}
+#endif
         if(pass)need(packed_bytes==first_q&&result==first_y,"composition: reset/repeat changed");
         first_q=packed_bytes;first_y=result;
         save(dir/(pass?"qx-repeat.bin":"qx.bin"),packed_bytes.data(),packed_bytes.size());

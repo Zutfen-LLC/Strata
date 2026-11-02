@@ -999,7 +999,7 @@ struct PortableGdnLayer::Impl {
             require(graphs_size<options.execution.graph_budget,"native GDN output projection: no graph room");
             auto role=std::find_if(aw.begin(),aw.end(),[&](const auto&v){return v.name==prefix+"ssm_out.weight";});
             require(role!=aw.end()&&role->type==8&&role->shape==std::vector<int64_t>({6144,2560}),"native GDN output projection: Q8_0 role required");
-            native_output_projection=std::make_unique<portable_detail::PortableNativeQsaWo>(options.execution.accelerator,w.at("ssm_out.weight"),role->data,role->bytes,options.native_output_projection_receipt,options.execution.graph_budget-graphs_size,options.native_output_projection_record_first);
+            native_output_projection=std::make_unique<portable_detail::PortableNativeQsaWo>(options.execution.accelerator,w.at("ssm_out.weight"),role->data,role->bytes,options.native_output_projection_receipt,options.execution.graph_budget-graphs_size,options.native_output_projection_record_first,portable_detail::PortableNativeQsaWo::InputDomain::gdn_output);
             native_output_candidate=std::make_unique<portable_detail::PortableNativeQsaWo::Candidate>();
             graphs_size+=native_output_projection->bytes();
         }

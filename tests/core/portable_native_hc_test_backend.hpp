@@ -230,7 +230,7 @@ uint32_t strata_vk_native_qsa_select_run(StrataVkNativeQsaSelect*p,ggml_tensor*c
 #include "strata_vk_q8_wo.hpp"
 #include "../kernels/native_q8_wo_fixture.hpp"
 namespace {bool fail_qsa_attention=false;std::vector<float>actual_native_gated;}
-namespace {bool fail_qsa_wo=false,fail_qsa_qkv=false;const ggml_tensor*actual_packed_producer=nullptr;const ggml_tensor*actual_qkv_packed=nullptr;}
+namespace {bool fail_qsa_wo=false,fail_qsa_qkv=false;int gdn_test_scale=0;const ggml_tensor*actual_packed_producer=nullptr;const ggml_tensor*actual_qkv_packed=nullptr;}
 namespace strata::core::portable_detail {
 struct StrataVkNativeStages{uint64_t submitted=0,completed=0;};
 StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"quantizer budget");std::ofstream(path)<<"host mock only\n";return new StrataVkNativeStages;}
@@ -244,7 +244,7 @@ void strata_vk_native_stages_run(StrataVkNativeStages*p,uint32_t mode,const ggml
  if(n==6144&&observe_gdn_output){check_gdn_output_bank(gate,actual_gdn_gated,6144*4);++gdn_output_quant_links;}
  else if(n==6144)check(values==actual_native_gated,"quantizer ignored actual native attention output");
  else check(gate==live_mixed,"QKV quantizer ignored actual HC mixed output");
- ++p->submitted;auto bytes=native_q8_fixture::quantize(values);ggml_backend_tensor_set(packed,bytes.data(),0,bytes.size());if(n==6144)actual_packed_producer=packed;else actual_qkv_packed=packed;++p->completed;
+ ++p->submitted;auto bytes=native_q8_fixture::quantize(values);if(n==6144&&observe_gdn_output&&gdn_test_scale){bytes[0]=gdn_test_scale==1?1:0;bytes[1]=gdn_test_scale==1?0:0x7c;}ggml_backend_tensor_set(packed,bytes.data(),0,bytes.size());if(n==6144)actual_packed_producer=packed;else actual_qkv_packed=packed;++p->completed;
 }
 struct StrataVkQ8Wo{uint64_t submitted=0,completed=0,uncertain=0;bool qkv=false,gdn=false;};
 StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t b,const char*path,size_t budget){check(budget>=16,"WO budget");gdn_output_backend=b;std::ofstream(path)<<"host mock only\n";return new StrataVkQ8Wo;}
@@ -263,7 +263,7 @@ void strata_vk_q8_wo_run(StrataVkQ8Wo*p,const ggml_tensor*weights,const ggml_ten
  native_q8_wo_fixture::Fixture f{rows,native_q8_fixture::Bytes(rows*q8_wo_row_bytes),native_q8_fixture::Bytes(q8_wo_input_bytes)};
  ggml_backend_tensor_get(weights,f.weights.data(),0,f.weights.size());ggml_backend_tensor_get(packed,f.input.data(),0,f.input.size());
  if(observe_gdn_output){if(gdn_output_weight_snapshot.empty())gdn_output_weight_snapshot=f.weights;else check(f.weights==gdn_output_weight_snapshot,"GDN output resident weight changed");}
- actual_native_wo.resize(rows);for(size_t i=0;i<rows;++i)actual_native_wo[i]=native_q8_wo_fixture::reference(f,i).value;
+ actual_native_wo.resize(rows);for(size_t i=0;i<rows;++i)actual_native_wo[i]=native_q8_wo_fixture::reference(f,i,observe_gdn_output?native_q8_wo_fixture::InputScaleDomain::gdn_output_finite:native_q8_wo_fixture::InputScaleDomain::wo_bounded).value;
  ggml_backend_tensor_set(out,actual_native_wo.data(),0,rows*4);++p->completed;
 }
 struct StrataVkNativeQsaAttention{std::array<uint64_t,3>calls{};};

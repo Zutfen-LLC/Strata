@@ -22,7 +22,7 @@ int main(int argc, char** argv) {
         const auto* weights = model.shard(shard).tensor_data(*role);
         const auto packed = load(argv[8], q8_wo_input_bytes), output = load(argv[9], 2560 * 4);
         for (size_t row = 0; row < 2560; ++row) {
-            const auto value = reference(weights, 2560 * q8_wo_row_bytes, packed.data(), packed.size(), 2560, row).value;
+            const auto value = reference(weights, 2560 * q8_wo_row_bytes, packed.data(), packed.size(), 2560, row, InputScaleDomain::gdn_output_finite).value;
             const uint32_t actual = uint32_t(output[row*4]) | (uint32_t(output[row*4+1]) << 8) |
                                     (uint32_t(output[row*4+2]) << 16) | (uint32_t(output[row*4+3]) << 24);
             if (bits(value) != actual) throw std::runtime_error("GDN output control: projected byte mismatch at row " + std::to_string(row));

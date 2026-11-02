@@ -36,6 +36,12 @@ inline void qsa_wo_packed_domain(const void* bytes,size_t size) {
     if(size!=192u*36u || !bytes)throw std::runtime_error("QSA WO: unsupported Q8_1 byte span");
     qsa_wo_require_scales(qsa_wo_scale_classes(static_cast<const uint8_t*>(bytes),192,36),"producer Q8_1");
 }
+// GDN output uses the same 192-block layout but admits every finite stored
+// scale. A half subnormal widens exactly to normal F32 in the native dot.
+inline void qsa_gdn_output_packed_domain(const void* bytes,size_t size) {
+    if(size!=192u*36u || !bytes)throw std::runtime_error("GDN output: unsupported Q8_1 byte span");
+    qsa_wo_require_scales(qsa_wo_scale_classes(static_cast<const uint8_t*>(bytes),192,36),"GDN output producer Q8_1",true);
+}
 // Q/K/V has 80 blocks. A finite stored binary16 scale, including a
 // subnormal, widens exactly to normal F32 before the native Q8_0 dot.
 inline void qsa_qkv_packed_domain(const void* bytes,size_t size) {

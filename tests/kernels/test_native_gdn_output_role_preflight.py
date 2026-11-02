@@ -49,6 +49,13 @@ with tempfile.TemporaryDirectory(prefix='gdn-out-roles-') as tmp:
         command = [str(Path(sys.argv[1]).resolve()), *(str(p) for p in paths), '0', str(packed), str(output)]
         result = subprocess.run(command, capture_output=True, text=True, timeout=120)
         assert result.returncode == 0 and json.loads(result.stdout)['exact'] is True, result.stderr
+        image[:2] = b'\x01\x00'; packed.write_bytes(image)
+        expected[:4] = struct.pack('<f', 2.0 ** -24); output.write_bytes(expected)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+        assert result.returncode == 0 and json.loads(result.stdout)['exact'] is True, result.stderr
+        image[:2] = b'\x00\x7c'; packed.write_bytes(image)
+        assert subprocess.run(command, capture_output=True, timeout=120).returncode
+        image[:2] = b'\x01\x00'; packed.write_bytes(image)
         altered = bytearray(output.read_bytes()); altered[0] = 1; output.write_bytes(altered)
         result = subprocess.run(command, capture_output=True, text=True, timeout=120)
         assert result.returncode and 'projected byte mismatch' in result.stderr

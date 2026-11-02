@@ -19,5 +19,6 @@ int main(int argc,char**argv){try{
  for(unsigned m=1;m<=1023;++m)for(unsigned sign:{0u,0x8000u}){const uint16_t h=uint16_t(sign|m);const float expected=std::ldexp(sign?-float(m):float(m),-24);need(bits(half(h))==bits(expected),"WO: binary16 subnormal conversion");}
  for(auto h:{uint16_t(0x7c00),uint16_t(0xfc00),uint16_t(0x7e00)}){auto g=f;set16(g.weights,0,h);bool fail=false;try{validate(g);}catch(...){fail=true;}need(fail,"WO: accepted unsupported scale");}
  for(auto h:{uint16_t(0x0001),uint16_t(0x8001)}){auto g=f;set16(g.input,0,h);bool fail=false;try{validate(g);}catch(...){fail=true;}need(fail,"WO: accepted subnormal input half scale");}
+ for(unsigned h=1;h<=1023;++h)need(input_half(uint16_t(h),InputScaleDomain::gdn_output_finite)==std::ldexp(float(h),-24),"GDN output: half expansion");
  puts("WO independent literal, native partition, finite-domain and layout controls pass");return 0;
 }catch(const std::exception& e){fprintf(stderr,"%s\n",e.what());return 1;}}
