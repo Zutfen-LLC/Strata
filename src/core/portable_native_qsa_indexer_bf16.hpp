@@ -17,7 +17,7 @@ class PortableNativeQsaIndexerBf16 {
  std::filesystem::path directory_;bool record_;std::array<bool,8> recorded_{};
  static constexpr std::array<size_t,2> rows_{{128,512}};
  static Context context(){Context c(ggml_init({32768,nullptr,true}),ggml_free);native_shared_need(bool(c),"QSA indexer BF16: metadata allocation");return c;}
- static void leaves(ggml_context*c,std::array<ggml_tensor*,2>&o,ggml_tensor*&a){for(size_t i=0;i<2;++i)o[i]=ggml_new_tensor_1d(c,GGML_TYPE_F32,rows_[i]);a=ggml_new_tensor_1d(c,GGML_TYPE_F32,1);}
+ static void leaves(ggml_context*c,std::array<ggml_tensor*,2>&o,ggml_tensor*&a){for(size_t i=0;i<2;++i){o[i]=ggml_new_tensor_1d(c,GGML_TYPE_F32,rows_[i]);ggml_set_output(o[i]);}a=ggml_new_tensor_1d(c,GGML_TYPE_F32,1);}
  static size_t metadata(ggml_backend_t b){auto c=context();ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,128);return ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(b));}
  static void save(const std::filesystem::path&p,const void*data,size_t n){std::ofstream o(p,std::ios::binary);o.write(static_cast<const char*>(data),n);native_shared_need(bool(o),"QSA indexer BF16: receipt write");}
 public:
@@ -37,6 +37,7 @@ public:
   bytes_=ggml_backend_buffer_get_size(buffer_.get())+strata_vk_native_shared_bytes(component_.get());native_shared_need(bytes_<=estimate(b)&&bytes_<=budget,"QSA indexer BF16: allocation exceeds admission");
  }
  size_t bytes()const{return bytes_;}
+ ggml_tensor* projection(size_t role)const{native_shared_need(role<outputs_.size(),"QSA indexer BF16: projection role");return outputs_[role];}
  uint64_t calls(unsigned stage)const{switch(stage){case 0:return strata_vk_native_shared_submitted(component_.get());case 1:return strata_vk_native_shared_completed(component_.get());case 2:return strata_vk_native_shared_uncertain(component_.get());default:return 0;}}
  Candidate run(ggml_tensor*mixed){native_shared_need(mixed && ggml_nbytes(mixed)==2560*4,"QSA indexer BF16: mixed input span");std::vector<float> input(2560);ggml_backend_tensor_get(mixed,input.data(),0,input.size()*4);Candidate result;
   for(size_t i=0;i<2;++i){std::vector<uint16_t>weights(rows_[i]*2560);ggml_backend_tensor_get(weights_[i],weights.data(),0,weights.size()*2);auto expected=qsa_indexer_bf16_control(input.data(),weights.data(),rows_[i]);

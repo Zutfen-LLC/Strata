@@ -330,13 +330,14 @@ struct PortableQsaLayer::Impl {
         portable_detail::PortableNativeQsaQkv::Candidate qkv_candidate;
         if(s.options.native_qkv_t1){qkv_candidate=s.native_qkv->run(s.native_hc->mixed);for(size_t i=0;i<3;++i)write(s.qkv_leaves[i],qkv_candidate.output[i]);}
         portable_detail::PortableNativeQsaIndexerBf16::Candidate indexer_projection_candidate;
+        auto norm_raw=s.norm_raw;
         if(s.options.native_indexer_projection_t1){indexer_projection_candidate=s.native_indexer_projection->run(s.native_hc->mixed);for(size_t i=0;i<2;++i)write(s.indexer_projection_leaves[i],indexer_projection_candidate.values[i]);}
 #endif
         s.project->run();
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(s.options.native_qkv_t1)s.native_qkv->consumed(position,s.native_hc->mixed,s.qkv_leaves,qkv_candidate);
-        if(s.options.native_indexer_projection_t1)s.native_indexer_projection->consumed(position,s.native_hc->mixed,s.indexer_projection_leaves,indexer_projection_candidate);
-        if(s.options.native_norm_rope_t1)s.native_norm_rope->run(s.norm_raw,position);
+        if(s.options.native_indexer_projection_t1){s.native_indexer_projection->consumed(position,s.native_hc->mixed,s.indexer_projection_leaves,indexer_projection_candidate);norm_raw[2]=s.native_indexer_projection->projection(1);}
+        if(s.options.native_norm_rope_t1)s.native_norm_rope->run(norm_raw,position);
 #endif
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(s.native_hc)s.native_hc->record_first();
@@ -387,7 +388,7 @@ struct PortableQsaLayer::Impl {
         } else {
 #ifdef STRATA_PORTABLE_NATIVE_HC
             if(s.options.native_indexer_t1){
-                native_indexer_candidate=s.native_indexer->run(s.ik,position);
+                native_indexer_candidate=s.native_indexer->run(s.options.native_indexer_projection_t1?s.native_indexer_projection->projection(0):s.ik,position);
                 next_tail.resize(3*ID);std::memcpy(next_tail.data(),native_indexer_candidate.data(),3*ID*4);
                 next_pool.resize((complete+1)*ID);std::memcpy(next_pool.data(),native_indexer_candidate.data()+portable_detail::qsa_idx_pool,next_pool.size()*4);
                 if(n%4==0)new_pool.assign(next_pool.begin()+(complete-1)*ID,next_pool.begin()+complete*ID);
