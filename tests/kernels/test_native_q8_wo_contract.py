@@ -11,7 +11,7 @@ with tempfile.TemporaryDirectory(prefix='q8-wo-contract-') as t:
 namespace strata::kernels {
 void native_mmvq(int type,const void* weights,const void* x,float* y,int n,int rows,int cols,void* stream){
  validate_shape(n,cols,32);validate_pointer(weights);validate_pointer(x);validate_pointer(y);validate_stream(stream);
- if(type!=8||n!=6144||cols!=1||stream!=active||rows<6)throw std::runtime_error("WO provider: signature");
+ if(type!=8||n!=6144||cols!=1||stream!=active||rows<8)throw std::runtime_error("WO provider: signature");
  log("launch");using namespace native_q8_wo_fixture;
  native_q8_wo_fixture::Fixture f{size_t(rows),Bytes(size_t(rows)*q8_wo_row_bytes),Bytes(q8_wo_input_bytes)};
  std::memcpy(f.weights.data(),weights,f.weights.size());std::memcpy(f.input.data(),x,f.input.size());
@@ -19,12 +19,12 @@ void native_mmvq(int type,const void* weights,const void* x,float* y,int n,int r
 }}
 ''')
  native=d/'wo-native-provider';subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-O2','-fno-fast-math','-ffp-contract=off','-I'+str(d),'-I'+str(root/'include'),'-I'+str(root/'src/core'),'-I'+str(root/'tests/kernels'),'-x','c++',str(root/'tests/kernels/native_q8_wo_reference.cu'),str(provider),'-o',str(native)],check=True)
- for rows in (6,2560):
+ for rows in (8,2560):
   fixture=d/f'fixture-{rows}';r=run([control,'--synthetic',rows,fixture],cwd=d);assert r.returncode==0,r.stderr
   weights=fixture/'weights.bin';packed=fixture/'qx.bin';assert weights.stat().st_size==rows*6528 and packed.stat().st_size==6912
   if rows==2560:
-   assert hashlib.sha256(weights.read_bytes()).hexdigest()=='0b925b976dc8ac51c219a319cc35943870d3baace960b70d8ddc9d6c4748594f'
-   assert hashlib.sha256(packed.read_bytes()).hexdigest()=='9824f511439b82ce68f9ca3cf881cbfd3e2145ad36745bef5af650f21cad3912'
+   assert hashlib.sha256(weights.read_bytes()).hexdigest()=='96425599c0b6af6e3cc3fefe21bd6c03b7b2257a2e8e1c6ac8f1b6aab9479e69'
+   assert hashlib.sha256(packed.read_bytes()).hexdigest()=='9391f116934a0f2b0865a97e5f0f3e0749be6bd6b413c19071ca7ccb72d5cc46'
   contracts=[]
   for idx,exe in enumerate((control,native,vulkan)):
    output=d/f'contract-{rows}-{idx}.json';r=run([exe,'--contract',weights,packed,rows,output],cwd=d);assert r.returncode==0,r.stderr;contracts.append(output.read_bytes())

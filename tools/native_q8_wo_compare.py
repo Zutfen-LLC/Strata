@@ -8,7 +8,7 @@ def read(path):
  if p.is_symlink() or not p.is_file():raise ValueError('regular file required')
  return p.read_bytes()
 def compare(weights,weight_sha,packed,packed_sha,rows,native,vulkan,control,control_sha):
- if not 6<=rows<=2560:raise ValueError('unsupported rows')
+ if not 8<=rows<=2560:raise ValueError('unsupported rows')
  for p,h in ((weights,weight_sha),(packed,packed_sha),(control,control_sha)):
   if len(h)!=64 or digest(read(p))!=h:raise ValueError('bound input or control differs')
  result=subprocess.run([str(control),'--validate',str(weights),str(packed),str(rows)],capture_output=True,timeout=60)
