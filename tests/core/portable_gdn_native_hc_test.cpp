@@ -162,6 +162,7 @@ int main(){try{
   auto opts=o.execution;opts.native_hc_pending_read=true;opts.native_hc_receipt_prefix=(root/"ffn-control").string();
   auto control=PortableFfn::create({2560,4,320,640,512,10,1e-6f},0,fw,opts,error);check(bool(control),error);
   check(control->reset(expected,error),error);check(!control->step(experts(),route,error),"pending FFN accepted implicit tuple");
+  check(!control->step_pending_device(nullptr,std::vector<float>(4,0),experts(),route,error)&&control->residual()==expected,"pending FFN accepted missing producer bank");
   check(!control->create_chunk_execution(2,error),"pending FFN accepted chunk owner");
   {auto bo=std::vector<float>(2560,0);auto inj=std::vector<float>(4,0);bo.pop_back();check(!control->step_pending(bo,inj,experts(),route,error),"short FFN producer accepted");bo.resize(2560);bo[0]=std::numeric_limits<float>::quiet_NaN();check(!control->step_pending(bo,inj,experts(),route,error),"nonfinite FFN producer accepted");check(control->residual()==expected,"invalid producer changed public residual");}
   {std::vector<PortableRoute> routes;check(!control->step_batch([](int64_t,const std::vector<PortableRoute>&,std::vector<float>&,std::string&){return true;},routes,error),"pending FFN accepted batch bypass");}

@@ -508,36 +508,46 @@ bool PortableFfn::step_pending(const std::vector<float>& b,const std::vector<flo
     const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableFfnHcTrace* trace,uint64_t diagnostic_position) {
     return step_impl(&b,&i,dispatch,route,error,trace,diagnostic_position);
 }
-bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>* i,
+bool PortableFfn::step_pending_device(ggml_tensor* b,const std::vector<float>& i,
     const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableFfnHcTrace* trace,uint64_t diagnostic_position) {
+    return step_impl(nullptr,&i,dispatch,route,error,trace,diagnostic_position,b);
+}
+bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>* i,
+    const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableFfnHcTrace* trace,uint64_t diagnostic_position,ggml_tensor* producer_block) {
     error.clear(); route = {};if(trace)*trace={};
     try {
         auto& s = *impl_;
         require(s.tokens == 1, "portable FFN: multirow graph requires batch dispatch");
         require(s.initialized && bool(dispatch), "portable FFN: reset and expert callback required");
         require(!s.options.defer_hc_write || s.pending.empty(),"deferred FFN: fresh residual reset required before another producer");
-        require(s.options.native_hc_pending_read==bool(b&&i),"native FFN HC: complete fresh tuple required only in pending mode");
+        require(!(b&&producer_block)&&bool(b||producer_block)==bool(i)&&s.options.native_hc_pending_read==bool((b||producer_block)&&i),"native FFN HC: complete fresh tuple required only in pending mode");
+#ifndef STRATA_PORTABLE_NATIVE_HC
+        require(!producer_block,"native FFN HC: device producer requires native backend");
+#endif
         PortableFfnHcTrace observed;
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(s.native_hc) {
-            require(b->size()==2560 && i->size()==4,"native FFN HC: producer tuple shape");finite(*b);finite(*i);
-            write(s.native_hc->pending_input,s.state);write(s.native_hc->previous_output,*b);write(s.native_hc->previous_inject,*i);
+            require((producer_block ? (producer_block->type==GGML_TYPE_F32&&ggml_nbytes(producer_block)==2560*sizeof(float)&&producer_block->buffer&&ggml_is_contiguous(producer_block)) : b->size()==2560) && i->size()==4,"native FFN HC: producer tuple shape");if(b)finite(*b);finite(*i);
+            write(s.native_hc->pending_input,s.state);if(b)write(s.native_hc->previous_output,*b);write(s.native_hc->previous_inject,*i);
             s.native_hc->diagnostic_position(diagnostic_position);
-            s.native_hc->run_pending();
+            s.native_hc->run_pending(producer_block);
             if(trace) {
-                observed.original=s.state;observed.previous_output=*b;observed.previous_injection=*i;
+                observed.original=s.state;observed.previous_output=b?*b:read(producer_block);observed.previous_injection=*i;
                 observed.residual=read(s.native_hc->residual);observed.gate=read(s.native_hc->pending_gate);observed.exponential=read(s.native_hc->pending_exp);
                 observed.normalized=read(s.native_hc->normalized);observed.rs=read(s.native_hc->rs);observed.inject=read(s.native_hc->inject);
                 observed.low_pre=read(s.native_hc->low_pre);observed.low=read(s.native_hc->low);observed.low_exp=read(s.native_hc->low_exp);
                 observed.up_pre=read(s.native_hc->up_pre);observed.gates=read(s.native_hc->gates);observed.up_exp=read(s.native_hc->up_exp);observed.mixed=read(s.native_hc->mixed);
             }
-        } else
+        } else {require(!producer_block,"native FFN HC: device producer requires pending owner");
 #endif
         write(s.input, s.state);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        }
+#endif
         ++s.work.pre_graph_calls;
         require(ggml_backend_sched_graph_compute(s.pre_sched.get(), s.pre) == GGML_STATUS_SUCCESS, "portable FFN: pre graph failed");
 #ifdef STRATA_PORTABLE_NATIVE_HC
-        if(s.native_hc)s.native_hc->record_first();
+        if(s.native_hc)s.native_hc->record_first(producer_block);
 #endif
         PortableRoute candidate;
         auto* observer=s.options.layer0_observer;

@@ -63,6 +63,7 @@ public:
     if(bytes_>estimate(b)||bytes_>budget)throw std::runtime_error("QSA WO: actual allocation exceeds bound");
  }
  size_t bytes()const{return bytes_;}
+ ggml_tensor* output()const{return output_;}
  uint64_t calls(unsigned i)const{switch(i){case 0:return strata_vk_native_stages_quant_submitted(quant_.get());case 1:return strata_vk_native_stages_quant_completed(quant_.get());case 2:return strata_vk_q8_wo_submitted(wo_.get());case 3:return strata_vk_q8_wo_completed(wo_.get());case 4:return strata_vk_native_stages_quant_submission_uncertain(quant_.get());case 5:return strata_vk_q8_wo_submission_uncertain(wo_.get());default:return 0;}}
  Candidate run(ggml_tensor* gated,const std::vector<float>& expected){
     qsa_wo_input_domain(expected);

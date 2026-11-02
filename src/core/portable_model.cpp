@@ -190,6 +190,15 @@ struct PortableModelSession::Impl {
                 std::clog<<"qsa_qkv_role "<<role.name<<" type=Q8_0 bytes="<<role.bytes<<" zero="<<classes.zero<<" normal="<<classes.normal<<" subnormal="<<classes.subnormal<<" nonfinite="<<classes.nonfinite<<'\n';
             }
         }
+        if(opts.native_gdn_output_projection_t1){
+            for(size_t l=0;l<48;++l)if(portable_detail::model_gdn_t1_layer(l)){
+                auto role=view(model,"blk."+std::to_string(l)+".ssm_out.weight");
+                require(role.type==8&&role.shape==std::vector<int64_t>({6144,2560}),"GDN output projection: unsupported role type or shape: "+role.name);
+                portable_detail::qsa_wo_weight_domain(role.data,role.bytes,role.name);
+                auto classes=portable_detail::qsa_wo_scale_classes(static_cast<const uint8_t*>(role.data),2560u*192u,34);
+                std::clog<<"gdn_output_role "<<role.name<<" type=Q8_0 bytes="<<role.bytes<<" zero="<<classes.zero<<" normal="<<classes.normal<<" subnormal="<<classes.subnormal<<" nonfinite="<<classes.nonfinite<<'\n';
+            }
+        }
         if(opts.native_qsa_wo_t1){
             // Scan all selected role bytes before allocating layers or executing
             // a request. Do not silently omit an unsupported QSA layer.
@@ -873,6 +882,7 @@ PortableModelWork PortableModelSession::model_work(bool state_digests) const {
         }if(l==3&&layer.qsa)work.native_hc_pending_layer3_calls+=layer.qsa->native_hc_pending_calls();if(!layer.gdn)continue;
         work.native_gdn_t1_calls[l]=layer.gdn->native_recurrence_calls();
         for(unsigned i=0;i<6;++i)work.native_gdn_input_projection_calls[i][l]=layer.gdn->native_input_projection_calls(i);
+        for(unsigned i=0;i<6;++i)work.native_gdn_output_projection_calls[i][l]=layer.gdn->native_output_projection_calls(i);
         work.native_gdn_conv_calls[l]=layer.gdn->native_convolution_calls();work.native_gdn_ab_calls[l]=layer.gdn->native_ab_calls();
         if(state_digests && !impl_->opts.gdn_production){const auto&state=layer.gdn->recurrent_state();const auto digest=worker::blob_digest(state.data(),state.size()*sizeof(float));work.gdn_state_a[l]=digest.a;work.gdn_state_b[l]=digest.b;}
         if(l==2)work.deferred_ffn_layer2_outputs+=layer.gdn->deferred_hc_outputs();
