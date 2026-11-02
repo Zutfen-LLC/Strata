@@ -754,6 +754,16 @@ for each capability below.
    not establish general MUFU.RCP equivalence or model integration. Vulkan had
    no in-loop guard sample; qualified=false remains. Terra owns this separate
    candidate; the prior RN implementation and failed result are unchanged.
+   The subsequent same-input replay at `e9ed479c` also passes, as reported by
+   Hermes: eight retained layer3 gated inputs, positions 0..7, match all 55,296
+   packed output bytes across native CUDA and Vulkan. Exact input echoes,
+   canaries, repeats, modules, process exit/reap and three baseline cleanup
+   observations pass; native has eight in-loop samples and Vulkan none.
+   Inputs are from the portable model's actual gated candidate, supplied equally
+   to each quantizer; this does not establish upstream native attention equality.
+   Literal controls remain separate; no model rerun or integration was performed.
+   The remaining projection consumer is native T1 MMVQ: the portable combine
+   still calls GGML matrix multiplication and cannot use these packed bytes yet.
    Quantized KV, projections, accepted-prefix and window scheduling remain gaps.
 
 
