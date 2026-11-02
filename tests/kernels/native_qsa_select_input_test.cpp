@@ -1,0 +1,14 @@
+#include "native_qsa_select_fixture.hpp"
+using namespace native_qsa_ss;
+int main(int argc,char**argv){try{
+ if(argc==4&&std::string(argv[1])=="--synthetic"){write(argv[3],native_qsa_ss::synthetic(std::stoul(argv[2])));return 0;}
+ if(argc==4&&std::string(argv[1])=="--contract"){contract(native_qsa_ss::read(argv[2]),argv[3]);return 0;}
+ if(argc==4&&std::string(argv[1])=="--check"){check(native_qsa_ss::read(argv[2]),argv[3]);return 0;}
+ if(argc==4&&std::string(argv[1])=="--oracle"){auto f=native_qsa_ss::read(argv[2]);std::filesystem::path d=argv[3];native_hc_need(std::filesystem::create_directory(d),"fresh QSA host oracle");std::filesystem::copy_file(argv[2],d/"fixture.bin");auto s=score_control(f);put(d/"scores.f32le",s);put(d/"selected.i32le",select_control(f,s));return 0;}
+ native_hc_need(argc==1,"QSA input/control arguments");auto f=native_qsa_ss::synthetic(0);f.step={{3,4,1,4}};std::fill(f.query.begin(),f.query.end(),0);for(size_t j=0;j<4;++j)f.pooled[j]=1;float q[]={0x1p24f,1.f,-0x1p24f,1.f};for(size_t j=0;j<4;++j)f.query[j]=q[j];native_hc_need(score_control(f)[0]==bits(1.f),"independent left-associated contraction/cancellation vector");for(size_t j=0;j<4;++j)f.query[128+j]=-1;for(size_t j=0;j<4;++j)f.query[384+j]=1;native_hc_need(score_control(f)[0]==bits(5.f),"independent per-head ReLU, not per-term ReLU");
+ std::fill(f.pooled.begin(),f.pooled.end(),0);f.pooled[0]=1;std::fill(f.query.begin(),f.query.end(),0);f.query[0]=1;f.query[128]=0x1p24f;f.query[256]=1;native_hc_need(score_control(f)[0]==bits(0x1p24f),"independent sequential head sum");
+ for(unsigned mode:{3u,4u,6u,7u}){auto g=native_qsa_ss::synthetic(mode);auto s=score_control(g),ids=select_control(g,s);for(size_t i=0;i<2050;++i)native_hc_need(ids[i]==i,"independent lowest-cell ties");if(mode==4)native_hc_need(ids[2050]==2052,"incomplete-tail weight/bias");else native_hc_need(ids[2050]==2050,"identity/threshold or finite tail not forced");}
+ for(auto bad:std::vector<std::array<int32_t,4>>{{{-1,0,0,0}},{{4096,4097,1024,2051}},{{1,2,0,1}},{{7,8,1,8}}}){bool rejected=false;try{native_qsa_select_geometry(4096,bad);}catch(...){rejected=true;}native_hc_need(rejected,"invalid native step geometry accepted");}
+ native_qsa_select_environment();setenv("STRATA_TOPK_OLD","1",1);bool alternative=false;try{native_qsa_select_environment();}catch(...){alternative=true;}unsetenv("STRATA_TOPK_OLD");native_hc_need(alternative,"alternative selector silently substituted");
+ native_hc_need(order_key(0x80000000)==order_key(0)&&order_key(0x7fc00001)==0&&order_key(0xff800000)>0&&order_key(0x7f800000)>order_key(0x7f7fffff),"independent NaN/Inf/zero order-key policy");puts("native QSA independent contraction/head/tie/tail/special-value controls pass");return 0;
+ }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}

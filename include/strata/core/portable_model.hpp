@@ -111,6 +111,10 @@ struct PortableModelOptions {
     bool expert_timings = false; // opt-in coarse provider/executor host-call boundaries
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
     bool native_qsa_indexer_t1=false, qsa_indexer_resident_weights=false;
+    bool native_qsa_attention_t1=false,qsa_attention_banks=false;
+    std::string qsa_attention_receipt_prefix;
+    bool native_qsa_score_select_t1=false,qsa_score_select_banks=false;
+    std::string qsa_score_select_receipt_prefix;
     std::string qsa_indexer_receipt_prefix;
     bool native_qsa_norm_rope_t1=false;
     bool qsa_norm_rope_resident_weights=false;
@@ -146,7 +150,8 @@ struct PortableExpertWork {
 // Whole-call wall totals are optional; head outcome counters are unconditional.
 // Layer totals include matched provider intervals.
 struct PortableModelWork {
-    std::array<uint64_t,48> native_qsa_indexer_calls{},native_qsa_norm_rope_calls{},qsa_state_a{},qsa_state_b{};
+    std::array<uint64_t,48> native_qsa_attention_chunk_calls{},native_qsa_attention_merge_calls{},native_qsa_attention_gate_calls{};
+    std::array<uint64_t,48> native_qsa_score_calls{},native_qsa_select_calls{},native_qsa_indexer_calls{},native_qsa_norm_rope_calls{},qsa_state_a{},qsa_state_b{};
     std::array<uint64_t,48> native_gdn_conv_calls{},native_gdn_ab_calls{},native_gdn_t1_calls{},gdn_state_a{},gdn_state_b{};
     std::array<uint64_t,48> native_hc_serial_reads{}, native_hc_serial_ffn_calls{}, native_hc_serial_outputs{};
     uint64_t native_hc_serial_final_writes=0;

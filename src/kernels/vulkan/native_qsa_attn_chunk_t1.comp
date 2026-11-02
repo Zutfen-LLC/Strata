@@ -1,0 +1,67 @@
+#version 450
+// Native qsa_decode_attn.cu::attn_chunk_body<0,false,false,false>.
+// MIT License
+//
+// Copyright (c) 2026 Niko1221 and the Strata contributors
+// Copyright (c) 2023-2026 The ggml authors (reused integer FP16 expansion)
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427) float nfma(float a,float b,float c);
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer K{uint keys[];};
+layout(binding=1,std430) readonly buffer V{uint values[];};
+layout(binding=2,std430) readonly buffer Q{float query[];};
+layout(binding=3,std430) readonly buffer PAGES{int pages[];};
+layout(binding=4,std430) readonly buffer IDS{int ids[];};
+layout(binding=5,std430) readonly buffer STEP{int step[];};
+layout(binding=6,std430) buffer SCRATCH{float scratch[];};
+layout(binding=7,std430) buffer AUX{float aux[];};
+layout(binding=8,std430) buffer STATUS{uint status[];};
+layout(push_constant) uniform Params{uint off[9];uint npages;uint cells;}p;
+shared float sq[3072],sp[768],partial[256];shared int srow[64];
+float ck(float v){uint a=floatBitsToUint(v)&0x7fffffffu;if(a>=0x7f800000u||(a!=0u&&a<0x800000u))atomicOr(status[p.off[8]],1u);return v;}
+float expand_half(uint h){uint sign=(h&0x8000u)<<16,e=(h>>10)&31u,m=h&1023u;if(e==0u){if(m==0u)return uintBitsToFloat(sign);uint shift=0u;while((m&1024u)==0u){m<<=1u;++shift;}return uintBitsToFloat(sign|((113u-shift)<<23)|((m&1023u)<<13));}return uintBitsToFloat(sign|((e+112u)<<23)|(m<<13));}
+float kval(uint i){return expand_half((keys[p.off[0]+i/2u]>>((i&1u)*16u))&65535u);}
+float vval(uint i){return expand_half((values[p.off[1]+i/2u]>>((i&1u)*16u))&65535u);}
+float maximum(float a,float b){return a==0.0&&b==0.0?uintBitsToFloat(floatBitsToUint(a)&floatBitsToUint(b)):max(a,b);}
+void main(){uint t=gl_LocalInvocationID.x,lane=t&31u,warp=t>>5u,chunk=gl_WorkGroupID.x,kvh=gl_WorkGroupID.y,slot=kvh*33u+chunk;int n_here=min(64,step[p.off[5]+3u]-int(chunk*64u));
+ if(n_here<=0){if(t<12u){scratch[p.off[6]+202752u+slot*12u+t]=-uintBitsToFloat(0x7f7fffffu);scratch[p.off[6]+203544u+slot*12u+t]=0.0;}return;}
+ for(uint i=t;i<3072u;i+=256u)sq[i]=ck(query[p.off[2]+kvh*3072u+i]);
+ if(t<64u){int row=-1;if(t<uint(n_here)){int cell=ids[p.off[4]+chunk*64u+t],page=pages[p.off[3]+uint(cell)/4u];if(page>=0)row=(page*2+int(kvh))*4+cell%4;}srow[t]=row;}barrier();
+ // Same native warp/cell/head chronology. Inactive logical warps participate
+ // only in shared shuffle barriers and cannot publish an arithmetic candidate.
+ for(uint batch=0u;batch<8u;++batch){uint c=warp+batch*8u;bool live=c<uint(n_here)&&srow[c]>=0;float k[8];for(uint j=0u;j<8u;++j)k[j]=live?ck(kval(uint(srow[c])*256u+lane*8u+j)):0.0;
+  for(uint h=0u;h<12u;++h){uint at=h*256u+lane*8u;precise float d=ck(k[0]*sq[at]);d=ck(nfma(k[1],sq[at+1u],d));d=ck(nfma(k[2],sq[at+2u],d));d=ck(nfma(k[3],sq[at+3u],d));d=ck(nfma(k[4],sq[at+4u],d));d=ck(nfma(k[5],sq[at+5u],d));d=ck(nfma(k[6],sq[at+6u],d));d=ck(nfma(k[7],sq[at+7u],d));partial[t]=d;barrier();
+   for(uint o=16u;o>0u;o>>=1u){precise float v=ck(partial[t]+partial[t^o]);barrier();partial[t]=v;barrier();}
+   if(lane==0u){precise float score=live?ck(partial[t]*0.0625):-uintBitsToFloat(0x7f7fffffu);sp[h*64u+c]=score;aux[p.off[7]+(kvh*12u+h)*2112u+chunk*64u+c]=score;}barrier();
+  }
+ }
+ // There are at most two heads per warp; every invocation enters both rounds.
+ for(uint round=0u;round<2u;++round){uint h=warp+round*8u;bool live=h<12u;float a=live?sp[h*64u+lane]:0.0,b=live?sp[h*64u+lane+32u]:0.0;partial[t]=maximum(a,b);barrier();
+  for(uint o=16u;o>0u;o>>=1u){float m=maximum(partial[t],partial[t^o]);barrier();partial[t]=m;barrier();}float m=partial[t];
+  bool va=live&&lane<uint(n_here)&&srow[lane]>=0,vb=live&&lane+32u<uint(n_here)&&srow[lane+32u]>=0;precise float da=va?ck(a-m):0.0,db=vb?ck(b-m):0.0;float ea=va?ck(exp(da)):0.0,eb=vb?ck(exp(db)):0.0;
+  if(live){sp[h*64u+lane]=ea;sp[h*64u+lane+32u]=eb;aux[p.off[7]+50688u+(kvh*12u+h)*2112u+chunk*64u+lane]=ea;aux[p.off[7]+50688u+(kvh*12u+h)*2112u+chunk*64u+lane+32u]=eb;}precise float sum=ck(ea+eb);partial[t]=sum;barrier();
+  for(uint o=16u;o>0u;o>>=1u){precise float next=ck(partial[t]+partial[t^o]);barrier();partial[t]=next;barrier();}
+  if(live&&lane==0u){scratch[p.off[6]+202752u+slot*12u+h]=m;scratch[p.off[6]+203544u+slot*12u+h]=partial[t];}barrier();
+ }
+ float acc[12];for(uint h=0u;h<12u;++h)acc[h]=0.0;
+ for(int c=0;c<n_here;++c){if(srow[c]<0)continue;float v=ck(vval(uint(srow[c])*256u+t));for(uint h=0u;h<12u;++h)acc[h]=ck(nfma(sp[h*64u+uint(c)],v,acc[h]));}
+ for(uint h=0u;h<12u;++h)scratch[p.off[6]+(slot*12u+h)*256u+t]=acc[h];
+}

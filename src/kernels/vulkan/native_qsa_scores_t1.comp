@@ -1,0 +1,49 @@
+#version 450
+// Native qsa_select.cu::block_scores_multi_body, default T1 path.
+// MIT License
+//
+// Copyright (c) 2026 Niko1221 and the Strata contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427) float nfma(float a,float b,float c);
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer K{float pooled[];};
+layout(binding=1,std430) readonly buffer D{float dead[];};
+layout(binding=2,std430) readonly buffer Q{float query[];};
+layout(binding=3,std430) readonly buffer T{int step[];};
+layout(binding=4,std430) writeonly buffer O{float scores[];};
+layout(binding=5,std430) buffer S{uint status[];};
+layout(push_constant) uniform Params{uint off[6];uint blocks;}p;
+shared float qs[512],partial[256];
+float ck(float v){uint a=floatBitsToUint(v)&0x7fffffffu;if(a>=0x7f800000u||(a!=0u&&a<0x800000u))atomicOr(status[p.off[5]],1u);return v;}
+void main(){uint tid=gl_LocalInvocationID.x,lane=tid&31u,b=gl_WorkGroupID.x*8u+(tid>>5);uint nb=uint(step[p.off[3]+2u]),n=uint(step[p.off[3]+1u]);
+ // Native early-exit is CTA-uniform and precedes query staging.
+ if(gl_WorkGroupID.x*8u>nb)return;
+ for(uint i=tid;i<512u;i+=256u)qs[i]=query[p.off[2]+i];barrier();
+ // Bound4096 means one iteration of the native 256-CTA/8-warp strided loop.
+ // Inactive logical warps participate in shared-memory shuffle emulation only.
+ bool live=b<=nb&&b<p.blocks;float key[4];for(uint j=0u;j<4u;++j)key[j]=!live?0.0:b==nb?dead[p.off[1]+lane*4u+j]:pooled[p.off[0]+b*128u+lane*4u+j];
+ precise float score=0.0;
+ for(uint h=0u;h<4u;++h){uint at=h*128u+lane*4u;precise float d=ck(key[0]*qs[at]);d=ck(nfma(key[1],qs[at+1u],d));d=ck(nfma(key[2],qs[at+2u],d));d=ck(nfma(key[3],qs[at+3u],d));partial[tid]=d;barrier();
+  for(uint o=16u;o>0u;o>>=1u){precise float v=ck(partial[tid]+partial[tid^o]);barrier();partial[tid]=v;barrier();}
+  score=ck(score+(partial[tid]>0.0?partial[tid]:0.0));
+ }
+ if(live&&lane==0u){if(b==nb&&n%4u!=0u)score=ck(score+1e9);scores[p.off[4]+b]=score;}
+}

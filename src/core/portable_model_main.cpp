@@ -188,6 +188,8 @@ int main(int argc, char **argv) {
                 opts.gdn_batch_input_projections = true;
                 continue;
             }
+            if(key=="--native-qsa-attention-t1"){opts.native_qsa_attention_t1=true;continue;}
+            if(key=="--native-qsa-score-select-t1"){opts.native_qsa_score_select_t1=true;continue;}
             if(key=="--native-qsa-indexer-t1"){opts.native_qsa_indexer_t1=true;continue;}
             if(key=="--native-qsa-norm-rope-t1"){opts.native_qsa_norm_rope_t1=true;continue;}
             if(key=="--gdn-native-prep-bf16") {opts.native_gdn_preparation_weights=true;continue;}
@@ -206,7 +208,9 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
-            if(key=="--qsa-indexer-resident-weights"){opts.qsa_indexer_resident_weights=true;opts.qsa_indexer_receipt_prefix=value;}
+            if(key=="--qsa-attention-banks"){opts.qsa_attention_banks=true;opts.qsa_attention_receipt_prefix=value;}
+            else if(key=="--qsa-score-select-banks"){opts.qsa_score_select_banks=true;opts.qsa_score_select_receipt_prefix=value;}
+            else if(key=="--qsa-indexer-resident-weights"){opts.qsa_indexer_resident_weights=true;opts.qsa_indexer_receipt_prefix=value;}
             else if(key=="--qsa-norm-rope-resident-weights"){opts.qsa_norm_rope_resident_weights=true;opts.qsa_norm_rope_receipt_prefix=value;}
             else if(key=="--native-gdn-prep-t1") {opts.native_gdn_preparation_t1=true;opts.native_gdn_preparation_receipt_prefix=value;}
             else if(key=="--native-gdn-t1") {opts.native_gdn_t1=true;opts.native_gdn_receipt_prefix=value;}
@@ -370,6 +374,8 @@ int main(int argc, char **argv) {
                      <<",\"dense_resident_weights\":"<<(opts.dense_resident_weights?"true":"false")
                      <<",\"layer0_resident_weights\":"<<(opts.layer0_resident_weights?"true":"false")
                      <<",\"native_hc_serial_cycle\":"<<(opts.native_hc_serial_cycle?"true":"false")
+                     <<",\"native_qsa_attention_t1\":"<<(opts.native_qsa_attention_t1?"true":"false")<<",\"qsa_attention_banks\":"<<(opts.qsa_attention_banks?"true":"false")
+                     <<",\"native_qsa_score_select_t1\":"<<(opts.native_qsa_score_select_t1?"true":"false")<<",\"qsa_score_select_banks\":"<<(opts.qsa_score_select_banks?"true":"false")
                      <<",\"native_qsa_indexer_t1\":"<<(opts.native_qsa_indexer_t1?"true":"false")<<",\"qsa_indexer_resident_weights\":"<<(opts.qsa_indexer_resident_weights?"true":"false")
                      <<",\"native_qsa_norm_rope_t1\":"<<(opts.native_qsa_norm_rope_t1?"true":"false")<<",\"qsa_norm_rope_resident_weights\":"<<(opts.qsa_norm_rope_resident_weights?"true":"false")
                      <<",\"native_gdn_t1\":"<<(opts.native_gdn_t1?"true":"false")
@@ -579,6 +585,10 @@ int main(int argc, char **argv) {
                 const auto w=session->model_work(true);out<<",\"qsa_norm_rope_resident_weights\":"<<(opts.qsa_norm_rope_resident_weights?"true":"false")<<",\"native_qsa_norm_rope_t1\":"<<(opts.native_qsa_norm_rope_t1?"true":"false");
                 auto array=[&](const char*name,const auto&a){out<<",\""<<name<<"\":[";for(size_t l=0;l<48;++l){if(l)out<<",";out<<a[l];}out<<"]";};
                 out<<",\"qsa_indexer_resident_weights\":"<<(opts.qsa_indexer_resident_weights?"true":"false")<<",\"native_qsa_indexer_t1\":"<<(opts.native_qsa_indexer_t1?"true":"false");
+                out<<",\"native_qsa_score_select_t1\":"<<(opts.native_qsa_score_select_t1?"true":"false")<<",\"qsa_score_select_banks\":"<<(opts.qsa_score_select_banks?"true":"false");
+                out<<",\"native_qsa_attention_t1\":"<<(opts.native_qsa_attention_t1?"true":"false")<<",\"qsa_attention_banks\":"<<(opts.qsa_attention_banks?"true":"false");
+                std::array<uint64_t,48>ac{},am{},ag{};for(size_t l=0;l<48;++l){ac[l]=w.native_qsa_attention_chunk_calls[l]-heads_before.native_qsa_attention_chunk_calls[l];am[l]=w.native_qsa_attention_merge_calls[l]-heads_before.native_qsa_attention_merge_calls[l];ag[l]=w.native_qsa_attention_gate_calls[l]-heads_before.native_qsa_attention_gate_calls[l];}array("native_qsa_attention_chunk_calls_delta",ac);array("native_qsa_attention_merge_calls_delta",am);array("native_qsa_attention_gate_calls_delta",ag);
+                std::array<uint64_t,48>score_delta{},select_delta{};for(size_t l=0;l<48;++l){score_delta[l]=w.native_qsa_score_calls[l]-heads_before.native_qsa_score_calls[l];select_delta[l]=w.native_qsa_select_calls[l]-heads_before.native_qsa_select_calls[l];}array("native_qsa_score_calls_delta",score_delta);array("native_qsa_select_calls_delta",select_delta);
                 std::array<uint64_t,48>idx_delta{};for(size_t l=0;l<48;++l)idx_delta[l]=w.native_qsa_indexer_calls[l]-heads_before.native_qsa_indexer_calls[l];array("native_qsa_indexer_calls_delta",idx_delta);
                 array("qsa_state_before_a",heads_before.qsa_state_a);array("qsa_state_before_b",heads_before.qsa_state_b);array("qsa_state_after_a",w.qsa_state_a);array("qsa_state_after_b",w.qsa_state_b);
                 std::array<uint64_t,48>d{};for(size_t l=0;l<48;++l)d[l]=w.native_qsa_norm_rope_calls[l]-heads_before.native_qsa_norm_rope_calls[l];array("native_qsa_norm_rope_calls_delta",d);

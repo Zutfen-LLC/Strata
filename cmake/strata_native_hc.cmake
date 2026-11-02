@@ -112,6 +112,57 @@ function(strata_native_hc_enable out)
     DEPENDS src/kernels/vulkan/native_qsa_indexer_t1.comp cmake/strata_native_stages_embed.cmake VERBATIM)
   add_custom_target(strata_native_qsa_indexer_t1_shader DEPENDS "${out}/strata_native_qsa_indexer_t1_spv.hpp")
   add_dependencies(ggml-vulkan strata_native_qsa_indexer_t1_shader)
+  add_custom_command(OUTPUT "${out}/strata_native_qsa_attn_chunk_t1_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_qsa_attn_chunk_t1.comp" -o "${out}/native_qsa_attn_chunk_t1.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_qsa_attn_chunk_t1.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_qsa_attn_chunk_t1.spv" "-DOUTPUT=${out}/strata_native_qsa_attn_chunk_t1_spv.hpp" -DARRAY_NAME=strata_native_qsa_attn_chunk_t1_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_qsa_attn_chunk_t1.comp src/kernels/vulkan/native_f32_div_rn.glsl src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_qsa_attn_chunk_t1_shader DEPENDS "${out}/strata_native_qsa_attn_chunk_t1_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_qsa_attn_chunk_t1_shader)
+  add_custom_command(OUTPUT "${out}/strata_native_qsa_attn_merge_t1_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_qsa_attn_merge_t1.comp" -o "${out}/native_qsa_attn_merge_t1.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_qsa_attn_merge_t1.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_qsa_attn_merge_t1.spv" "-DOUTPUT=${out}/strata_native_qsa_attn_merge_t1_spv.hpp" -DARRAY_NAME=strata_native_qsa_attn_merge_t1_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_qsa_attn_merge_t1.comp src/kernels/vulkan/native_f32_div_rn.glsl src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_qsa_attn_merge_t1_shader DEPENDS "${out}/strata_native_qsa_attn_merge_t1_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_qsa_attn_merge_t1_shader)
+  add_custom_command(OUTPUT "${out}/strata_native_qsa_attn_gate_t1_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_qsa_attn_gate_t1.comp" -o "${out}/native_qsa_attn_gate_t1.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_qsa_attn_gate_t1.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_qsa_attn_gate_t1.spv" "-DOUTPUT=${out}/strata_native_qsa_attn_gate_t1_spv.hpp" -DARRAY_NAME=strata_native_qsa_attn_gate_t1_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_qsa_attn_gate_t1.comp src/kernels/vulkan/native_f32_div_rn.glsl src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_qsa_attn_gate_t1_shader DEPENDS "${out}/strata_native_qsa_attn_gate_t1_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_qsa_attn_gate_t1_shader)
+  add_custom_command(OUTPUT "${out}/strata_native_qsa_scores_t1_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_qsa_scores_t1.comp" -o "${out}/native_qsa_scores_t1.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_qsa_scores_t1.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_qsa_scores_t1.spv" "-DOUTPUT=${out}/strata_native_qsa_scores_t1_spv.hpp"
+      -DARRAY_NAME=strata_native_qsa_scores_t1_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_qsa_scores_t1.comp cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_qsa_scores_t1_shader DEPENDS "${out}/strata_native_qsa_scores_t1_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_qsa_scores_t1_shader)
+  add_custom_command(OUTPUT "${out}/strata_native_qsa_select_t1_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_qsa_select_t1.comp" -o "${out}/native_qsa_select_t1.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_qsa_select_t1.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_qsa_select_t1.spv" "-DOUTPUT=${out}/strata_native_qsa_select_t1_spv.hpp"
+      -DARRAY_NAME=strata_native_qsa_select_t1_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_qsa_select_t1.comp cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_qsa_select_t1_shader DEPENDS "${out}/strata_native_qsa_select_t1_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_qsa_select_t1_shader)
+  add_executable(native_qsa_attention_component tests/kernels/native_qsa_attention_component.cpp)
+  target_include_directories(native_qsa_attention_component PRIVATE src/core tests/kernels)
+  target_link_libraries(native_qsa_attention_component PRIVATE ggml-vulkan ggml-base)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(native_qsa_attention_component PRIVATE -fno-fast-math -ffp-contract=off)
+  endif()
+  add_executable(native_qsa_select_component tests/kernels/native_qsa_select_component.cpp)
+  target_include_directories(native_qsa_select_component PRIVATE src/core tests/kernels)
+  target_link_libraries(native_qsa_select_component PRIVATE ggml-vulkan ggml-base)
+  if(NOT MSVC)
+    target_compile_options(native_qsa_select_component PRIVATE -fno-fast-math -ffp-contract=off)
+  endif()
   add_executable(native_qsa_indexer_component tests/kernels/native_qsa_indexer_component.cpp)
   target_include_directories(native_qsa_indexer_component PRIVATE src/core tests/kernels)
   target_link_libraries(native_qsa_indexer_component PRIVATE ggml-vulkan ggml-base)
@@ -171,6 +222,20 @@ function(strata_native_hc_enable out)
     target_link_libraries(native_gdn_conv_t1_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)
     add_dependencies(native_gdn_conv_t1_effective_shader_test strata_native_gdn_conv_t1_shader)
     add_test(NAME native_gdn_conv_t1_effective_shader_test COMMAND native_gdn_conv_t1_effective_shader_test)
+    add_executable(native_qsa_attention_effective_shader_test tests/kernels/native_qsa_attention_effective_shader_test.cpp)
+    target_include_directories(native_qsa_attention_effective_shader_test PRIVATE src/core "${out}")
+    target_link_libraries(native_qsa_attention_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)
+    add_dependencies(native_qsa_attention_effective_shader_test strata_native_qsa_attn_chunk_t1_shader strata_native_qsa_attn_merge_t1_shader strata_native_qsa_attn_gate_t1_shader)
+    add_test(NAME native_qsa_attention_effective_shader_test COMMAND native_qsa_attention_effective_shader_test)
+    add_test(NAME native_qsa_attention_output_contract_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_qsa_attention_output_contract.py" "$<TARGET_FILE:native_qsa_attention_input_test>" "$<TARGET_FILE:native_qsa_attention_component>")
+    add_executable(native_qsa_select_effective_shader_test tests/kernels/native_qsa_select_effective_shader_test.cpp)
+    target_include_directories(native_qsa_select_effective_shader_test PRIVATE src/core "${out}")
+    target_link_libraries(native_qsa_select_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)
+    add_dependencies(native_qsa_select_effective_shader_test strata_native_qsa_scores_t1_shader strata_native_qsa_select_t1_shader)
+    add_test(NAME native_qsa_select_effective_shader_test COMMAND native_qsa_select_effective_shader_test)
+    add_test(NAME native_qsa_select_output_contract_test COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_qsa_select_output_contract.py"
+      "$<TARGET_FILE:native_qsa_select_input_test>" "$<TARGET_FILE:native_qsa_select_component>")
     add_executable(native_qsa_indexer_effective_shader_test tests/kernels/native_qsa_indexer_effective_shader_test.cpp)
     target_include_directories(native_qsa_indexer_effective_shader_test PRIVATE src/core "${out}")
     target_link_libraries(native_qsa_indexer_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)
