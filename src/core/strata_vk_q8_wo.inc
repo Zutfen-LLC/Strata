@@ -1,11 +1,13 @@
 #include "strata_vk_q8_wo.hpp"
 #include "native_q8_wo_layout.hpp"
+#include "native_qsa_qkv_layout.hpp"
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
 #include "strata_q8_wo_spv.hpp"
+#include "strata_qsa_qkv_spv.hpp"
 #endif
 #include <limits>
 namespace strata::core::portable_detail {
-struct StrataVkQ8Wo {std::unique_ptr<StrataVkLogitsGuard> owner;size_t budget;uint64_t submitted=0,completed=0,submission_uncertain=0;};
+struct StrataVkQ8Wo {std::unique_ptr<StrataVkLogitsGuard> owner;size_t budget;bool qkv=false;uint64_t submitted=0,completed=0,submission_uncertain=0;};
 StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t backend,const char* path,size_t budget) {
 #ifndef STRATA_NATIVE_Q8_STRICT_FMA
     (void)backend;(void)path;(void)budget;
@@ -17,6 +19,17 @@ StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t backend,const char* path,siz
     return result.release();
 #endif
 }
+StrataVkQ8Wo* strata_vk_qsa_qkv_create(ggml_backend_t backend,const char* path,size_t budget) {
+#ifndef STRATA_NATIVE_Q8_STRICT_FMA
+    (void)backend;(void)path;(void)budget;
+    throw std::runtime_error("QSA QKV: strict FMA component build required");
+#else
+    auto result=std::make_unique<StrataVkQ8Wo>();result->budget=budget;result->qkv=true;
+    result->owner=strata_vk_q8_component_owner(backend,strata_qsa_qkv_spv,sizeof(strata_qsa_qkv_spv)/4,
+        NativeComponentAddressing::descriptor,"strata_native_qsa_qkv_q8_0_candidate",3,4,path,budget,1);
+    return result.release();
+#endif
+}
 size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo* p){return p?p->owner->bytes:0;}
 uint64_t strata_vk_q8_wo_submitted(const StrataVkQ8Wo* p) noexcept{return p?p->submitted:0;}
 uint64_t strata_vk_q8_wo_completed(const StrataVkQ8Wo* p) noexcept{return p?p->completed:0;}
@@ -25,7 +38,8 @@ void strata_vk_q8_wo_destroy(StrataVkQ8Wo* p) noexcept {delete p;}
 void strata_vk_q8_wo_run(StrataVkQ8Wo* s,const ggml_tensor* weights,const ggml_tensor* packed,
                          ggml_tensor* output,size_t rows) {
     logits_guard_need(s && weights && packed && output,"Q8 WO: invalid call");
-    q8_wo_require_layout(rows,ggml_nbytes(weights),ggml_nbytes(packed),ggml_nbytes(output));
+    if(s->qkv)qsa_qkv_require_layout(rows,ggml_nbytes(weights),ggml_nbytes(packed),ggml_nbytes(output));
+    else q8_wo_require_layout(rows,ggml_nbytes(weights),ggml_nbytes(packed),ggml_nbytes(output));
     logits_guard_need(weights->type==GGML_TYPE_I32 && packed->type==GGML_TYPE_I32 && output->type==GGML_TYPE_F32,
         "Q8 WO: incorrect tensor type");
     auto& g=*s->owner;auto* ctx=static_cast<ggml_backend_vk_context*>(g.backend->context);

@@ -28,6 +28,9 @@ struct PortableQsaOptions {
     static constexpr size_t native_wo_host_bound=1u<<20;
     bool native_wo_t1=false,native_wo_record_first=false;
     std::string native_wo_receipt_prefix;
+    static constexpr size_t native_qkv_host_bound=1u<<20;
+    bool native_qkv_t1=false,native_qkv_record_first=false;
+    std::string native_qkv_receipt_prefix;
     std::string native_attention_receipt_prefix;
     static constexpr size_t native_select_host_bound=1u<<20;
     bool native_select_banks=false,native_select_t1=false,native_select_record_first=false;
@@ -96,6 +99,7 @@ class PortableQsaLayer {
     uint64_t native_select_calls() const;
     uint64_t native_attention_calls(unsigned stage) const;
     uint64_t native_wo_calls(unsigned stage) const;
+    uint64_t native_qkv_calls(unsigned stage) const;
     const std::vector<uint32_t>& native_indexer_state() const;
     uint64_t native_hc_pending_calls() const;
     uint64_t native_ffn_hc_pending_calls() const;

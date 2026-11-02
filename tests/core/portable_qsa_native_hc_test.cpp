@@ -128,6 +128,23 @@ int main(){try{
  check(wo_on->last_residual()==first_wo,"WO reset/retry changed output");
  check(std::filesystem::file_size(root/"wo-on/first-0/qx.bin")==6912&&std::filesystem::file_size(root/"wo-on/first-0/projected.f32le")==10240,"WO receipt spans differ");
  auto bad_wo=wn;bad_wo.native_attention_t1=false;bad_wo.native_wo_receipt_prefix=(root/"wo-invalid").string();check(!PortableQsaLayer::create(3,qf.views,bad_wo,error),"WO accepted nonnative attention");
+ // Q/K/V consume one actual HC mixed producer and one packed image. Only the
+ // Vulkan primitives are mocked; the layer graph and transaction are real.
+ auto qn=wn;qn.native_qkv_t1=true;qn.native_qkv_record_first=true;qn.native_qkv_receipt_prefix=(root/"qkv-on").string();qn.native_wo_receipt_prefix=(root/"qkv-wo").string();qn.native_hc_receipt_prefix=(root/"qkv-hc").string();fresh(qn,"qkv-attention");
+ auto qkv_on=PortableQsaLayer::create(3,qf.views,qn,error);check(bool(qkv_on),error);check(qkv_on->reset(error),error);
+ PortableQsaTrace qt;observe_qkv_norm=true;check(qkv_on->step(0,f.input(0),nr_dispatch,nr_route,error,&qt),error);observe_qkv_norm=false;check(qkv_norm_links==2,"QKV query/key not consumed by norm/RoPE");
+ check(qkv_on->native_qkv_calls(0)==1&&qkv_on->native_qkv_calls(1)==1&&qkv_on->native_qkv_calls(2)==3&&qkv_on->native_qkv_calls(3)==3,"QKV work counters differ");
+ check(qt.value==actual_qkv[2]&&qt.gate.size()==6144,"actual native value or gate lost");
+ for(size_t h=0;h<24;++h)for(size_t d=0;d<256;++d)check(qt.gate[h*256+d]==actual_qkv[0][h*512+256+d],"interleaved gate row lost");
+ auto qk=qkv_on->keys(),qv=qkv_on->values();auto qp=qkv_on->pooled_keys(),ql=qkv_on->last_residual();
+ fail_qsa_qkv=true;check(!qkv_on->step(1,f.input(1),nr_dispatch,nr_route,error),"QKV refusal accepted");fail_qsa_qkv=false;
+ check(qkv_on->tokens()==1&&qkv_on->keys()==qk&&qkv_on->values()==qv&&qkv_on->pooled_keys()==qp&&qkv_on->last_residual()==ql,"QKV failure committed state");
+ check(qkv_on->native_qkv_calls(0)==2&&qkv_on->native_qkv_calls(1)==2&&qkv_on->native_qkv_calls(2)==3&&qkv_on->native_qkv_calls(5)==1,"QKV failure accounting differs");
+ check(!qkv_on->step(1,f.input(1),[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="FFN failure";return false;},nr_route,error),"post-QKV failure accepted");
+ check(qkv_on->tokens()==1&&qkv_on->keys()==qk&&qkv_on->values()==qv&&qkv_on->pooled_keys()==qp&&qkv_on->last_residual()==ql,"post-QKV failure committed state");
+ check(qkv_on->step(1,f.input(1),nr_dispatch,nr_route,error),error);check(qkv_on->reset(error)&&qkv_on->step(0,f.input(0),nr_dispatch,nr_route,error),error);
+ check(qkv_on->last_residual()==ql&&std::filesystem::file_size(root/"qkv-on/first-0/qx.bin")==2880,"QKV reset/retry or packed receipt differs");
+ auto bad_qkv=qn;bad_qkv.native_wo_t1=false;bad_qkv.native_qkv_receipt_prefix=(root/"qkv-invalid").string();check(!PortableQsaLayer::create(3,qf.views,bad_qkv,error),"QKV accepted missing native WO");
  auto sb=ss;sb.native_indexer_t1=false;sb.native_select_receipt_prefix=(root/"ss-invalid").string();check(!PortableQsaLayer::create(3,qf.views,sb,error),"scores accepted nonnative indexer state");
  sb=ss;sb.execution.graph_budget=1;sb.native_select_receipt_prefix=(root/"ss-budget").string();check(!PortableQsaLayer::create(3,qf.views,sb,error),"score banks bypassed graph budget");
  auto idx_state=idx->native_indexer_state();auto idx_keys=idx->keys();auto idx_pool=idx->pooled_keys();auto idx_last=idx->last_residual();

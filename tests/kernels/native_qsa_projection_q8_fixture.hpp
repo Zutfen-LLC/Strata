@@ -6,10 +6,14 @@
 #include <sstream>
 namespace native_projection_q8 {
 using namespace native_q8_fixture;
+#ifdef STRATA_PROJECTION_Q8_QKV
+constexpr size_t elements=2560, blocks=elements/32, bytes=blocks*36;
+#else
 constexpr size_t elements=6144, blocks=elements/32, bytes=blocks*36;
+#endif
 constexpr uint32_t canary=0xa5a5a5a5;
 inline void validate(const std::vector<float>& x) {
-    need(x.size()==elements,"projection q8: expected exactly 6144 values");
+    need(x.size()==elements,"projection q8: unsupported input length");
 #ifndef STRATA_PROJECTION_Q8_REPLAY
     std::array<uint32_t,8*32> fixed{};
     std::fill(fixed.begin()+32,fixed.begin()+64,0x80000000u);

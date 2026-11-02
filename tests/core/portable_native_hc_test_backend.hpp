@@ -21,6 +21,7 @@ size_t write_owners=0,write_calls=0;bool fail_write_create=false,fail_write_run=
 const ggml_tensor* live_ffn_residual=nullptr;const ggml_tensor* live_ffn_inject=nullptr;std::vector<float> write_seen_block;
 size_t pending_owners=0,pending_calls=0;bool fail_pending_create=false,fail_pending_run=false;
 bool observe_wo_pending=false;size_t wo_pending_links=0;std::vector<float>actual_native_wo;
+bool observe_qkv_norm=false;size_t qkv_norm_links=0;std::array<std::vector<float>,3>actual_qkv;
 size_t owners=0,calls=0,mix_owners=0,mix_calls=0;bool fail_mix_domain=false,fail_mix_domain_ffn=false,last_norm_ffn=false;bool fail_mix=false,fail_mix_create=false;float mixed_scale=1;const ggml_tensor* live_mixed=nullptr;size_t mixed_consumers=0;
 std::vector<uint16_t> expected_down,expected_up;bool fail_run=false,fail_create=false;float inject_bias=0,norm_scale=1;
 std::vector<uint16_t> expected_ffn_down,expected_ffn_up,expected_ffn_inject;
@@ -138,6 +139,7 @@ uint64_t strata_vk_native_qsa_norm_rope_calls(const StrataVkNativeQsaNormRope*p)
 uint32_t strata_vk_native_qsa_norm_rope_run(StrataVkNativeQsaNormRope*p,ggml_tensor*const t[6],uint32_t cols,uint32_t rows,uint32_t stride,uint32_t theta){
  check(t[0]->flags&GGML_TENSOR_FLAG_OUTPUT,"actual QSA projection lifetime missing OUTPUT");
  native_qsa_nr::Fixture f;f.cols=cols;f.rows=rows;f.stride=stride;f.theta=theta;f.x=get(t[0]);f.gamma=get(t[1]);f.pos.resize(rows);ggml_backend_tensor_get(t[2],f.pos.data(),0,rows*4);native_qsa_nr::validate(f);qsa_last_raw=f.x;
+ if(observe_qkv_norm&&cols==256){const size_t role=rows==24?0:1;check(f.x==actual_qkv[role],"native norm/RoPE ignored QKV candidate");++qkv_norm_links;}
  ++p->calls;++qsa_norm_calls;if(fail_qsa_norm)return 1;
  // Independent host primitive provider, not Vulkan/CUDA numerical evidence.
  std::vector<float>d(rows*130);
@@ -190,7 +192,7 @@ uint32_t strata_vk_native_qsa_select_run(StrataVkNativeQsaSelect*p,ggml_tensor*c
 #include "strata_vk_q8_wo.hpp"
 #include "../kernels/native_q8_wo_fixture.hpp"
 namespace {bool fail_qsa_attention=false;std::vector<float>actual_native_gated;}
-namespace {bool fail_qsa_wo=false;const ggml_tensor*actual_packed_producer=nullptr;}
+namespace {bool fail_qsa_wo=false,fail_qsa_qkv=false;const ggml_tensor*actual_packed_producer=nullptr;const ggml_tensor*actual_qkv_packed=nullptr;}
 namespace strata::core::portable_detail {
 struct StrataVkNativeStages{uint64_t submitted=0,completed=0;};
 StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"quantizer budget");std::ofstream(path)<<"host mock only\n";return new StrataVkNativeStages;}
@@ -200,17 +202,21 @@ uint64_t strata_vk_native_stages_quant_submitted(const StrataVkNativeStages*p) n
 uint64_t strata_vk_native_stages_quant_completed(const StrataVkNativeStages*p) noexcept{return p?p->completed:0;}
 uint64_t strata_vk_native_stages_quant_submission_uncertain(const StrataVkNativeStages*) noexcept{return 0;}
 void strata_vk_native_stages_run(StrataVkNativeStages*p,uint32_t mode,const ggml_tensor*gate,const ggml_tensor*,ggml_tensor*,ggml_tensor*packed,uint32_t n,const int32_t*,size_t){
- check(mode==0&&n==6144&&get(gate)==actual_native_gated,"quantizer ignored actual native attention output");
- ++p->submitted;auto bytes=native_q8_fixture::quantize(actual_native_gated);ggml_backend_tensor_set(packed,bytes.data(),0,bytes.size());actual_packed_producer=packed;++p->completed;
+ check(mode==0&&(n==6144||n==2560),"unexpected quantizer geometry");auto values=get(gate);
+ if(n==6144)check(values==actual_native_gated,"quantizer ignored actual native attention output");
+ else check(gate==live_mixed,"QKV quantizer ignored actual HC mixed output");
+ ++p->submitted;auto bytes=native_q8_fixture::quantize(values);ggml_backend_tensor_set(packed,bytes.data(),0,bytes.size());if(n==6144)actual_packed_producer=packed;else actual_qkv_packed=packed;++p->completed;
 }
-struct StrataVkQ8Wo{uint64_t submitted=0,completed=0,uncertain=0;};
+struct StrataVkQ8Wo{uint64_t submitted=0,completed=0,uncertain=0;bool qkv=false;};
 StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t,const char*path,size_t budget){check(budget>=16,"WO budget");std::ofstream(path)<<"host mock only\n";return new StrataVkQ8Wo;}
+StrataVkQ8Wo* strata_vk_qsa_qkv_create(ggml_backend_t,const char*path,size_t budget){check(budget>=16,"QKV budget");std::ofstream(path)<<"host mock only\n";auto*p=new StrataVkQ8Wo;p->qkv=true;return p;}
 void strata_vk_q8_wo_destroy(StrataVkQ8Wo*p)noexcept{delete p;}
 size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo*){return 16;}
 uint64_t strata_vk_q8_wo_submitted(const StrataVkQ8Wo*p)noexcept{return p?p->submitted:0;}
 uint64_t strata_vk_q8_wo_completed(const StrataVkQ8Wo*p)noexcept{return p?p->completed:0;}
 uint64_t strata_vk_q8_wo_submission_uncertain(const StrataVkQ8Wo*p)noexcept{return p?p->uncertain:0;}
 void strata_vk_q8_wo_run(StrataVkQ8Wo*p,const ggml_tensor*weights,const ggml_tensor*packed,ggml_tensor*out,size_t rows){
+ if(p->qkv){check(packed==actual_qkv_packed&&(rows==12288||rows==512),"QKV ignored actual packed producer");if(fail_qsa_qkv){++p->uncertain;throw std::runtime_error("injected QKV synchronize failure");}size_t role=size_t(p->completed%3);check((role==0&&rows==12288)||(role>0&&rows==512),"QKV role order");++p->submitted;actual_qkv[role].resize(rows);for(size_t i=0;i<rows;++i)actual_qkv[role][i]=float(int((i+role*3)%17)-8)*0.03125f;ggml_backend_tensor_set(out,actual_qkv[role].data(),0,rows*4);++p->completed;return;}
  check(packed==actual_packed_producer&&rows==2560,"WO ignored actual packed producer");if(fail_qsa_wo){++p->uncertain;throw std::runtime_error("injected WO synchronize failure");}++p->submitted;
  native_q8_wo_fixture::Fixture f{rows,native_q8_fixture::Bytes(rows*q8_wo_row_bytes),native_q8_fixture::Bytes(q8_wo_input_bytes)};
  ggml_backend_tensor_get(weights,f.weights.data(),0,f.weights.size());ggml_backend_tensor_get(packed,f.input.data(),0,f.input.size());

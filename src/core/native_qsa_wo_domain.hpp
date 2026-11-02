@@ -37,9 +37,9 @@ inline void qsa_wo_packed_domain(const void* bytes,size_t size) {
     qsa_wo_require_scales(qsa_wo_scale_classes(static_cast<const uint8_t*>(bytes),192,36),"producer Q8_1");
 }
 inline bool qsa_wo_normal_or_zero(float x) { return std::isfinite(x) && (x==0.f || std::isnormal(x)); }
-inline void qsa_wo_input_domain(const std::vector<float>& input) {
-    if(input.size()!=6144)throw std::runtime_error("QSA WO: gated input shape");
-    for(size_t b=0;b<192;++b){std::array<float,32> sums{},maxima{};
+inline void qsa_q8_input_domain(const std::vector<float>& input,size_t blocks) {
+    if(input.size()!=blocks*32)throw std::runtime_error("QSA WO: gated input shape");
+    for(size_t b=0;b<blocks;++b){std::array<float,32> sums{},maxima{};
         for(size_t lane=0;lane<32;++lane){float x=input[b*32+lane];
             if(!qsa_wo_normal_or_zero(x))throw std::runtime_error("QSA WO: nonfinite or subnormal gated input");
             sums[lane]=x;maxima[lane]=std::fabs(x);
@@ -55,4 +55,5 @@ inline void qsa_wo_input_domain(const std::vector<float>& input) {
         }
     }
 }
+inline void qsa_wo_input_domain(const std::vector<float>& input) { qsa_q8_input_domain(input,192); }
 }

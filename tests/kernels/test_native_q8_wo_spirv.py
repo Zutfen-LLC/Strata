@@ -18,7 +18,8 @@ with tempfile.TemporaryDirectory(prefix='q8-wo-spirv-') as t:
  fadds=re.findall(r'^\s*(%\w+) = OpFAdd %float (%\w+) (%\w+)$',text,re.M);assert len(fadds)==4
  assert fadds[1][1]==fadds[0][0] and fadds[2][1]==fadds[1][0]
  for ident in [scale[0]]+[x[0] for x in fadds]:assert f'OpDecorate {ident} NoContraction' in text
- for n in ('uint_192','uint_6528','uint_34','uint_32','uint_64','uint_96','uint_16'):
+ geometry=('uint_80','uint_2720') if shader.name=='native_qsa_qkv_t1.comp' else ('uint_192','uint_6528')
+ for n in (*geometry,'uint_34','uint_32','uint_64','uint_96','uint_16'):
   assert re.search(r'%'+n+r' = OpConstant %uint ',text)
  assert 'OpBitwiseXor' in text and 'OpShiftRightLogical' in text
  print('WO SPIR-V signed dots, scale, strict FMA, ordered four-warp adds and XOR reduction verified; no device')

@@ -158,3 +158,10 @@ wo=[*ordinary,*attention,'--native-qsa-attention-t1','--dense-resident-weights',
 assert run(wo,True)['native_qsa_wo_t1']
 for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:run([*wo,*bad],False)
 print('native QSA WO CLI default and ordinary eager native-attention/residency preconditions pass')
+
+assert not run([],True).get('native_qsa_qkv_t1',False)
+run(['--native-qsa-qkv-t1'],False,'native QSA QKV requires')
+assert run([*wo,'--native-qsa-qkv-t1'],True)['native_qsa_qkv_t1']
+for bad in [['--allow-cpu-fallback'],['--qsa-production','--qsa-reuse-attention'],['--prompt-chunk-size','2']]:
+    run([*wo,'--native-qsa-qkv-t1',*bad],False)
+print('native QSA QKV CLI default and matched native WO preconditions pass')
