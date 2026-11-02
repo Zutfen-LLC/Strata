@@ -798,10 +798,40 @@ for each capability below.
    defect or full-model parity.
    Its precise downstream attribution has not been established. Sampling is
    discrete, not continuous; qualified=false and full_model_parity=false remain.
-   Next replicate native T1 Q/K/V input quantization and Q8_0 projections from
-   `Verifier::record_window()` before the already ported norm/RoPE consumers.
-   Quantized KV, other projection families, accepted-prefix and native window
-   scheduling remain separate gaps.
+   [PR138](https://github.com/Zutfen-LLC/Strata/pull/138) adds default-disabled
+   native T1 Q/K/V quantization and Q8_0 projections before norm/RoPE. One
+   actual HC-mixed input produces the shared packed buffer for all three
+   projections; Q/K producer-owned Vulkan banks feed normalization and the
+   interleaved Q/gate bank feeds attention. The original component comparison
+   passes exact packed and projected bytes. Its model attempt first exposed
+   scheduler-owned input leaves, then a conservative Q8_1 half-scale refusal;
+   both STOPs remain preserved. [PR140](https://github.com/Zutfen-LLC/Strata/pull/140)
+   supports finite stored half-subnormal scales only for the 80-block QKV path,
+   preserving full-F32 restrictions and the separate WO producer/reference
+   domain. All 16 native-first constructed cases pass exact packed/projected
+   comparisons and direct-consumer controls, covering all 1,023 positive
+   half-subnormal scale encodings plus boundaries. This does not establish
+   general reciprocal equivalence or replay the unretained rejected input.
+   At corrected source `02c6d2b5`, fresh planning admits 96 primary / 1,490 helper
+   experts; both same-image arms complete two reset-separated requests. Final
+   checks pass all eight layer3 QKV and eight WO positions: same-input native
+   packed bytes, mapped-role projections, actual consumer links, work counters,
+   state/reset replay, modules, admission and owned exit/reap/cleanup. The QKV
+   check covers twelve owners and 24 modules; WO checks cover 24 owners and
+   48 modules. An owner-aware checker-path repair completed finalization offline,
+   resolving the authenticated runtime owner rather than hard-coding its suffix.
+   Ten resolver regressions pass; the 192-byte regenerated GDN derivative
+   exactly matches the retained one. No model/GPU/replay/build rerun was needed
+   for that repair, and prior failures remain preserved. The final result has
+   6,096 manifest members and 25 host-retained references, totaling 133,578,533
+   copied bytes including the manifest, below the unchanged 128 MiB cap.
+   Cross-arm differences remain: first route-order difference position 0 /
+   layer 8; largest retained matching-history absolute logit difference
+   1.538769781589508 at position 24. These are diagnostics without a final-logit
+   tolerance or quality/performance claim. Full state arrays are not exported;
+   qualified=false, full_model_parity=false and native_window_parity=false remain.
+   BF16 indexer projections, quantized KV, other projection families,
+   accepted-prefix and native window scheduling remain separate gaps.
 
 
 
