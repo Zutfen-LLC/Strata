@@ -719,9 +719,19 @@ for each capability below.
    The default-disabled [model adapter](native-qsa-attention-model-t1.md) consumes
    actual query/selected-ID/current FP16 KV candidates and feeds gated output to
    WO under existing FFN-success state authority. Initial model control passes;
-   on stopped before READY on an omitted output-leaf admission estimate. The
-   source-derived accounting correction has seven local regressions passing;
-   corrected on-model validation remains pending.
+   on initially stopped before READY on an omitted output-leaf admission estimate.
+   At corrected source `0079b358`, Hermes reports the bounded on-only recovery
+   passes fresh admission against retained native-selected ownership and two
+   reset-separated requests, both generating `[18,24,16]`. Each ordinary QSA
+   layer runs 28 chunk/merge/gate calls per request. Layer3 positions 0..7
+   own-input contracts and exact query/ID/gate-to-WO links, 72 attention plus
+   566 preceding modules and within-arm state/route reset pass. The control is
+   reused historical source-compatible evidence, not a new same-image pair.
+   Owned exit/reap, empty owners and three baseline cleanup observations pass;
+   922 resource samples are discrete, not continuous coverage. Offline compact
+   packaging also passes under the unchanged 128 MiB cap, retaining authenticated
+   historical references; original allocation, runner and packaging STOPs remain.
+   This remains bounded experimental model evidence with qualified=false.
    Quantized KV, projections, accepted-prefix and window scheduling remain gaps.
 
 
