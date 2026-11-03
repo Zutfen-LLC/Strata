@@ -40,6 +40,41 @@ class PortableNativeHeadHc {
                        (device?device==expected:(ggml_backend_buft_is_host(type_owner)&&ggml_backend_dev_type(expected)==GGML_BACKEND_DEVICE_TYPE_CPU)),
                        "native head HC: borrowed bank backend/device differs");
     }
+    // Diagnostics are failure-only. A domain refusal guarantees synchronized
+    // outputs; any other failure may expose only the validated immutable input.
+    void record_refusal(const PortableFinalHcResidual& producer,const char* component,
+                        bool complete,uint32_t status) noexcept {
+        try {
+            const auto dir=receipts_/"refusal";
+            native_hc_need(std::filesystem::create_directory(dir),"native head HC: fresh refusal namespace");
+            size_t total=0;
+            auto save=[&](const char* name,const ggml_tensor* tensor){
+                const size_t bytes=ggml_nbytes(tensor);
+                native_hc_need(tensor->type==GGML_TYPE_F32&&bytes<=40960&&total+bytes<=85776,
+                               "native head HC: bounded refusal payload");
+                std::vector<uint32_t> values(bytes/sizeof(uint32_t));
+                ggml_backend_tensor_get(tensor,values.data(),0,bytes);total+=bytes;
+                auto* f=std::fopen((dir/(std::string(name)+".f32le")).string().c_str(),"wbx");
+                native_hc_need(f,"native head HC: exclusive refusal payload");
+                const bool written=std::fwrite(values.data(),1,bytes,f)==bytes;
+                const bool closed=std::fclose(f)==0;
+                native_hc_need(written&&closed,"native head HC: refusal payload write failed");
+            };
+            save("residual",producer.tensor);
+            if(complete){save("normalized",normalized_);save("rs",rs_);save("low-pre",low_pre_);save("low-exp",low_exp_);save("low",low_);}
+            auto* f=std::fopen((dir/"metadata.json").string().c_str(),"wx");
+            native_hc_need(f,"native head HC: exclusive refusal metadata");
+            const bool written=std::fprintf(f,"{\"schema\":1,\"component\":\"%s\",\"position\":%llu,\"producer_layer\":47,\"producer_owner_id\":%llu,\"producer_write_sequence\":%llu,\"attempted_call\":%llu,\"successful_calls\":%llu,\"status\":%s,\"stage_status\":%s,\"all_dispatches_completed\":%s,\"outputs_captured\":%s,\"accepted\":false,\"payload_bytes\":%zu}\n",
+                component,(unsigned long long)producer.position,(unsigned long long)producer.owner_id,(unsigned long long)producer.write_sequence,
+                (unsigned long long)(calls_+1),(unsigned long long)calls_,
+                (complete?std::to_string(status):"null").c_str(),
+                (complete?("["+std::to_string(status&255u)+","+std::to_string((status>>8)&255u)+","+std::to_string((status>>16)&255u)+"]"):"null").c_str(),
+                complete?"true":"false",complete?"true":"false",total)>0;
+            const bool closed=std::fclose(f)==0;
+            native_hc_need(written&&closed,"native head HC: refusal metadata write failed");
+        }catch(const std::exception& e){std::fprintf(stderr,"native head HC refusal diagnostic incomplete: %s\n",e.what());}
+         catch(...){std::fprintf(stderr,"native head HC refusal diagnostic incomplete\n");}
+    }
 public:
     PortableNativeHeadHc(ggml_backend_t backend,const ggml_tensor* weight,const ggml_tensor* down,const ggml_tensor* up,
                          size_t budget,const std::filesystem::path& receipts)
@@ -69,11 +104,14 @@ public:
     ggml_tensor* mixed_bank_for_graph()const{return mixed_;}
     // The returned bank is valid until the next call or owner destruction;
     // a failed call invalidates it before any downstream consumer can use it.
-    ggml_tensor* run(const ggml_tensor* materialized_residual){
+    ggml_tensor* run(const PortableFinalHcResidual& producer){
         valid_=false;native_hc_need(calls_!=UINT64_MAX,"native head HC: call counter exhausted");
-        borrowed(materialized_residual,GGML_TYPE_F32,40960);
-        strata_vk_native_hc_norm_only(norm_.get(),materialized_residual,weight_,normalized_,rs_);
-        strata_vk_native_hc_mix_run(mix_.get(),normalized_,down_,up_,low_pre_,low_,low_exp_,up_pre_,gates_,up_exp_,mixed_);
+        borrowed(producer.tensor,GGML_TYPE_F32,40960);
+        try{strata_vk_native_hc_norm_only(norm_.get(),producer.tensor,weight_,normalized_,rs_);}
+        catch(...){record_refusal(producer,"norm",false,0);throw;}
+        try{strata_vk_native_hc_mix_run(mix_.get(),normalized_,down_,up_,low_pre_,low_,low_exp_,up_pre_,gates_,up_exp_,mixed_);}
+        catch(const NativeHcMixDomainRefusal& e){record_refusal(producer,"mix",true,e.status);throw;}
+        catch(...){record_refusal(producer,"mix",false,0);throw;}
         ++calls_;valid_=true;return mixed_;
     }
     ggml_tensor* mixed()const{native_hc_need(valid_,"native head HC: no successful current result");return mixed_;}

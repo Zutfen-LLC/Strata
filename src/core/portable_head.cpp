@@ -353,7 +353,7 @@ bool PortableHead::run_device(const PortableFinalHcResidual& producer,std::vecto
 #ifdef STRATA_PORTABLE_NATIVE_HC
         auto& s=*impl_;require(s.native_head&&s.native_hc,"native head HC: option not enabled");
         require(producer.tensor&&producer.position!=UINT64_MAX&&producer.owner_id!=UINT64_MAX&&producer.write_sequence>0&&producer.layer==47&&producer.owner&&producer.is_current&&producer.is_current(producer.owner,producer),"native head HC: current producer identity required");
-        auto* mixed=s.native_hc->run(producer.tensor);
+        auto* mixed=s.native_hc->run(producer);
         require(mixed==s.output->src[1]&&mixed==s.native_hc->mixed_bank_for_graph(),"native head HC: vocabulary consumer must borrow actual mixer bank");
         require(ggml_backend_sched_graph_compute(s.scheduler.get(),s.graph)==GGML_STATUS_SUCCESS,"native head HC: vocabulary compute failed");
         if(s.logits_guard)require(s.logits_guard->check(s.output),"portable head: nonfinite logits (integer status guard)");
