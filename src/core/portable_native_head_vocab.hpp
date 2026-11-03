@@ -1,10 +1,13 @@
 #pragma once
 #include "ggml-alloc.h"
+#include "strata/core/portable_ffn.hpp"
 #include "native_head_vocab_layout.hpp"
 #include "native_qsa_wo_domain.hpp"
 #include "strata_vk_native_stages.hpp"
 #include "strata_vk_q8_wo.hpp"
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <vector>
@@ -24,6 +27,9 @@ class PortableNativeHeadVocab {
     std::vector<size_t> rows_;
     size_t bytes_ = 0;
     uint64_t completed_ = 0;
+    std::filesystem::path receipts_;
+    bool valid_ = false, recorded_ = false;
+    std::array<uint8_t, head_vocab_packed_bytes> consumed_packed_{};
     static Context context() {
         Context c(ggml_init({256u << 10, nullptr, true}), ggml_free);
         if (!c)
@@ -58,6 +64,7 @@ public:
         }
         if (!std::filesystem::create_directory(directory))
             throw std::runtime_error("native head vocabulary: fresh receipt required");
+        receipts_ = directory;
         mixed_ = mixed;
         ctx_ = context();
         packed_ = ggml_new_tensor_1d(ctx_.get(), GGML_TYPE_I32, head_vocab_packed_bytes / 4);
@@ -100,6 +107,7 @@ public:
     size_t bytes() const { return bytes_; }
     uint64_t calls() const { return completed_; }
     ggml_tensor *run(ggml_tensor *mixed) {
+        valid_ = false;
         if (mixed != mixed_)
             throw std::runtime_error("native head vocabulary: actual mixer bank required");
         std::vector<float> input(2560);
@@ -112,8 +120,67 @@ public:
         qsa_wo_require_scales(qsa_wo_scale_classes(packed.data(), 80, 36), "head vocabulary producer Q8_1", true);
         for (size_t i = 0; i < rows_.size(); ++i)
             strata_vk_q8_wo_run(dot_.get(), weights_[i], packed_, outputs_[i], rows_[i]);
+        if (!recorded_) {
+            ggml_backend_tensor_get(packed_, consumed_packed_.data(), 0, consumed_packed_.size());
+            if (packed != consumed_packed_)
+                throw std::runtime_error("native head vocabulary: consumed packed bank changed");
+        }
         ++completed_;
+        valid_ = true;
         return logits_;
+    }
+    // Called only after the caller has validated the full projected logits.
+    // The mixed and output identities tie this receipt to the actual dispatch.
+    bool record_first(const PortableFinalHcResidual &producer, const ggml_tensor *mixed,
+                      const ggml_tensor *logits) {
+        if (!valid_ || mixed != mixed_ || logits != logits_ || !producer.tensor ||
+            producer.position == UINT64_MAX || producer.owner_id == UINT64_MAX ||
+            producer.write_sequence == 0 || producer.layer != 47 || !producer.owner ||
+            !producer.is_current || !producer.is_current(producer.owner, producer))
+            throw std::runtime_error("native head vocabulary: current producer and output required");
+        if (recorded_)
+            return false;
+        std::array<uint8_t, head_vocab_packed_bytes> bytes{};
+        ggml_backend_tensor_get(packed_, bytes.data(), 0, bytes.size());
+        if (bytes != consumed_packed_)
+            throw std::runtime_error("native head vocabulary: current packed bank changed");
+        const auto packed_path = receipts_ / "first-q8_1.bin";
+        const auto metadata_path = receipts_ / "first.json";
+        bool packed_created = false, metadata_created = false;
+        try {
+            auto *f = std::fopen(packed_path.string().c_str(), "wbx");
+            if (!f) throw std::runtime_error("native head vocabulary: fresh packed receipt required");
+            packed_created = true;
+            const bool written = std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
+            const bool closed = std::fclose(f) == 0;
+            if (!written || !closed) throw std::runtime_error("native head vocabulary: packed receipt write failed");
+            f = std::fopen(metadata_path.string().c_str(), "wx");
+            if (!f) throw std::runtime_error("native head vocabulary: fresh metadata required");
+            metadata_created = true;
+            const bool metadata_written = std::fprintf(f,
+                "{\"position\":%llu,\"producer_owner_id\":%llu,\"producer_write_sequence\":%llu,"
+                "\"producer_layer\":47,\"mixed_tensor_identity\":true,\"packed_consumer_identity\":true,"
+                "\"logits_tensor_identity\":true,\"packed_bytes\":%zu,\"slice_count\":%zu,\"qualified\":false}\n",
+                (unsigned long long)producer.position, (unsigned long long)producer.owner_id,
+                (unsigned long long)producer.write_sequence, bytes.size(), rows_.size()) > 0;
+            const bool metadata_closed = std::fclose(f) == 0;
+            if (!metadata_written || !metadata_closed) throw std::runtime_error("native head vocabulary: metadata write failed");
+            recorded_ = true;
+            return true;
+        } catch (...) {
+            std::error_code ignored;
+            if (metadata_created) std::filesystem::remove(metadata_path, ignored);
+            if (packed_created) std::filesystem::remove(packed_path, ignored);
+            throw;
+        }
+    }
+    // Only remove files created by the immediately preceding record_first call.
+    void rollback_first() noexcept {
+        if (!recorded_) return;
+        std::error_code ignored;
+        std::filesystem::remove(receipts_ / "first.json", ignored);
+        std::filesystem::remove(receipts_ / "first-q8_1.bin", ignored);
+        recorded_ = false;
     }
 };
 } // namespace strata::core::portable_detail
