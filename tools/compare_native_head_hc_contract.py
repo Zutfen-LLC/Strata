@@ -10,9 +10,10 @@ import native_hc_numeric as n
 import native_hc_mix_numeric as m
 import native_head_hc_numeric as exact
 
-VERSION='native-head-hc-own-primitives-rne-v1'
+VERSION='native-head-hc-own-primitives-rne-overflow-v2'
 
 def rne_div(top,den):
+ if den==0x7f800000 and m.head_silu_overflow_candidate(top):return 0x80000000
  m.quotient_guard(top,den)
  if not top&0x7fffffff:return top
  q=n.rational(top)/n.rational(den)
@@ -34,11 +35,11 @@ def evaluate(case,reference,candidate,retained=False):
    for name in (('low','mixed') if backend=='native' else m.NAMES):
     path=source/(('' if backend=='native' else 'first-')+name+'.f32le')
     n.need(not path.is_symlink(),'symlink output');(dest/(name+'.f32le')).write_bytes(path.read_bytes())
-   controls[backend]=m.check(fixture,dest,backend)
+   controls[backend]=m.check(fixture,dest,backend,head_silu_overflow=True)
    if backend=='vulkan':
     pre=exact.words(source/'first-low-pre.f32le',320);exp=exact.words(source/'first-low-exp.f32le',320)
     for i,(top,e,actual) in enumerate(zip(pre,exp,values['low'])):
-     if actual!=rne_div(top,n.add(0x3f800000,e)):rne_bad.append(i)
+     if actual!=rne_div(top,0x7f800000 if e==0x7f800000 and m.head_silu_overflow_candidate(top) else n.add(0x3f800000,e)):rne_bad.append(i)
  differences={name:sum(a!=b for a,b in zip(outputs['native'][name],outputs['vulkan'][name])) for name in ('rs','normalized','low','mixed')}
  # A historical capture is never accepted as the new shader qualification.
  return {'contract':VERSION,'mode':'retained_observation' if retained else 'head_rne_candidate',

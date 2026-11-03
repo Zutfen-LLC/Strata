@@ -135,8 +135,18 @@ def sigmoid_controls(v,e,a,backend):
  else:n.need(a==(0x3f800000 if kind=='positive_tail' else 0),'sigmoid exact original tail identity')
  return True
 
+def head_silu_overflow_candidate(v):
+ n.normal(v)
+ return bool(v&0x80000000) and (v&0x7fffffff)>=0x42b20000
+
+def head_silu_overflow_controls(v,e,a):
+ n.need(head_silu_overflow_candidate(v),'head SiLU input outside overflow class')
+ n.need(e==0x7f800000 and a==0x80000000,'head SiLU overflow identity')
+ return True
+
 @lru_cache(maxsize=32768)
-def activation_bounds(v,backend,silu):
+def activation_bounds(v,backend,silu,head_silu_overflow=False):
+ if silu and head_silu_overflow and head_silu_overflow_candidate(v):return (0x80000000,0x80000000)
  if not silu:
   kind=sigmoid_class(v)
   if kind!='normal':return (0,0) if kind=='overflow_tail' else (0x3f800000,0x3f800000)
@@ -157,7 +167,7 @@ def mixed_exact(x,g):
   out.append(n.mul(s,0x3e800000))
  return out
 
-def check(fixture,directory,backend):
+def check(fixture,directory,backend,head_silu_overflow=False):
  x,down,up=read_fixture(fixture);directory=Path(directory)
  def words(name,count,auxiliary=False):
   raw=(directory/(name+'.f32le')).read_bytes();n.need(len(raw)==count*4,'output shape '+name);v=list(struct.unpack('<'+str(count)+'I',raw))
@@ -166,16 +176,18 @@ def check(fixture,directory,backend):
   return v
  low=words('low',R);mixed=words('mixed',H)
  pre=[n.mul(dot(x,down,row,D),0x3e800000) for row in range(R)]
- n.need(all(inside(v,activation_bounds(p,backend,True)) for p,v in zip(pre,low)),'down SiLU bound')
+ n.need(all(inside(v,activation_bounds(p,backend,True,head_silu_overflow)) for p,v in zip(pre,low)),'down SiLU bound')
  upre=[dot(low,up,row,R,True) for row in range(D)]
  [sigmoid_class(v) for v in upre]
  if backend=='vulkan':
   n.need(words('low-pre',R)==pre and words('up-pre',D)==upre,'exact own-input source projection')
   for count,ps,act,en,silu in [(R,pre,low,'low-exp',True),(D,upre,words('gates',D),'up-exp',False)]:
-   es=words(en,count,not silu)
+   es=words(en,count,not silu or head_silu_overflow)
    for p,a,e in zip(ps,act,es):
     if not silu:
      sigmoid_controls(p,e,a,backend);continue
+    if head_silu_overflow and head_silu_overflow_candidate(p):
+     head_silu_overflow_controls(p,e,a);continue
     n.need(inside(e,exp_bounds(p^0x80000000,backend)),'exp bound')
     n.need(inside(a,quotient_bounds(p if silu else 0x3f800000,n.add(0x3f800000,e))),'own-exp activation association')
   n.need(mixed==mixed_exact(x,words('gates',D)),'exact own-gate mixed association')
