@@ -23,7 +23,9 @@ int main(int argc,char** argv){try{
   if(op==spv::OpFAdd)adds.insert(code[p+2]);
   loops+=op==spv::OpLoopMerge;fmas+=op==4427;
  }
- for(size_t p=5;p<code.size();p+=code[p]>>16)if((code[p]&65535)==spv::OpFDiv){++divs;native_hc_need(ones.count(code[p+3]) && adds.count(code[p+4]) && precise.count(code[p+2]),"only protected sigmoid reciprocal may use floating division");}
+ for(size_t p=5;p<code.size();p+=code[p]>>16){const auto op=code[p]&65535;
+  if(op==spv::OpFAdd || op==spv::OpFMul || op==spv::OpFDiv)native_hc_need(precise.count(code[p+2]),"head basic arithmetic can contract");
+  if(op==spv::OpFDiv){++divs;native_hc_need(ones.count(code[p+3]) && adds.count(code[p+4]),"only protected sigmoid reciprocal may use floating division");}}
  native_hc_need(divs>0 && loops>=3 && fmas>0,"head candidate lost sigmoid, integer division or FMA structure");
  for(unsigned flags=0;flags<4;++flags){auto effective=native_q8_test_helper_effective(code,flags&1,flags&2);const std::string path=argc==2?std::string(argv[1])+"."+std::to_string(flags)+".spv":"";
   native_q8_validate_observation_effective(code.data(),code.size(),effective.data(),effective.size(),flags&1,flags&2,argc==2?path.c_str():nullptr);}

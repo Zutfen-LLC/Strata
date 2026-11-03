@@ -43,7 +43,10 @@ def evaluate(case,reference,candidate,retained=False):
  # A historical capture is never accepted as the new shader qualification.
  return {'contract':VERSION,'mode':'retained_observation' if retained else 'head_rne_candidate',
          'fixture_sha256':hashlib.sha256(raw).hexdigest(),'per_backend_source_and_primitive_controls':True,
-         'native_gate_scope':'not_exported_existing_propagation_bound','vulkan_own_gate_mixed_exact':True,
+         'native_sum_scope':'not_exported_reference_sum_and_rsqrt_bound',
+         'native_dot_scope':'not_exported_reference_dots_and_activation_bounds',
+         'native_gate_scope':'not_exported_existing_propagation_bound',
+         'vulkan_captured_dots_exact':True,'vulkan_own_gate_mixed_exact':True,
          'vulkan_rne_silu':{'exact':not rne_bad,'different_words':len(rne_bad),'first':rne_bad[0] if rne_bad else None},
          'exact_diagnostic':{'different_words':differences,'all_equal':not any(differences.values())},
          'numerical_acceptance':not retained and not rne_bad,'physical_gates_required':True,

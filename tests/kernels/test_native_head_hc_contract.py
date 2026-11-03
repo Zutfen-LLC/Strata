@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix='head-numeric-') as tmp:
   (v/('first-'+name+'.f32le')).write_bytes(struct.pack('<'+str(len(words))+'I',*words))
  cmd=[sys.executable,'-I','-S','-B',str(root/'tools/isolated_head_entry.py'),str(root/'tools/compare_native_head_hc_contract.py'),'zero',str(native),str(vk),str(d/'check.json')]
  result=subprocess.run(cmd,cwd='/',capture_output=True,text=True,timeout=300);assert result.returncode==0,result.stderr
- data=json.loads((d/'check.json').read_text());assert data['numerical_acceptance'] and data['vulkan_rne_silu']['exact'] and data['native_gate_scope']=='not_exported_existing_propagation_bound' and not data['qualified']
+ data=json.loads((d/'check.json').read_text());assert data['numerical_acceptance'] and data['vulkan_rne_silu']['exact'] and data['native_gate_scope']=='not_exported_existing_propagation_bound' and data['native_dot_scope']=='not_exported_reference_dots_and_activation_bounds' and data['native_sum_scope']=='not_exported_reference_sum_and_rsqrt_bound' and data['vulkan_captured_dots_exact'] and not data['qualified']
  historical=subprocess.run(cmd[:-1]+[str(d/'history.json'),'--retained-observation'],cwd='/',capture_output=True,text=True,timeout=300);assert historical.returncode==0,historical.stderr
  history=json.loads((d/'history.json').read_text());assert not history['numerical_acceptance'] and history['original_exact_gate']=='separate_not_reclassified'
  assert subprocess.run(cmd,cwd='/',capture_output=True,timeout=300).returncode!=0
