@@ -18,7 +18,7 @@ class PortableNativeQsaWo {
  std::unique_ptr<StrataVkNativeStages,decltype(&strata_vk_native_stages_destroy)> quant_{nullptr,strata_vk_native_stages_destroy};
  std::unique_ptr<StrataVkQ8Wo,decltype(&strata_vk_q8_wo_destroy)> wo_{nullptr,strata_vk_q8_wo_destroy};
  ggml_tensor *weight_=nullptr,*packed_=nullptr,*output_=nullptr;
- size_t bytes_=0;std::filesystem::path dir_;std::string role_;bool record_;std::array<bool,8>recorded_{};
+ size_t bytes_=0;std::filesystem::path dir_;std::string role_;bool record_;bool gdn_output_;std::array<bool,8>recorded_{};
  static Context context(){Context c(ggml_init({65536,nullptr,true}),ggml_free);if(!c)throw std::runtime_error("QSA WO: metadata");return c;}
  static size_t estimate_buffer(ggml_backend_t b,size_t words){auto c=context();ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,int64_t(words));return ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(b));}
  static void save(const std::filesystem::path&p,const void* data,size_t n){std::ofstream o(p,std::ios::binary);o.write(static_cast<const char*>(data),n);if(!o)throw std::runtime_error("QSA WO: receipt write");}
@@ -29,7 +29,8 @@ public:
     size_t bank=ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(b));
     return bank+estimate_buffer(b,128)+estimate_buffer(b,1);
  }
- PortableNativeQsaWo(ggml_backend_t b,ggml_tensor*weight,const void*role_bytes,size_t role_size,const std::string&directory,size_t budget,bool record):dir_(directory),record_(record){
+ enum class InputDomain { qsa_wo, gdn_output };
+ PortableNativeQsaWo(ggml_backend_t b,ggml_tensor*weight,const void*role_bytes,size_t role_size,const std::string&directory,size_t budget,bool record,InputDomain domain=InputDomain::qsa_wo):dir_(directory),record_(record),gdn_output_(domain==InputDomain::gdn_output){
     if(!b||!weight||weight->type!=GGML_TYPE_Q8_0||ggml_nbytes(weight)!=16711680||!weight->buffer||!ggml_is_contiguous(weight)||estimate(b)>budget)
         throw std::runtime_error("QSA WO: resident Q8_0 weight or aligned budget unavailable");
     role_=ggml_get_name(weight);if(!std::filesystem::create_directory(dir_))throw std::runtime_error("QSA WO: fresh receipt namespace required");
@@ -63,6 +64,7 @@ public:
     if(bytes_>estimate(b)||bytes_>budget)throw std::runtime_error("QSA WO: actual allocation exceeds bound");
  }
  size_t bytes()const{return bytes_;}
+ ggml_tensor* output()const{return output_;}
  uint64_t calls(unsigned i)const{switch(i){case 0:return strata_vk_native_stages_quant_submitted(quant_.get());case 1:return strata_vk_native_stages_quant_completed(quant_.get());case 2:return strata_vk_q8_wo_submitted(wo_.get());case 3:return strata_vk_q8_wo_completed(wo_.get());case 4:return strata_vk_native_stages_quant_submission_uncertain(quant_.get());case 5:return strata_vk_q8_wo_submission_uncertain(wo_.get());default:return 0;}}
  Candidate run(ggml_tensor* gated,const std::vector<float>& expected){
     qsa_wo_input_domain(expected);
@@ -70,7 +72,8 @@ public:
     std::vector<float> actual(6144);ggml_backend_tensor_get(gated,actual.data(),0,6144*4);
     if(std::memcmp(actual.data(),expected.data(),6144*4)!=0)throw std::runtime_error("QSA WO: gated tensor differs from attention candidate");
     const int32_t starts[]={0,1};strata_vk_native_stages_run(quant_.get(),0,gated,gated,gated,packed_,6144,starts,2);
-    Candidate c;c.output.resize(2560);ggml_backend_tensor_get(packed_,c.packed.data(),0,c.packed.size());qsa_wo_packed_domain(c.packed.data(),c.packed.size());
+    Candidate c;c.output.resize(2560);ggml_backend_tensor_get(packed_,c.packed.data(),0,c.packed.size());
+    if(gdn_output_)qsa_gdn_output_packed_domain(c.packed.data(),c.packed.size());else qsa_wo_packed_domain(c.packed.data(),c.packed.size());
     strata_vk_q8_wo_run(wo_.get(),weight_,packed_,output_,2560);
     ggml_backend_tensor_get(output_,c.output.data(),0,c.output.size()*sizeof(float));
     for(float v:c.output)if(!qsa_wo_normal_or_zero(v))throw std::runtime_error("QSA WO: unsupported output");

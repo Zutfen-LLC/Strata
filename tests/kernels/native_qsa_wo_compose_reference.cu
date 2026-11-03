@@ -9,7 +9,7 @@ int main(int argc,char**argv){try{
     if(argc==5&&std::string(argv[1])=="--contract"){contract(argv[2],argv[3],argv[4]);return 0;}
     need(argc==11&&std::string(argv[1])=="--device"&&std::string(argv[3])=="--expect-device"&&
          std::string(argv[5])=="--weights"&&std::string(argv[7])=="--fixture"&&std::string(argv[9])=="--output","composition: invalid native arguments");
-    auto ww=weights(argv[6]);auto input=q::read(argv[8]);std::string idx=argv[2];
+    auto ww=weights(argv[6]);auto input=read_input(argv[8]);std::string idx=argv[2];
     need(!idx.empty()&&idx.find_first_not_of("0123456789")==std::string::npos,"composition: invalid device");
     cu(cudaSetDevice(std::stoi(idx)));cudaDeviceProp prop{};cu(cudaGetDeviceProperties(&prop,std::stoi(idx)));
     need(std::string(argv[4]).size()&&std::string(prop.name).find(argv[4])!=std::string::npos&&prop.major==8&&prop.minor==6,"composition: unexpected native device");
@@ -21,6 +21,9 @@ int main(int argc,char**argv){try{
     std::fill(stale.begin()+8,stale.end()-8,0u);
     Device dx(xi.size()*4),dw(wi.size()*4),dq(qi.size()*4),dy(yi.size()*4),ds(stale.size()*4);Stream stream;
     Bytes first_q,first_y;
+#ifdef STRATA_GDN_OUTPUT_SCALE_SUITE
+    Bytes first_direct;
+#endif
     for(int pass=0;pass<2;++pass){
         for(auto pair:{std::make_pair(dx.p,&xi),std::make_pair(dw.p,&wi),std::make_pair(dq.p,&qi),std::make_pair(dy.p,&yi),std::make_pair(ds.p,&stale)})
             cu(cudaMemcpy(pair.first,pair.second->data(),pair.second->size()*4,cudaMemcpyHostToDevice));
@@ -40,6 +43,9 @@ int main(int argc,char**argv){try{
         cu(cudaGetLastError());cu(cudaStreamSynchronize(stream.p));
         std::vector<uint32_t> qread(qi.size());cu(cudaMemcpy(qread.data(),dq.p,qread.size()*4,cudaMemcpyDeviceToHost));
         Bytes packed(q::bytes);std::memcpy(packed.data(),qread.data()+8,packed.size());packed_domain(ww,packed);
+#ifdef STRATA_GDN_OUTPUT_SCALE_SUITE
+        fixture_scale_words(argv[8],input,packed);
+#endif
         for(size_t i=0;i<8;++i)need(qread[i]==guard&&qread[qread.size()-1-i]==guard,"composition: packed canary changed");
         strata::kernels::native_mmvq(8,(uint32_t*)dw.p+8,(uint32_t*)dq.p+8,(float*)((uint32_t*)dy.p+8),6144,int(rows),1,stream.p);
         cu(cudaGetLastError());cu(cudaStreamSynchronize(stream.p));
@@ -62,6 +68,17 @@ int main(int argc,char**argv){try{
         cu(cudaMemcpy(qafter.data(),dq.p,qafter.size()*4,cudaMemcpyDeviceToHost));
         need(stale_after==stale&&xread==xi&&wread==wi&&qafter==qread,"composition: stale test mutated inputs");
         for(size_t i=0;i<8;++i)need(bad[i]==guard&&bad[bad.size()-1-i]==guard,"composition: stale output canary changed");
+#ifdef STRATA_GDN_OUTPUT_SCALE_SUITE
+        auto direct=direct_packed();std::array<uint32_t,q::bytes/4+16> direct_image{};direct_image.fill(guard);std::memcpy(direct_image.data()+8,direct.data(),q::bytes);
+        cu(cudaMemcpy(ds.p,direct_image.data(),direct_image.size()*4,cudaMemcpyHostToDevice));cu(cudaMemcpy(dy.p,yi.data(),yi.size()*4,cudaMemcpyHostToDevice));
+        strata::kernels::native_mmvq(8,(uint32_t*)dw.p+8,(uint32_t*)ds.p+8,(float*)((uint32_t*)dy.p+8),6144,int(rows),1,stream.p);
+        cu(cudaGetLastError());cu(cudaStreamSynchronize(stream.p));cu(cudaMemcpy(bad.data(),dy.p,bad.size()*4,cudaMemcpyDeviceToHost));
+        Bytes direct_out(rows*4);std::memcpy(direct_out.data(),bad.data()+8,direct_out.size());direct_controls(direct_out);
+        for(size_t i=0;i<8;++i)need(bad[i]==guard&&bad[bad.size()-1-i]==guard,"GDN output: direct canary changed");
+        cu(cudaMemcpy(stale_after.data(),ds.p,stale_after.size()*4,cudaMemcpyDeviceToHost));cu(cudaMemcpy(wread.data(),dw.p,wread.size()*4,cudaMemcpyDeviceToHost));
+        need(std::equal(stale_after.begin(),stale_after.end(),direct_image.begin())&&wread==wi,"GDN output: direct input or weights mutated");
+        if(pass)need(direct_out==first_direct,"GDN output: direct repeat changed");else{first_direct=direct_out;save(dir/"direct-qx.bin",direct.data(),direct.size());save(dir/"direct-out.f32le",direct_out.data(),direct_out.size());}
+#endif
         if(pass)need(packed==first_q&&result==first_y,"composition: reset/repeat changed");
         first_q=packed;first_y=result;
         save(dir/(pass?"qx-repeat.bin":"qx.bin"),packed.data(),packed.size());

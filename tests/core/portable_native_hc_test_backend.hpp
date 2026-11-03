@@ -26,6 +26,13 @@ bool observe_wo_pending=false;size_t wo_pending_links=0;std::vector<float>actual
 bool observe_qkv_norm=false;size_t qkv_norm_links=0;std::array<std::vector<float>,3>actual_qkv;std::array<ggml_tensor*,3> actual_qkv_banks{};ggml_backend_t qkv_backend=nullptr;
 bool observe_indexer_projection=false;int fail_indexer_projection=0;size_t indexer_projection_links=0;std::array<std::vector<float>,2>actual_indexer_projection;
 bool observe_gdn_input=false;int fail_gdn_input=0;size_t gdn_input_links=0;std::array<ggml_tensor*,2> actual_gdn_input_banks{};ggml_backend_t gdn_input_backend=nullptr;
+bool observe_gdn_output=false;size_t gdn_output_quant_links=0,gdn_output_pending_links=0;ggml_tensor* actual_gdn_gated=nullptr;ggml_tensor* actual_gdn_output_bank=nullptr;ggml_backend_t gdn_output_backend=nullptr;
+std::vector<uint8_t> gdn_output_weight_snapshot;
+void check_gdn_output_bank(const ggml_tensor*t,const ggml_tensor*expected,size_t bytes){
+ check(t==expected&&t->type==GGML_TYPE_F32&&ggml_nbytes(t)==bytes&&ggml_is_contiguous(t)&&t->buffer,"GDN output producer tensor/span differs");
+ auto type=ggml_backend_buffer_get_type(t->buffer);auto device=ggml_backend_buft_get_device(type);auto owner=ggml_backend_get_device(gdn_output_backend);
+ check(type==ggml_backend_get_default_buffer_type(gdn_output_backend)&&owner&&(device?device==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"GDN output producer device differs");
+}
 void check_gdn_input_bank(ggml_tensor*t,size_t role,size_t bytes){
  check(t==actual_gdn_input_banks[role],"GDN input consumer did not receive producer bank");
  check(t->type==GGML_TYPE_F32&&ggml_nbytes(t)==bytes&&ggml_is_contiguous(t)&&t->buffer,"GDN input producer span invalid");
@@ -62,6 +69,7 @@ size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*){return 
 StrataVkNativeHcPending* strata_vk_native_hc_write_create(ggml_backend_t,const char*path,size_t budget){check(!fail_write_create&&budget>=512,"injected write create/budget refusal");std::ofstream(path)<<"mock; not shader evidence\n";++write_owners;return new StrataVkNativeHcPending{true};}
 void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p)noexcept{if(p){if(p->final_write)--write_owners;else --pending_owners;}delete p;}
 void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*owner,const ggml_tensor*r,const ggml_tensor*b,const ggml_tensor*i,ggml_tensor*rp,ggml_tensor*g,ggml_tensor*e){
+ if(observe_gdn_output&&!owner->final_write){check_gdn_output_bank(b,actual_gdn_output_bank,2560*4);++gdn_output_pending_links;}
  if(observe_wo_pending&&!actual_native_wo.empty()&&get(b)==actual_native_wo)++wo_pending_links;
  if(owner->final_write){
  check(!fail_write_run,"injected final write refusal");check(r==live_ffn_residual&&i==live_ffn_inject,"final write did not consume retained actual FFN operands");check(r!=rp&&b!=rp&&i!=rp,"final write producer/candidate alias");
@@ -109,7 +117,7 @@ void strata_vk_native_gdn_destroy(StrataVkNativeGdn*p)noexcept{delete p;}
 size_t strata_vk_native_gdn_bytes(const StrataVkNativeGdn*){return 512;}
 void strata_vk_native_gdn_run(StrataVkNativeGdn*,ggml_tensor*const t[13],ggml_tensor*){
  if(observe_gdn_input){check_gdn_input_bank(t[4],1,6144*4);++gdn_input_links;}
- native_gdn_t1::Fixture f;for(size_t i=0;i<6;++i)f[i]=get(t[i]);std::vector<float>eg(48),rs(49,1.f),sig(6144),se(6144);for(size_t i=0;i<48;++i)eg[i]=std::exp(f[2][i]);for(size_t i=0;i<6144;++i){se[i]=std::exp(-f[4][i]);sig[i]=1.f/(1.f+se[i]);}rs[48]=1.f/std::sqrt(128.f);auto partial=native_gdn_t1::control(f,eg,rs,sig);for(size_t i=0;i<48;++i)rs[i]=1.f/std::sqrt(partial.arg[i]);auto ref=native_gdn_t1::control(f,eg,rs,sig);put(t[6],ref.state);put(t[7],ref.y);put(t[8],eg);put(t[9],ref.oc);put(t[10],rs);put(t[11],se);put(t[12],sig);gdn_fixture::check(!fail_gdn,"injected GDN candidate refusal");++gdn_calls;
+ native_gdn_t1::Fixture f;for(size_t i=0;i<6;++i)f[i]=get(t[i]);std::vector<float>eg(48),rs(49,1.f),sig(6144),se(6144);for(size_t i=0;i<48;++i)eg[i]=std::exp(f[2][i]);for(size_t i=0;i<6144;++i){se[i]=std::exp(-f[4][i]);sig[i]=1.f/(1.f+se[i]);}rs[48]=1.f/std::sqrt(128.f);auto partial=native_gdn_t1::control(f,eg,rs,sig);for(size_t i=0;i<48;++i)rs[i]=1.f/std::sqrt(partial.arg[i]);auto ref=native_gdn_t1::control(f,eg,rs,sig);put(t[6],ref.state);put(t[7],ref.y);actual_gdn_gated=t[7];put(t[8],eg);put(t[9],ref.oc);put(t[10],rs);put(t[11],se);put(t[12],sig);gdn_fixture::check(!fail_gdn,"injected GDN candidate refusal");++gdn_calls;
 }
 }
 
@@ -222,7 +230,7 @@ uint32_t strata_vk_native_qsa_select_run(StrataVkNativeQsaSelect*p,ggml_tensor*c
 #include "strata_vk_q8_wo.hpp"
 #include "../kernels/native_q8_wo_fixture.hpp"
 namespace {bool fail_qsa_attention=false;std::vector<float>actual_native_gated;}
-namespace {bool fail_qsa_wo=false,fail_qsa_qkv=false;const ggml_tensor*actual_packed_producer=nullptr;const ggml_tensor*actual_qkv_packed=nullptr;}
+namespace {bool fail_qsa_wo=false,fail_qsa_qkv=false;int gdn_test_scale=0;const ggml_tensor*actual_packed_producer=nullptr;const ggml_tensor*actual_qkv_packed=nullptr;}
 namespace strata::core::portable_detail {
 struct StrataVkNativeStages{uint64_t submitted=0,completed=0;};
 StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"quantizer budget");std::ofstream(path)<<"host mock only\n";return new StrataVkNativeStages;}
@@ -233,12 +241,13 @@ uint64_t strata_vk_native_stages_quant_completed(const StrataVkNativeStages*p) n
 uint64_t strata_vk_native_stages_quant_submission_uncertain(const StrataVkNativeStages*) noexcept{return 0;}
 void strata_vk_native_stages_run(StrataVkNativeStages*p,uint32_t mode,const ggml_tensor*gate,const ggml_tensor*,ggml_tensor*,ggml_tensor*packed,uint32_t n,const int32_t*,size_t){
  check(mode==0&&(n==6144||n==2560),"unexpected quantizer geometry");auto values=get(gate);
- if(n==6144)check(values==actual_native_gated,"quantizer ignored actual native attention output");
+ if(n==6144&&observe_gdn_output){check_gdn_output_bank(gate,actual_gdn_gated,6144*4);++gdn_output_quant_links;}
+ else if(n==6144)check(values==actual_native_gated,"quantizer ignored actual native attention output");
  else check(gate==live_mixed,"QKV quantizer ignored actual HC mixed output");
- ++p->submitted;auto bytes=native_q8_fixture::quantize(values);ggml_backend_tensor_set(packed,bytes.data(),0,bytes.size());if(n==6144)actual_packed_producer=packed;else actual_qkv_packed=packed;++p->completed;
+ ++p->submitted;auto bytes=native_q8_fixture::quantize(values);if(n==6144&&observe_gdn_output&&gdn_test_scale){bytes[0]=gdn_test_scale==1?1:0;bytes[1]=gdn_test_scale==1?0:0x7c;}ggml_backend_tensor_set(packed,bytes.data(),0,bytes.size());if(n==6144)actual_packed_producer=packed;else actual_qkv_packed=packed;++p->completed;
 }
 struct StrataVkQ8Wo{uint64_t submitted=0,completed=0,uncertain=0;bool qkv=false,gdn=false;};
-StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t,const char*path,size_t budget){check(budget>=16,"WO budget");std::ofstream(path)<<"host mock only\n";return new StrataVkQ8Wo;}
+StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t b,const char*path,size_t budget){check(budget>=16,"WO budget");gdn_output_backend=b;std::ofstream(path)<<"host mock only\n";return new StrataVkQ8Wo;}
 StrataVkQ8Wo* strata_vk_qsa_qkv_create(ggml_backend_t b,const char*path,size_t budget){check(budget>=16,"QKV budget");qkv_backend=b;std::ofstream(path)<<"host mock only\n";auto*p=new StrataVkQ8Wo;p->qkv=true;return p;}
 StrataVkQ8Wo* strata_vk_gdn_input_create(ggml_backend_t b,const char*path,size_t budget){check(budget>=16,"GDN input budget");gdn_input_backend=b;std::ofstream(path)<<"host mock only\n";auto*p=new StrataVkQ8Wo;p->gdn=true;return p;}
 void strata_vk_q8_wo_destroy(StrataVkQ8Wo*p)noexcept{delete p;}
@@ -250,9 +259,11 @@ void strata_vk_q8_wo_run(StrataVkQ8Wo*p,const ggml_tensor*weights,const ggml_ten
  if(p->gdn){check(packed==actual_qkv_packed&&(rows==10240||rows==6144),"GDN projections did not share actual packed input");const size_t role=rows==6144?1:0;if(fail_gdn_input==int(role+1)){++p->uncertain;throw std::runtime_error("injected GDN projection failure");}++p->submitted;actual_gdn_input_banks[role]=out;std::vector<float>v(rows);for(size_t i=0;i<rows;++i)v[i]=float(int((i+role)%17)-8)*0.03125f;ggml_backend_tensor_set(out,v.data(),0,v.size()*4);++p->completed;return;}
  if(p->qkv){check(packed==actual_qkv_packed&&(rows==12288||rows==512),"QKV ignored actual packed producer");if(fail_qsa_qkv){++p->uncertain;throw std::runtime_error("injected QKV synchronize failure");}size_t role=size_t(p->completed%3);check((role==0&&rows==12288)||(role>0&&rows==512),"QKV role order");++p->submitted;actual_qkv_banks[role]=out;actual_qkv[role].resize(rows);for(size_t i=0;i<rows;++i)actual_qkv[role][i]=float(int((i+role*3)%17)-8)*0.03125f;ggml_backend_tensor_set(out,actual_qkv[role].data(),0,rows*4);++p->completed;return;}
  check(packed==actual_packed_producer&&rows==2560,"WO ignored actual packed producer");if(fail_qsa_wo){++p->uncertain;throw std::runtime_error("injected WO synchronize failure");}++p->submitted;
+ if(observe_gdn_output)actual_gdn_output_bank=out;
  native_q8_wo_fixture::Fixture f{rows,native_q8_fixture::Bytes(rows*q8_wo_row_bytes),native_q8_fixture::Bytes(q8_wo_input_bytes)};
  ggml_backend_tensor_get(weights,f.weights.data(),0,f.weights.size());ggml_backend_tensor_get(packed,f.input.data(),0,f.input.size());
- actual_native_wo.resize(rows);for(size_t i=0;i<rows;++i)actual_native_wo[i]=native_q8_wo_fixture::reference(f,i).value;
+ if(observe_gdn_output){if(gdn_output_weight_snapshot.empty())gdn_output_weight_snapshot=f.weights;else check(f.weights==gdn_output_weight_snapshot,"GDN output resident weight changed");}
+ actual_native_wo.resize(rows);for(size_t i=0;i<rows;++i)actual_native_wo[i]=native_q8_wo_fixture::reference(f,i,observe_gdn_output?native_q8_wo_fixture::InputScaleDomain::gdn_output_finite:native_q8_wo_fixture::InputScaleDomain::wo_bounded).value;
  ggml_backend_tensor_set(out,actual_native_wo.data(),0,rows*4);++p->completed;
 }
 struct StrataVkNativeQsaAttention{std::array<uint64_t,3>calls{};};

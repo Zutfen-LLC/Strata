@@ -15,7 +15,7 @@ inline float half(uint16_t h){unsigned e=(h>>10)&31,m=h&1023;
     if(e==0 && m){float v=std::ldexp(float(m),-24);return h&0x8000?-v:v;}
     return value((uint32_t(h&0x8000)<<16)|(e?(uint32_t(e+112)<<23)|(uint32_t(m)<<13):0));
 }
-enum class InputScaleDomain { wo_bounded, qkv_finite };
+enum class InputScaleDomain { wo_bounded, qkv_finite, gdn_output_finite };
 inline float input_half(uint16_t h,InputScaleDomain domain=InputScaleDomain::wo_bounded){
     if(domain==InputScaleDomain::wo_bounded)need(((h>>10)&31)!=0 || (h&1023)==0,"WO: unsupported half scale in Q8_1 input");
     return half(h);
@@ -60,6 +60,8 @@ inline Fixture subnormal_fixture(){
 struct Result {float value;std::array<float,128> partial;};
 inline Result reference_blocks(const uint8_t* weights,size_t weights_size,const uint8_t* input,size_t input_size,size_t rows,size_t row,size_t block_count,InputScaleDomain domain=InputScaleDomain::wo_bounded){
     need(weights&&input&&row<rows&&block_count&&weights_size==rows*block_count*34&&input_size==block_count*36,"WO: row or block span");
+    need(domain!=InputScaleDomain::gdn_output_finite || block_count==192,"GDN output: expected 192 blocks");
+    need(domain!=InputScaleDomain::qkv_finite || block_count==80,"QSA QKV: expected 80 blocks");
     std::array<float,128> partial{};
     for(size_t tid=0;tid<128;++tid)for(size_t b=tid/4;b<block_count;b+=32){
         size_t q=2*(tid%4),wi=row*block_count*34+b*34,xi=b*36;int sum=0;
@@ -71,11 +73,11 @@ inline Result reference_blocks(const uint8_t* weights,size_t weights_size,const 
     for(size_t offset=16;offset;offset>>=1){auto old=mixed;for(size_t lane=0;lane<32;++lane)mixed[lane]=checked(old[lane]+old[lane^offset]);}
     return {mixed[0],partial};
 }
-inline Result reference(const uint8_t* weights,size_t weights_size,const uint8_t* input,size_t input_size,size_t rows,size_t row){
+inline Result reference(const uint8_t* weights,size_t weights_size,const uint8_t* input,size_t input_size,size_t rows,size_t row,InputScaleDomain domain=InputScaleDomain::wo_bounded){
     q8_wo_require_layout(rows,weights_size,input_size,rows*4);
-    return reference_blocks(weights,weights_size,input,input_size,rows,row,blocks);
+    return reference_blocks(weights,weights_size,input,input_size,rows,row,blocks,domain);
 }
-inline Result reference(const Fixture& f,size_t row){return reference(f.weights.data(),f.weights.size(),f.input.data(),f.input.size(),f.rows,row);}
+inline Result reference(const Fixture& f,size_t row,InputScaleDomain domain=InputScaleDomain::wo_bounded){return reference(f.weights.data(),f.weights.size(),f.input.data(),f.input.size(),f.rows,row,domain);}
 // Existing expert helper visits block indices in a different order.
 inline float expert_order(const Fixture& f,size_t row){
     std::array<float,32> p{};
@@ -112,7 +114,7 @@ inline void subnormal_output_literals(const Fixture& f,const std::vector<float>&
 }
 inline Bytes load(const std::filesystem::path& path,size_t bytes){std::ifstream i(path,std::ios::binary);need(bool(i),"WO: input missing");Bytes b(bytes);i.read((char*)b.data(),bytes);need(size_t(i.gcount())==bytes&&i.peek()==EOF,"WO: input size");return b;}
 inline void save(const std::filesystem::path& path,const Bytes& b){need(!std::filesystem::exists(path),"WO: output exists");std::ofstream o(path,std::ios::binary);o.write((const char*)b.data(),b.size());need(bool(o),"WO: output write");}
-inline void validate(const Fixture& f){q8_wo_require_layout(f.rows,f.weights.size(),f.input.size(),f.rows*4);for(size_t row=0;row<f.rows;++row)(void)reference(f,row);}
+inline void validate(const Fixture& f,InputScaleDomain domain=InputScaleDomain::wo_bounded){q8_wo_require_layout(f.rows,f.weights.size(),f.input.size(),f.rows*4);for(size_t row=0;row<f.rows;++row)(void)reference(f,row,domain);}
 inline Fixture read_fixture(const std::string& w,const std::string& x,size_t rows){
     need(rows>=8 && rows<=max_rows,"WO: bounded synthetic row count");
     Fixture f{rows,load(w,rows*q8_wo_row_bytes),load(x,q8_wo_input_bytes)};validate(f);literal_controls(f);return f;

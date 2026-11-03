@@ -119,7 +119,7 @@ public:
     }
     // Only the first successful attention graph is observed. This is a bounded
     // diagnostic readback, not a weight extraction or numerical fallback.
-    void record_first() {
+    void record_first(ggml_tensor* producer_block=nullptr) {
         if(first_recorded_ || calls_==0 || (mix_&&mix_calls_==0))return;
         for(auto pair:{std::pair{"input.f32le",residual},std::pair{"normalized.f32le",normalized},
                        std::pair{"rs.f32le",rs},std::pair{"inject.f32le",inject}}) {
@@ -136,7 +136,7 @@ public:
             auto* f=std::fopen((receipt_dir_+"/first-"+pair.first+".f32le").c_str(),"wbx");native_hc_need(f,"native HC serial: initial mix receipt");
             const bool written=std::fwrite(v.data(),4,v.size(),f)==v.size();const bool closed=std::fclose(f)==0;native_hc_need(written&&closed,"native HC serial: mix receipt write");
         }
-        if(pending_)for(auto pair:{std::pair{"unapplied-residual",pending_input},std::pair{"previous-output",previous_output},std::pair{"previous-injection",previous_inject},std::pair{"pending-gate",pending_gate},std::pair{"pending-exp",pending_exp}}) {
+        if(pending_)for(auto pair:{std::pair{"unapplied-residual",pending_input},std::pair{"previous-output",producer_block?producer_block:previous_output},std::pair{"previous-injection",previous_inject},std::pair{"pending-gate",pending_gate},std::pair{"pending-exp",pending_exp}}) {
             std::vector<float> v(size_t(ggml_nelements(pair.second)));ggml_backend_tensor_get(pair.second,v.data(),0,v.size()*4);
             auto* f=std::fopen((receipt_dir_+"/first-"+pair.first+".f32le").c_str(),"wbx");native_hc_need(f,"native HC pending: exclusive tuple receipt");
             const bool written=std::fwrite(v.data(),4,v.size(),f)==v.size();const bool closed=std::fclose(f)==0;native_hc_need(written&&closed,"native HC pending: tuple receipt write");
@@ -207,10 +207,11 @@ private:
     }
 public:
     void run(){native_hc_need(!pending_,"native HC pending: explicit tuple upload required");read();}
-    void run_pending(){
+    void run_pending(ggml_tensor* producer_block=nullptr){
         native_hc_need(pending_&&pending_calls_!=UINT64_MAX&&calls_!=UINT64_MAX&&mix_calls_!=UINT64_MAX,"native HC pending: owner/counter required");
-        try{strata_vk_native_hc_pending_run(pending_.get(),pending_input,previous_output,previous_inject,residual,pending_gate,pending_exp);}
-        catch(...){record_input_refusal("pending",{{"input",pending_input},{"block",previous_output},{"inject",previous_inject}});throw;}
+        auto* block=producer_block?producer_block:previous_output;
+        try{strata_vk_native_hc_pending_run(pending_.get(),pending_input,block,previous_inject,residual,pending_gate,pending_exp);}
+        catch(...){record_input_refusal("pending",{{"input",pending_input},{"block",block},{"inject",previous_inject}});throw;}
         ++pending_calls_;
         read();
     }
