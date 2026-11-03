@@ -64,8 +64,8 @@ class PortableNativeHeadHc {
             if(complete){save("normalized",normalized_);save("rs",rs_);save("low-pre",low_pre_);save("low-exp",low_exp_);save("low",low_);}
             auto* f=std::fopen((dir/"metadata.json").string().c_str(),"wx");
             native_hc_need(f,"native head HC: exclusive refusal metadata");
-            const bool written=std::fprintf(f,"{\"schema\":1,\"component\":\"%s\",\"position\":%llu,\"producer_layer\":47,\"producer_owner_id\":%llu,\"producer_write_sequence\":%llu,\"attempted_call\":%llu,\"successful_calls\":%llu,\"status\":%s,\"stage_status\":%s,\"all_dispatches_completed\":%s,\"outputs_captured\":%s,\"accepted\":false,\"payload_bytes\":%zu}\n",
-                component,(unsigned long long)producer.position,(unsigned long long)producer.owner_id,(unsigned long long)producer.write_sequence,
+            const bool written=std::fprintf(f,"{\"schema\":1,\"component\":\"%s\",\"position\":%llu,\"producer_layer\":%lld,\"producer_owner_id\":%llu,\"producer_write_sequence\":%llu,\"attempted_call\":%llu,\"successful_calls\":%llu,\"status\":%s,\"stage_status\":%s,\"all_dispatches_completed\":%s,\"outputs_captured\":%s,\"accepted\":false,\"payload_bytes\":%zu}\n",
+                component,(unsigned long long)producer.position,(long long)producer.layer,(unsigned long long)producer.owner_id,(unsigned long long)producer.write_sequence,
                 (unsigned long long)(calls_+1),(unsigned long long)calls_,
                 (complete?std::to_string(status):"null").c_str(),
                 (complete?("["+std::to_string(status&255u)+","+std::to_string((status>>8)&255u)+","+std::to_string((status>>16)&255u)+"]"):"null").c_str(),
