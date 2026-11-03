@@ -37,6 +37,11 @@ int main(int argc,char** argv){try {
     need(rn::strata_f32_div_rn_bits(1,0x40000000)==0,"minimum subnormal half tie must round to even zero");
     need(rn::strata_f32_div_rn_bits(3,0x40000000)==2,"subnormal tie must round to even significand");
     need(rn::strata_f32_div_rn_bits(0x80000001,0x40000000)==0x80000000,"underflow zero sign lost");
+    need(rn::strata_f32_div_rn_bits(0x33c013a7,0x3fffffff)==0x334013a8,"retained head SiLU quotient differs");
+    need(rn::strata_f32_div_rn_bits(0xb3c013a7,0x3fffffff)==0xb34013a8,"negative head SiLU quotient differs");
+    need(rn::strata_f32_div_rn_bits(0x80000000,0x3fffffff)==0x80000000,"head SiLU signed zero differs");
+    for(auto a:{0x33c013a6u,0x33c013a7u,0x33c013a8u,0xb3c013a6u,0xb3c013a7u,0xb3c013a8u})
+        for(auto b:{0x3ffffffeu,0x3fffffffu,0x40000000u})check(a,b);
     need(rn::strata_f32_div_rn_bits(0x7f812345,0x3f800000)==0x7fc12345,"explicit NaN quiet/payload convention changed");
     need(rn::strata_f32_div_rn_bits(0,0)==0x7fc00000,"invalid division NaN convention changed");
     uint32_t state=0x12345678;auto random=[&](){state^=state<<13;state^=state>>17;state^=state<<5;return state;};

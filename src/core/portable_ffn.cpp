@@ -7,9 +7,9 @@
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "native_shared_layout.hpp"
+#include "native_hc_boundary.hpp"
 #ifdef STRATA_PORTABLE_NATIVE_HC
 #include "portable_native_hc.hpp"
-#include "native_hc_boundary.hpp"
 #endif
 #ifdef STRATA_PORTABLE_NATIVE_SHARED
 #include "portable_native_shared.hpp"
@@ -278,7 +278,7 @@ struct PortableFfn::Impl {
     PortableHcPendingWrite pending;
     std::vector<PortablePlacement> placement;
     size_t weights_size = 0, graphs_size = 0, device_weights = 0;
-    bool initialized = false;
+    bool initialized = false, final_device_valid = false;
 
 #ifdef STRATA_PORTABLE_NATIVE_SHARED
     std::unique_ptr<portable_detail::PortableNativeShared> native_shared;
@@ -496,6 +496,7 @@ bool PortableFfn::combined_memory_usage(const PortableFfn& chunk, PortableMemory
 
 bool PortableFfn::reset(const std::vector<float>& residual, std::string& error) {
     error.clear();
+    impl_->final_device_valid=false;
     try {
         require(residual.size() == size_t(impl_->g.hidden * impl_->g.streams * impl_->tokens), "portable FFN: residual size mismatch");
         finite(residual); impl_->state = residual; impl_->pending = {}; impl_->initialized = true; return true;
@@ -514,7 +515,7 @@ bool PortableFfn::step_pending_device(ggml_tensor* b,const std::vector<float>& i
 }
 bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>* i,
     const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableFfnHcTrace* trace,uint64_t diagnostic_position,ggml_tensor* producer_block) {
-    error.clear(); route = {};if(trace)*trace={};
+    error.clear(); route = {};impl_->final_device_valid=false;if(trace)*trace={};
     try {
         auto& s = *impl_;
         require(s.tokens == 1, "portable FFN: multirow graph requires batch dispatch");
@@ -630,12 +631,12 @@ bool PortableFfn::step_impl(const std::vector<float>* b,const std::vector<float>
         ++s.work.logical_rows; ++s.work.completed_chunks;
         if(s.options.defer_hc_write)++s.work.deferred_hc_outputs;
         s.pending.swap(pending);
-        s.state = std::move(next); route = std::move(candidate);if(trace)*trace=std::move(observed); error.clear(); return true;
+        s.state = std::move(next); route = std::move(candidate);if(trace)*trace=std::move(observed);s.final_device_valid=s.options.native_hc_final_write; error.clear(); return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 bool PortableFfn::step_batch(const PortableExpertRowsBatch& dispatch,
                              std::vector<PortableRoute>& routes, std::string& error) {
-    error.clear(); routes.clear();
+    error.clear(); routes.clear();impl_->final_device_valid=false;
     try {
         auto& s = *impl_;
         require(!s.options.native_hc_pending_read && !s.options.defer_hc_write,"native FFN HC: batch execution unsupported");
@@ -700,6 +701,36 @@ bool PortableFfn::step_batch(const PortableExpertRowsBatch& dispatch,
 int64_t PortableFfn::tokens() const { return impl_->tokens; }
 PortableFfnWork PortableFfn::work() const { return impl_->work; }
 const std::vector<float>& PortableFfn::residual() const { return impl_->state; }
+ggml_tensor* PortableFfn::final_residual_tensor() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->final_device_valid&&impl_->native_hc ? impl_->native_hc->write_candidate : nullptr;
+#else
+    return nullptr;
+#endif
+}
+PortableFinalHcResidual PortableFfn::final_residual_identity() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    if(impl_->final_device_valid&&impl_->native_hc)
+        return {impl_->native_hc->write_candidate,impl_->native_hc->position(),impl_->native_hc->owner_id(),impl_->native_hc->write_calls(),impl_->layer,this,
+                [](const void* owner,const PortableFinalHcResidual& value){return static_cast<const PortableFfn*>(owner)->owns_final_residual(value);}};
+#endif
+    return {};
+}
+bool PortableFfn::owns_final_residual(const PortableFinalHcResidual& expected) const {
+    const auto actual=final_residual_identity();
+    return actual.tensor&&expected.owner==this&&actual.is_current==expected.is_current&&actual.tensor==expected.tensor&&actual.position==expected.position&&actual.owner_id==expected.owner_id&&actual.write_sequence==expected.write_sequence&&actual.layer==expected.layer;
+}
+bool PortableFfn::record_head_producer(const PortableFinalHcResidual& expected,std::string& error) {
+    error.clear();
+    try {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        require(owns_final_residual(expected),"native HC final write: stale head producer identity");
+        impl_->native_hc->record_head_write(expected);return true;
+#else
+        (void)expected;require(false,"native HC final write: strict native-stage build required");return false;
+#endif
+    } catch(const std::exception& e){error=e.what();return false;}
+}
 const std::vector<PortablePlacement>& PortableFfn::placements() const { return impl_->placement; }
 size_t PortableFfn::weight_bytes() const { return impl_->weights_size; }
 size_t PortableFfn::graph_bytes() const { return impl_->graphs_size; }

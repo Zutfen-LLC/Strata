@@ -127,6 +127,7 @@ int main(int argc, char **argv) {
                              " [--native-qsa-qkv-t1 (trial, ordinary QSA Q/K/V projections)]\n"
                              " [--native-qsa-indexer-projection-t1 (trial, BF16 indexer projections)]\n"
                              " [--native-hc-serial PREFIX --hc-serial-resident-weights (trial, ordinary serial boundaries)]\n"
+                             " [--native-head-hc-t1 PREFIX (trial, materialized output-head mixer)]\n"
                              " [--native-hc-serial-cycle PREFIX --hc-cycle-resident-weights (trial, bounded GDN/QSA cycle)]\n"
                              " [--layer0-resident-weights (trial, only layer0 dense/FFN weights)]\n"
                              " [--native-hc-read-layer0 RECEIPT_PREFIX (experimental serial T1 attention read)]\n"
@@ -224,6 +225,7 @@ int main(int argc, char **argv) {
             else if(key=="--native-gdn-output-projection-t1") {opts.native_gdn_output_projection_t1=true;opts.native_gdn_output_projection_receipt_prefix=value;}
             else if(key=="--native-gdn-t1") {opts.native_gdn_t1=true;opts.native_gdn_receipt_prefix=value;}
             else if(key=="--native-hc-serial") {opts.native_hc_serial=true;opts.native_hc_serial_receipt_prefix=value;}
+            else if(key=="--native-head-hc-t1") {opts.native_head_hc_t1=true;opts.native_head_hc_receipt_prefix=value;}
             else if(key=="--native-hc-serial-cycle") {
                 opts.native_hc_serial_cycle=true;opts.native_hc_cycle_receipt_prefix=value;
                 opts.native_hc_pending_layer1_2=opts.native_hc_pending_layer2_3=true;
@@ -396,6 +398,7 @@ int main(int argc, char **argv) {
                      <<",\"native_gdn_preparation_t1\":"<<(opts.native_gdn_preparation_t1?"true":"false")<<",\"native_gdn_preparation_weights\":"<<(opts.native_gdn_preparation_weights?"true":"false")
                      <<",\"gdn_resident_state\":"<<(opts.gdn_resident_state?"true":"false")
                      <<",\"native_hc_serial\":"<<(opts.native_hc_serial?"true":"false")
+                     <<(opts.native_head_hc_t1?",\"native_head_hc_t1\":true":"")
                      <<",\"hc_serial_resident_weights\":"<<(opts.hc_serial_resident_weights?"true":"false")
                      <<",\"hc_cycle_resident_weights\":"<<(opts.hc_cycle_resident_weights?"true":"false")
                      <<",\"native_hc_pending_layer2_3\":"<<(opts.native_hc_pending_layer2_3?"true":"false")
@@ -632,6 +635,7 @@ int main(int argc, char **argv) {
                 out<<",\"native_hc_serial_cycle\":true,\"native_hc_cycle_ffn_calls_delta\":["<<w.native_hc_cycle_ffn_calls[0]-heads_before.native_hc_cycle_ffn_calls[0]<<","<<w.native_hc_cycle_ffn_calls[1]-heads_before.native_hc_cycle_ffn_calls[1]
                    <<"],\"native_hc_cycle_outputs_delta\":"<<w.native_hc_cycle_outputs-heads_before.native_hc_cycle_outputs<<",\"native_hc_cycle_reads_delta\":"<<w.native_hc_cycle_reads-heads_before.native_hc_cycle_reads;
             }
+            if(opts.native_head_hc_t1)out<<",\"native_head_hc_t1\":true,\"native_head_hc_calls_delta\":"<<session->model_work().native_head_hc_calls-heads_before.native_head_hc_calls;
             if(opts.native_hc_pending_layer2_3)out<<",\"native_hc_pending_layer2_3\":true,\"deferred_ffn_layer2_outputs_delta\":"<<session->model_work().deferred_ffn_layer2_outputs-heads_before.deferred_ffn_layer2_outputs<<",\"native_hc_pending_layer3_calls_delta\":"<<session->model_work().native_hc_pending_layer3_calls-heads_before.native_hc_pending_layer3_calls;
             if(opts.native_hc_pending_layer1_2)out<<",\"native_hc_pending_layer1_2\":true,\"deferred_ffn_layer1_outputs_delta\":"<<session->model_work().deferred_ffn_layer1_outputs-heads_before.deferred_ffn_layer1_outputs<<",\"native_hc_pending_layer2_calls_delta\":"<<session->model_work().native_hc_pending_layer2_calls-heads_before.native_hc_pending_layer2_calls;
             if(opts.native_hc_ffn_write_layer0)out<<",\"native_hc_ffn_write_layer0\":true,\"native_ffn_hc_write_layer0_calls_delta\":"<<session->model_work().native_ffn_hc_write_layer0_calls-heads_before.native_ffn_hc_write_layer0_calls;

@@ -151,6 +151,8 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
             !opts.gdn_batch_input_projections && !opts.gdn_causal_chunk && selected_accelerators &&
             !opts.allow_cpu_fallback && opts.gdn_resident_weights && opts.dense_topology==PortableDenseTopology::primary),
             "ordinary native HC requires serial eager primary dense, matched FFN residency, layer0 PLE write and receipt prefix; cycle scope is exclusive");
+        require(!opts.native_head_hc_t1 || (opts.native_hc_serial&&opts.dense_resident_weights&&selected_accelerators&&!opts.allow_cpu_fallback&&!opts.native_head_hc_receipt_prefix.empty()),
+            "native head HC requires ordinary materialized native HC, resident head weights, strict accelerator and receipt prefix");
         const char* fused_head=std::getenv("STRATA_FUSE_HEAD_GR");
         require(!opts.native_hc_serial || !fused_head || *fused_head!='1',"ordinary native HC: fused final head is not ported");
         require(!opts.hc_serial_resident_weights || (selected_accelerators && !opts.allow_cpu_fallback),"ordinary FFN residency requires strict accelerator");

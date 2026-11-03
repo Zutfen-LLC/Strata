@@ -6,6 +6,7 @@
 #include "ggml-cpu.h"
 #include "portable_graph.hpp"
 #include "portable_gdn_projection.hpp"
+#include "native_hc_boundary.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #ifdef STRATA_PORTABLE_NATIVE_HC
 #include "portable_native_hc.hpp"
@@ -13,7 +14,6 @@
 #include "portable_native_gdn_preparation.hpp"
 #include "portable_native_gdn_input.hpp"
 #include "portable_native_qsa_wo.hpp"
-#include "native_hc_boundary.hpp"
 #endif
 #include <algorithm>
 #include <cmath>

@@ -1,5 +1,6 @@
 #include "strata/core/portable_model.hpp"
 #include "portable_graph.hpp"
+#include "portable_head_execution.hpp"
 #include "portable_router_work.hpp"
 #include "portable_shared_work.hpp"
 #include "portable_memory.hpp"
@@ -266,6 +267,7 @@ struct PortableModelSession::Impl {
             if(o.native_moe_combine) o.native_moe_combine_receipt_prefix = opts.expert_native_q8_observation + ".combine";
             o.allow_cpu_fallback = opts.allow_cpu_fallback;
             o.resident_dense_weights = portable_detail::model_resident_dense(opts,index,output);
+            if(output){o.native_head_hc_t1=opts.native_head_hc_t1;o.native_head_hc_receipt_prefix=opts.native_head_hc_receipt_prefix;}
             o.weight_budget = output ? opts.head_weight_cap : opts.layer_weight_cap;
             o.graph_budget = output ? opts.head_graph_cap : opts.layer_graph_cap;
             if (!opts.accelerators.empty()) {
@@ -419,7 +421,7 @@ struct PortableModelSession::Impl {
                 "portable model: resident head preflight overflow");
         const PortableHeadGeometry head_geometry{H, HC, 320, int64_t(vocabulary), 1e-6f};
         const size_t aligned_head_weights = head_resident_bound ? PortableHead::weight_allocation_size(
-            opts.accelerators[device(L-1)], head_geometry, hw) : 0;
+            opts.accelerators[device(L-1)], head_geometry, hw,opts.native_head_hc_t1) : 0;
         require(aligned_head_weights <= head_resident_bound, "portable model: aligned head weights exceed configured cap");
         if (head_resident_bound)
             std::clog << "head_weight_preflight slot=" << device(L-1)
@@ -778,14 +780,18 @@ struct PortableModelSession::Impl {
                 if (opts.expert_timings)
                     (gdn ? model_work.gdn_provider_ms : model_work.qsa_provider_ms) += provider_ms-provider_before;
             }
-            if (project) {
-                ++model_work.heads_executed;
+            const bool head_ok=portable_detail::model_optional_head(project,model_work,logits,[&]{
                 portable_detail::ScopedExpertTimer<> head_timer(opts.expert_timings, model_work.head_ms, model_work.head_calls);
-                const bool head_ok = head->run(residual, logits, error);
-                require(head_ok, "portable model: output head: " + error);
-            } else {
-                ++model_work.heads_skipped;
-            }
+                PortableFinalHcResidual producer;
+                if(opts.native_head_hc_t1&&layers.back().qsa)producer=layers.back().qsa->final_residual_identity();
+                if(opts.native_head_hc_t1)require(producer.tensor&&producer.position==pos&&producer.layer==int64_t(L-1),"native head HC: current final FFN producer identity required");
+                const auto native_head_before=head->native_hc_calls();
+                bool ok = opts.native_head_hc_t1 ? head->run_device(producer,logits,error) : head->run(residual, logits, error);
+                model_work.native_head_hc_calls+=head->native_hc_calls()-native_head_before;
+                if(ok&&opts.native_head_hc_t1)ok=layers.back().qsa->record_head_producer(producer,error);
+                return ok;
+            });
+            if(!head_ok)require(false, "portable model: output head: " + error);
             placement.clear();
             for (size_t l = 0; l < layers.size(); ++l)
                 append_placements(layers[l].placements(), int64_t(l));

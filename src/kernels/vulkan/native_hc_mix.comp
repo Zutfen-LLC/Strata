@@ -2,6 +2,10 @@
 #extension GL_EXT_spirv_intrinsics : require
 #extension GL_GOOGLE_include_directive : require
 #include "../../core/native_hc_mix_limits.h"
+#ifdef STRATA_HC_HEAD_DIV_RN
+#include "native_f32_div_rn.glsl"
+#include "native_head_hc_silu_tail.glsl"
+#endif
 spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427)
 float hc_fma(float a,float b,float c);
 layout(local_size_x=256) in;
@@ -20,9 +24,21 @@ void activate(float v,bool silu,out float e,out float a){
  uint vb=floatBitsToUint(v)&0x7fffffffu;
  bool positive_tail=!silu&&vb<0x7f800000u&&v>uintBitsToFloat(STRATA_HC_MIX_ACTIVATION_LIMIT_BITS);
  bool overflow_tail=!silu&&vb<0x7f800000u&&v<=-89.0;
+#ifdef STRATA_HC_HEAD_DIV_RN
+ bool head_silu_tail=silu&&strata_head_silu_overflow_candidate(floatBitsToUint(v));
+ if(!positive_tail&&!overflow_tail&&!head_silu_tail&&vb>STRATA_HC_MIX_ACTIVATION_LIMIT_BITS)flag(4u);
+#else
  if(!positive_tail&&!overflow_tail&&vb>STRATA_HC_MIX_ACTIVATION_LIMIT_BITS)flag(4u);
+#endif
  e=exp(-v);precise float den=1.0+e;
- precise float result=silu?v/den:1.0/den;a=result;
+#ifdef STRATA_HC_HEAD_DIV_RN
+ // This head-only observation fixes the captured SiLU division operands;
+ // exp and reciprocal remain native-device observations, not parity claims.
+ precise float result=silu?uintBitsToFloat(strata_f32_div_rn_bits(floatBitsToUint(v),floatBitsToUint(den))):1.0/den;
+#else
+ precise float result=silu?v/den:1.0/den;
+#endif
+ a=result;
  if(positive_tail){
   // exp may underflow, but the unchanged rounded denominator must be one.
   uint eb=floatBitsToUint(e);if(eb>0x33800000u||den!=1.0||floatBitsToUint(a)!=0x3f800000u)flag(8u);
@@ -30,6 +46,11 @@ void activate(float v,bool silu,out float e,out float a){
   // ceil(log(FLT_MAX))=89: only observed +Inf and exact +0 are admitted.
   // No replacement/saturation is assigned to e, den or result.
   if(floatBitsToUint(e)!=0x7f800000u||floatBitsToUint(den)!=0x7f800000u||floatBitsToUint(a)!=0u)flag(8u);
+#ifdef STRATA_HC_HEAD_DIV_RN
+ }else if(head_silu_tail){
+  // Observe the original operations; do not clamp or replace any operand.
+  if(!strata_head_silu_overflow_valid(floatBitsToUint(v),floatBitsToUint(e),floatBitsToUint(den),floatBitsToUint(a)))flag(8u);
+#endif
  }else{
   checked(e);checked(den);
   if(!(e>0.0)||(floatBitsToUint(e)&0x7fffffffu)<0x00800000u)flag(8u);

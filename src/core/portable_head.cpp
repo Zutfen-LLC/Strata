@@ -4,6 +4,9 @@
 #include "portable_head_admission.hpp"
 #include "portable_logits_guard.hpp"
 #include "strata/core/portable_model.hpp"
+#ifdef STRATA_PORTABLE_NATIVE_HC
+#include "portable_native_head_hc.hpp"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -12,6 +15,10 @@
 namespace strata::core {
 using portable_detail::require;
 namespace {
+// Two existing component pipelines each carry the same 1 MiB private-resource
+// allowance as the logits guard; the remaining MiB bounds aligned scratch/status.
+constexpr size_t native_head_device_bound=3u<<20;
+constexpr size_t native_head_host_bound=16u<<20;
 using Context = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
 using Buffer = std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)>;
 Context context() {
@@ -25,7 +32,7 @@ void validate_geometry(const PortableHeadGeometry& g) {
             "portable head: invalid geometry");
 }
 std::map<std::string, ggml_tensor*> weight_metadata(ggml_context* c, const PortableHeadGeometry& g,
-                                                 const std::vector<PortableTensorView>& views, size_t budget) {
+                                                 const std::vector<PortableTensorView>& views, size_t budget, bool native_hc = false) {
     validate_geometry(g);
     const int64_t width = g.hidden * g.streams;
     size_t payload_bytes = 0;
@@ -41,12 +48,15 @@ std::map<std::string, ggml_tensor*> weight_metadata(ggml_context* c, const Porta
                     (v.type == 0 || v.type == 8) && (v.type != 8 || v.shape[0] % 32 == 0),
                 "portable head: unexpected tensor/type/shape: " + v.name);
         require(v.name != "output_hc_norm.weight" || v.type == 0, "portable head: norm requires F32");
-        auto *t = ggml_new_tensor(c, ggml_type(v.type), int(v.shape.size()), v.shape.data());
+        const bool convert=native_hc&&(v.name=="output_hc_down.weight"||v.name=="output_hc_up.weight");
+        if(convert)require(v.type==8&&v.bytes==size_t(width*g.rank)/32*34,"native head HC: Q8_0 source role required");
+        auto *t = convert ? ggml_new_tensor_1d(c, GGML_TYPE_I32, width*g.rank/2) : ggml_new_tensor(c, ggml_type(v.type), int(v.shape.size()), v.shape.data());
         ggml_set_name(t, v.name.c_str());
-        require(ggml_nbytes(t) == v.bytes && payload_bytes <= budget &&
-                    v.bytes <= budget - payload_bytes,
+        const size_t bytes=ggml_nbytes(t);
+        require((convert||bytes==v.bytes) && payload_bytes <= budget &&
+                    bytes <= budget - payload_bytes,
                 "portable head: weight budget/size");
-        payload_bytes += v.bytes;
+        payload_bytes += bytes;
         w[v.name] = t;
     }
     return w;
@@ -72,10 +82,16 @@ size_t aligned_weight_size(ggml_context* c, ggml_backend_t backend) {
 }
 struct HeadGraph { ggml_tensor *input, *output; ggml_cgraph* graph; };
 HeadGraph build_head_graph(ggml_context* c, const PortableHeadGeometry& g,
-                          const std::map<std::string, ggml_tensor*>& w) {
+                          const std::map<std::string, ggml_tensor*>& w, ggml_tensor* native_mixed=nullptr) {
     const int64_t width=g.hidden*g.streams;
     ggml_tensor *input=nullptr,*output=nullptr;
     ggml_cgraph* graph=nullptr;
+    if(native_mixed){
+        output=ggml_mul_mat(c,w.at("output.weight"),native_mixed);
+        ggml_set_name(output,"portable_logits");ggml_set_output(output);
+        graph=ggml_new_graph(c);ggml_build_forward_expand(graph,output);
+        return {nullptr,output,graph};
+    }
     input = ggml_new_tensor_3d(c, GGML_TYPE_F32, g.hidden, g.streams, 1);
     ggml_set_input(input);
     auto *norm = ggml_mul(c, ggml_reshape_2d(c, ggml_rms_norm(c, input, g.epsilon), width, 1),
@@ -142,6 +158,10 @@ struct PortableHead::Impl {
     ggml_cgraph *graph = nullptr;
     ggml_tensor *input = nullptr, *output = nullptr;
     std::unique_ptr<portable_detail::PortableLogitsGuard> logits_guard;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    std::unique_ptr<portable_detail::PortableNativeHeadHc> native_hc;
+#endif
+    bool native_head=false;
     std::vector<PortablePlacement> placement;
     size_t device_weights = 0;
     size_t weight_size = 0, graph_size = 0, device_bytes = 0, device_workspace = 0, device_conversion = 0;
@@ -150,29 +170,62 @@ struct PortableHead::Impl {
         : g(geometry) {
         validate_geometry(g);
         require(opts.threads > 0, "portable head: invalid thread count");
+        native_head=opts.native_head_hc_t1;
+        if(native_head){
+#ifndef STRATA_PORTABLE_NATIVE_HC
+            require(false,"native head HC: strict native-stage build required");
+#endif
+            require(g.hidden==2560&&g.streams==4&&g.rank==320&&g.epsilon==1e-6f&&opts.request_accelerator&&opts.accelerator&&opts.resident_dense_weights&&!opts.allow_cpu_fallback&&!opts.native_head_hc_receipt_prefix.empty(),"native head HC: require materialized T1 geometry, resident strict accelerator and receipt");
+        }
         cpu.reset(ggml_backend_cpu_init());
         require(bool(cpu), "portable head: CPU unavailable");
         ggml_backend_cpu_set_n_threads(cpu.get(), opts.threads);
         const int64_t width = g.hidden * g.streams;
-        auto w = weight_metadata(weights.get(), g, views, opts.weight_budget);
+        auto w = weight_metadata(weights.get(), g, views, opts.weight_budget,native_head);
         auto *weight_backend = portable_detail::weight_backend(opts, cpu.get());
         const size_t weight_bound = aligned_weight_size(weights.get(),weight_backend);
         require(weight_bound <= opts.weight_budget, "portable head: aligned weight budget");
         buffer.reset(ggml_backend_alloc_ctx_tensors(weights.get(), weight_backend));
         require(bool(buffer), "portable head: weight allocation failed");
         ggml_backend_buffer_set_usage(buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-        for (const auto &v : views)
+        for (const auto &v : views) {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            if(native_head&&(v.name=="output_hc_down.weight"||v.name=="output_hc_up.weight")){
+                auto converted=portable_detail::native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,size_t(width*g.rank));
+                for(auto h:converted)portable_detail::native_hc_normal(portable_detail::native_hc_value(uint32_t(h)<<16));
+                ggml_backend_tensor_set(w.at(v.name),converted.data(),0,converted.size()*sizeof(uint16_t));
+                std::vector<uint16_t> actual(converted.size());ggml_backend_tensor_get(w.at(v.name),actual.data(),0,actual.size()*sizeof(uint16_t));
+                require(actual==converted,"native head HC: resident BF16 role differs from source conversion");continue;
+            }
+#endif
             ggml_backend_tensor_set(w.at(v.name), v.data, 0, v.bytes);
+#ifdef STRATA_PORTABLE_NATIVE_HC
+            if(native_head&&v.name=="output_hc_norm.weight"){
+                std::vector<float> actual(static_cast<size_t>(width));ggml_backend_tensor_get(w.at(v.name),actual.data(),0,v.bytes);
+                require(std::memcmp(actual.data(),v.data,v.bytes)==0,"native head HC: resident norm role differs from source");
+                for(float value:actual)portable_detail::native_hc_normal(value);
+            }
+#endif
+        }
         weight_size = ggml_backend_buffer_get_size(buffer.get());
         require(weight_size <= weight_bound && weight_size <= opts.weight_budget,
                 "portable head: actual aligned weight budget/estimate exceeded");
         device_weights = weight_backend != cpu.get() ? weight_size : 0;
-        auto *c = ctx.get();
-        const auto built=build_head_graph(c,g,w);
+        auto *c = ctx.get();ggml_tensor* native_mixed=nullptr;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        if(native_head){
+            require(native_head_device_bound<=opts.graph_budget,"native head HC: graph budget");
+            native_hc=std::make_unique<portable_detail::PortableNativeHeadHc>(opts.accelerator,w.at("output_hc_norm.weight"),w.at("output_hc_down.weight"),w.at("output_hc_up.weight"),native_head_device_bound,opts.native_head_hc_receipt_prefix);
+            require(native_hc->bytes()<=native_head_device_bound,"native head HC: device bound exceeded");
+            graph_size=native_head_device_bound;native_mixed=native_hc->mixed_bank_for_graph();
+            placement.push_back({"global-head-native-hc","NATIVE_BF16_MATERIALIZED_T1","head_mixed","F32/BF16",ggml_backend_name(opts.accelerator),"",{g.hidden,g.streams,g.rank}});
+        }
+#endif
+        const auto built=build_head_graph(c,g,w,native_mixed);
         input=built.input;output=built.output;graph=built.graph;
         const size_t workspace = ggml_graph_plan(graph, opts.threads, nullptr).work_size;
-        require(workspace <= opts.graph_budget, "portable head: CPU workspace budget");
-        graph_size = workspace;
+        require(graph_size<=opts.graph_budget&&workspace <= opts.graph_budget-graph_size, "portable head: CPU workspace budget");
+        graph_size += workspace;
         if (opts.request_accelerator && opts.accelerator) {
             // Only discount the full output-matrix conversion when the exact
             // pinned T=1 matvec path and physical storage range are proven.
@@ -213,19 +266,24 @@ struct PortableHead::Impl {
     }
 };
 size_t PortableHead::weight_allocation_size(ggml_backend* backend, PortableHeadGeometry geometry,
-                                          const std::vector<PortableTensorView>& views) {
+                                          const std::vector<PortableTensorView>& views, bool native_head_hc_t1) {
     auto metadata = context();
-    weight_metadata(metadata.get(),geometry,views,SIZE_MAX);
+    weight_metadata(metadata.get(),geometry,views,SIZE_MAX,native_head_hc_t1);
     return aligned_weight_size(metadata.get(),backend);
 }
 PortableHeadAdmission PortableHead::admission(PortableHeadGeometry g,
     const std::vector<PortableTensorView>& views, PortableFfnOptions opts, bool guard_logits) {
     require(opts.threads>0,"portable head: invalid thread count");
     auto weights=context(),ctx=context();
-    auto w=weight_metadata(weights.get(),g,views,opts.weight_budget);
+    auto w=weight_metadata(weights.get(),g,views,opts.weight_budget,opts.native_head_hc_t1);
     portable_detail::Backend cpu(ggml_backend_cpu_init(),ggml_backend_free);
     require(bool(cpu),"portable head: CPU unavailable for metadata sizing");
-    auto built=build_head_graph(ctx.get(),g,w);
+    ggml_tensor* mixed=nullptr;
+    if(opts.native_head_hc_t1){
+        require(g.hidden==2560&&g.streams==4&&g.rank==320&&g.epsilon==1e-6f&&opts.request_accelerator&&opts.accelerator&&opts.resident_dense_weights&&!opts.allow_cpu_fallback&&!opts.native_head_hc_receipt_prefix.empty(),"native head HC: unsupported admission mode");
+        mixed=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,g.hidden);ggml_set_input(mixed);
+    }
+    auto built=build_head_graph(ctx.get(),g,w,mixed);
     auto* accelerator=opts.request_accelerator?opts.accelerator:nullptr;
     PortableHeadAdmission a;
     a.scheduler_bound=graph_storage_bound(built.graph,cpu.get(),accelerator,w);
@@ -247,6 +305,7 @@ PortableHeadAdmission PortableHead::admission(PortableHeadGeometry g,
     }
     a.graph_bound=add_bound(add_bound(a.scheduler_bound,a.cpu_workspace),
                             add_bound(a.device_workspace,a.guard_bound));
+    if(opts.native_head_hc_t1)a.graph_bound=add_bound(a.graph_bound,native_head_device_bound);
     return a;
 }
 PortableHead::PortableHead(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -266,6 +325,7 @@ bool PortableHead::run(const std::vector<float> &streams, std::vector<float> &lo
     logits.clear();
     try {
         auto &s = *impl_;
+        require(!s.native_head,"native head HC: actual final producer tensor required");
         require(streams.size() == size_t(s.g.hidden * s.g.streams), "portable head: residual size");
         for (float v : streams)
             if (!std::isfinite(v))
@@ -287,6 +347,31 @@ bool PortableHead::run(const std::vector<float> &streams, std::vector<float> &lo
         return false;
     }
 }
+bool PortableHead::run_device(const PortableFinalHcResidual& producer,std::vector<float>& logits,std::string& error){
+    error.clear();logits.clear();
+    try {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        auto& s=*impl_;require(s.native_head&&s.native_hc,"native head HC: option not enabled");
+        require(producer.tensor&&producer.position!=UINT64_MAX&&producer.owner_id!=UINT64_MAX&&producer.write_sequence>0&&producer.layer==47&&producer.owner&&producer.is_current&&producer.is_current(producer.owner,producer),"native head HC: current producer identity required");
+        auto* mixed=s.native_hc->run(producer);
+        require(mixed==s.output->src[1]&&mixed==s.native_hc->mixed_bank_for_graph(),"native head HC: vocabulary consumer must borrow actual mixer bank");
+        require(ggml_backend_sched_graph_compute(s.scheduler.get(),s.graph)==GGML_STATUS_SUCCESS,"native head HC: vocabulary compute failed");
+        if(s.logits_guard)require(s.logits_guard->check(s.output),"portable head: nonfinite logits (integer status guard)");
+        std::vector<float> next(size_t(s.g.vocabulary));ggml_backend_tensor_get(s.output,next.data(),0,next.size()*sizeof(float));
+        for(float v:next)require(std::isfinite(v),"portable head: nonfinite logits");
+        s.native_hc->record_first(producer,true,true);logits.swap(next);return true;
+#else
+        (void)producer;require(false,"native head HC: strict native-stage build required");return false;
+#endif
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+uint64_t PortableHead::native_hc_calls()const{
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_hc?impl_->native_hc->calls():0;
+#else
+    return 0;
+#endif
+}
 size_t PortableHead::weight_bytes() const { return impl_->weight_size; }
 size_t PortableHead::graph_bytes() const { return impl_->graph_size; }
 const std::vector<PortablePlacement> &PortableHead::placements() const { return impl_->placement; }
@@ -300,10 +385,14 @@ PortableMemoryUsage PortableHead::memory_usage() const {
     m.device_graph = s.device_bytes;
     const size_t guard_device = s.logits_guard ? s.logits_guard->device_bytes() +
                                                s.logits_guard->device_resource_bound() : 0;
-    const size_t buffers = m.host_graph + m.device_graph + guard_device;
+    const size_t buffers = m.host_graph + m.device_graph + guard_device + (s.native_head?native_head_device_bound:0);
     m.device_state += s.logits_guard ? s.logits_guard->device_bytes() : 0;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    if(s.native_hc){m.device_state+=s.native_hc->bytes();m.device_extra_bound+=native_head_device_bound-s.native_hc->bytes();}
+#endif
     m.device_extra_bound += s.logits_guard ? s.logits_guard->device_resource_bound() : 0;
     m.host_extra_bound = (4u << 20) + size_t(s.g.vocabulary * 2 + s.g.hidden * 16) * sizeof(float);
+    if(s.native_head)m.host_extra_bound+=native_head_host_bound;
     if (s.graph_size > buffers)
         m.host_extra_bound += s.graph_size - buffers;
     if (s.logits_guard) m.host_extra_bound += s.logits_guard->host_bound();

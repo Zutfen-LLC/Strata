@@ -30,18 +30,25 @@ inline std::vector<uint16_t> native_hc_q8_bf16(const uint8_t* bytes,size_t size,
 struct NativeHcOracle {std::vector<float> rs,xn,inject;};
 // Host normal-domain control, not a replacement for the actual CUDA source oracle.
 // rsqrt implementation/contraction qualification must use native_hc_reference.
-inline NativeHcOracle native_hc_oracle(const std::vector<float>& x,const std::vector<float>& w,const std::vector<uint16_t>& wi,uint32_t t){
- native_hc_shape(2560,4,t);native_hc_need(x.size()==size_t(t)*10240&&w.size()==10240&&wi.size()==40960,"native HC: oracle span mismatch");
+inline NativeHcOracle native_hc_norm_oracle(const std::vector<float>& x,const std::vector<float>& w,uint32_t t){
+ native_hc_shape(2560,4,t);native_hc_need(x.size()==size_t(t)*10240&&w.size()==10240,"native HC: norm oracle span mismatch");
  for(float f:x)native_hc_normal(f);
  for(float f:w)native_hc_normal(f);
- for(auto h:wi)native_hc_normal(native_hc_value(uint32_t(h)<<16));
- NativeHcOracle out;out.rs.resize(t*4);out.xn.resize(x.size());out.inject.resize(t*4);
+ NativeHcOracle out;out.rs.resize(t*4);out.xn.resize(x.size());
  for(uint32_t token=0;token<t;++token){float partial[4][256]{};
   for(uint32_t tid=0;tid<256;++tid)for(uint32_t j=tid*4;j<10240;j+=1024){const uint32_t c=j/2560;const auto* r=x.data()+token*10240+j;
    float sq=native_hc_normal(r[1]*r[1]);sq=native_hc_normal(std::fma(r[0],r[0],sq));for(int k=2;k<4;++k)sq=native_hc_normal(std::fma(r[k],r[k],sq));partial[c][tid]=native_hc_normal(partial[c][tid]+sq);}
   for(uint32_t offset=16;offset;offset>>=1){auto old=std::array<std::array<float,256>,4>{};for(int c=0;c<4;++c)std::memcpy(old[c].data(),partial[c],1024);for(int c=0;c<4;++c)for(int i=0;i<256;++i)partial[c][i]=native_hc_normal(old[c][i]+old[c][i^offset]);}
   for(int c=0;c<4;++c){float sum=0;for(int warp=0;warp<8;++warp)sum=native_hc_normal(sum+partial[c][warp*32]);const float mean=native_hc_normal(sum/2560.0f);out.rs[token*4+c]=native_hc_normal(1.0f/std::sqrt(native_hc_normal(mean+1e-6f)));}
   for(uint32_t j=0;j<10240;++j)out.xn[token*10240+j]=native_hc_normal(native_hc_normal(x[token*10240+j]*w[j])*out.rs[token*4+j/2560]);
+ }
+ return out;
+}
+inline NativeHcOracle native_hc_oracle(const std::vector<float>& x,const std::vector<float>& w,const std::vector<uint16_t>& wi,uint32_t t){
+ native_hc_need(wi.size()==40960,"native HC: oracle span mismatch");
+ for(auto h:wi)native_hc_normal(native_hc_value(uint32_t(h)<<16));
+ NativeHcOracle out=native_hc_norm_oracle(x,w,t);out.inject.resize(t*4);
+ for(uint32_t token=0;token<t;++token){
   for(uint32_t row=0;row<4;++row){float lane[32]{};for(uint32_t i=0;i<32;++i)for(uint32_t chunk=i;chunk<1280;chunk+=32){float acc=0;for(uint32_t k=0;k<8;++k)acc=native_hc_normal(std::fma(native_hc_value(uint32_t(wi[row*10240+chunk*8+k])<<16),out.xn[token*10240+chunk*8+k],acc));lane[i]=native_hc_normal(lane[i]+acc);}
    for(uint32_t offset=16;offset;offset>>=1){float old[32];std::memcpy(old,lane,sizeof lane);for(int i=0;i<32;++i)lane[i]=native_hc_normal(old[i]+old[i^offset]);}out.inject[token*4+row]=lane[0];}
  }

@@ -11,7 +11,7 @@ struct ggml_backend_vk_buffer_context{std::weak_ptr<MockDevice> device;};
 namespace strata::core::portable_detail {
 enum class NativeComponentAddressing {descriptor,physical64};
 struct StrataVkLogitsGuard{ggml_backend_t backend;ggml_tensor* status=nullptr;size_t bytes=512;int pipeline=1;};
-static bool is_vk=true;static size_t submissions=0;static uint32_t fake_status=0;static const ggml_tensor* status_tensor=nullptr;static std::vector<std::array<uint32_t,3>> grids;
+static bool is_vk=true,norm_only=false;static size_t submissions=0;static uint32_t fake_status=0;static const ggml_tensor* status_tensor=nullptr;static std::vector<std::array<uint32_t,3>> grids;
 static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_backend_t b,const uint32_t*,size_t,NativeComponentAddressing,const char*,uint32_t,uint32_t,const char*,size_t){return std::make_unique<StrataVkLogitsGuard>(StrataVkLogitsGuard{b});}
 static bool ggml_backend_buffer_is_vk(ggml_backend_buffer_t){return is_vk;}
 static uint32_t get_misalign_bytes(ggml_backend_vk_context*,const ggml_tensor* t){return uintptr_t(t->data)%256;}
@@ -20,12 +20,13 @@ static void ggml_pipeline_request_descriptor_sets(ggml_backend_vk_context*,int,i
 static std::shared_ptr<int> ggml_vk_get_compute_ctx(ggml_backend_vk_context*){return std::make_shared<int>(1);}
 static void ggml_vk_sync_buffers(ggml_backend_vk_context*,const std::shared_ptr<int>&){}
 static int ggml_vk_tensor_subbuffer(ggml_backend_vk_context*,const ggml_tensor*,bool){return 0;}
-static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context*,const std::shared_ptr<int>&,int,std::initializer_list<int>,const std::array<uint32_t,9>& p,const std::array<uint32_t,3>& grid){++submissions;grids.push_back(grid);if(p!=std::array<uint32_t,9>{uint32_t(submissions%2==1?0:1),8,2,3,4,5,6,7,0})throw std::runtime_error("HC descriptor bias mapping");}
+static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context*,const std::shared_ptr<int>&,int,std::initializer_list<int>,const std::array<uint32_t,9>& p,const std::array<uint32_t,3>& grid){++submissions;grids.push_back(grid);if(!norm_only&&p!=std::array<uint32_t,9>{uint32_t(submissions%2==1?0:1),8,2,3,4,5,6,7,0})throw std::runtime_error("HC descriptor bias mapping");if(norm_only&&p!=std::array<uint32_t,9>{0,1,2,3,0,5,6,0,0})throw std::runtime_error("HC norm-only descriptor bias mapping");}
 static void mock_get(const ggml_tensor* t,void* out,size_t,size_t size){std::memset(out,0,size);if(t==status_tensor)std::memcpy(out,&fake_status,4);}
 static void mock_set(ggml_tensor*,const void*,size_t,size_t){}
 }
 #define ggml_backend_tensor_get mock_get
 #define ggml_backend_tensor_set mock_set
+#define STRATA_NATIVE_HC_NORM_DISPATCH_TEST
 #include "strata_vk_native_hc.inc"
 #undef ggml_backend_tensor_get
 #undef ggml_backend_tensor_set
@@ -42,5 +43,12 @@ int main(){try{ggml_backend_vk_context vk;ggml_backend backend{};backend.context
  ggml_backend_vk_buffer_context other;other.device=std::make_shared<MockDevice>();ggml_backend_buffer foreign{};foreign.context=&other;w->buffer=&foreign;reject(run);w->buffer=&buffer;
  vk.device->properties.limits.maxComputeSharedMemorySize=4096;reject(run);vk.device->properties.limits.maxComputeSharedMemorySize=32768;
  auto rounding=std::fegetround();std::fesetround(FE_DOWNWARD);reject(run);std::fesetround(rounding);
- fake_status=2;bool caught=false;try{run();}catch(const std::invalid_argument&){caught=true;}native_hc_need(caught&&submissions==4,"native HC: bad device arithmetic accepted");puts("native HC actual dispatch bias/grid/domain/status refusal (mock submission) passed");return 0;
+ fake_status=2;bool caught=false;try{run();}catch(const std::invalid_argument&){caught=true;}native_hc_need(caught&&submissions==4,"native HC: bad device arithmetic accepted");
+ auto* head_x=tensor(GGML_TYPE_F32,10240,0xa00008);auto* head_n=tensor(GGML_TYPE_F32,10240,0xb00014);auto* head_rs=tensor(GGML_TYPE_F32,4,0xc00018);
+ fake_status=0;norm_only=true;auto head=[&]{strata_vk_native_hc_norm_only(&hc,head_x,w,head_n,head_rs);};head();
+ native_hc_need(submissions==5&&grids.back()==std::array<uint32_t,3>{1,1,1},"head HC must issue one norm dispatch without injection");
+ auto* original=head_n->data;head_n->data=head_x->data;reject(head);head_n->data=original;
+ head_n->buffer=&foreign;reject(head);head_n->buffer=&buffer;
+ fake_status=2;caught=false;try{head();}catch(const std::invalid_argument&){caught=true;}native_hc_need(caught&&submissions==6,"head HC: submitted domain failure accepted");
+ puts("native HC actual dispatch bias/grid/domain/status refusal and head norm-only dispatch (mock submission) passed");return 0;
 }catch(const std::exception& e){fprintf(stderr,"%s\n",e.what());return 1;}}

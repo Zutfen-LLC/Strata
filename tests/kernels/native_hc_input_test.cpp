@@ -15,6 +15,13 @@ int main(){try{
  for(uint32_t scale:{0u,1u,0x3ffu,0x400u,0x1401u,0x3555u,0x3c00u,0x3c01u,0x7bffu,0x8000u,0x8400u,0xbc01u})for(int code=-128;code<128;++code){uint8_t data[34]{};uint16_t half=uint16_t(scale);std::memcpy(data,&half,2);std::fill(data+2,data+34,uint8_t(code));const auto out=native_hc_q8_bf16(data,34,32);const bool sign=((scale>>15)!=0)^(code<0);double exact=std::abs(double(ggml_fp16_to_fp32(half))*double(code));auto it=std::lower_bound(table.begin(),table.end(),exact);size_t hi=it-table.begin(),chosen=hi;if(hi&&hi<table.size()){double lo_dist=exact-table[hi-1],hi_dist=table[hi]-exact;if(lo_dist<hi_dist||(lo_dist==hi_dist&&((hi-1)%2)==0))chosen=hi-1;}if(hi==table.size())chosen=hi-1;uint16_t expected=uint16_t(chosen)|(sign?0x8000u:0u);if(exact==0)expected=uint16_t((scale&0x8000u)^(code<0?0x8000u:0));native_hc_need(out[0]==expected,"native HC: original pack BF16 RNE mismatch");}
  native_hc_need(native_hc_bf16_rne(native_hc_value(0x3f808000))==0x3f80&&native_hc_bf16_rne(native_hc_value(0x3f818000))==0x3f82,"native HC: even/odd BF16 ties");
  refuses([]{native_hc_normal(std::numeric_limits<float>::denorm_min());});refuses([]{native_hc_normal(INFINITY);});refuses([]{native_hc_bf16_rne(NAN);});
+ // A materialized output head has no injection projection. Its norm-only
+ // reference must preserve each stream's native RMS order without a weight
+ // or output for the omitted projection.
+ {std::vector<float>x(10240),w(10240,1);for(int c=0;c<4;++c)std::fill(x.begin()+c*2560,x.begin()+(c+1)*2560,float(c));
+  const auto out=native_hc_norm_oracle(x,w,1);native_hc_need(out.inject.empty()&&out.xn.size()==10240&&out.rs.size()==4,"head HC norm-only layout");
+  for(int c=0;c<4;++c){const float v=float(c),rs=1.f/std::sqrt(v*v+1e-6f);native_hc_need(out.rs[c]==rs&&out.xn[c*2560]==v*rs,"head HC norm-only stream control");}
+  auto bad=x;bad[0]=INFINITY;refuses([&]{native_hc_norm_oracle(bad,w,1);});}
  uint8_t bad[34]{};refuses([&]{native_hc_q8_bf16(bad,33,32);});bad[1]=0x7c;refuses([&]{native_hc_q8_bf16(bad,34,32);});
  // Synthetic adversarial values, independent of private model operands. Double computes
  // the exact products/sums here before each F32 rounding: native sm86 rounds y*y,

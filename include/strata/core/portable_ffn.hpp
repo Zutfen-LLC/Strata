@@ -41,7 +41,21 @@ struct PortableHcPendingWrite {
     }
 };
 
+// Borrowed final FFN device bank, valid only until its producer is reset or
+// attempts another step. The producer object must outlive the borrow.
+// The sequence disambiguates resets at the same position.
+struct PortableFinalHcResidual {
+    ggml_tensor* tensor = nullptr;
+    uint64_t position = UINT64_MAX, owner_id = UINT64_MAX, write_sequence = 0;
+    int64_t layer = -1;
+    const void* owner = nullptr;
+    bool (*is_current)(const void*, const PortableFinalHcResidual&) = nullptr;
+};
+
 struct PortableFfnOptions {
+    // Global head only; serial materialized T1 mixer with borrowed residual.
+    bool native_head_hc_t1 = false;
+    std::string native_head_hc_receipt_prefix;
     static constexpr size_t deferred_hc_host_bound = 1u << 20; // candidate/committed/caller tuple copies
     bool defer_hc_write = false; // ordinary native boundary; next attention owns materialization
 
@@ -175,6 +189,12 @@ public:
     int64_t tokens() const;
     PortableFfnWork work() const;
     const std::vector<float>& residual() const;
+    // Borrow the actual completed native final-write candidate until reset or
+    // the next step attempt. Null for other modes and after failure.
+    ggml_tensor* final_residual_tensor() const;
+    PortableFinalHcResidual final_residual_identity() const;
+    bool owns_final_residual(const PortableFinalHcResidual& expected) const;
+    bool record_head_producer(const PortableFinalHcResidual& expected, std::string& error);
     const std::vector<PortablePlacement>& placements() const;
     size_t weight_bytes() const;
     size_t graph_bytes() const;

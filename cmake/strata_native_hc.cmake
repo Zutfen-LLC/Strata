@@ -19,6 +19,15 @@ function(strata_native_hc_enable out)
     DEPENDS src/kernels/vulkan/native_hc_mix.comp src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
   add_custom_target(strata_native_hc_mix_shader DEPENDS "${out}/strata_native_hc_mix_spv.hpp")
   add_dependencies(ggml-vulkan strata_native_hc_mix_shader)
+  add_custom_command(OUTPUT "${out}/strata_native_head_hc_mix_rn_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O -DSTRATA_HC_HEAD_DIV_RN=1
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_hc_mix.comp" -o "${out}/native_head_hc_mix_rn.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_head_hc_mix_rn.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_head_hc_mix_rn.spv" "-DOUTPUT=${out}/strata_native_head_hc_mix_rn_spv.hpp"
+      -DARRAY_NAME=strata_native_head_hc_mix_rn_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_hc_mix.comp src/kernels/vulkan/native_f32_div_rn.glsl src/kernels/vulkan/native_head_hc_silu_tail.glsl src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_head_hc_mix_rn_shader DEPENDS "${out}/strata_native_head_hc_mix_rn_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_head_hc_mix_rn_shader)
   add_custom_command(OUTPUT "${out}/strata_native_gdn_t1_spv.hpp"
     COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
       "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_gdn_t1.comp" -o "${out}/native_gdn_t1.spv"
@@ -181,6 +190,9 @@ function(strata_native_hc_enable out)
   if(NOT MSVC)
     target_compile_options(native_qsa_norm_rope_component PRIVATE -fno-fast-math -ffp-contract=off)
   endif()
+  add_executable(native_head_hc_component tests/kernels/native_head_hc_component.cpp)
+  target_include_directories(native_head_hc_component PRIVATE include src/core tests/kernels)
+  target_link_libraries(native_head_hc_component PRIVATE ggml-vulkan ggml-base)
   add_executable(native_hc_mix_component tests/kernels/native_hc_mix_component.cpp)
   target_include_directories(native_hc_mix_component PRIVATE src/core tests/kernels)
   target_link_libraries(native_hc_mix_component PRIVATE ggml-vulkan ggml-base)
@@ -296,6 +308,21 @@ function(strata_native_hc_enable out)
     target_link_libraries(native_hc_mix_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)
     add_dependencies(native_hc_mix_effective_shader_test strata_native_hc_mix_shader)
     add_test(NAME native_hc_mix_effective_shader_test COMMAND native_hc_mix_effective_shader_test)
+    add_executable(native_head_hc_mix_rn_test tests/kernels/native_head_hc_mix_rn_test.cpp)
+    target_include_directories(native_head_hc_mix_rn_test PRIVATE src/core "${out}")
+    target_link_libraries(native_head_hc_mix_rn_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)
+    add_dependencies(native_head_hc_mix_rn_test strata_native_head_hc_mix_rn_shader)
+    add_test(NAME native_head_hc_mix_rn_test COMMAND native_head_hc_mix_rn_test)
+    add_test(NAME native_head_hc_fixture_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_head_hc_fixture.py" "$<TARGET_FILE:native_head_hc_fixture_tool>" "$<TARGET_FILE:native_head_hc_component>")
+    add_test(NAME native_head_hc_wrapper_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_head_hc_wrapper.py" "$<TARGET_FILE:native_head_hc_fixture_tool>" "${STRATA_GGML_DIR}/ggml")
+    add_test(NAME native_head_hc_exact_numeric_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_head_hc_numeric.py" "$<TARGET_FILE:native_head_hc_fixture_tool>")
+    add_test(NAME native_head_hc_contract_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_head_hc_contract.py" "$<TARGET_FILE:native_head_hc_fixture_tool>")
+    add_test(NAME native_head_hc_rne_operands_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_head_hc_rne.py")
+    add_test(NAME native_head_hc_overflow_numeric_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_head_hc_overflow.py")
+    add_test(NAME native_head_hc_tail_fixture_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_head_hc_tail_fixture.py" "$<TARGET_FILE:native_hc_mix_component>")
+    add_test(NAME native_head_hc_tail_compare_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_head_hc_tail_compare.py")
+    add_test(NAME native_head_hc_primitive_report_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_head_hc_primitive_report.py")
+    add_test(NAME native_head_hc_primitive_fake_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_head_hc_primitive_fake.py")
     add_executable(native_hc_effective_shader_test tests/kernels/native_hc_effective_shader_test.cpp)
     target_include_directories(native_hc_effective_shader_test PRIVATE src/core "${out}")
     target_link_libraries(native_hc_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)

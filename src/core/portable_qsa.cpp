@@ -6,6 +6,8 @@
 #include "portable_native_hc.hpp"
 #include "native_hc_boundary.hpp"
 #include "native_qsa_wo_domain.hpp"
+#include "native_qsa_attention_layout.hpp"
+#include "native_qsa_select_layout.hpp"
 #include "portable_native_qsa_policy.hpp"
 #ifdef STRATA_PORTABLE_NATIVE_HC
 #include "portable_native_qsa_norm_rope.hpp"
@@ -552,6 +554,7 @@ struct PortableQsaLayer::Impl {
     size_t weights_size = 0, fixed_graphs = 0, graphs_size = 0, states_size = 0, conversion_scratch = 0;
     uint64_t count = 0;
     bool healthy = true;
+    ggml_tensor* final_residual_bank = nullptr;
     ggml_tensor *device_k = nullptr, *device_v = nullptr, *device_pool = nullptr, *device_spare = nullptr,
                 *device_tail = nullptr, *device_mapping = nullptr, *device_bias = nullptr;
 
@@ -1194,7 +1197,7 @@ bool PortableQsaLayer::step_pending(uint64_t position,const PortableHcPendingWri
 }
 bool PortableQsaLayer::step_impl(uint64_t position,const std::vector<float>& residual,const PortableHcPendingWrite* pending,
     const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableQsaTrace* trace) {
-    error.clear();
+    error.clear();impl_->final_residual_bank=nullptr;
     route = {};
     if (trace)
         *trace = {};
@@ -1246,6 +1249,7 @@ bool PortableQsaLayer::step_impl(uint64_t position,const std::vector<float>& res
         route = std::move(candidate);
         if (trace)
             *trace = std::move(next_trace);
+        s.final_residual_bank=s.ffn->final_residual_tensor();
         return true;
     } catch (const std::exception &e) {
         if (impl_->options.production)
@@ -1260,7 +1264,7 @@ bool PortableQsaLayer::step_impl(uint64_t position,const std::vector<float>& res
     }
 }
 bool PortableQsaLayer::prepare_chunk(size_t tokens,std::string& error) {
-    error.clear();
+    error.clear();impl_->final_residual_bank=nullptr;
     try {
         PortableQsaAttention::Impl::Borrow borrow(impl_->shared());
         require(!impl_->chunk_active,"portable layer: active chunk");
@@ -1272,7 +1276,7 @@ bool PortableQsaLayer::prepare_chunk(size_t tokens,std::string& error) {
 bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t position0,
     std::vector<float>& residual_rows,const PortableExpertRowsBatch& dispatch,
     std::vector<PortableRoute>& routes,std::string& error) {
-    error.clear(); routes.clear(); auto& s = *impl_;
+    error.clear(); routes.clear(); auto& s = *impl_;s.final_residual_bank=nullptr;
     try {
         PortableQsaAttention::Impl::Borrow borrow(s.shared());
         require(s.healthy && !s.chunk_active,"portable QSA: poisoned or active chunk; reset required");
@@ -1334,7 +1338,7 @@ bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t pos
 }
 PortableLayerChunkWork PortableQsaLayer::chunk_work() const { return impl_->chunk_work; }
 bool PortableQsaLayer::reset(std::string &error) {
-    error.clear();
+    error.clear();impl_->final_residual_bank=nullptr;
     try {
         auto &s = *impl_;
         // Poison before any allocating precondition/error message, as the
@@ -1391,6 +1395,18 @@ const std::vector<float> &PortableQsaLayer::indexer_tail() const {
     return impl_->tail;
 }
 const std::vector<float> &PortableQsaLayer::last_residual() const { return impl_->last; }
+ggml_tensor* PortableQsaLayer::final_residual_tensor() const { return impl_->final_residual_bank; }
+PortableFinalHcResidual PortableQsaLayer::final_residual_identity() const {
+    if(!impl_->final_residual_bank)return {};
+    const auto info=impl_->ffn->final_residual_identity();
+    if(info.tensor!=impl_->final_residual_bank||!impl_->count||info.position!=impl_->count-1)return {};
+    return info;
+}
+bool PortableQsaLayer::record_head_producer(const PortableFinalHcResidual& expected,std::string& error) {
+    const auto actual=final_residual_identity();
+    if(!actual.tensor||!actual.is_current||!actual.is_current(actual.owner,expected)){error="native QSA final write: stale head producer";return false;}
+    return impl_->ffn->record_head_producer(expected,error);
+}
 const std::vector<PortablePlacement> &PortableQsaLayer::placements() const { return impl_->placement; }
 const PortableQsaAttention *PortableQsaLayer::attention_owner() const { return impl_->options.attention.get(); }
 size_t PortableQsaLayer::weight_bytes() const { return impl_->weights_size; }

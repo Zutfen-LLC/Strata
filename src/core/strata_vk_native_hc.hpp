@@ -17,6 +17,10 @@ void strata_vk_native_hc_destroy(StrataVkNativeHc*) noexcept;
 // Tensors must be disjoint contiguous spans on the same Vulkan device.
 void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor* residual,const ggml_tensor* norm_weight,
  const ggml_tensor* bf16_weight,ggml_tensor* normalized,ggml_tensor* rs,ggml_tensor* inject,uint32_t tokens);
+// T1 materialized-head normalization only. The injection matrix and projection
+// are absent; normalized and rs remain owned by the caller.
+void strata_vk_native_hc_norm_only(StrataVkNativeHc*,const ggml_tensor* residual,const ggml_tensor* norm_weight,
+ ggml_tensor* normalized,ggml_tensor* rs);
 }
 namespace strata::core::portable_detail {
 struct StrataVkNativeHcMix;
@@ -31,6 +35,8 @@ struct NativeHcMixDomainRefusal : std::invalid_argument {
 // [320,10240]/[10240,320]. Outputs scaled-down pre/low/exp[320], up pre/gate/exp
 // [10240], mixed[2560]. All spans disjoint; zero/normal domain; derived exp/div guards in native_hc_mix_limits.h.
 StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char* effective_spv,size_t budget=65536);
+// Separate head-only candidate; existing mixer users retain the original shader.
+StrataVkNativeHcMix* strata_vk_native_head_hc_mix_rn_create(ggml_backend_t,const char* effective_spv,size_t budget=65536);
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*);
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix*) noexcept;
 // Test-only identical preactivation probe; same production shader activation.

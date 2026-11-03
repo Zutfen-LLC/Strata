@@ -1,5 +1,6 @@
 #pragma once
 #include "strata_vk_native_hc.hpp"
+#include "strata/core/portable_ffn.hpp"
 #include "native_hc_layout.hpp"
 #include "ggml-alloc.h"
 #include <atomic>
@@ -19,11 +20,11 @@ class PortableNativeHc {
     std::unique_ptr<StrataVkNativeHcPending,decltype(&strata_vk_native_hc_pending_destroy)> pending_{nullptr,strata_vk_native_hc_pending_destroy};
     std::unique_ptr<StrataVkNativeHcPending,decltype(&strata_vk_native_hc_pending_destroy)> write_{nullptr,strata_vk_native_hc_pending_destroy};
     const ggml_tensor *norm_,*weight_,*down_,*up_;
-    uint64_t position_=UINT64_MAX;
+    uint64_t position_=UINT64_MAX,owner_id_=UINT64_MAX;
     size_t bytes_=0;
     uint64_t calls_=0,mix_calls_=0,pending_calls_=0,write_calls_=0;
     std::string receipt_dir_;
-    bool first_recorded_=false,write_recorded_=false;
+    bool first_recorded_=false,write_recorded_=false,head_write_recorded_=false;
 public:
     ggml_tensor *pending_input=nullptr,*previous_output=nullptr,*previous_inject=nullptr,*pending_gate=nullptr,*pending_exp=nullptr;
     ggml_tensor *write_block=nullptr,*write_candidate=nullptr,*write_gate=nullptr,*write_exp=nullptr;
@@ -69,7 +70,7 @@ public:
         auto bound=ggml_backend_alloc_ctx_tensors_from_buft_size(context_.get(),ggml_backend_get_default_buffer_type(backend));
         native_hc_need(bound<=budget,"native HC serial: scratch graph budget");
         static std::atomic<uint64_t> next{0};std::string dir;
-        for(int i=0;i<1024;++i){auto candidate=prefix+".owner-"+std::to_string(next.fetch_add(1));if(std::filesystem::create_directory(candidate)){dir=candidate;break;}}
+        for(int i=0;i<1024;++i){const auto id=next.fetch_add(1);native_hc_need(id!=UINT64_MAX,"native HC serial: owner identity exhausted");auto candidate=prefix+".owner-"+std::to_string(id);if(std::filesystem::create_directory(candidate)){dir=candidate;owner_id_=id;break;}}
         native_hc_need(!dir.empty(),"native HC serial: fresh receipt namespace");
         receipt_dir_=dir;
         component_.reset(strata_vk_native_hc_create(backend,(dir+"/effective.spv").c_str(),budget-bound));
@@ -103,6 +104,20 @@ public:
     uint64_t mix_calls()const{return mix_calls_;}
     uint64_t pending_calls()const{return pending_calls_;}
     uint64_t write_calls()const{return write_calls_;}
+    uint64_t owner_id()const{return owner_id_;}
+    uint64_t position()const{return position_;}
+    void record_head_write(const PortableFinalHcResidual& expected){
+        native_hc_need(expected.tensor==write_candidate&&expected.position==position_&&expected.owner_id==owner_id_&&
+                       expected.write_sequence==write_calls_&&write_calls_>0&&expected.layer==47,
+                       "native HC final write: head producer identity differs");
+        if(head_write_recorded_)return;
+        std::vector<float> v(size_t(ggml_nelements(write_candidate)));ggml_backend_tensor_get(write_candidate,v.data(),0,v.size()*4);
+        auto* f=std::fopen((receipt_dir_+"/first-head-write-candidate.f32le").c_str(),"wbx");native_hc_need(f,"native HC final write: exclusive head producer receipt");
+        const bool written=std::fwrite(v.data(),4,v.size(),f)==v.size();const bool closed=std::fclose(f)==0;native_hc_need(written&&closed,"native HC final write: head producer receipt failed");
+        f=std::fopen((receipt_dir_+"/first-head-write.json").c_str(),"wx");native_hc_need(f,"native HC final write: exclusive head metadata");
+        const bool meta=std::fprintf(f,"{\"position\":%llu,\"producer_owner_id\":%llu,\"producer_write_sequence\":%llu,\"producer_layer\":47,\"producer_tensor_identity\":true,\"qualified\":false}\n",(unsigned long long)position_,(unsigned long long)owner_id_,(unsigned long long)write_calls_)>0;
+        const bool done=std::fclose(f)==0;native_hc_need(meta&&done,"native HC final write: head metadata failed");head_write_recorded_=true;
+    }
     void run_write(){
         native_hc_need(write_&&write_calls_!=UINT64_MAX,"native HC final write: owner/counter required");
         try{strata_vk_native_hc_pending_run(write_.get(),residual,write_block,inject,write_candidate,write_gate,write_exp);}

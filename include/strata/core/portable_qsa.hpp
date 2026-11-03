@@ -136,6 +136,10 @@ class PortableQsaLayer {
     // three FP16-rounded/F32-expanded rows, retained across block completion.
     const std::vector<float> &indexer_tail() const;
     const std::vector<float> &last_residual() const;
+    // Completed final FFN producer, borrowed until reset or the next step.
+    ggml_tensor* final_residual_tensor() const;
+    PortableFinalHcResidual final_residual_identity() const;
+    bool record_head_producer(const PortableFinalHcResidual& expected, std::string& error);
     const std::vector<PortablePlacement> &placements() const;
     const PortableQsaAttention *attention_owner() const;
     size_t weight_bytes() const;
