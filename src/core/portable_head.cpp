@@ -359,7 +359,7 @@ bool PortableHead::run_device(const PortableFinalHcResidual& producer,std::vecto
         if(s.logits_guard)require(s.logits_guard->check(s.output),"portable head: nonfinite logits (integer status guard)");
         std::vector<float> next(size_t(s.g.vocabulary));ggml_backend_tensor_get(s.output,next.data(),0,next.size()*sizeof(float));
         for(float v:next)require(std::isfinite(v),"portable head: nonfinite logits");
-        s.native_hc->record_first(producer);logits.swap(next);return true;
+        s.native_hc->record_first(producer,true,true);logits.swap(next);return true;
 #else
         (void)producer;require(false,"native head HC: strict native-stage build required");return false;
 #endif

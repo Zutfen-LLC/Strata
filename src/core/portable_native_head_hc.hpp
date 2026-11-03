@@ -77,7 +77,7 @@ public:
         ++calls_;valid_=true;return mixed_;
     }
     ggml_tensor* mixed()const{native_hc_need(valid_,"native head HC: no successful current result");return mixed_;}
-    void record_first(const PortableFinalHcResidual& producer){
+    void record_first(const PortableFinalHcResidual& producer,bool producer_identity,bool vocabulary_identity){
         const auto* input=producer.tensor;
         native_hc_need(valid_,"native head HC: current result required for receipt");if(recorded_)return;
         for(auto item:{std::pair{"residual",input},std::pair{"normalized",static_cast<const ggml_tensor*>(normalized_)},std::pair{"rs",static_cast<const ggml_tensor*>(rs_)},
@@ -88,7 +88,7 @@ public:
             const bool written=std::fwrite(values.data(),sizeof(float),values.size(),f)==values.size();const bool closed=std::fclose(f)==0;native_hc_need(written&&closed,"native head HC: receipt write failed");
         }
         auto* f=std::fopen((receipts_/"first.json").string().c_str(),"wx");native_hc_need(f,"native head HC: fresh metadata required");
-        const bool written=std::fprintf(f,"{\"materialized\":true,\"injection\":false,\"position\":%llu,\"producer_owner_id\":%llu,\"producer_write_sequence\":%llu,\"producer_layer\":47,\"producer_tensor_identity\":true,\"vocabulary_consumer_identity\":true,\"qualified\":false}\n",(unsigned long long)producer.position,(unsigned long long)producer.owner_id,(unsigned long long)producer.write_sequence)>0;const bool closed=std::fclose(f)==0;native_hc_need(written&&closed,"native head HC: metadata write failed");recorded_=true;
+        const bool written=std::fprintf(f,"{\"materialized\":true,\"injection\":false,\"position\":%llu,\"producer_owner_id\":%llu,\"producer_write_sequence\":%llu,\"producer_layer\":47,\"producer_tensor_identity\":%s,\"vocabulary_consumer_identity\":%s,\"qualified\":false}\n",(unsigned long long)producer.position,(unsigned long long)producer.owner_id,(unsigned long long)producer.write_sequence,producer_identity?"true":"false",vocabulary_identity?"true":"false")>0;const bool closed=std::fclose(f)==0;native_hc_need(written&&closed,"native head HC: metadata write failed");recorded_=true;
     }
 };
 }
