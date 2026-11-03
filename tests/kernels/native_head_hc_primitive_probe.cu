@@ -2,6 +2,7 @@
 // fused_gr kernels before interpreting these values as the same native method.
 #include <cuda_runtime.h>
 #include <array>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -38,11 +39,17 @@ extern "C" __global__ void native_head_hc_primitive_observation(const uint32_t* 
 }
 int main(int argc,char** argv){try{
  if(argc==2 && std::string(argv[1])=="--contract"){puts("native_head_hc_primitive_probe_v1 fixed_inputs observation_only");return 0;}
- need(argc==7 && std::string(argv[1])=="--device" && std::string(argv[3])=="--expect-device" && std::string(argv[5])=="--output","invalid arguments");
+ need((argc==7 || (argc==9 && std::string(argv[7])=="--tail-bits")) && std::string(argv[1])=="--device" && std::string(argv[3])=="--expect-device" && std::string(argv[5])=="--output","invalid arguments");
  const std::string expected=argv[4];need(!expected.empty(),"empty device identity");
+ uint32_t selected_low=0x33c013a7u;
+ if(argc==9){
+  const std::string arg=argv[8];size_t used=0;const auto parsed=std::stoul(arg,&used,16);
+  const std::array<uint32_t,12> allowed{0xc2b20000u,0xc2b20001u,0xc2b1ffffu,0xc2c803e5u,0xc2c80000u,0xc3000000u,0xff7fffffu,0xfe7fffffu,0xc2b00000u,0xc2b170a4u,0xc2aeac4du,0x42c80000u};
+  need(arg.size()==8 && used==arg.size() && parsed<=0xffffffffu && std::find(allowed.begin(),allowed.end(),uint32_t(parsed))!=allowed.end(),"unsupported tail operand");selected_low=uint32_t(parsed);
+ }
  const std::string target=argv[6];need(std::filesystem::create_directory(target),"fresh output directory required");
  const int device=std::stoi(argv[2]);cu(cudaSetDevice(device));cudaDeviceProp prop{};cu(cudaGetDeviceProperties(&prop,device));need(std::string(prop.name).find(expected)!=std::string::npos,"device mismatch");
- const std::array<uint32_t,kInputs> input{0xbf5544aau,0x33c013a7u,0x3e800022u,0x3fffffffu};
+ const std::array<uint32_t,kInputs> input{0xbf5544aau,selected_low,0x3e800022u,0x3fffffffu};
  std::array<uint32_t,kOutputs+2> first{},current{};Bank in(sizeof(input)),out(sizeof(current));Stream stream;
  for(int trial=0;trial<2;++trial){
   current.fill(kCanary);cu(cudaMemcpyAsync(in.value,input.data(),sizeof(input),cudaMemcpyHostToDevice,stream.value));cu(cudaMemcpyAsync(out.value,current.data(),sizeof(current),cudaMemcpyHostToDevice,stream.value));
@@ -52,7 +59,7 @@ int main(int argc,char** argv){try{
   if(trial)need(current==first,"probe repeat differs");else first=current;
  }
  std::ofstream words(target+"/words.u32le",std::ios::binary);words.write(reinterpret_cast<const char*>(first.data()+1),kOutputs*sizeof(uint32_t));need(bool(words),"word write failed");words.close();
- std::ofstream out_json(target+"/report.json");out_json<<"{\"probe\":\"native_head_hc_primitive_v1\",\"inputs\":[\"bf5544aa\",\"33c013a7\",\"3e800022\",\"3fffffff\"],\"words\":[";
- char hex[9];for(size_t i=1;i<=kOutputs;++i){std::snprintf(hex,sizeof(hex),"%08x",first[i]);out_json<<(i==1?"":",")<<"\""<<hex<<"\"";}
+ std::ofstream out_json(target+"/report.json");out_json<<"{\"probe\":\"native_head_hc_primitive_v1\",\"inputs\":[";
+ char hex[9];for(size_t i=0;i<input.size();++i){std::snprintf(hex,sizeof(hex),"%08x",input[i]);out_json<<(i?",":"")<<"\""<<hex<<"\"";}out_json<<"],\"words\":[";for(size_t i=1;i<=kOutputs;++i){std::snprintf(hex,sizeof(hex),"%08x",first[i]);out_json<<(i==1?"":",")<<"\""<<hex<<"\"";}
  out_json<<"],\"repeat\":true,\"canaries\":true,\"compiled_instruction_review_required\":true,\"qualified\":false}\n";need(bool(out_json),"report write failed");return 0;
 }catch(const std::exception& e){fprintf(stderr,"head primitive probe: %s\n",e.what());return 1;}}

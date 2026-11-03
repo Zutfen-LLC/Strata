@@ -20,6 +20,10 @@ inline float __uint_as_float(uint32_t x){float f;memcpy(&f,&x,4);return f;}inlin
  p=subprocess.run([str(exe),'--contract'],cwd='/',capture_output=True,text=True);assert p.returncode==0 and p.stdout.strip()=='native_head_hc_primitive_probe_v1 fixed_inputs observation_only'
  out=d/'out';cmd=[str(exe),'--device','0','--expect-device','signature-fixture GPU','--output',str(out)];p=subprocess.run(cmd,cwd='/',capture_output=True,text=True);assert p.returncode==0,p.stderr
  p=subprocess.run([sys.executable,'-I','-S','-B',str(checker),str(out)],cwd='/',capture_output=True,text=True);assert p.returncode==0,p.stderr;assert json.loads(p.stdout)['comparisons']['fixed_division_matches_rne']
+ for operand in ('c2b20000','c2b20001','c2c803e5','c2c80000','c3000000','fe7fffff','ff7fffff'):
+  tail=d/('tail-'+operand);result=subprocess.run([str(exe),'--device','0','--expect-device','signature-fixture GPU','--output',str(tail),'--tail-bits',operand],cwd='/',capture_output=True,text=True);assert result.returncode==0,result.stderr
+  report=json.loads((tail/'report.json').read_text());assert report['inputs'][1]==operand and report['words'][4]==operand and report['words'][5:8]==['7f800000','7f800000','80000000']
+ invalid=d/'invalid';assert subprocess.run([str(exe),'--device','0','--expect-device','signature-fixture GPU','--output',str(invalid),'--tail-bits','7f800000'],cwd='/',capture_output=True).returncode!=0 and not invalid.exists()
  assert subprocess.run(cmd,cwd='/',capture_output=True).returncode!=0
  assert subprocess.run([str(exe),'--device','0','--expect-device','','--output',str(d/'empty')],cwd='/',capture_output=True).returncode!=0 and not (d/'empty').exists()
 print('Probe host CLI, fixed inputs, repeat/canaries and report pass with fake provider and rewritten launch; CUDA not compiled or executed')
