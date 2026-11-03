@@ -25,13 +25,15 @@ class PortableHead {
     // Metadata-only selected-backend estimate, including padding/alignment.
     // Uses the same four tensors and allocator sizing as create; no weight upload.
     static size_t weight_allocation_size(ggml_backend* backend, PortableHeadGeometry geometry,
-                                        const std::vector<PortableTensorView>& weights);
+                                        const std::vector<PortableTensorView>& weights, bool native_head_hc_t1 = false);
     // Builds the same graph metadata as create. No weight bytes read, scheduler
     // allocation or execution. Unknown physical/backend contracts keep the cap.
     static PortableHeadAdmission admission(PortableHeadGeometry geometry,
         const std::vector<PortableTensorView>& weights, PortableFfnOptions options, bool guard_logits);
     ~PortableHead();
     bool run(const std::vector<float> &streams, std::vector<float> &logits, std::string &error);
+    bool run_device(ggml_tensor* materialized_residual, std::vector<float>& logits, std::string& error);
+    uint64_t native_hc_calls() const;
     size_t weight_bytes() const;
     size_t graph_bytes() const;
     PortableMemoryUsage memory_usage() const;
@@ -80,6 +82,8 @@ struct PortableModelOptions {
     size_t layer_weight_cap = 256ull << 20, layer_graph_cap = 256ull << 20;
     size_t head_weight_cap = 1ull << 30, head_graph_cap = 4ull << 30;
     bool head_shape_admission = false; // experimental metadata bound; default keeps full graph cap
+    bool native_head_hc_t1 = false; // materialized T1 head mixer, default off
+    std::string native_head_hc_receipt_prefix;
     // Comparison oracle only: preserve the former copy/digest on every dispatch.
     bool expert_dispatch_oracle = false;
     size_t expert_staging_cap = 64ull << 20;
@@ -180,6 +184,7 @@ struct PortableModelWork {
     uint64_t native_shared_calls = 0, native_shared_rows = 0; // completed tagged forwards only
     uint64_t native_router_calls = 0, native_router_rows = 0; // actual tagged routes, completed forwards only
     uint64_t heads_executed = 0, heads_skipped = 0; // unconditional, cumulative across reset
+    uint64_t native_head_hc_calls = 0; // completed mixer calls, including a later head failure
     uint64_t completed_forward_calls = 0, completed_layer_calls = 0;
     uint64_t completed_ffn_pre_calls = 0, completed_provider_calls = 0, completed_ffn_post_calls = 0;
     uint64_t logical_tokens = 0, prompt_chunks = 0, prompt_chunk_tokens = 0;

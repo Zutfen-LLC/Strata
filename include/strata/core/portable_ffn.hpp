@@ -42,6 +42,9 @@ struct PortableHcPendingWrite {
 };
 
 struct PortableFfnOptions {
+    // Global head only; serial materialized T1 mixer with borrowed residual.
+    bool native_head_hc_t1 = false;
+    std::string native_head_hc_receipt_prefix;
     static constexpr size_t deferred_hc_host_bound = 1u << 20; // candidate/committed/caller tuple copies
     bool defer_hc_write = false; // ordinary native boundary; next attention owns materialization
 
@@ -175,6 +178,9 @@ public:
     int64_t tokens() const;
     PortableFfnWork work() const;
     const std::vector<float>& residual() const;
+    // Borrow the actual completed native final-write candidate until reset or
+    // the next step attempt. Null for other modes and after failure.
+    ggml_tensor* final_residual_tensor() const;
     const std::vector<PortablePlacement>& placements() const;
     size_t weight_bytes() const;
     size_t graph_bytes() const;

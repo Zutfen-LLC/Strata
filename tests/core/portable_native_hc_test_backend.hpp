@@ -19,7 +19,7 @@ using namespace strata::core::portable_detail;
 using namespace gdn_fixture;
 namespace {
 bool inspect_producer=false;std::vector<float> actual_projected,actual_attention_inject;size_t ffn_mixed_consumers=0;
-size_t write_owners=0,write_calls=0;bool fail_write_create=false,fail_write_run=false;
+size_t write_owners=0,write_calls=0;bool fail_write_create=false,fail_write_run=false;ggml_tensor* actual_final_write_bank=nullptr;
 const ggml_tensor* live_ffn_residual=nullptr;const ggml_tensor* live_ffn_inject=nullptr;std::vector<float> write_seen_block;
 size_t pending_owners=0,pending_calls=0;bool fail_pending_create=false,fail_pending_run=false;
 bool observe_wo_pending=false;size_t wo_pending_links=0;std::vector<float>actual_native_wo;
@@ -27,6 +27,7 @@ bool observe_qkv_norm=false;size_t qkv_norm_links=0;std::array<std::vector<float
 bool observe_indexer_projection=false;int fail_indexer_projection=0;size_t indexer_projection_links=0;std::array<std::vector<float>,2>actual_indexer_projection;
 bool observe_gdn_input=false;int fail_gdn_input=0;size_t gdn_input_links=0;std::array<ggml_tensor*,2> actual_gdn_input_banks{};ggml_backend_t gdn_input_backend=nullptr;
 bool observe_gdn_output=false;size_t gdn_output_quant_links=0,gdn_output_pending_links=0;ggml_tensor* actual_gdn_gated=nullptr;ggml_tensor* actual_gdn_output_bank=nullptr;ggml_backend_t gdn_output_backend=nullptr;
+bool observe_head_consumer=false;size_t head_consumer_links=0;
 std::vector<uint8_t> gdn_output_weight_snapshot;
 void check_gdn_output_bank(const ggml_tensor*t,const ggml_tensor*expected,size_t bytes){
  check(t==expected&&t->type==GGML_TYPE_F32&&ggml_nbytes(t)==bytes&&ggml_is_contiguous(t)&&t->buffer,"GDN output producer tensor/span differs");
@@ -53,7 +54,7 @@ std::vector<float> uploaded,expected_xn,expected_rs,expected_inject;
 std::vector<uint16_t> expected_weights;
 const ggml_tensor* bound_weight=nullptr;const ggml_tensor* live_normalized=nullptr;size_t direct_consumers=0;
 decltype(ggml_backend_i::graph_compute) original_compute=nullptr;
-ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.attn_qkv.weight"&&live_mixed){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"composed mixed backing ignored/reused");++mixed_consumers;}}if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ffn_gate_inp.weight"){
+ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(observe_head_consumer&&t->op==GGML_OP_MUL_MAT&&std::string(ggml_get_name(t))=="portable_logits"){check(t->src[1]==live_mixed&&live_mixed->buffer&&ggml_backend_buffer_get_type(live_mixed->buffer)==ggml_backend_get_default_buffer_type(b),"head vocabulary did not borrow actual mixed bank/device");++head_consumer_links;}if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.attn_qkv.weight"&&live_mixed){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"composed mixed backing ignored/reused");++mixed_consumers;}}if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ffn_gate_inp.weight"){
  auto* root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"FFN router ignored native mixed leaf");++ffn_mixed_consumers;}}
  const auto status=original_compute(b,g);
  if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ssm_out.weight"){
@@ -75,7 +76,7 @@ void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*owner,const ggml_te
  check(!fail_write_run,"injected final write refusal");check(r==live_ffn_residual&&i==live_ffn_inject,"final write did not consume retained actual FFN operands");check(r!=rp&&b!=rp&&i!=rp,"final write producer/candidate alias");
  auto x=get(r),bo=get(b),inj=get(i);write_seen_block=bo;std::vector<float> result(10240),gate(4),exp(4);
  for(size_t c=0;c<4;++c){const float scaled=std::fma(.25f,inj[c],0.f);exp[c]=std::exp(-scaled);gate[c]=std::fma(2.f,1.f/(1.f+exp[c]),0.f);for(size_t d=0;d<2560;++d)result[c*2560+d]=std::fma(bo[d],gate[c],x[c*2560+d]);}
- put(rp,result);put(g,gate);put(e,exp);++write_calls;return;}
+ put(rp,result);put(g,gate);put(e,exp);actual_final_write_bank=rp;++write_calls;return;}
  check(!fail_pending_run,"injected pending component refusal");check(r!=rp&&b!=rp&&i!=rp,"pending input/candidate alias");
  auto out=native_hc_pending_control(get(r),get(b),get(i));put(rp,out.residual);put(g,out.gate);put(e,out.exponential);++pending_calls;
 }
@@ -94,6 +95,7 @@ struct StrataVkNativeHc{};
 StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t,const char* path,size_t budget){check(!fail_create,"injected create refusal");check(budget>=512,"component budget");std::ofstream(path)<<"mock; not shader evidence\n";++owners;return new StrataVkNativeHc;}
 size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*){return 512;}
 void strata_vk_native_hc_destroy(StrataVkNativeHc*p)noexcept{if(p)--owners;if(!owners){bound_weight=nullptr;live_normalized=nullptr;}delete p;}
+void strata_vk_native_hc_norm_only(StrataVkNativeHc*,const ggml_tensor*x,const ggml_tensor*w,ggml_tensor*xn,ggml_tensor*rs){check(!fail_run&&x==actual_final_write_bank,"head must read actual final FFN producer");auto out=native_hc_norm_oracle(get(x),get(w),1);put(xn,out.xn);put(rs,out.rs);live_normalized=xn;last_norm_ffn=false;++calls;}
 void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*x,const ggml_tensor*w,const ggml_tensor*wi,ggml_tensor*xn,ggml_tensor*rs,ggml_tensor*inject,uint32_t t){
  native_hc_environment();last_norm_ffn=std::string(ggml_get_name(wi)).ends_with(".hc_ffn_inject.weight");check(x->ne[0]==2560&&x->ne[1]==4&&!x->view_src&&xn->ne[0]==10240&&xn->ne[1]==1&&!xn->view_src,"original input/normalized geometry");live_normalized=xn;
  check(t==1&&wi->type==GGML_TYPE_I32&&ggml_nbytes(wi)==81920,"native weight/T binding");

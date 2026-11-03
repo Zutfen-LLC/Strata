@@ -5,6 +5,7 @@
 namespace {
 std::vector<float> projected;size_t projections=0;
 ggml_status inspect(ggml_backend_t b,ggml_cgraph*g){
+ for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(observe_head_consumer&&t->op==GGML_OP_MUL_MAT&&std::string(ggml_get_name(t))=="portable_logits"){check(t->src[1]==live_mixed&&live_mixed->buffer&&ggml_backend_buffer_get_type(live_mixed->buffer)==ggml_backend_get_default_buffer_type(b),"head vocabulary did not borrow actual mixed bank/device");++head_consumer_links;}}
  auto result=original_compute(b,g);
  for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);
   if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.3.attn_output.weight"){
@@ -76,8 +77,20 @@ int main(){try{
  auto fq=qo;fq.defer_ffn_hc_write=false;fq.native_hc_ffn_write=true;fq.native_hc_receipt_prefix=(root/"final47").string();
  auto final=PortableQsaLayer::create(47,finalviews,fq,error);check(bool(final),error);check(final->reset(error),error);
  check(final->step_pending(0,last,dispatch,route,error),error);auto finalres=final->last_residual();check(final->pending_write().empty()&&final->native_ffn_hc_write_calls()==1,"head materialization/counter");
- check(!final->step_pending(1,last,fail,route,error)&&final->last_residual()==finalres&&final->tokens()==1,"final endpoint rollback");
- check(final->reset(error)&&final->step_pending(0,last,dispatch,route,error)&&final->last_residual()==finalres,"final endpoint reset");
+ auto* finalbank=final->final_residual_tensor();check(finalbank==actual_final_write_bank&&finalbank->buffer&&ggml_is_contiguous(finalbank)&&ggml_nbytes(finalbank)==10240*sizeof(float)&&ggml_backend_buffer_get_type(finalbank->buffer)==ggml_backend_get_default_buffer_type(fq.execution.accelerator),"actual final FFN producer bank/device");
+ auto* finaltype=ggml_backend_buffer_get_type(finalbank->buffer);auto* finaldev=ggml_backend_buft_get_device(finaltype);auto* expecteddev=ggml_backend_get_device(fq.execution.accelerator);check(expecteddev&&(finaldev?finaldev==expecteddev:(ggml_backend_buft_is_host(finaltype)&&ggml_backend_dev_type(expecteddev)==GGML_BACKEND_DEVICE_TYPE_CPU)),"actual final FFN producer owning device");
+ {auto previous_down=expected_down,previous_up=expected_up;expected_down.assign(3276800,0);expected_up.assign(3276800,0);
+  std::vector<float> norm(10240,1.f),vocab(5120,1.f);std::vector<uint8_t> zeros(3276800/32*34,0);
+  std::vector<PortableTensorView> hw{{"output_hc_norm.weight",{10240},0,norm.data(),norm.size()*4},{"output_hc_down.weight",{10240,320},8,zeros.data(),zeros.size()},{"output_hc_up.weight",{320,10240},8,zeros.data(),zeros.size()},{"output.weight",{2560,2},0,vocab.data(),vocab.size()*4}};
+  auto ho=exec;ho.resident_dense_weights=true;ho.native_head_hc_t1=true;ho.native_head_hc_receipt_prefix=(root/"head").string();auto head=PortableHead::create({2560,4,320,2,1e-6f},hw,ho,error);check(bool(head),error);
+  std::vector<float> logits;observe_head_consumer=true;check(head->run_device(finalbank,logits,error),error);check(logits.size()==2&&head_consumer_links==1&&head->native_hc_calls()==1,"final FFN -> head mixer -> vocabulary actual banks");
+  fail_mix=true;check(!head->run_device(finalbank,logits,error)&&logits.empty()&&head->native_hc_calls()==1,"failed head mixer published logits");fail_mix=false;check(head->run_device(finalbank,logits,error)&&head->native_hc_calls()==2,"head retry missing");observe_head_consumer=false;
+  expected_down.swap(previous_down);expected_up.swap(previous_up);
+  check(!final->step_pending(1,last,fail,route,error)&&final->last_residual()==finalres&&final->tokens()==1&&!final->final_residual_tensor(),"final endpoint rollback/borrow invalidation");
+  check(final->reset(error)&&!final->final_residual_tensor()&&final->step_pending(0,last,dispatch,route,error)&&final->last_residual()==finalres&&final->final_residual_tensor()==actual_final_write_bank,"final endpoint reset");
+  expected_down.swap(previous_down);expected_up.swap(previous_up);observe_head_consumer=true;
+  check(head->run_device(final->final_residual_tensor(),logits,error)&&head->native_hc_calls()==3,"head must consume new committed bank after reset");observe_head_consumer=false;
+  expected_down.swap(previous_down);expected_up.swap(previous_up);}
 
  // Failure-only diagnostics read the completed failing call, not initial success.
  auto diagnostic=go;diagnostic.native_hc_ffn_read=false;diagnostic.defer_ffn_hc_write=false;diagnostic.native_hc_receipt_prefix=(root/"diagnostic38").string();

@@ -88,6 +88,15 @@ run(['--native-hc-serial','/absent/no-residency'],False,'ordinary native HC requ
 for flags in [['--native-hc-serial-cycle','/absent/cycle'],['--dense-topology','split'],['--allow-cpu-fallback'],['--prompt-chunk-size','2']]:run([*ordinary,*flags],False)
 run(ordinary,False,'fused final head',dict(os.environ,STRATA_FUSE_HEAD_GR='1'))
 run(ordinary,True,env=dict(os.environ,STRATA_FUSE_HEAD_GR='0'))
+assert not run([],True).get('native_head_hc_t1',False)
+run(['--native-head-hc-t1','/absent/head'],False,'native head HC requires')
+run([*ordinary,'--native-head-hc-t1','/absent/head'],False,'native head HC requires')
+head=[*ordinary,'--dense-resident-weights','--native-head-hc-t1','/absent/head']
+assert run(head,True)['native_head_hc_t1']
+for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--dense-topology','split']]:run([*head,*flags],False)
+run([*ordinary,'--dense-resident-weights','--native-head-hc-t1',''],False,'receipt')
+run(head,False,'fused final head',dict(os.environ,STRATA_FUSE_HEAD_GR='1'))
+print('native head HC actual CLI default, materialized T1 and residency refusals pass')
 
 # The GDN family is explicit and default-disabled; complete residency is validated before model load.
 assert not a.get('native_gdn_t1',False)
