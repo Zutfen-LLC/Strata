@@ -9,6 +9,20 @@ StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t backend,const char* 
 }
 size_t strata_vk_native_hc_bytes(const StrataVkNativeHc* p){return p?p->owner->bytes:0;}
 void strata_vk_native_hc_destroy(StrataVkNativeHc* p) noexcept {delete p;}
+void strata_vk_native_hc_norm_only(StrataVkNativeHc* p,const ggml_tensor* residual,const ggml_tensor* norm_weight,ggml_tensor* normalized,ggml_tensor* rs){
+ native_hc_environment();native_hc_shape(2560,4,1);native_hc_need(p&&std::fegetround()==FE_TONEAREST,"native HC head: component and host round-to-nearest required");auto& g=*p->owner;auto* ctx=static_cast<ggml_backend_vk_context*>(g.backend->context);
+ const ggml_tensor* tensors[]={residual,norm_weight,normalized,rs};const uint64_t sizes[]={40960,40960,40960,16};std::array<uint32_t,9> params{0,1,0,0,0,0,0,0,0};const size_t offsets[]={2,3,5,6};
+ for(size_t i=0;i<4;++i){auto* t=tensors[i];native_hc_need(t&&t->type==GGML_TYPE_F32&&ggml_nbytes(t)==sizes[i],"native HC head: tensor type/span mismatch");native_hc_need(t->buffer&&ggml_is_contiguous(t)&&ggml_backend_buffer_is_vk(t->buffer),"native HC head: contiguous Vulkan spans required");auto* b=static_cast<ggml_backend_vk_buffer_context*>(t->buffer->context);native_hc_need(b->device.lock()==ctx->device,"native HC head: foreign device");auto bias=get_misalign_bytes(ctx,t);native_hc_need(bias%4==0,"native HC head: word alignment");params[offsets[i]]=bias/4;
+  for(size_t j=0;j<i;++j)if(t->buffer==tensors[j]->buffer){auto x=reinterpret_cast<uintptr_t>(t->data),y=reinterpret_cast<uintptr_t>(tensors[j]->data);native_hc_need(!(x<=y?y-x<ggml_nbytes(t):x-y<ggml_nbytes(tensors[j])),"native HC head: overlapping spans");}}
+ const auto& limits=ctx->device->properties.limits;native_hc_need(limits.maxComputeWorkGroupCount[0]>=1&&limits.maxComputeWorkGroupCount[1]>=1&&limits.maxComputeSharedMemorySize>=4112,"native HC head: grid/shared memory unsupported");
+ ggml_backend_vk_synchronize(g.backend);std::vector<float>x(10240),w(10240);ggml_backend_tensor_get(residual,x.data(),0,x.size()*4);ggml_backend_tensor_get(norm_weight,w.data(),0,w.size()*4);(void)native_hc_norm_oracle(x,w,1);
+ const uint32_t zero=0;ggml_backend_tensor_set(g.status,&zero,0,4);params[8]=get_misalign_bytes(ctx,g.status)/4;
+ // Mode zero does not access the two injection bindings; valid borrowed
+ // descriptors avoid allocating an injection matrix or an injection output.
+ ggml_pipeline_request_descriptor_sets(ctx,g.pipeline,1);auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
+ ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,residual,true),ggml_vk_tensor_subbuffer(ctx,norm_weight,true),ggml_vk_tensor_subbuffer(ctx,residual,true),ggml_vk_tensor_subbuffer(ctx,normalized,true),ggml_vk_tensor_subbuffer(ctx,rs,true),ggml_vk_tensor_subbuffer(ctx,rs,true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},params,{1,1,1});ggml_vk_sync_buffers(ctx,compute);compute.reset();
+ ggml_backend_vk_synchronize(g.backend);uint32_t status=0;ggml_backend_tensor_get(g.status,&status,0,4);native_hc_need(status==0,"native HC head: device nonfinite/subnormal arithmetic; no result accepted");
+}
 void strata_vk_native_hc_run(StrataVkNativeHc* p,const ggml_tensor* residual,const ggml_tensor* norm_weight,const ggml_tensor* weight,ggml_tensor* normalized,ggml_tensor* rs,ggml_tensor* inject,uint32_t tokens){
  native_hc_environment();native_hc_shape(2560,4,tokens);native_hc_need(p&&std::fegetround()==FE_TONEAREST,"native HC: component and host round-to-nearest required");auto& g=*p->owner;auto* ctx=static_cast<ggml_backend_vk_context*>(g.backend->context);
  const ggml_tensor* tensors[]={residual,norm_weight,weight,normalized,rs,inject};const uint64_t sizes[]={uint64_t(tokens)*40960,40960,81920,uint64_t(tokens)*40960,uint64_t(tokens)*16,uint64_t(tokens)*16};std::array<uint32_t,9> params{0,tokens,0,0,0,0,0,0,0};
@@ -23,6 +37,7 @@ void strata_vk_native_hc_run(StrataVkNativeHc* p,const ggml_tensor* residual,con
  ggml_backend_vk_synchronize(g.backend);uint32_t status=0;ggml_backend_tensor_get(g.status,&status,0,4);native_hc_need(status==0,"native HC: device nonfinite/subnormal arithmetic; no result accepted");
 }
 }
+#ifndef STRATA_NATIVE_HC_NORM_DISPATCH_TEST
 #include "strata_vk_native_hc_mix.inc"
 
 #include "strata_vk_native_hc_pending.inc"
@@ -43,3 +58,4 @@ void strata_vk_native_hc_run(StrataVkNativeHc* p,const ggml_tensor* residual,con
 #include "strata_vk_native_qsa_select.inc"
 
 #include "strata_vk_native_qsa_attention.inc"
+#endif

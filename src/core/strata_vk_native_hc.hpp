@@ -17,6 +17,10 @@ void strata_vk_native_hc_destroy(StrataVkNativeHc*) noexcept;
 // Tensors must be disjoint contiguous spans on the same Vulkan device.
 void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor* residual,const ggml_tensor* norm_weight,
  const ggml_tensor* bf16_weight,ggml_tensor* normalized,ggml_tensor* rs,ggml_tensor* inject,uint32_t tokens);
+// T1 materialized-head normalization only. The injection matrix and projection
+// are absent; normalized and rs remain owned by the caller.
+void strata_vk_native_hc_norm_only(StrataVkNativeHc*,const ggml_tensor* residual,const ggml_tensor* norm_weight,
+ ggml_tensor* normalized,ggml_tensor* rs);
 }
 namespace strata::core::portable_detail {
 struct StrataVkNativeHcMix;
