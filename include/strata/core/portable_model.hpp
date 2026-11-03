@@ -32,7 +32,7 @@ class PortableHead {
         const std::vector<PortableTensorView>& weights, PortableFfnOptions options, bool guard_logits);
     ~PortableHead();
     bool run(const std::vector<float> &streams, std::vector<float> &logits, std::string &error);
-    bool run_device(ggml_tensor* materialized_residual, std::vector<float>& logits, std::string& error);
+    bool run_device(const PortableFinalHcResidual& producer, std::vector<float>& logits, std::string& error);
     uint64_t native_hc_calls() const;
     size_t weight_bytes() const;
     size_t graph_bytes() const;

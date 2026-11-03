@@ -3008,7 +3008,7 @@ if(STRATA_BUILD_TESTS)
     add_test(NAME native_hc_input_test COMMAND native_hc_input_test)
     if(TARGET ggml-cpu)
       add_executable(portable_head_native_hc_owner_test tests/core/portable_head_native_hc_owner_test.cpp)
-      target_include_directories(portable_head_native_hc_owner_test PRIVATE src/core)
+      target_include_directories(portable_head_native_hc_owner_test PRIVATE include src/core)
       target_link_libraries(portable_head_native_hc_owner_test PRIVATE ggml-base ggml-cpu Threads::Threads)
       add_test(NAME portable_head_native_hc_owner_test COMMAND portable_head_native_hc_owner_test "${CMAKE_CURRENT_BINARY_DIR}")
       add_executable(portable_head_native_integration_test tests/core/portable_head_native_integration_test.cpp

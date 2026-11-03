@@ -708,6 +708,29 @@ ggml_tensor* PortableFfn::final_residual_tensor() const {
     return nullptr;
 #endif
 }
+PortableFinalHcResidual PortableFfn::final_residual_identity() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    if(impl_->final_device_valid&&impl_->native_hc)
+        return {impl_->native_hc->write_candidate,impl_->native_hc->position(),impl_->native_hc->owner_id(),impl_->native_hc->write_calls(),impl_->layer,this,
+                [](const void* owner,const PortableFinalHcResidual& value){return static_cast<const PortableFfn*>(owner)->owns_final_residual(value);}};
+#endif
+    return {};
+}
+bool PortableFfn::owns_final_residual(const PortableFinalHcResidual& expected) const {
+    const auto actual=final_residual_identity();
+    return actual.tensor&&expected.owner==this&&actual.is_current==expected.is_current&&actual.tensor==expected.tensor&&actual.position==expected.position&&actual.owner_id==expected.owner_id&&actual.write_sequence==expected.write_sequence&&actual.layer==expected.layer;
+}
+bool PortableFfn::record_head_producer(const PortableFinalHcResidual& expected,std::string& error) {
+    error.clear();
+    try {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        require(owns_final_residual(expected),"native HC final write: stale head producer identity");
+        impl_->native_hc->record_head_write(expected);return true;
+#else
+        (void)expected;require(false,"native HC final write: strict native-stage build required");return false;
+#endif
+    } catch(const std::exception& e){error=e.what();return false;}
+}
 const std::vector<PortablePlacement>& PortableFfn::placements() const { return impl_->placement; }
 size_t PortableFfn::weight_bytes() const { return impl_->weights_size; }
 size_t PortableFfn::graph_bytes() const { return impl_->graphs_size; }

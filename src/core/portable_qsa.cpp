@@ -1396,6 +1396,17 @@ const std::vector<float> &PortableQsaLayer::indexer_tail() const {
 }
 const std::vector<float> &PortableQsaLayer::last_residual() const { return impl_->last; }
 ggml_tensor* PortableQsaLayer::final_residual_tensor() const { return impl_->final_residual_bank; }
+PortableFinalHcResidual PortableQsaLayer::final_residual_identity() const {
+    if(!impl_->final_residual_bank)return {};
+    const auto info=impl_->ffn->final_residual_identity();
+    if(info.tensor!=impl_->final_residual_bank||!impl_->count||info.position!=impl_->count-1)return {};
+    return info;
+}
+bool PortableQsaLayer::record_head_producer(const PortableFinalHcResidual& expected,std::string& error) {
+    const auto actual=final_residual_identity();
+    if(!actual.tensor||!actual.is_current||!actual.is_current(actual.owner,expected)){error="native QSA final write: stale head producer";return false;}
+    return impl_->ffn->record_head_producer(expected,error);
+}
 const std::vector<PortablePlacement> &PortableQsaLayer::placements() const { return impl_->placement; }
 const PortableQsaAttention *PortableQsaLayer::attention_owner() const { return impl_->options.attention.get(); }
 size_t PortableQsaLayer::weight_bytes() const { return impl_->weights_size; }

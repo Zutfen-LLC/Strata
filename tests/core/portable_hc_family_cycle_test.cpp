@@ -1,6 +1,7 @@
 // Real family coordinators; existing HC arithmetic test backend, not GPU proof.
 #include "portable_native_hc_test_backend.hpp"
 #include "portable_qsa_fixture.hpp"
+#include "portable_head_execution.hpp"
 #include "native_hc_boundary.hpp"
 namespace {
 std::vector<float> projected;size_t projections=0;
@@ -76,20 +77,43 @@ int main(){try{
  // outgoing carry, including rollback and reset, rather than deferring to head.
  auto fq=qo;fq.defer_ffn_hc_write=false;fq.native_hc_ffn_write=true;fq.native_hc_receipt_prefix=(root/"final47").string();
  auto final=PortableQsaLayer::create(47,finalviews,fq,error);check(bool(final),error);check(final->reset(error),error);
- check(final->step_pending(0,last,dispatch,route,error),error);auto finalres=final->last_residual();check(final->pending_write().empty()&&final->native_ffn_hc_write_calls()==1,"head materialization/counter");
+ check(final->step_pending(0,last,dispatch,route,error),error);auto finalres=final->last_residual();const auto initial_finalres=finalres;check(final->pending_write().empty()&&final->native_ffn_hc_write_calls()==1,"head materialization/counter");
  auto* finalbank=final->final_residual_tensor();check(finalbank==actual_final_write_bank&&finalbank->buffer&&ggml_is_contiguous(finalbank)&&ggml_nbytes(finalbank)==10240*sizeof(float)&&ggml_backend_buffer_get_type(finalbank->buffer)==ggml_backend_get_default_buffer_type(fq.execution.accelerator),"actual final FFN producer bank/device");
  auto* finaltype=ggml_backend_buffer_get_type(finalbank->buffer);auto* finaldev=ggml_backend_buft_get_device(finaltype);auto* expecteddev=ggml_backend_get_device(fq.execution.accelerator);check(expecteddev&&(finaldev?finaldev==expecteddev:(ggml_backend_buft_is_host(finaltype)&&ggml_backend_dev_type(expecteddev)==GGML_BACKEND_DEVICE_TYPE_CPU)),"actual final FFN producer owning device");
  {auto previous_down=expected_down,previous_up=expected_up;expected_down.assign(3276800,0);expected_up.assign(3276800,0);
   std::vector<float> norm(10240,1.f),vocab(5120,1.f);std::vector<uint8_t> zeros(3276800/32*34,0);
   std::vector<PortableTensorView> hw{{"output_hc_norm.weight",{10240},0,norm.data(),norm.size()*4},{"output_hc_down.weight",{10240,320},8,zeros.data(),zeros.size()},{"output_hc_up.weight",{320,10240},8,zeros.data(),zeros.size()},{"output.weight",{2560,2},0,vocab.data(),vocab.size()*4}};
   auto ho=exec;ho.resident_dense_weights=true;ho.native_head_hc_t1=true;ho.native_head_hc_receipt_prefix=(root/"head").string();auto head=PortableHead::create({2560,4,320,2,1e-6f},hw,ho,error);check(bool(head),error);
-  std::vector<float> logits;observe_head_consumer=true;check(head->run_device(finalbank,logits,error),error);check(logits.size()==2&&head_consumer_links==1&&head->native_hc_calls()==1,"final FFN -> head mixer -> vocabulary actual banks");
-  fail_mix=true;check(!head->run_device(finalbank,logits,error)&&logits.empty()&&head->native_hc_calls()==1,"failed head mixer published logits");fail_mix=false;check(head->run_device(finalbank,logits,error)&&head->native_hc_calls()==2,"head retry missing");observe_head_consumer=false;
+  std::vector<float> logits;PortableModelWork headwork;auto first=final->final_residual_identity();
+  check(first.tensor==finalbank&&first.position==0&&first.write_sequence==1&&first.layer==47,"initial producer identity");
+  check(model_optional_head(false,headwork,logits,[&]{return head->run_device(first,logits,error);})&&head->native_hc_calls()==0,"elided head performed work");
+  check(!std::filesystem::exists(root/"head"/"first.json"),"elided head recorded a receipt");
   expected_down.swap(previous_down);expected_up.swap(previous_up);
-  check(!final->step_pending(1,last,fail,route,error)&&final->last_residual()==finalres&&final->tokens()==1&&!final->final_residual_tensor(),"final endpoint rollback/borrow invalidation");
-  check(final->reset(error)&&!final->final_residual_tensor()&&final->step_pending(0,last,dispatch,route,error)&&final->last_residual()==finalres&&final->final_residual_tensor()==actual_final_write_bank,"final endpoint reset");
+  auto second=last;for(auto& v:second.residual)v+=0.125f;
+  check(final->step_pending(1,second,dispatch,route,error),error);finalres=final->last_residual();auto producer=final->final_residual_identity();
+  check(producer.tensor==actual_final_write_bank&&producer.position==1&&producer.owner_id==first.owner_id&&producer.write_sequence==2,"paid head did not bind actual second producer");
+  check(!final->record_head_producer(first,error),"stale producer identity accepted");
   expected_down.swap(previous_down);expected_up.swap(previous_up);observe_head_consumer=true;
-  check(head->run_device(final->final_residual_tensor(),logits,error)&&head->native_hc_calls()==3,"head must consume new committed bank after reset");observe_head_consumer=false;
+  fail_mix=true;check(!head->run_device(producer,logits,error)&&logits.empty()&&head->native_hc_calls()==0,"failed head mixer published logits");fail_mix=false;
+  check(!std::filesystem::exists(root/"head"/"first.json"),"failed head published receipt");
+  check(head->run_device(producer,logits,error),error);check(final->record_head_producer(producer,error),error);
+  check(logits.size()==2&&head_consumer_links==1&&head->native_hc_calls()==1,"final FFN -> head mixer -> vocabulary actual banks");
+  std::filesystem::path owner;for(const auto&e:std::filesystem::directory_iterator(root))if(e.path().filename()==("final47.ffn.owner-"+std::to_string(producer.owner_id)))owner=e.path();
+  check(!owner.empty(),"producer owner directory missing");
+  auto read_bytes=[](const std::filesystem::path&p){std::ifstream f(p,std::ios::binary);check(bool(f),"receipt missing");return std::string(std::istreambuf_iterator<char>(f),{});};
+  auto hmeta=read_bytes(root/"head"/"first.json"),pmeta=read_bytes(owner/"first-head-write.json");
+  for(const auto&part:{std::string("\"position\":1"),std::string("\"producer_owner_id\":")+std::to_string(producer.owner_id),std::string("\"producer_write_sequence\":2"),std::string("\"producer_layer\":47"),std::string("\"producer_tensor_identity\":true")})check(hmeta.find(part)!=std::string::npos&&pmeta.find(part)!=std::string::npos,"head/producer receipt identity differs");
+  check(hmeta.find("\"vocabulary_consumer_identity\":true")!=std::string::npos,"head consumer identity not recorded");
+  check(read_bytes(root/"head"/"first-residual.f32le")==read_bytes(owner/"first-head-write-candidate.f32le"),"position-bound producer capture differs");
+  check(read_bytes(owner/"first-write-candidate.f32le")!=read_bytes(owner/"first-head-write-candidate.f32le"),"elided and paid captures did not exercise distinct inputs");
+  observe_head_consumer=false;expected_down.swap(previous_down);expected_up.swap(previous_up);
+  check(!final->step_pending(2,last,fail,route,error)&&final->last_residual()==finalres&&final->tokens()==2&&!final->final_residual_tensor(),"final endpoint rollback/borrow invalidation");
+  check(!final->record_head_producer(producer,error),"failed step retained valid producer");
+  check(final->reset(error)&&!final->final_residual_tensor()&&final->step_pending(0,last,dispatch,route,error)&&final->last_residual()==initial_finalres&&final->final_residual_tensor()==actual_final_write_bank,"final endpoint reset");
+  check(!head->run_device(producer,logits,error)&&logits.empty(),"head accepted stale producer after reset");
+  const auto reset_producer=final->final_residual_identity();check(reset_producer.position==0&&reset_producer.write_sequence==3&&reset_producer.owner_id==producer.owner_id,"reset producer sequence/position");
+  expected_down.swap(previous_down);expected_up.swap(previous_up);observe_head_consumer=true;
+  check(head->run_device(reset_producer,logits,error)&&head->native_hc_calls()==2,"head must consume new committed bank after reset");observe_head_consumer=false;
   expected_down.swap(previous_down);expected_up.swap(previous_up);}
 
  // Failure-only diagnostics read the completed failing call, not initial success.

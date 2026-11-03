@@ -347,20 +347,21 @@ bool PortableHead::run(const std::vector<float> &streams, std::vector<float> &lo
         return false;
     }
 }
-bool PortableHead::run_device(ggml_tensor* residual,std::vector<float>& logits,std::string& error){
+bool PortableHead::run_device(const PortableFinalHcResidual& producer,std::vector<float>& logits,std::string& error){
     error.clear();logits.clear();
     try {
 #ifdef STRATA_PORTABLE_NATIVE_HC
         auto& s=*impl_;require(s.native_head&&s.native_hc,"native head HC: option not enabled");
-        auto* mixed=s.native_hc->run(residual);
+        require(producer.tensor&&producer.position!=UINT64_MAX&&producer.owner_id!=UINT64_MAX&&producer.write_sequence>0&&producer.layer==47&&producer.owner&&producer.is_current&&producer.is_current(producer.owner,producer),"native head HC: current producer identity required");
+        auto* mixed=s.native_hc->run(producer.tensor);
         require(mixed==s.output->src[1]&&mixed==s.native_hc->mixed_bank_for_graph(),"native head HC: vocabulary consumer must borrow actual mixer bank");
         require(ggml_backend_sched_graph_compute(s.scheduler.get(),s.graph)==GGML_STATUS_SUCCESS,"native head HC: vocabulary compute failed");
         if(s.logits_guard)require(s.logits_guard->check(s.output),"portable head: nonfinite logits (integer status guard)");
         std::vector<float> next(size_t(s.g.vocabulary));ggml_backend_tensor_get(s.output,next.data(),0,next.size()*sizeof(float));
         for(float v:next)require(std::isfinite(v),"portable head: nonfinite logits");
-        s.native_hc->record_first(residual);logits.swap(next);return true;
+        s.native_hc->record_first(producer);logits.swap(next);return true;
 #else
-        (void)residual;require(false,"native head HC: strict native-stage build required");return false;
+        (void)producer;require(false,"native head HC: strict native-stage build required");return false;
 #endif
     }catch(const std::exception& e){error=e.what();return false;}
 }

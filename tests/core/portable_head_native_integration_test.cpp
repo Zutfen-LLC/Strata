@@ -42,12 +42,14 @@ int main(int argc,char**argv){try{
  const auto saved=q[1];q[1]=0x7c;native_hc_need(!PortableHead::create(geo,views,o,error),"head nonfinite source scale accepted");q[1]=saved;
  norm[0]=std::numeric_limits<float>::infinity();native_hc_need(!PortableHead::create(geo,views,o,error),"head nonfinite norm accepted");norm[0]=1.f;
  const auto admission=PortableHead::admission(geo,views,o,false);auto head=PortableHead::create(geo,views,o,error);native_hc_need(bool(head),error.c_str());native_hc_need(head->weight_bytes()<=weight&&head->graph_bytes()<=o.graph_budget&&head->memory_usage().device_state>0&&admission.graph_bound>=head->memory_usage().device_state,"head converted weights/owner admission");
- std::vector<float> logits;native_hc_need(head->run_device(final_bank,logits,error),error.c_str());native_hc_need(graph_links==1&&logits==std::vector<float>({2560.f,2560.f})&&head->native_hc_calls()==1,"actual head mixer/vocabulary link");
- PortableModelWork work;logits={42.f};const auto calls_before=head->native_hc_calls();native_hc_need(model_optional_head(false,work,logits,[&]{return head->run_device(final_bank,logits,error);})&&logits.empty()&&work.heads_skipped==1&&work.heads_executed==0&&head->native_hc_calls()==calls_before,"elided head did work or returned stale logits");
- fail_norm=true;native_hc_need(!head->run_device(final_bank,logits,error)&&logits.empty()&&head->native_hc_calls()==1,"head norm failure published logits");fail_norm=false;
- fail_mix=true;native_hc_need(!head->run_device(final_bank,logits,error)&&logits.empty()&&head->native_hc_calls()==1,"head mixer failure published logits");fail_mix=false;
- fail_graph=true;native_hc_need(!head->run_device(final_bank,logits,error)&&logits.empty()&&head->native_hc_calls()==2,"head projection failure/counter");fail_graph=false;
- native_hc_need(head->run_device(final_bank,logits,error)&&logits==std::vector<float>({2560.f,2560.f})&&head->native_hc_calls()==3,"head retry");
+ PortableFinalHcResidual producer{final_bank,7,42,3,47,final_bank,[](const void* owner,const PortableFinalHcResidual& info){return owner==info.tensor;}};
+ std::vector<float> logits;native_hc_need(head->run_device(producer,logits,error),error.c_str());native_hc_need(graph_links==1&&logits==std::vector<float>({2560.f,2560.f})&&head->native_hc_calls()==1,"actual head mixer/vocabulary link");
+ PortableModelWork work;logits={42.f};const auto calls_before=head->native_hc_calls();native_hc_need(model_optional_head(false,work,logits,[&]{return head->run_device(producer,logits,error);})&&logits.empty()&&work.heads_skipped==1&&work.heads_executed==0&&head->native_hc_calls()==calls_before,"elided head did work or returned stale logits");
+ fail_norm=true;native_hc_need(!head->run_device(producer,logits,error)&&logits.empty()&&head->native_hc_calls()==1,"head norm failure published logits");fail_norm=false;
+ fail_mix=true;native_hc_need(!head->run_device(producer,logits,error)&&logits.empty()&&head->native_hc_calls()==1,"head mixer failure published logits");fail_mix=false;
+ fail_graph=true;native_hc_need(!head->run_device(producer,logits,error)&&logits.empty()&&head->native_hc_calls()==2,"head projection failure/counter");fail_graph=false;
+ native_hc_need(head->run_device(producer,logits,error)&&logits==std::vector<float>({2560.f,2560.f})&&head->native_hc_calls()==3,"head retry");
+ auto invalid=producer;invalid.write_sequence=0;native_hc_need(!head->run_device(invalid,logits,error)&&logits.empty(),"missing producer identity accepted");
  native_hc_need(!head->run(std::vector<float>(10240),logits,error)&&logits.empty(),"head host-copy fallback accepted");
  std::puts("actual head owner/vocabulary graph, role conversion, budget, refusal and retry pass with host providers");return 0;
  }catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

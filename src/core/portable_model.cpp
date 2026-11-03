@@ -782,10 +782,13 @@ struct PortableModelSession::Impl {
             }
             const bool head_ok=portable_detail::model_optional_head(project,model_work,logits,[&]{
                 portable_detail::ScopedExpertTimer<> head_timer(opts.expert_timings, model_work.head_ms, model_work.head_calls);
-                ggml_tensor* final_bank=opts.native_head_hc_t1&&layers.back().qsa ? layers.back().qsa->final_residual_tensor() : nullptr;
+                PortableFinalHcResidual producer;
+                if(opts.native_head_hc_t1&&layers.back().qsa)producer=layers.back().qsa->final_residual_identity();
+                if(opts.native_head_hc_t1)require(producer.tensor&&producer.position==pos&&producer.layer==int64_t(L-1),"native head HC: current final FFN producer identity required");
                 const auto native_head_before=head->native_hc_calls();
-                const bool ok = opts.native_head_hc_t1 ? head->run_device(final_bank,logits,error) : head->run(residual, logits, error);
+                bool ok = opts.native_head_hc_t1 ? head->run_device(producer,logits,error) : head->run(residual, logits, error);
                 model_work.native_head_hc_calls+=head->native_hc_calls()-native_head_before;
+                if(ok&&opts.native_head_hc_t1)ok=layers.back().qsa->record_head_producer(producer,error);
                 return ok;
             });
             if(!head_ok)require(false, "portable model: output head: " + error);
