@@ -420,13 +420,13 @@ struct PortableGdnLayer::Impl {
         PortableGdnWork disabled;
         auto &timing = work ? *work : disabled;
         std::vector<float> next_residual,next_block,next_inject;
+        std::array<uint32_t,16> ple_rows{};
         {
             portable_detail::ScopedExpertTimer<> attention_timer(work != nullptr,
                 timing.attention_exchange_ms, timing.attention_exchange_calls);
             if (s.options.ple_table) {
                 std::vector<float> embedding;
-                std::array<uint32_t, 16> rows{};
-                require(s.options.ple_table->gather(token, cursor.previous, rows, embedding, error), error);
+                require(s.options.ple_table->gather(token, cursor.previous, ple_rows, embedding, error), error);
 #ifdef STRATA_PORTABLE_NATIVE_HC
                 if (s.native_ple_value) s.native_ple_value->run(embedding);
                 else
@@ -436,7 +436,7 @@ struct PortableGdnLayer::Impl {
                     write(s.ple_hist, cursor.ple_history);
                 next_previous = {{cursor.previous[1], token}};
                 if (trace) {
-                    next_trace.ple_rows = rows;
+                    next_trace.ple_rows = ple_rows;
                     next_trace.ple_embedding = std::move(embedding);
                 }
             }
@@ -476,6 +476,7 @@ struct PortableGdnLayer::Impl {
             }
             require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
 #ifdef STRATA_PORTABLE_NATIVE_HC
+            if(s.native_ple_value)s.native_ple_value->verify_and_record(s.ple_value,s.count,token,cursor.previous,ple_rows);
             if(s.native_hc)s.native_hc->record_first();
             if(trace && s.native_hc) {
                 next_trace.native_hc_norm_inject=true;

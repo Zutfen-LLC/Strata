@@ -15,6 +15,8 @@ unchanged. PLE token history and the normalized convolution history retain their
 existing transaction and reset behavior. This option does not enable native
 GDN or HC at layer 1.
 
+The first graph-completed value is retained under `PREFIX.layer-1/first-candidate` with its token, position, predecessor IDs and gathered row IDs. The recorded input and value are read from the actual device banks after the PLE graph, and the consumer must be the producer-owned value tensor. This receipt is lifetime-scoped and explicitly marks `committed: false`; use the surrounding successful request and state evidence to establish commit. A later reset does not overwrite it.
+
 The device result is checked against an ordered host control. It rejects
 nonfinite and subnormal BF16 weights or F32 inputs and intermediate results;
 that is a bounded diagnostic domain, not a statement about CUDA's full domain.

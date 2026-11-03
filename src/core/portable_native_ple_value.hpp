@@ -3,7 +3,9 @@
 #include "strata_vk_native_shared.hpp"
 #include "ggml-alloc.h"
 #include <algorithm>
+#include <array>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <vector>
 
@@ -18,6 +20,9 @@ class PortableNativePleValue {
     std::unique_ptr<StrataVkNativeShared, decltype(&strata_vk_native_shared_destroy)> component_{nullptr, strata_vk_native_shared_destroy};
     ggml_tensor *weight_ = nullptr, *input_ = nullptr, *output_ = nullptr, *aux_ = nullptr;
     std::vector<uint16_t> host_weight_;
+    std::vector<float> last_input_, last_output_;
+    std::filesystem::path directory_;
+    bool recorded_ = false;
     size_t bytes_ = 0;
     static constexpr size_t width = 2560;
     static Context context() {
@@ -41,7 +46,7 @@ public:
     }
     PortableNativePleValue(ggml_backend_t backend, ggml_tensor* weight, std::vector<uint16_t> host_weight,
                            const std::string& directory, size_t budget)
-        : weight_(weight), host_weight_(std::move(host_weight)) {
+        : weight_(weight), host_weight_(std::move(host_weight)), directory_(directory) {
         native_shared_need(backend && weight && weight->buffer && weight->type == GGML_TYPE_I32 &&
                            ggml_is_contiguous(weight) && ggml_nbytes(weight) == width * width * 2 &&
                            host_weight_.size() == width * width && estimate(backend) <= budget &&
@@ -78,6 +83,35 @@ public:
         ggml_backend_tensor_get(output_, actual.data(), 0, width * 4);
         native_shared_need(std::memcmp(actual.data(), expected.data(), width * 4) == 0,
                            "PLE value: device output differs from ordered control");
+        last_input_ = embedding;
+        last_output_ = std::move(actual);
+    }
+    // Records a graph-completed candidate, not an FFN or sequence commit.
+    // The first receipt is lifetime-scoped; reset does not overwrite it.
+    void verify_and_record(const ggml_tensor* consumed, uint64_t position, int32_t token,
+                           const std::array<int32_t,2>& previous, const std::array<uint32_t,16>& rows) {
+        native_shared_need(consumed == output_ && consumed->buffer && ggml_is_contiguous(consumed) &&
+                           ggml_nbytes(consumed) == width*4 && last_input_.size() == width && last_output_.size() == width,
+                           "PLE value: actual consumer bank differs");
+        std::vector<float> input(width), value(width);
+        ggml_backend_tensor_get(input_, input.data(), 0, width*4);
+        ggml_backend_tensor_get(consumed, value.data(), 0, width*4);
+        native_shared_need(std::memcmp(input.data(),last_input_.data(),width*4)==0 &&
+                           std::memcmp(value.data(),last_output_.data(),width*4)==0,
+                           "PLE value: graph changed input or producer bank");
+        if(recorded_)return;
+        auto path=directory_/"first-candidate";
+        native_shared_need(std::filesystem::create_directory(path),"PLE value: first candidate already exists");
+        auto save=[&](const char* name,const void* bytes,size_t n){std::ofstream f(path/name,std::ios::binary);f.write(static_cast<const char*>(bytes),n);f.flush();native_shared_need(bool(f),"PLE value: candidate receipt write");};
+        save("input.f32le",input.data(),width*4);
+        save("value.f32le",value.data(),width*4);
+        std::ofstream meta(path/"metadata.json");
+        meta<<"{\"position\":"<<position<<",\"token\":"<<token<<",\"previous\":["<<previous[0]<<","<<previous[1]<<"],\"rows\":[";
+        for(size_t i=0;i<rows.size();++i)meta<<(i?",":"")<<rows[i];
+        meta<<"],\"direct_producer_bank\":true,\"graph_completed\":true,\"committed\":false,\"qualified\":false}\n";
+        meta.flush();
+        native_shared_need(bool(meta),"PLE value: candidate metadata write");
+        recorded_=true;
     }
 };
 }
