@@ -883,8 +883,27 @@ for each capability below.
    arrays are omitted. Current resident snapshots preserve long-lived non-kworker
    identities; seven model-host kworkers ended. Historical CPU snapshot gaps,
    inaccessible root-cgroup fields and discrete monitoring remain explicit limits.
-   GDN output projection, quantized KV, other projection families, accepted-prefix
-   and native window scheduling remain separate gaps.
+   [PR144](https://github.com/Zutfen-LLC/Strata/pull/144) completes the default-disabled
+   ordinary T1 GDN output projection trial: actual gated recurrence feeds the shared
+   Q8_1 producer, and the persistent native-order Q8_0 output bank feeds FFN HC.
+   GDN-only finite stored half-scale admission is separately qualified; legacy WO
+   and 80-block QKV domains remain distinct. Seven exhaustive/boundary cases plus
+   the retained stopped input match all 6,912 packed and 10,240 projected bytes in
+   native-first/Vulkan comparison. At source `6bd7335d`, the corrected model candidate
+   completes two reset-separated requests using fresh admission and retained 96/1490
+   plans; the control is historical-source-compatible at `0c71c648`, not same-image.
+   Eight new candidate inputs pass exact native packed replay, actual mapped-role
+   outputs and recurrence/FFN links; 35 output owners / 70 modules, reset, counters
+   and cleanup pass. Final offline sealing preserves the original failures and all
+   7,210 prior files; 19 sealer tests pass with byte-identical numerical revalidation.
+   The final result has 7,180 manifest entries and 44 retained references.
+   First route-order divergence is position 0 / layer 0 (experts 414 and 2 exchange
+   order); largest matching-history absolute logit difference is 1.3079073429107666
+   at position 27. Qualified, full-model and native-window parity remain false;
+   no numerical tolerance, quality or performance claim is introduced. Details and
+   limits are in [the output trial](native-gdn-output-t1.md).
+   Final-head HC mixing/output projection, quantized KV, accepted-prefix and native
+   window scheduling remain separate gaps.
 
 
 
