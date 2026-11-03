@@ -6,6 +6,7 @@
 #include "strata/core/portable_model.hpp"
 #ifdef STRATA_PORTABLE_NATIVE_HC
 #include "portable_native_head_hc.hpp"
+#include "portable_native_head_vocab.hpp"
 #endif
 #include <algorithm>
 #include <cmath>
@@ -160,8 +161,9 @@ struct PortableHead::Impl {
     std::unique_ptr<portable_detail::PortableLogitsGuard> logits_guard;
 #ifdef STRATA_PORTABLE_NATIVE_HC
     std::unique_ptr<portable_detail::PortableNativeHeadHc> native_hc;
+    std::unique_ptr<portable_detail::PortableNativeHeadVocab> native_vocab;
 #endif
-    bool native_head=false;
+    bool native_head=false, native_vocabulary=false;
     std::vector<PortablePlacement> placement;
     size_t device_weights = 0;
     size_t weight_size = 0, graph_size = 0, device_bytes = 0, device_workspace = 0, device_conversion = 0;
@@ -171,6 +173,8 @@ struct PortableHead::Impl {
         validate_geometry(g);
         require(opts.threads > 0, "portable head: invalid thread count");
         native_head=opts.native_head_hc_t1;
+        native_vocabulary=opts.native_head_vocab_t1;
+        require(!native_vocabulary||native_head,"native head vocabulary: native mixer required");
         if(native_head){
 #ifndef STRATA_PORTABLE_NATIVE_HC
             require(false,"native head HC: strict native-stage build required");
@@ -218,6 +222,15 @@ struct PortableHead::Impl {
             native_hc=std::make_unique<portable_detail::PortableNativeHeadHc>(opts.accelerator,w.at("output_hc_norm.weight"),w.at("output_hc_down.weight"),w.at("output_hc_up.weight"),native_head_device_bound,opts.native_head_hc_receipt_prefix);
             require(native_hc->bytes()<=native_head_device_bound,"native head HC: device bound exceeded");
             graph_size=native_head_device_bound;native_mixed=native_hc->mixed_bank_for_graph();
+            if(native_vocabulary){
+                const auto it=std::find_if(views.begin(),views.end(),[](const auto& v){return v.name=="output.weight";});
+                require(it!=views.end()&&it->type==8,"native head vocabulary: Q8_0 output role required");
+                const size_t bound=portable_detail::PortableNativeHeadVocab::bound(size_t(g.vocabulary));
+                require(bound<=opts.graph_budget-graph_size,"native head vocabulary: graph budget");
+                native_vocab=std::make_unique<portable_detail::PortableNativeHeadVocab>(opts.accelerator,w.at("output.weight"),native_mixed,it->data,it->bytes,size_t(g.vocabulary),opts.native_head_hc_receipt_prefix+"/vocabulary",bound);
+                graph_size+=bound;
+                placement.push_back({"global-head-native-vocabulary","NATIVE_Q8_1_Q8_0_T1","portable_logits","Q8_0/F32",ggml_backend_name(opts.accelerator),"",{g.hidden,g.vocabulary}});
+            }
             placement.push_back({"global-head-native-hc","NATIVE_BF16_MATERIALIZED_T1","head_mixed","F32/BF16",ggml_backend_name(opts.accelerator),"",{g.hidden,g.streams,g.rank}});
         }
 #endif
@@ -306,6 +319,14 @@ PortableHeadAdmission PortableHead::admission(PortableHeadGeometry g,
     a.graph_bound=add_bound(add_bound(a.scheduler_bound,a.cpu_workspace),
                             add_bound(a.device_workspace,a.guard_bound));
     if(opts.native_head_hc_t1)a.graph_bound=add_bound(a.graph_bound,native_head_device_bound);
+    if(opts.native_head_vocab_t1){
+        require(opts.native_head_hc_t1,"native head vocabulary: native mixer required");
+#ifdef STRATA_PORTABLE_NATIVE_HC
+        a.graph_bound=add_bound(a.graph_bound,portable_detail::PortableNativeHeadVocab::bound(size_t(g.vocabulary)));
+#else
+        require(false,"native head vocabulary: strict native-stage build required");
+#endif
+    }
     return a;
 }
 PortableHead::PortableHead(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -355,11 +376,16 @@ bool PortableHead::run_device(const PortableFinalHcResidual& producer,std::vecto
         require(producer.tensor&&producer.position!=UINT64_MAX&&producer.owner_id!=UINT64_MAX&&producer.write_sequence>0&&producer.layer==47&&producer.owner&&producer.is_current&&producer.is_current(producer.owner,producer),"native head HC: current producer identity required");
         auto* mixed=s.native_hc->run(producer);
         require(mixed==s.output->src[1]&&mixed==s.native_hc->mixed_bank_for_graph(),"native head HC: vocabulary consumer must borrow actual mixer bank");
-        require(ggml_backend_sched_graph_compute(s.scheduler.get(),s.graph)==GGML_STATUS_SUCCESS,"native head HC: vocabulary compute failed");
-        if(s.logits_guard)require(s.logits_guard->check(s.output),"portable head: nonfinite logits (integer status guard)");
-        std::vector<float> next(size_t(s.g.vocabulary));ggml_backend_tensor_get(s.output,next.data(),0,next.size()*sizeof(float));
+        ggml_tensor* logits_bank=s.output;
+        if(s.native_vocab)logits_bank=s.native_vocab->run(mixed);
+        else require(ggml_backend_sched_graph_compute(s.scheduler.get(),s.graph)==GGML_STATUS_SUCCESS,"native head HC: vocabulary compute failed");
+        if(s.logits_guard)require(s.logits_guard->check(logits_bank),"portable head: nonfinite logits (integer status guard)");
+        std::vector<float> next(size_t(s.g.vocabulary));ggml_backend_tensor_get(logits_bank,next.data(),0,next.size()*sizeof(float));
         for(float v:next)require(std::isfinite(v),"portable head: nonfinite logits");
-        s.native_hc->record_first(producer,true,true);logits.swap(next);return true;
+        const bool vocab_recorded=s.native_vocab&&s.native_vocab->record_first(producer,mixed,logits_bank);
+        try { s.native_hc->record_first(producer,true,true); }
+        catch (...) { if(vocab_recorded)s.native_vocab->rollback_first(); throw; }
+        logits.swap(next);return true;
 #else
         (void)producer;require(false,"native head HC: strict native-stage build required");return false;
 #endif
@@ -368,6 +394,13 @@ bool PortableHead::run_device(const PortableFinalHcResidual& producer,std::vecto
 uint64_t PortableHead::native_hc_calls()const{
 #ifdef STRATA_PORTABLE_NATIVE_HC
     return impl_->native_hc?impl_->native_hc->calls():0;
+#else
+    return 0;
+#endif
+}
+uint64_t PortableHead::native_vocab_calls()const{
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_vocab?impl_->native_vocab->calls():0;
 #else
     return 0;
 #endif
@@ -385,10 +418,15 @@ PortableMemoryUsage PortableHead::memory_usage() const {
     m.device_graph = s.device_bytes;
     const size_t guard_device = s.logits_guard ? s.logits_guard->device_bytes() +
                                                s.logits_guard->device_resource_bound() : 0;
-    const size_t buffers = m.host_graph + m.device_graph + guard_device + (s.native_head?native_head_device_bound:0);
+    size_t vocabulary_bound=0;
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    if(s.native_vocabulary)vocabulary_bound=portable_detail::PortableNativeHeadVocab::bound(size_t(s.g.vocabulary));
+#endif
+    const size_t buffers = m.host_graph + m.device_graph + guard_device + (s.native_head?native_head_device_bound:0) + vocabulary_bound;
     m.device_state += s.logits_guard ? s.logits_guard->device_bytes() : 0;
 #ifdef STRATA_PORTABLE_NATIVE_HC
     if(s.native_hc){m.device_state+=s.native_hc->bytes();m.device_extra_bound+=native_head_device_bound-s.native_hc->bytes();}
+    if(s.native_vocab){m.device_state+=s.native_vocab->bytes();m.device_extra_bound+=vocabulary_bound-s.native_vocab->bytes();}
 #endif
     m.device_extra_bound += s.logits_guard ? s.logits_guard->device_resource_bound() : 0;
     m.host_extra_bound = (4u << 20) + size_t(s.g.vocabulary * 2 + s.g.hidden * 16) * sizeof(float);

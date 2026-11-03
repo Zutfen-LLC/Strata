@@ -267,7 +267,7 @@ struct PortableModelSession::Impl {
             if(o.native_moe_combine) o.native_moe_combine_receipt_prefix = opts.expert_native_q8_observation + ".combine";
             o.allow_cpu_fallback = opts.allow_cpu_fallback;
             o.resident_dense_weights = portable_detail::model_resident_dense(opts,index,output);
-            if(output){o.native_head_hc_t1=opts.native_head_hc_t1;o.native_head_hc_receipt_prefix=opts.native_head_hc_receipt_prefix;}
+            if(output){o.native_head_hc_t1=opts.native_head_hc_t1;o.native_head_vocab_t1=opts.native_head_vocab_t1;o.native_head_hc_receipt_prefix=opts.native_head_hc_receipt_prefix;}
             o.weight_budget = output ? opts.head_weight_cap : opts.layer_weight_cap;
             o.graph_budget = output ? opts.head_graph_cap : opts.layer_graph_cap;
             if (!opts.accelerators.empty()) {
@@ -786,8 +786,10 @@ struct PortableModelSession::Impl {
                 if(opts.native_head_hc_t1&&layers.back().qsa)producer=layers.back().qsa->final_residual_identity();
                 if(opts.native_head_hc_t1)require(producer.tensor&&producer.position==pos&&producer.layer==int64_t(L-1),"native head HC: current final FFN producer identity required");
                 const auto native_head_before=head->native_hc_calls();
+                const auto native_vocab_before=head->native_vocab_calls();
                 bool ok = opts.native_head_hc_t1 ? head->run_device(producer,logits,error) : head->run(residual, logits, error);
                 model_work.native_head_hc_calls+=head->native_hc_calls()-native_head_before;
+                model_work.native_head_vocab_calls+=head->native_vocab_calls()-native_vocab_before;
                 if(ok&&opts.native_head_hc_t1)ok=layers.back().qsa->record_head_producer(producer,error);
                 return ok;
             });

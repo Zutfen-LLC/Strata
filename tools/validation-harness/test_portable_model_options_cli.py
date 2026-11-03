@@ -93,6 +93,9 @@ run(['--native-head-hc-t1','/absent/head'],False,'native head HC requires')
 run([*ordinary,'--native-head-hc-t1','/absent/head'],False,'native head HC requires')
 head=[*ordinary,'--dense-resident-weights','--native-head-hc-t1','/absent/head']
 assert run(head,True)['native_head_hc_t1']
+assert not run(head,True).get('native_head_vocab_t1',False)
+run(['--native-head-vocab-t1'],False,'native head vocabulary requires')
+assert run([*head,'--native-head-vocab-t1'],True)['native_head_vocab_t1']
 for flags in [['--allow-cpu-fallback'],['--prompt-chunk-size','2'],['--dense-topology','split']]:run([*head,*flags],False)
 run([*ordinary,'--dense-resident-weights','--native-head-hc-t1',''],False,'receipt')
 run(head,False,'fused final head',dict(os.environ,STRATA_FUSE_HEAD_GR='1'))

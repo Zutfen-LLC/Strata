@@ -141,6 +141,7 @@ inline void model_qsa_hc_options(const PortableModelOptions& opts,size_t layer,P
 // never a physical capability, metadata or memory-admission success receipt.
 inline void validate_model_modes(const PortableModelOptions& opts,size_t selected_accelerators) {
     const auto require=[](bool ok,const char* error){if(!ok)throw std::runtime_error(error);};
+        require(!opts.native_head_vocab_t1 || opts.native_head_hc_t1,"native head vocabulary requires the materialized native head HC mixer");
         require(!opts.expert_native_profile.empty() || (!opts.expert_native_primary_slots && !opts.expert_native_helper_slots &&
             opts.expert_native_plan_prefix.empty()),"native capacity options require a profile");
         require(opts.expert_native_q8_observation.empty() || (!opts.expert_devices.empty() && !opts.allow_cpu_fallback),
