@@ -28,7 +28,20 @@ for v in [0xc2b20000,0xc2b20001,0xc2c803e5,0xff7fffff]:
   try:c.m.head_silu_overflow_controls(v,e,a)
   except ValueError:pass
   else:raise AssertionError('invalid overflow evidence accepted')
-for v in [0xc2b1ffff,0x42b20000,0x80000000]:assert not c.m.head_silu_overflow_candidate(v)
+for v in [0xc2b1ffff,0xc2b00000,0xc2b170a4,0xc2aeac4d,0x42c80000]:
+ assert not c.m.head_silu_overflow_candidate(v)
+ try:c.m.activation_bounds(v,'vulkan',True,True)
+ except ValueError:pass
+ else:raise AssertionError('transition/positive SiLU admitted')
+assert not c.m.head_silu_overflow_candidate(0x80000000)
+# The endpoint of the earlier domain follows exactly its previous control.
+endpoint=0xc2aeac4c
+try:baseline=c.m.activation_bounds(endpoint,'vulkan',True)
+except ValueError:
+ try:c.m.activation_bounds(endpoint,'vulkan',True,True)
+ except ValueError:pass
+ else:raise AssertionError('old endpoint refusal changed')
+else:assert c.m.activation_bounds(endpoint,'vulkan',True,True)==baseline
 for v in [0xff800000,0x7f800000,0xffc00000,0x80000001]:
  try:c.m.head_silu_overflow_candidate(v)
  except ValueError:pass
