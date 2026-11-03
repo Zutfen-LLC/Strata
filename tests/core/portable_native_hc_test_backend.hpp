@@ -82,6 +82,7 @@ void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*owner,const ggml_te
 }
 struct StrataVkNativeHcMix{};
 StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char* path,size_t budget){check(!fail_mix_create,"injected mix create refusal");check(budget>=512,"mix metadata budget");std::ofstream(path)<<"mock; not shader evidence\n";++mix_owners;return new StrataVkNativeHcMix;}
+StrataVkNativeHcMix* strata_vk_native_head_hc_mix_rn_create(ggml_backend_t backend,const char* path,size_t budget){return strata_vk_native_hc_mix_create(backend,path,budget);}
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*){return 512;}
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix*p)noexcept{if(p)--mix_owners;if(!mix_owners)live_mixed=nullptr;delete p;}
 void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*x,const ggml_tensor*down,const ggml_tensor*up,ggml_tensor*lp,ggml_tensor*low,ggml_tensor*le,ggml_tensor*upre,ggml_tensor*gates,ggml_tensor*ue,ggml_tensor*mixed){

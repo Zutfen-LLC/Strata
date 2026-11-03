@@ -15,7 +15,7 @@ size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*){return 512;}
 void strata_vk_native_hc_destroy(StrataVkNativeHc* p)noexcept{delete p;}
 void strata_vk_native_hc_norm_only(StrataVkNativeHc*,const ggml_tensor* r,const ggml_tensor*,ggml_tensor* n,ggml_tensor*){native_hc_need(!fail_norm&&r==actual_residual,"mock actual residual identity");actual_normalized=n;++norm_calls;}
 struct StrataVkNativeHcMix{};
-StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char* p,size_t b){native_hc_need(b>=512,"mock mix budget");std::ofstream(p)<<"mock";return new StrataVkNativeHcMix;}
+StrataVkNativeHcMix* strata_vk_native_head_hc_mix_rn_create(ggml_backend_t,const char* p,size_t b){native_hc_need(b>=512,"mock mix budget");std::ofstream(p)<<"mock";return new StrataVkNativeHcMix;}
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*){return 512;}
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix* p)noexcept{delete p;}
 void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor* n,const ggml_tensor*,const ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor* out){native_hc_need(!fail_mix&&n==actual_normalized,"mock actual norm producer identity");actual_mixed=out;std::vector<float> v(2560,1.f);ggml_backend_tensor_set(out,v.data(),0,v.size()*sizeof(float));++mix_calls;}

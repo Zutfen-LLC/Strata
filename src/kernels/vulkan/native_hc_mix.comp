@@ -2,6 +2,9 @@
 #extension GL_EXT_spirv_intrinsics : require
 #extension GL_GOOGLE_include_directive : require
 #include "../../core/native_hc_mix_limits.h"
+#ifdef STRATA_HC_HEAD_DIV_RN
+#include "native_f32_div_rn.glsl"
+#endif
 spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427)
 float hc_fma(float a,float b,float c);
 layout(local_size_x=256) in;
@@ -22,7 +25,14 @@ void activate(float v,bool silu,out float e,out float a){
  bool overflow_tail=!silu&&vb<0x7f800000u&&v<=-89.0;
  if(!positive_tail&&!overflow_tail&&vb>STRATA_HC_MIX_ACTIVATION_LIMIT_BITS)flag(4u);
  e=exp(-v);precise float den=1.0+e;
- precise float result=silu?v/den:1.0/den;a=result;
+#ifdef STRATA_HC_HEAD_DIV_RN
+ // This head-only observation fixes the captured SiLU division operands;
+ // exp and reciprocal remain native-device observations, not parity claims.
+ precise float result=silu?uintBitsToFloat(strata_f32_div_rn_bits(floatBitsToUint(v),floatBitsToUint(den))):1.0/den;
+#else
+ precise float result=silu?v/den:1.0/den;
+#endif
+ a=result;
  if(positive_tail){
   // exp may underflow, but the unchanged rounded denominator must be one.
   uint eb=floatBitsToUint(e);if(eb>0x33800000u||den!=1.0||floatBitsToUint(a)!=0x3f800000u)flag(8u);

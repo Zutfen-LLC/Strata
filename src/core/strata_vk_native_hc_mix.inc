@@ -1,8 +1,12 @@
 #include "strata_native_hc_mix_spv.hpp"
+#include "strata_native_head_hc_mix_rn_spv.hpp"
 namespace strata::core::portable_detail {
 struct StrataVkNativeHcMix {std::unique_ptr<StrataVkLogitsGuard> owner;};
 StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t backend,const char* path,size_t budget){
  native_hc_environment();auto p=std::make_unique<StrataVkNativeHcMix>();p->owner=strata_vk_q8_component_owner(backend,strata_native_hc_mix_spv,sizeof(strata_native_hc_mix_spv)/4,NativeComponentAddressing::descriptor,"strata_native_hc_mix_observation",7,9,path,budget);return p.release();
+}
+StrataVkNativeHcMix* strata_vk_native_head_hc_mix_rn_create(ggml_backend_t backend,const char* path,size_t budget){
+ native_hc_environment();auto p=std::make_unique<StrataVkNativeHcMix>();p->owner=strata_vk_q8_component_owner(backend,strata_native_head_hc_mix_rn_spv,sizeof(strata_native_head_hc_mix_rn_spv)/4,NativeComponentAddressing::descriptor,"strata_native_head_hc_mix_rn_observation",7,9,path,budget);return p.release();
 }
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix* p){return p?p->owner->bytes:0;}
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix* p) noexcept {delete p;}

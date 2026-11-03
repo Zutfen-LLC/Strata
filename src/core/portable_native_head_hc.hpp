@@ -56,7 +56,7 @@ public:
         norm_.reset(strata_vk_native_hc_create(backend,(receipts/"effective.spv").c_str(),budget-bound));
         native_hc_need(bool(norm_),"native head HC: norm component unavailable");
         const size_t nb=strata_vk_native_hc_bytes(norm_.get());native_hc_need(nb<=budget-bound,"native head HC: norm budget");
-        mix_.reset(strata_vk_native_hc_mix_create(backend,(receipts/"mix-effective.spv").c_str(),budget-bound-nb));
+        mix_.reset(strata_vk_native_head_hc_mix_rn_create(backend,(receipts/"mix-effective.spv").c_str(),budget-bound-nb));
         native_hc_need(bool(mix_),"native head HC: mixer component unavailable");
         const size_t mb=strata_vk_native_hc_mix_bytes(mix_.get());native_hc_need(mb<=budget-bound-nb,"native head HC: mixer budget");
         buffer_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),backend));native_hc_need(bool(buffer_),"native head HC: scratch allocation");
