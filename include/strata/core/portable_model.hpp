@@ -34,6 +34,7 @@ class PortableHead {
     bool run(const std::vector<float> &streams, std::vector<float> &logits, std::string &error);
     bool run_device(const PortableFinalHcResidual& producer, std::vector<float>& logits, std::string& error);
     uint64_t native_hc_calls() const;
+    uint64_t native_vocab_calls() const;
     size_t weight_bytes() const;
     size_t graph_bytes() const;
     PortableMemoryUsage memory_usage() const;
@@ -83,6 +84,7 @@ struct PortableModelOptions {
     size_t head_weight_cap = 1ull << 30, head_graph_cap = 4ull << 30;
     bool head_shape_admission = false; // experimental metadata bound; default keeps full graph cap
     bool native_head_hc_t1 = false; // materialized T1 head mixer, default off
+    bool native_head_vocab_t1 = false; // native Q8 vocabulary projection, default off
     std::string native_head_hc_receipt_prefix;
     // Comparison oracle only: preserve the former copy/digest on every dispatch.
     bool expert_dispatch_oracle = false;
@@ -185,6 +187,7 @@ struct PortableModelWork {
     uint64_t native_router_calls = 0, native_router_rows = 0; // actual tagged routes, completed forwards only
     uint64_t heads_executed = 0, heads_skipped = 0; // unconditional, cumulative across reset
     uint64_t native_head_hc_calls = 0; // completed mixer calls, including a later head failure
+    uint64_t native_head_vocab_calls = 0; // completed native vocabulary projections
     uint64_t completed_forward_calls = 0, completed_layer_calls = 0;
     uint64_t completed_ffn_pre_calls = 0, completed_provider_calls = 0, completed_ffn_post_calls = 0;
     uint64_t logical_tokens = 0, prompt_chunks = 0, prompt_chunk_tokens = 0;

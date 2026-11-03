@@ -55,6 +55,7 @@ struct PortableFinalHcResidual {
 struct PortableFfnOptions {
     // Global head only; serial materialized T1 mixer with borrowed residual.
     bool native_head_hc_t1 = false;
+    bool native_head_vocab_t1 = false; // native Q8_1 -> Q8_0 T1 output projection
     std::string native_head_hc_receipt_prefix;
     static constexpr size_t deferred_hc_host_bound = 1u << 20; // candidate/committed/caller tuple copies
     bool defer_hc_write = false; // ordinary native boundary; next attention owns materialization
