@@ -79,7 +79,13 @@ if(observe_ple_key&&actual_ple_key_output)for(int i=0;i<ggml_graph_n_nodes(g);++
   ggml_tensor* candidate=nullptr;size_t count=0;
   for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);
    if(t->op==GGML_OP_CPY&&t->src[0]&&t->src[0]->op==GGML_OP_MUL&&t->src[0]->src[0]&&t->src[0]->src[0]->op==GGML_OP_RMS_NORM&&ggml_nbytes(t)==40960){candidate=t;++count;}}
-  if(count==1){ple_conv_rewritten_node=candidate;ple_conv_previous_source=candidate->src[0];candidate->src[0]=ple_conv_simulated_stale;}
+  if(count==1){
+   std::vector<float> source(10240),destination(10240);
+   ggml_backend_tensor_get(candidate->src[0],source.data(),0,source.size()*4);
+   ggml_backend_tensor_get(candidate->src[1],destination.data(),0,destination.size()*4);
+   check(std::memcmp(source.data(),destination.data(),source.size()*4)==0,"simulated rewrite preceded a correct copy");
+   ple_conv_rewritten_node=candidate;ple_conv_previous_source=candidate->src[0];candidate->src[0]=ple_conv_simulated_stale;
+  }
  }
  // Simulate the scheduler replacing a cross-backend RMS input edge with its
  // backend copy after execution, as ggml_backend_sched_split_graph does.
