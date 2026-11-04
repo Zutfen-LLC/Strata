@@ -38,10 +38,22 @@ int main() {
     std::vector<uint16_t> weights(40960,0x3c00);
     const auto exact=PortableNativePleConv::estimate(backend.get());
     bool short_refused=false;
-    try{PortableNativePleConv short_owner(backend.get(),weights.data(),weights.size()*2,"",exact-1);}catch(...){short_refused=true;}
+    try{PortableNativePleConv short_owner(backend.get(),weights.data(),weights.size()*2,1,"",exact-1);}catch(...){short_refused=true;}
     assert(short_refused && component_creates==0);
-    PortableNativePleConv owner(backend.get(),weights.data(),weights.size()*2,"",exact);
+    PortableNativePleConv owner(backend.get(),weights.data(),weights.size()*2,1,"",exact);
     assert(component_creates==1 && owner.bytes()==exact);
+    std::vector<float> f32(40960);
+    f32[0]=1.0f;f32[1]=1.00048828125f;f32[2]=1.00146484375f;
+    f32[3]=0x1p-24f;f32[4]=0x1p-25f;f32[5]=-0.0f;f32[6]=65504.f;
+    const auto packed=PortableNativePleConv::native_weights(f32.data(),f32.size()*4,0);
+    assert(packed[0]==0x3c00 && packed[1]==0x3c00 && packed[2]==0x3c02 &&
+           packed[3]==0x0001 && packed[4]==0x0000 && packed[5]==0x8000 && packed[6]==0x7bff);
+    for(float invalid:{std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN(),65520.f}){
+        f32[0]=invalid;bool rejected=false;try{(void)PortableNativePleConv::native_weights(f32.data(),f32.size()*4,0);}catch(...){rejected=true;}assert(rejected);
+    }
+    weights[0]=0x7c00;bool invalid_half=false;
+    try{(void)PortableNativePleConv::native_weights(weights.data(),weights.size()*2,1);}catch(...){invalid_half=true;}
+    assert(invalid_half);weights[0]=0x3c00;
     auto ctx=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({16384,nullptr,true}),ggml_free);
     ggml_tensor* originals[4]; ggml_tensor* copies[4];
     for(size_t i=0;i<4;++i){originals[i]=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,i?10240:92160);copies[i]=ggml_cpy(ctx.get(),originals[i],owner.input(i));}

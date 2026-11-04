@@ -1,8 +1,10 @@
 #pragma once
 #include "strata_vk_native_ple_conv.hpp"
+#include "strata/kernels/f16_bits.hpp"
 #include "native_hc_layout.hpp"
 #include "ggml-alloc.h"
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -40,6 +42,23 @@ class PortableNativePleConv {
         need(type==ggml_backend_get_default_buffer_type(backend_)&&owner&&(dev?dev==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE conv: producer device");
     }
 public:
+    // Native pack kind F16InF32 narrows the original F32 role with this exact
+    // converter; raw F16 roles are copied. The packer refuses nonfinite and
+    // F16-overflowing values instead of silently changing them.
+    static std::vector<uint16_t> native_weights(const void* data,size_t bytes,uint32_t type){
+        need(data&&((type==0&&bytes==40960*4)||(type==1&&bytes==40960*2)),"PLE conv: expected F32 or F16 role");
+        const auto* p=static_cast<const uint8_t*>(data);
+        std::vector<uint16_t> out(40960);
+        for(size_t i=0;i<out.size();++i){
+            if(type==0){
+                float value;std::memcpy(&value,p+i*4,4);
+                need(std::isfinite(value),"PLE conv: nonfinite F32 weight");
+                out[i]=strata::kernels::f16_from_f32(value);
+            } else std::memcpy(&out[i],p+i*2,2);
+            need((out[i]&0x7c00u)!=0x7c00u,"PLE conv: nonfinite or overflowing F16 weight");
+        }
+        return out;
+    }
     static size_t estimate(ggml_backend_t backend){
         need(backend,"PLE conv: backend");
         auto c=context();std::array<ggml_tensor*,10> t{};leaves(c.get(),t);
@@ -50,10 +69,9 @@ public:
         need(bank<=SIZE_MAX-status,"PLE conv: budget overflow");
         return bank+status;
     }
-    PortableNativePleConv(ggml_backend_t backend,const void* weights,size_t weight_bytes,const char* module,size_t budget):backend_(backend),directory_(std::filesystem::path(module).parent_path()){
-        need(backend&&weights&&weight_bytes==81920,"PLE conv: native F16 role required");
-        const auto* p=static_cast<const uint8_t*>(weights);
-        for(size_t i=0;i<weight_bytes;i+=2){uint16_t h;std::memcpy(&h,p+i,2);need((h&0x7c00u)!=0x7c00u,"PLE conv: nonfinite weight");}
+    PortableNativePleConv(ggml_backend_t backend,const void* weights,size_t weight_bytes,uint32_t role_type,const char* module,size_t budget):backend_(backend),directory_(std::filesystem::path(module).parent_path()){
+        need(backend,"PLE conv: backend required");
+        const auto packed=native_weights(weights,weight_bytes,role_type);
         const auto admitted=estimate(backend);
         need(admitted<=budget,"PLE conv: allocation budget");
         ctx_=context();leaves(ctx_.get(),tensors_);
@@ -64,7 +82,7 @@ public:
         const auto actual=ggml_backend_buffer_get_size(buffer_.get()),extra=strata_vk_native_ple_conv_bytes(component_.get());
         need(actual<=budget&&extra<=budget-actual,"PLE conv: actual budget");bytes_=actual+extra;
         need(bytes_<=admitted,"PLE conv: allocation exceeds estimate");
-        ggml_backend_tensor_set(tensors_[2],weights,0,weight_bytes);
+        ggml_backend_tensor_set(tensors_[2],packed.data(),0,packed.size()*sizeof(uint16_t));
     }
     size_t bytes()const{return bytes_;}
     uint64_t calls()const{return calls_;}

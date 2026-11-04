@@ -1082,11 +1082,11 @@ struct PortableGdnLayer::Impl {
 #ifdef STRATA_PORTABLE_NATIVE_HC
         if(options.native_ple_conv_t1){
             auto role=std::find_if(aw.begin(),aw.end(),[&](const auto& v){return v.name==prefix+"ple_conv1d.weight";});
-            require(role!=aw.end() && role->type==1 && role->bytes==81920,"native PLE conv: F16 role required");
+            require(role!=aw.end() && ((role->type==1 && role->bytes==81920)||(role->type==0 && role->bytes==163840)),"native PLE conv: F32/F16 role required");
             require(graphs_size<options.execution.graph_budget,"native PLE conv: no graph room");
             require(std::filesystem::create_directory(options.native_ple_conv_receipt),"native PLE conv: fresh receipt required");
             auto path=(std::filesystem::path(options.native_ple_conv_receipt)/"effective.spv").string();
-            native_ple_conv=std::make_unique<portable_detail::PortableNativePleConv>(options.execution.accelerator,role->data,role->bytes,path.c_str(),options.execution.graph_budget-graphs_size);
+            native_ple_conv=std::make_unique<portable_detail::PortableNativePleConv>(options.execution.accelerator,role->data,role->bytes,role->type,path.c_str(),options.execution.graph_budget-graphs_size);
             graphs_size+=native_ple_conv->bytes();
             placement.push_back({"native-ple","NATIVE_CONV_T1_DIAGNOSTIC","normalized input; candidate history","F32/F16",ggml_backend_name(options.execution.accelerator),"",{4,RESIDUAL}});
         }

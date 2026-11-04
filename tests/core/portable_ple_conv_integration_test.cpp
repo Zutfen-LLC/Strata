@@ -15,7 +15,7 @@ int main(int argc,char** argv){try{
     }
     ple_fixture::Fixture fixture;std::vector<uint16_t> role(40960);
     for(size_t i=0;i<role.size();++i)role[i]=ggml_fp32_to_fp16(fixture.f32(5,i));
-    auto& view=fixture.views.back();view.type=1;view.data=role.data();view.bytes=role.size()*2;
+    // The real Q8_0 GGUF stores this role in F32; native packing narrows it.
     std::string error;auto table=ple_fixture::small_table(error);check(bool(table),error);
     auto root=std::filesystem::path(argv[1])/("ple-conv-integration-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     check(std::filesystem::create_directory(root),"fresh root");
@@ -38,6 +38,11 @@ int main(int argc,char** argv){try{
           std::filesystem::file_size(root/"candidate/first-candidate/weight.f16le")==81920 &&
           std::filesystem::file_size(root/"candidate/first-candidate/result.f32le")==10240*4,
           "actual convolution candidate receipt missing");
+    {
+        std::ifstream f(root/"candidate/first-candidate/weight.f16le",std::ios::binary);
+        std::vector<uint16_t> captured(role.size());f.read(reinterpret_cast<char*>(captured.data()),captured.size()*2);
+        check(bool(f)&&captured==role,"actual F32 role was not narrowed to the native F16 values");
+    }
     auto history=layer->ple_convolution_history();auto residual=layer->last_residual();
     for(size_t c=0;c<10240;++c){check(history[c*9+8]==trace.ple_normalized[c],"history append did not use actual normalized input");
         for(size_t j=0;j<8;++j)check(history[c*9+j]==0,"first history shift differs");}
