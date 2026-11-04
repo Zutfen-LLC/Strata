@@ -898,6 +898,7 @@ PortableModelWork PortableModelSession::model_work(bool state_digests) const {
         }if(l==3&&layer.qsa)work.native_hc_pending_layer3_calls+=layer.qsa->native_hc_pending_calls();if(!layer.gdn)continue;
         work.native_gdn_t1_calls[l]=layer.gdn->native_recurrence_calls();
         work.native_ple_key_calls[l]=layer.gdn->native_ple_key_calls();
+        work.native_ple_gate_calls[l]=layer.gdn->native_ple_gate_calls();
         for(unsigned i=0;i<6;++i)work.native_gdn_input_projection_calls[i][l]=layer.gdn->native_input_projection_calls(i);
         for(unsigned i=0;i<6;++i)work.native_gdn_output_projection_calls[i][l]=layer.gdn->native_output_projection_calls(i);
         work.native_gdn_conv_calls[l]=layer.gdn->native_convolution_calls();work.native_gdn_ab_calls[l]=layer.gdn->native_ab_calls();

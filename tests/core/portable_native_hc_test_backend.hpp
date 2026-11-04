@@ -2,6 +2,7 @@
 // Actual GDN graph/coordinator/owner with mocked device HC arithmetic. No GPU proof.
 #include "portable_gdn_fixture.hpp"
 #include "strata_vk_native_hc.hpp"
+#include "strata_vk_native_ple_gate.hpp"
 #include "native_hc_layout.hpp"
 #include "native_hc_pending.hpp"
 #include "strata_vk_native_shared.hpp"
@@ -29,6 +30,8 @@ bool observe_indexer_projection=false;int fail_indexer_projection=0;size_t index
 bool observe_gdn_input=false;int fail_gdn_input=0;size_t gdn_input_links=0;std::array<ggml_tensor*,2> actual_gdn_input_banks{};ggml_backend_t gdn_input_backend=nullptr;
 bool observe_gdn_output=false;size_t gdn_output_quant_links=0,gdn_output_pending_links=0;ggml_tensor* actual_gdn_gated=nullptr;ggml_tensor* actual_gdn_output_bank=nullptr;ggml_backend_t gdn_output_backend=nullptr;
 bool observe_head_consumer=false;size_t head_consumer_links=0;
+bool observe_ple_gate=false,fail_ple_gate=false;size_t ple_gate_links=0;
+ggml_tensor* actual_ple_gate_bank=nullptr;ggml_backend_t ple_gate_backend=nullptr;std::vector<float> actual_ple_gate_key,actual_ple_gate_query;
 bool observe_ple_key=false,fail_ple_key=false;size_t ple_key_links=0;
 const ggml_tensor* actual_ple_key_input=nullptr;ggml_tensor* actual_ple_key_output=nullptr;ggml_backend_t ple_key_backend=nullptr;
 std::vector<uint8_t> gdn_output_weight_snapshot;
@@ -58,6 +61,8 @@ std::vector<uint16_t> expected_weights;
 const ggml_tensor* bound_weight=nullptr;const ggml_tensor* live_normalized=nullptr;size_t direct_consumers=0;
 decltype(ggml_backend_i::graph_compute) original_compute=nullptr;
 ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){
+ if(observe_ple_gate&&actual_ple_gate_bank)for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL&&t->src[1]==actual_ple_gate_bank){auto*g=t->src[1];check(g->buffer&&ggml_is_contiguous(g)&&ggml_nbytes(g)==16&&ggml_backend_buffer_get_type(g->buffer)==ggml_backend_get_default_buffer_type(ple_gate_backend),"PLE gate broadcast ignored producer tensor/device");check(t->src[0]&&t->src[0]->src[0]&&t->src[0]->src[0]->src[0],"PLE value broadcast missing");++ple_gate_links;}}
+
  if(observe_ple_value && ple_value_bank) for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);for(auto* source:t->src){if(!source)continue;auto*root=source;while(root->view_src)root=root->view_src;if(root==ple_value_bank){check(ple_value_bank->buffer && ggml_is_contiguous(ple_value_bank) && ggml_nbytes(ple_value_bank)==2560*4 && ggml_backend_buffer_get_type(ple_value_bank->buffer)==ggml_backend_get_default_buffer_type(ple_value_backend),"PLE consumer did not use producer bank/device");++ple_value_links;}}}
 if(observe_ple_key&&actual_ple_key_output)for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_RMS_NORM&&t->src[0]){auto*root=t->src[0];while(root->view_src)root=root->view_src;if(root==actual_ple_key_output){check(root->buffer&&ggml_is_contiguous(root)&&ggml_nbytes(root)==10240*4,"PLE norm ignored actual key bank/span");auto type=ggml_backend_buffer_get_type(root->buffer);auto device=ggml_backend_buft_get_device(type);auto owner=ggml_backend_get_device(ple_key_backend);check(type==ggml_backend_get_default_buffer_type(ple_key_backend)&&owner&&(device?device==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE key consumer device differs");++ple_key_links;}}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(observe_head_consumer&&t->op==GGML_OP_MUL_MAT&&std::string(ggml_get_name(t))=="portable_logits"){check(t->src[1]==live_mixed&&live_mixed->buffer&&ggml_backend_buffer_get_type(live_mixed->buffer)==ggml_backend_get_default_buffer_type(b),"head vocabulary did not borrow actual mixed bank/device");++head_consumer_links;}if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.attn_qkv.weight"&&live_mixed){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"composed mixed backing ignored/reused");++mixed_consumers;}}if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ffn_gate_inp.weight"){
  auto* root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"FFN router ignored native mixed leaf");++ffn_mixed_consumers;}}
@@ -301,5 +306,22 @@ void strata_vk_native_shared_run(StrataVkNativeShared*p,uint32_t mode,const ggml
  const size_t role=no==128?0:1;if(fail_indexer_projection==int(role+1)){++p->uncertain;throw std::runtime_error("injected indexer projection failure");}
  auto in=get(x);std::vector<uint16_t>weights(size_t(no)*2560);ggml_backend_tensor_get(w,weights.data(),0,weights.size()*2);
  actual_indexer_projection_banks[role]=out;actual_indexer_projection[role]=qsa_indexer_bf16_control(in.data(),weights.data(),no);ggml_backend_tensor_set(out,actual_indexer_projection[role].data(),0,no*4);++p->submitted;++p->completed;
+}
+}
+
+namespace strata::core::portable_detail {
+struct StrataVkNativePleGate {ggml_backend_t backend;size_t bytes=0;uint64_t calls=0;};
+StrataVkNativePleGate* strata_vk_native_ple_gate_create(ggml_backend_t b,const char*path,size_t budget){check(b&&budget>=128,"PLE gate mock admission");ple_gate_backend=b;std::ofstream(path)<<"host mock only\n";auto*c=ggml_init({4096,nullptr,true});ggml_new_tensor_1d(c,GGML_TYPE_I32,1);auto size=ggml_backend_alloc_ctx_tensors_from_buft_size(c,ggml_backend_get_default_buffer_type(b));ggml_free(c);return new StrataVkNativePleGate{b,size};}
+void strata_vk_native_ple_gate_destroy(StrataVkNativePleGate*p)noexcept{delete p;}
+size_t strata_vk_native_ple_gate_bytes(const StrataVkNativePleGate*p){return p->bytes;}
+uint64_t strata_vk_native_ple_gate_calls(const StrataVkNativePleGate*p)noexcept{return p?p->calls:0;}
+uint32_t strata_vk_native_ple_gate_run(StrataVkNativePleGate*p,const ggml_tensor*k,const ggml_tensor*q,ggml_tensor*g,ggml_tensor*d){
+ check(observe_ple_gate&&k&&q&&k!=q&&k->buffer&&q->buffer&&ggml_is_contiguous(k)&&ggml_is_contiguous(q)&&ggml_nbytes(k)==40960&&ggml_nbytes(q)==40960,"PLE gate normalized banks/spans differ");
+ auto type=ggml_backend_get_default_buffer_type(p->backend);auto owner=ggml_backend_get_device(p->backend);for(auto*t:{k,q,static_cast<const ggml_tensor*>(g),static_cast<const ggml_tensor*>(d)}){auto bt=ggml_backend_buffer_get_type(t->buffer);auto dev=ggml_backend_buft_get_device(bt);check(bt==type&&owner&&(dev?dev==owner:(ggml_backend_buft_is_host(bt)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE gate tensor device differs");}
+ if(fail_ple_gate)return 1;auto key=get(k),query=get(q);actual_ple_gate_key=key;actual_ple_gate_query=query;std::array<float,4> values{};std::array<float,16> diag{};
+ for(int row=0;row<4;++row){float lanes[512]{};for(int lane=0;lane<512;++lane){float sum=0;for(int j=0;j<8;++j){int at=lane+j*512;volatile float product=at<2560?key[row*2560+at]*query[row*2560+at]:0.f;sum+=product;}lanes[lane]=sum;}
+ for(int off=16;off;off>>=1){float old[512];std::copy(lanes,lanes+512,old);for(int i=0;i<512;++i)lanes[i]=old[i]+old[i^off];}float x[32]{};for(int i=0;i<16;++i)x[i]=lanes[32*i];for(int off=16;off;off>>=1){float old[32];std::copy(x,x+32,old);for(int i=0;i<32;++i)x[i]=old[i]+old[i^off];}
+ float score=std::fma(1.f/std::sqrt(2560.f),x[0],0.f);float mag=std::sqrt(std::max(std::fabs(score),1e-6f));float sign=float((score>0.f)-(score<0.f));float ex=std::exp(-sign*mag);diag[4*row]=x[0];diag[4*row+1]=score;diag[4*row+2]=ex;diag[4*row+3]=1.f+ex;values[row]=1.f/(1.f+ex);}
+ ggml_backend_tensor_set(g,values.data(),0,16);ggml_backend_tensor_set(d,diag.data(),0,64);actual_ple_gate_bank=g;++p->calls;return 0;
 }
 }
