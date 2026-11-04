@@ -83,6 +83,7 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
 }
 inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,PortableGdnOptions& o) {
     o.native_ple_hc_read_t1=opts.native_ple_hc_read_t1&&layer==1;
+    if(o.native_ple_hc_read_t1)o.state_budget+=PortableGdnOptions::native_hc_read_host_bound;
     o.native_ple_norm_t1=opts.native_ple_norm_t1&&layer==1;
     if(o.native_ple_norm_t1){o.state_budget+=PortableGdnOptions::native_ple_norm_host_bound;o.native_ple_norm_receipt=opts.native_ple_norm_receipt_prefix+".layer-1";}
     o.native_ple_conv_t1=opts.native_ple_conv_t1&&layer==1;

@@ -144,11 +144,23 @@ int main(int argc,char** argv){try{
     check(norm_shared->step(20,fixture.input(1),ple_fixture::experts(),route,error),error);
     check(norm_shared->reset(error),error);check(norm_shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
     check(norm_shared->ple_convolution_history()==shared_norm_history,"shared norm reset differs");
+    const auto normalized_host_bytes=norm_shared->state_bytes();
     norm_shared.reset();options.scratch.reset();options.resident_state=false;
-    options.native_ple_hc_read_t1=true;options.native_hc_norm_inject=true;options.native_hc_mix=true;
-    options.native_hc_receipt_prefix=(root/"post-ple-hc").string();
-    options.state_budget+=PortableGdnOptions::native_hc_read_host_bound;
-    options.native_ple_conv_receipt=(root/"hc-conv").string();options.native_ple_gate_receipt=(root/"hc-gate").string();options.native_ple_norm_receipt=(root/"hc-norm").string();
+    PortableModelOptions hc_model;hc_model.native_ple_hc_read_t1=true;
+    hc_model.native_ple_norm_t1=hc_model.native_ple_conv_t1=hc_model.native_ple_gate_t1=true;
+    hc_model.native_ple_hc_receipt_prefix=(root/"post-ple-hc").string();
+    hc_model.native_ple_conv_receipt_prefix=(root/"hc-conv").string();hc_model.native_ple_gate_receipt_prefix=(root/"hc-gate").string();hc_model.native_ple_norm_receipt_prefix=(root/"hc-norm").string();
+    options.state_budget=normalized_host_bytes-PortableGdnOptions::native_ple_norm_host_bound-PortableGdnOptions::native_ple_conv_host_bound-PortableGdnOptions::native_ple_gate_host_bound;
+    model_gdn_hc_options(hc_model,1,options);
+    check(options.state_budget==normalized_host_bytes+PortableGdnOptions::native_hc_read_host_bound,"model-to-layer PLE HC allowance missing");
+    {auto disabled=hc_model;disabled.native_ple_hc_read_t1=false;
+     for(bool serial:{false,true}){hc_model.native_hc_serial=disabled.native_hc_serial=serial;
+      for(size_t l=0;l<48;++l){PortableGdnOptions on,off;model_gdn_hc_options(hc_model,l,on);model_gdn_hc_options(disabled,l,off);
+       const auto delta=l==1?PortableGdnOptions::native_hc_read_host_bound:0;
+       check(on.state_budget-off.state_budget==delta,"PLE HC layer allowance scope differs");
+       check(model_hc_host_bound(hc_model,l)-model_hc_host_bound(disabled,l)==delta,"global/layer PLE HC allowances disagree");}}}
+    {auto short_budget=options;--short_budget.state_budget;
+     check(!PortableGdnLayer::create(1,fixture.views,short_budget,error)&&error.find("host state budget exceeded")!=std::string::npos,"one-byte-short PLE HC host budget accepted");}
     for(const auto& v:fixture.views){
         if(v.name=="blk.1.hc_attn_inject.weight")expected_weights=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,40960);
         if(v.name=="blk.1.hc_attn_down.weight")expected_down=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);
