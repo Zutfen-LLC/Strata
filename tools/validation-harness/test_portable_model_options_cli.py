@@ -22,6 +22,15 @@ run(hc,False,'native HC layer0 requires')
 a=run(['--gdn-resident-weights'],True);b=run([*hc,'--gdn-resident-weights'],True)
 assert a['gdn_resident_weights'] and b['gdn_resident_weights'] and not a['dense_resident_weights'] and not b['dense_resident_weights']
 assert not a['native_hc_norm_inject_layer0'] and b['native_hc_norm_inject_layer0']
+ple_key=['--native-ple-key-t1','/absent/ple-key']
+assert not a.get('native_ple_key_t1',False)
+assert run(['--gdn-resident-weights',*ple_key],True)['native_ple_key_t1']
+both=run(['--gdn-resident-weights',*ple_key,'--native-ple-value-t1','/absent/ple-value'],True)
+assert both['native_ple_key_t1'] and both['native_ple_value_t1']
+run(ple_key,False,'native PLE key requires')
+for flags in [['--allow-cpu-fallback'],['--gdn-production','--gdn-resident-state'],['--prompt-chunk-size','2']]:
+ run(['--gdn-resident-weights',*ple_key,*flags],False)
+run(['--gdn-resident-weights','--native-ple-key-t1',''],False,'native PLE key requires')
 run([*hc,'--dense-resident-weights'],True) # valid syntax, deliberately no memory-fit claim
 for flags in [['--allow-cpu-fallback'],['--gdn-production','--gdn-resident-state'],['--prompt-chunk-size','2']]:run([*hc,'--gdn-resident-weights',*flags],False)
 run(['--native-hc-norm-inject-layer0','','--gdn-resident-weights'],False,'receipt prefix')
