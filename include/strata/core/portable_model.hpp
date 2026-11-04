@@ -134,6 +134,8 @@ struct PortableModelOptions {
     bool native_ple_value_t1=false;
     std::string native_ple_value_receipt_prefix;
     bool native_gdn_input_projection_t1=false;
+    bool native_ple_gate_t1=false; // default-off layer-1 PLE gate observation
+    std::string native_ple_gate_receipt_prefix;
     bool native_ple_key_t1=false; // opt-in Q8_0 layer-1 key projection
     std::string native_ple_key_receipt_prefix;
     std::string native_gdn_input_projection_receipt_prefix;
@@ -169,6 +171,7 @@ struct PortableExpertWork {
 struct PortableModelWork {
     std::array<std::array<uint64_t,48>,6> native_gdn_input_projection_calls{};
     std::array<uint64_t,48> native_ple_key_calls{};
+    std::array<uint64_t,48> native_ple_gate_calls{};
     std::array<std::array<uint64_t,48>,6> native_gdn_output_projection_calls{};
     std::array<uint64_t,48> native_qsa_indexer_projection_submitted{},native_qsa_indexer_projection_completed{},native_qsa_indexer_projection_uncertain{};
     std::array<uint64_t,48> native_qsa_qkv_quant_submitted{},native_qsa_qkv_quant_completed{},native_qsa_qkv_submitted{},native_qsa_qkv_completed{};
