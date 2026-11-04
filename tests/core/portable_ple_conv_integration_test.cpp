@@ -144,5 +144,32 @@ int main(int argc,char** argv){try{
     check(norm_shared->step(20,fixture.input(1),ple_fixture::experts(),route,error),error);
     check(norm_shared->reset(error),error);check(norm_shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
     check(norm_shared->ple_convolution_history()==shared_norm_history,"shared norm reset differs");
+    norm_shared.reset();options.scratch.reset();options.resident_state=false;
+    options.native_ple_hc_read_t1=true;options.native_hc_norm_inject=true;options.native_hc_mix=true;
+    options.native_hc_receipt_prefix=(root/"post-ple-hc").string();
+    options.state_budget+=PortableGdnOptions::native_hc_read_host_bound;
+    options.native_ple_conv_receipt=(root/"hc-conv").string();options.native_ple_gate_receipt=(root/"hc-gate").string();options.native_ple_norm_receipt=(root/"hc-norm").string();
+    for(const auto& v:fixture.views){
+        if(v.name=="blk.1.hc_attn_inject.weight")expected_weights=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,40960);
+        if(v.name=="blk.1.hc_attn_down.weight")expected_down=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);
+        if(v.name=="blk.1.hc_attn_up.weight")expected_up=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);
+    }
+    {auto bad=options;bad.native_hc_pending=true;check(!PortableGdnLayer::create(1,fixture.views,bad,error),"PLE HC pending write accepted");}
+    {auto bad=options;bad.execution.graph_budget=1;check(!PortableGdnLayer::create(1,fixture.views,bad,error),"PLE HC graph budget ignored");}
+    observe_ple_hc=true;actual_ple_conv_result=nullptr;
+    auto hc=PortableGdnLayer::create(1,fixture.views,options,error);check(bool(hc),error);check(hc->reset(error),error);
+    const auto pristine=hc->ple_convolution_history();fail_run=true;
+    check(!hc->step(19,fixture.input(0),ple_fixture::experts(),route,error),"HC refusal accepted");
+    check(hc->tokens()==0&&hc->ple_convolution_history()==pristine,"HC failure committed PLE history");fail_run=false;
+    check(hc->step(19,fixture.input(0),ple_fixture::experts(),route,error,&trace),error);
+    check(ple_hc_links>=2&&uploaded==trace.ple_residual&&trace.hc_residual==trace.ple_residual,"HC did not consume PLE result");
+    check(hc->native_hc_pending_calls()==0,"materialized PLE reapplied pending write");
+    const auto hc_history=hc->ple_convolution_history(),hc_residual=hc->last_residual();
+    check(!hc->step(20,fixture.input(1),refuse,route,error),"HC FFN refusal accepted");
+    check(hc->tokens()==1&&hc->ple_convolution_history()==hc_history,"HC FFN failure committed history");
+    check(hc->step(20,fixture.input(1),ple_fixture::experts(),route,error),error);
+    check(hc->reset(error),error);check(hc->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
+    check(hc->ple_convolution_history()==hc_history&&hc->last_residual()==hc_residual,"HC reset differs");
+    observe_ple_hc=false;
     std::puts("PLE conv producer, candidate history, refusal, retry and reset passed with host provider");return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

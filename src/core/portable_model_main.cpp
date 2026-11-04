@@ -232,6 +232,7 @@ int main(int argc, char **argv) {
             else if(key=="--native-gdn-input-projection-t1") {opts.native_gdn_input_projection_t1=true;opts.native_gdn_input_projection_receipt_prefix=value;}
             else if(key=="--native-gdn-output-projection-t1") {opts.native_gdn_output_projection_t1=true;opts.native_gdn_output_projection_receipt_prefix=value;}
             else if(key=="--native-ple-gate-t1") {opts.native_ple_gate_t1=true;opts.native_ple_gate_receipt_prefix=value;}
+            else if(key=="--native-ple-hc-read-t1") {opts.native_ple_hc_read_t1=true;opts.native_hc_receipt_prefix=value;}
             else if(key=="--native-ple-norm-t1") {opts.native_ple_norm_t1=true;opts.native_ple_norm_receipt_prefix=value;}
             else if(key=="--native-ple-key-t1") {opts.native_ple_key_t1=true;opts.native_ple_key_receipt_prefix=value;}
             else if(key=="--native-ple-conv-t1") {opts.native_ple_conv_t1=true;opts.native_ple_conv_receipt_prefix=value;}
@@ -540,6 +541,7 @@ int main(int argc, char **argv) {
         if(opts.native_hc_pending_layer1_2)std::cerr<<"native_hc_pending_layer1_2=true qualified=false full_hc_parity=false layer0_ple_materialization=unchanged\n";
         if(opts.native_hc_ffn_write_layer0)std::cerr<<"native_hc_ffn_write_layer0=true qualified=false full_hc_parity=false materialized_before_next_layer_ple=true\n";
         if(opts.native_hc_ffn_read_layer0)std::cerr<<"native_hc_ffn_read_layer0=true full_hc_parity=false qualified=false pending_contract=native-hc-pending-t1-v1\n";
+        if(opts.native_ple_hc_read_t1)std::cerr<<"native_ple_hc_read_t1=true boundary=materialized-ple apply=false qualified=false\n";
         if(opts.native_hc_mix_layer0)std::cerr<<"native_hc_read_layer0=true full_hc_parity=false qualified=false mixing_contract=native-hc-mix-normal-v2\n";
         if(opts.native_hc_norm_inject_layer0)std::cerr<<"native_hc_norm_inject_layer0=true full_hc_parity=false qualified=false numerical_contract=native-hc-normal-v1\n";
         if(opts.native_shared)std::cerr<<"native_shared_method=true numerical_parity=false qualified=false fp32_denorm_mode=unspecified\n";

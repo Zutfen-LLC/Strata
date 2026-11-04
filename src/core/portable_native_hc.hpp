@@ -136,7 +136,7 @@ public:
     // diagnostic readback, not a weight extraction or numerical fallback.
     void record_first(ggml_tensor* producer_block=nullptr) {
         if(first_recorded_ || calls_==0 || (mix_&&mix_calls_==0))return;
-        for(auto pair:{std::pair{"input.f32le",residual},std::pair{"normalized.f32le",normalized},
+        for(auto pair:{std::pair{"input.f32le",materialized_source_?materialized_source_:residual},std::pair{"normalized.f32le",normalized},
                        std::pair{"rs.f32le",rs},std::pair{"inject.f32le",inject}}) {
             std::vector<float> values(size_t(ggml_nelements(pair.second)));
             ggml_backend_tensor_get(pair.second,values.data(),0,values.size()*sizeof(float));
@@ -205,10 +205,12 @@ private:
         const bool written=std::fprintf(f,"{\"schema\":1,\"role\":\"%s\",\"owner\":\"%s\",\"layer\":%u,\"position\":%s,\"norm_call\":%llu,\"mix_successes\":%llu,\"status\":%u,\"stage_status\":[%u,%u,%u],\"all_dispatches_completed\":true,\"accepted\":false,\"payload_bytes\":177920}\n",role.c_str(),owner.c_str(),layer,position.c_str(),(unsigned long long)calls_,(unsigned long long)mix_calls_,status,status&255u,(status>>8)&255u,(status>>16)&255u)>0;
         const bool closed=std::fclose(f)==0;native_hc_need(written&&closed,"native HC: refusal metadata write failed");
     }
-    void read(){
+    ggml_tensor* materialized_source_=nullptr;
+    void read(ggml_tensor* producer=nullptr){
+        auto* source=producer?producer:residual;
         native_hc_need(calls_!=UINT64_MAX&&mix_calls_!=UINT64_MAX,"native HC serial: call counter exhausted");
-        try{strata_vk_native_hc_run(component_.get(),residual,norm_,weight_,normalized,rs,inject,1);}
-        catch(...){record_input_refusal("norm",{{"input",residual}});throw;}
+        try{strata_vk_native_hc_run(component_.get(),source,norm_,weight_,normalized,rs,inject,1);}
+        catch(...){record_input_refusal("norm",{{"input",source}});throw;}
         ++calls_;
         if(mix_){
             try {strata_vk_native_hc_mix_run(mix_.get(),normalized,down_,up_,low_pre,low,low_exp,up_pre,gates,up_exp,mixed);}
@@ -221,7 +223,18 @@ private:
         }
     }
 public:
+    ggml_tensor* read_source()const{return materialized_source_?materialized_source_:residual;}
     void run(){native_hc_need(!pending_,"native HC pending: explicit tuple upload required");read();}
+    // Materialized PLE output is already the residual: no pending write applies.
+    void run_materialized(ggml_tensor* producer){
+        native_hc_need(!pending_ && producer,"native HC materialized: producer required and pending write forbidden");
+        native_hc_need(producer->type==GGML_TYPE_F32 && ggml_is_contiguous(producer) &&
+                       ggml_nelements(producer)==10240 && producer->buffer &&
+                       ggml_backend_buffer_get_type(producer->buffer)==ggml_backend_buffer_get_type(residual->buffer),
+                       "native HC materialized: producer span/device differs");
+        read(producer);
+        materialized_source_=producer;
+    }
     void run_pending(ggml_tensor* producer_block=nullptr){
         native_hc_need(pending_&&pending_calls_!=UINT64_MAX&&calls_!=UINT64_MAX&&mix_calls_!=UINT64_MAX,"native HC pending: owner/counter required");
         auto* block=producer_block?producer_block:previous_output;

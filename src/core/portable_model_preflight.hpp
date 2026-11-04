@@ -41,6 +41,7 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         if(opts.native_ple_key_t1&&layer==1)b+=PortableGdnOptions::native_ple_key_host_bound;
         if(opts.native_ple_conv_t1&&layer==1)b+=PortableGdnOptions::native_ple_conv_host_bound;
         if(opts.native_ple_gate_t1&&layer==1)b+=PortableGdnOptions::native_ple_gate_host_bound;
+        if(opts.native_ple_hc_read_t1&&layer==1)b+=PortableGdnOptions::native_hc_read_host_bound;
         if(opts.native_ple_norm_t1&&layer==1)b+=PortableGdnOptions::native_ple_norm_host_bound;
         if(opts.qsa_norm_rope_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_norm_rope_host_bound;
         if(opts.qsa_indexer_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_indexer_host_bound;
@@ -76,10 +77,12 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
     if(opts.native_ple_key_t1&&layer==1)bound+=PortableGdnOptions::native_ple_key_host_bound;
     if(opts.native_ple_conv_t1&&layer==1)bound+=PortableGdnOptions::native_ple_conv_host_bound;
     if(opts.native_ple_gate_t1&&layer==1)bound+=PortableGdnOptions::native_ple_gate_host_bound;
+    if(opts.native_ple_hc_read_t1&&layer==1)bound+=PortableGdnOptions::native_hc_read_host_bound;
     if(opts.native_ple_norm_t1&&layer==1)bound+=PortableGdnOptions::native_ple_norm_host_bound;
     return bound;
 }
 inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,PortableGdnOptions& o) {
+    o.native_ple_hc_read_t1=opts.native_ple_hc_read_t1&&layer==1;
     o.native_ple_norm_t1=opts.native_ple_norm_t1&&layer==1;
     if(o.native_ple_norm_t1){o.state_budget+=PortableGdnOptions::native_ple_norm_host_bound;o.native_ple_norm_receipt=opts.native_ple_norm_receipt_prefix+".layer-1";}
     o.native_ple_conv_t1=opts.native_ple_conv_t1&&layer==1;
@@ -102,6 +105,7 @@ inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,P
     if(o.native_recurrence_t1){o.state_budget+=PortableGdnOptions::native_recurrence_host_bound;o.native_recurrence_receipt=opts.native_gdn_receipt_prefix+".layer-"+std::to_string(layer)+"/effective.spv";o.native_recurrence_record_first=layer==0;}
     o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && layer==0;
     o.native_hc_mix=opts.native_hc_mix_layer0 && layer==0;
+    if(o.native_ple_hc_read_t1){o.native_hc_norm_inject=o.native_hc_mix=true;o.native_hc_receipt_prefix=opts.native_hc_receipt_prefix+".ple-layer-1";}
     o.native_hc_ffn_read=opts.native_hc_ffn_read_layer0 && layer==0;
     o.native_hc_ffn_write=opts.native_hc_ffn_write_layer0 && layer==0;
     if(o.native_hc_norm_inject)o.native_hc_receipt_prefix=opts.native_hc_receipt_prefix;
@@ -245,6 +249,7 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
     require(!opts.native_gdn_input_projection_t1||(opts.native_gdn_preparation_t1&&opts.native_hc_serial&&opts.native_hc_mix_layer0&&!opts.native_gdn_input_projection_receipt_prefix.empty()),"native GDN input projections require ordinary HC, layer0 HC mix, native preparation and receipt");
     require(!opts.native_gdn_output_projection_t1||(opts.native_gdn_preparation_t1&&opts.native_hc_serial&&opts.native_hc_ffn_read_layer0&&opts.dense_resident_weights&&!opts.native_gdn_output_projection_receipt_prefix.empty()),"native GDN output projection requires native preparation, HC FFN reads, resident weights and receipt");
     require(!opts.native_ple_gate_t1 || (!opts.prompt_chunk_size && !opts.gdn_production && !opts.gdn_batch_input_projections && !opts.gdn_causal_chunk && selected_accelerators && !opts.allow_cpu_fallback && (opts.gdn_resident_weights || opts.dense_resident_weights) && !opts.native_ple_gate_receipt_prefix.empty()), "native PLE gate requires serial eager strict accelerator, resident GDN weights and receipt");
+    require(!opts.native_ple_hc_read_t1 || (opts.native_ple_norm_t1 && opts.native_hc_serial && opts.native_hc_ffn_write_layer0 && !opts.native_hc_receipt_prefix.empty()), "native PLE HC read requires native PLE normalization/convolution and receipt");
     require(!opts.native_ple_norm_t1 || (opts.native_ple_gate_t1 && opts.native_ple_conv_t1 && !opts.native_ple_norm_receipt_prefix.empty()), "native PLE norm requires native gate, convolution and receipt");
     if(opts.native_ple_gate_t1)require(PortableGdnLayer::native_hc_compiled(),"native PLE gate: native stage build required");
     require(!opts.native_ple_key_t1 || (!opts.prompt_chunk_size && !opts.gdn_production && !opts.gdn_batch_input_projections && !opts.gdn_causal_chunk && selected_accelerators && !opts.allow_cpu_fallback && (opts.gdn_resident_weights || opts.dense_resident_weights) && !opts.native_ple_key_receipt_prefix.empty()), "native PLE key requires serial eager strict accelerator, resident GDN weights and receipt");

@@ -45,6 +45,7 @@ struct PortableGdnOptions {
     std::string native_output_projection_receipt;
     bool native_ple_gate_t1=false; // default-off layer-1 PLE gate observation
     std::string native_ple_gate_receipt;
+    bool native_ple_hc_read_t1=false; // materialized PLE residual, apply=false
     bool native_ple_norm_t1=false; // bounded native-order observation, not bitwise CUDA parity
     std::string native_ple_norm_receipt;
     bool native_ple_key_t1=false; // layer-1 Q8_0 key projection, diagnostic and default off

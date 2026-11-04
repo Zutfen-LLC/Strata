@@ -465,7 +465,7 @@ struct PortableGdnLayer::Impl {
             {
                 write(s.input, residual);
 #ifdef STRATA_PORTABLE_NATIVE_HC
-                if(s.native_hc) {require(!projected,"native HC serial: projected execution unsupported");s.native_hc->diagnostic_position(s.count);s.native_hc->run();}
+                if(s.native_hc && !s.options.native_ple_hc_read_t1) {require(!projected,"native HC serial: projected execution unsupported");s.native_hc->diagnostic_position(s.count);s.native_hc->run();}
 #endif
             }
             if (!s.state_buffer) {
@@ -491,7 +491,7 @@ struct PortableGdnLayer::Impl {
                     timing.attention_compute_ms, timing.attention_compute_calls);
 #ifdef STRATA_PORTABLE_NATIVE_HC
                 if(s.native_ple_conv) {
-                    require(!s.native_hc,"native PLE conv: hidden residual owner differs");
+                    require(!s.native_hc || s.options.native_ple_hc_read_t1,"native PLE conv: hidden residual owner differs");
                     auto* prefix=s.native_ple_gate?s.tail_scheduler.get():s.projection_scheduler.get();
                     require(ggml_backend_sched_graph_compute(prefix,s.ple_prefix_graph)==GGML_STATUS_SUCCESS,"native PLE conv: prefix graph failed");
                     if(s.native_ple_norm){
@@ -502,6 +502,7 @@ struct PortableGdnLayer::Impl {
                         require(ggml_backend_sched_graph_compute(prefix,s.ple_prefix_graph)==GGML_STATUS_SUCCESS,"native PLE conv: normalized prefix graph failed");
                     }
                     s.native_ple_conv->run(s.ple_conv_copies.data(),s.ple_conv_sources.data(),residual);
+                    if(s.options.native_ple_hc_read_t1){s.native_hc->diagnostic_position(s.count);s.native_hc->run_materialized(s.native_ple_conv->result());}
                 }
                 if(s.native_gdn) {
                     portable_detail::PortableNativeGdnInput::Candidate candidate;
@@ -529,7 +530,7 @@ struct PortableGdnLayer::Impl {
                     next_trace.hc_previous_output=read(s.native_hc->previous_output);next_trace.hc_previous_inject=read(s.native_hc->previous_inject);
                     next_trace.hc_pending_gate=read(s.native_hc->pending_gate);next_trace.hc_pending_exp=read(s.native_hc->pending_exp);
                 }
-                next_trace.hc_residual=read(s.native_hc->residual);
+                next_trace.hc_residual=read(s.native_hc->read_source());
                 next_trace.hc_normalized=read(s.native_hc->normalized);
                 next_trace.hc_rs=read(s.native_hc->rs);
                 next_trace.hc_inject=read(s.native_hc->inject);
@@ -666,7 +667,7 @@ struct PortableGdnLayer::Impl {
         auto *c = ctx.get();
         input = ggml_new_tensor_3d(c, GGML_TYPE_F32, H, HC, 1);
 #ifdef STRATA_PORTABLE_NATIVE_HC
-        if(native_hc)input=native_hc->residual;
+        if(native_hc && !options.native_ple_hc_read_t1)input=native_hc->residual;
 #endif
         const bool keep_state = options.resident_state && options.execution.request_accelerator &&
                                 options.execution.accelerator;
@@ -963,10 +964,10 @@ struct PortableGdnLayer::Impl {
         require(!options.native_preparation_t1 || (options.native_preparation_weights&&!options.native_preparation_receipt.empty()),"native GDN preparation: explicit matched BF16 residency and receipt required");
         require(!options.native_input_projection_t1 || (layer!=1 && options.native_hc_mix && options.native_preparation_t1 && options.native_recurrence_t1 && !options.native_input_projection_receipt.empty()),"native GDN input projection: ordinary native HC, preparation, recurrence and receipt required");
         require(!options.native_output_projection_t1 || (layer!=1 && options.native_hc_ffn_read && options.native_preparation_t1 && options.native_recurrence_t1 && !options.native_output_projection_receipt.empty()),"native GDN output projection: ordinary native recurrence, FFN read and receipt required");
-        require(!options.native_ple_gate_t1 || (layer==1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && !options.native_recurrence_t1 && !options.native_hc_norm_inject && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_gate_receipt.empty()), "native PLE gate: layer 1 serial eager strict accelerator, resident weights and receipt required");
+        require(!options.native_ple_gate_t1 || (layer==1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && !options.native_recurrence_t1 && (!options.native_hc_norm_inject || options.native_ple_hc_read_t1) && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_gate_receipt.empty()), "native PLE gate: layer 1 serial eager strict accelerator, resident weights and receipt required");
         require(!options.native_ple_norm_t1 || (options.native_ple_gate_t1 && options.native_ple_conv_t1 && !options.native_ple_norm_receipt.empty()), "native PLE norm: native gate, convolution and receipt required");
         require(!options.native_ple_key_t1 || (layer == 1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_key_receipt.empty()), "native PLE key: layer 1 serial eager strict accelerator, resident role and receipt required");
-        require(!options.native_ple_conv_t1 || (layer == 1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && !options.native_hc_norm_inject && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_conv_receipt.empty()), "native PLE conv: layer 1 serial eager strict accelerator, resident role and receipt required");
+        require(!options.native_ple_conv_t1 || (layer == 1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && (!options.native_hc_norm_inject || options.native_ple_hc_read_t1) && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_conv_receipt.empty()), "native PLE conv: layer 1 serial eager strict accelerator, resident role and receipt required");
 #ifndef STRATA_PORTABLE_NATIVE_HC
         require(!options.native_ple_key_t1, "native PLE key: native stage build required");
         require(!options.native_ple_conv_t1, "native PLE conv: native stage build required");
@@ -989,9 +990,10 @@ struct PortableGdnLayer::Impl {
                 "native GDN-to-FFN: composed attention/resident dense required; legacy observer unsupported");
         require(!options.native_hc_pending||options.native_hc_mix,"native HC pending: composed read required");
         require(!options.native_hc_pending||!options.execution.layer0_observer,"native HC pending: legacy observer lacks pending tuple schema; use bounded layer trace");
+        require(!options.native_ple_hc_read_t1 || (layer==1 && options.ple_table && options.native_ple_norm_t1 && options.native_ple_conv_t1 && options.native_hc_mix && options.native_hc_norm_inject && !options.native_hc_pending), "native PLE HC: materialized native PLE result and apply=false required");
         require(!options.native_hc_mix||options.native_hc_norm_inject,"native HC read: norm/injection required");
         if(options.native_hc_norm_inject) {
-            require((layer==0 || !options.native_hc_pending || portable_detail::native_hc_boundary(int(layer)).pending_attention) && !options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk,
+            require((layer==0 || !options.native_hc_pending || portable_detail::native_hc_boundary(int(layer)).pending_attention) && (!options.ple_table || options.native_ple_hc_read_t1) && !production() && !options.batch_input_projections && !options.causal_chunk,
                     "native HC serial: eager native boundary only; PLE unsupported");
             require(options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback &&
                     (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_hc_receipt_prefix.empty(),
