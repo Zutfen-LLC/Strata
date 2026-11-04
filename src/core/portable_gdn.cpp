@@ -1134,7 +1134,8 @@ struct PortableGdnLayer::Impl {
         }
         if(options.native_ple_gate_t1) {
             require(graphs_size<options.execution.graph_budget,"native PLE gate: no graph room");
-            native_ple_gate=std::make_unique<portable_detail::PortableNativePleGate>(options.execution.accelerator,options.native_ple_gate_receipt,options.execution.graph_budget-graphs_size);
+            const auto borrowed=native_ple_norm?ggml_backend_buffer_get_size(native_ple_norm->output(0)->buffer):0;
+            native_ple_gate=std::make_unique<portable_detail::PortableNativePleGate>(options.execution.accelerator,options.native_ple_gate_receipt,options.execution.graph_budget-graphs_size,borrowed);
             graphs_size+=native_ple_gate->bytes();
             placement.push_back({"native-ple","NATIVE_PLE_GATE_T1_DIAGNOSTIC","device normalized PLE key/query; actual value broadcast","F32",ggml_backend_name(options.execution.accelerator),"",{H,HC}});
         }

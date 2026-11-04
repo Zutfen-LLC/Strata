@@ -22,7 +22,7 @@ class PortableNativePleGate {
     ggml_tensor *key_ = nullptr, *query_ = nullptr, *gate_ = nullptr, *diagnostic_ = nullptr;
     ggml_backend_t backend_ = nullptr;
     std::filesystem::path directory_;
-    size_t bytes_ = 0;
+    size_t bytes_ = 0, borrowed_buffer_ = 0;
     bool candidate_ = false, recorded_ = false;
     const ggml_tensor *key_copy_ = nullptr, *query_copy_ = nullptr, *raw_key_ = nullptr, *residual_ = nullptr;
     const ggml_tensor *direct_key_ = nullptr, *direct_query_ = nullptr;
@@ -87,13 +87,14 @@ class PortableNativePleGate {
         need(bank <= SIZE_MAX - status, "PLE gate: budget overflow");
         return bank + status;
     }
-    PortableNativePleGate(ggml_backend_t backend, const std::string& directory, size_t budget)
-        : backend_(backend), directory_(directory) {
+    PortableNativePleGate(ggml_backend_t backend, const std::string& directory, size_t budget, size_t borrowed_buffer = 0)
+        : backend_(backend), directory_(directory), borrowed_buffer_(borrowed_buffer) {
         need(backend && !directory.empty() && estimate(backend) <= budget && std::filesystem::create_directory(directory),
              "PLE gate: backend, budget or fresh receipt");
+        need(borrowed_buffer <= SIZE_MAX - budget, "PLE gate: borrowed buffer budget overflow");
         ctx_ = context();
         leaves(ctx_.get(), key_, query_, gate_, diagnostic_);
-        component_.reset(strata_vk_native_ple_gate_create(backend, (directory_ / "effective.spv").c_str(), budget));
+        component_.reset(strata_vk_native_ple_gate_create(backend, (directory_ / "effective.spv").c_str(), budget + borrowed_buffer));
         need(bool(component_), "PLE gate: component");
         buffer_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(), backend));
         need(bool(buffer_), "PLE gate: bank allocation");
@@ -118,7 +119,9 @@ class PortableNativePleGate {
     }
     void begin() { candidate_ = false; }
     void bind_direct(ggml_tensor* key, ggml_tensor* query) {
-        need(key && query && key != query, "PLE gate: missing direct normalized producers");
+        need(key && query && key != query && key->buffer && key->buffer == query->buffer &&
+             ggml_backend_buffer_get_size(key->buffer) <= borrowed_buffer_,
+             "PLE gate: missing or unaccounted direct normalized producers");
         direct_key_ = key; direct_query_ = query;
     }
     void run_direct(ggml_tensor* key, ggml_tensor* query) {
