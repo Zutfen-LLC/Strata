@@ -65,10 +65,13 @@ int main(int argc,char** argv){try{
     check(combined->step(20,fixture.input(1),ple_fixture::experts(),route,error),error);
     combined.reset();actual_ple_conv_result=nullptr;
     options.native_ple_conv_receipt=(root/"shared-conv").string();options.native_ple_gate_receipt=(root/"shared-gate").string();
+    options.resident_state=true;
     options.scratch=PortableGdnScratch::create(options.execution,error);check(bool(options.scratch),error);
     auto shared=PortableGdnLayer::create(1,fixture.views,options,error);check(bool(shared),error);
     check(shared->reset(error),error);check(shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
     auto shared_history=shared->ple_convolution_history(),shared_residual=shared->last_residual();
+    check(!shared->step(20,fixture.input(1),refuse,route,error),"resident FFN refusal accepted");
+    check(shared->tokens()==1&&shared->ple_convolution_history()==shared_history,"resident failure committed candidate history");
     check(shared->step(20,fixture.input(1),ple_fixture::experts(),route,error),error);
     check(shared->reset(error),error);check(shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
     check(shared->ple_convolution_history()==shared_history&&shared->last_residual()==shared_residual,"shared scheduler rebind/reset differs");
