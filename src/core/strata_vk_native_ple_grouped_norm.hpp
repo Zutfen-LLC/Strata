@@ -6,6 +6,9 @@ namespace strata::core::portable_detail {
 struct StrataVkNativePleGroupedNorm;
 // Standalone bounded observation. It neither advances PLE history nor commits a token.
 StrataVkNativePleGroupedNorm* strata_vk_native_ple_grouped_norm_create(ggml_backend_t,const char* effective_spv,size_t budget);
+// Separate arithmetic observation; production/model callers retain the original variant.
+// Its diagnostic span is F32[4,5]: sum, reciprocal, fused shift, scale, mean.
+StrataVkNativePleGroupedNorm* strata_vk_native_ple_grouped_norm_rcp_fma_observation_create(ggml_backend_t,const char* effective_spv,size_t budget);
 void strata_vk_native_ple_grouped_norm_destroy(StrataVkNativePleGroupedNorm*) noexcept;
 size_t strata_vk_native_ple_grouped_norm_bytes(const StrataVkNativePleGroupedNorm*);
 uint64_t strata_vk_native_ple_grouped_norm_calls(const StrataVkNativePleGroupedNorm*) noexcept;

@@ -12,6 +12,19 @@ function(strata_native_hc_enable out)
   add_executable(native_ple_grouped_norm_component tests/kernels/native_ple_grouped_norm_component.cpp)
   target_include_directories(native_ple_grouped_norm_component PRIVATE src/core)
   target_link_libraries(native_ple_grouped_norm_component PRIVATE ggml-vulkan ggml-base)
+  add_custom_command(OUTPUT "${out}/strata_native_ple_grouped_norm_rcp_fma_t1_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_ple_grouped_norm_rcp_fma_t1.comp" -o "${out}/native_ple_grouped_norm_rcp_fma_t1.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_ple_grouped_norm_rcp_fma_t1.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_ple_grouped_norm_rcp_fma_t1.spv" "-DOUTPUT=${out}/strata_native_ple_grouped_norm_rcp_fma_t1_spv.hpp"
+      -DARRAY_NAME=strata_native_ple_grouped_norm_rcp_fma_t1_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_ple_grouped_norm_rcp_fma_t1.comp cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_ple_grouped_norm_rcp_fma_t1_shader DEPENDS "${out}/strata_native_ple_grouped_norm_rcp_fma_t1_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_ple_grouped_norm_rcp_fma_t1_shader)
+  add_executable(native_ple_grouped_norm_rcp_fma_component tests/kernels/native_ple_grouped_norm_component.cpp)
+  target_compile_definitions(native_ple_grouped_norm_rcp_fma_component PRIVATE STRATA_PLE_NORM_RCP_FMA_OBSERVATION=1)
+  target_include_directories(native_ple_grouped_norm_rcp_fma_component PRIVATE src/core)
+  target_link_libraries(native_ple_grouped_norm_rcp_fma_component PRIVATE ggml-vulkan ggml-base)
   add_custom_command(OUTPUT "${out}/strata_native_ple_gate_t1_spv.hpp"
     COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
       "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_ple_gate_t1.comp" -o "${out}/native_ple_gate_t1.spv"
@@ -229,13 +242,21 @@ function(strata_native_hc_enable out)
     add_executable(native_ple_grouped_norm_dispatch_test tests/kernels/native_ple_grouped_norm_dispatch_test.cpp)
     target_include_directories(native_ple_grouped_norm_dispatch_test PRIVATE src/core "${out}" "${vk_source}/..")
     target_link_libraries(native_ple_grouped_norm_dispatch_test PRIVATE ggml-base)
-    add_dependencies(native_ple_grouped_norm_dispatch_test strata_native_ple_grouped_norm_t1_shader)
+    add_dependencies(native_ple_grouped_norm_dispatch_test strata_native_ple_grouped_norm_t1_shader strata_native_ple_grouped_norm_rcp_fma_t1_shader)
     add_test(NAME native_ple_grouped_norm_dispatch_test COMMAND native_ple_grouped_norm_dispatch_test)
     add_executable(native_ple_grouped_norm_effective_shader_test tests/kernels/native_ple_grouped_norm_effective_shader_test.cpp)
     target_include_directories(native_ple_grouped_norm_effective_shader_test PRIVATE src/core "${out}")
     target_link_libraries(native_ple_grouped_norm_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan)
     add_dependencies(native_ple_grouped_norm_effective_shader_test strata_native_ple_grouped_norm_t1_shader)
     add_test(NAME native_ple_grouped_norm_effective_shader_test COMMAND native_ple_grouped_norm_effective_shader_test)
+    add_executable(native_ple_grouped_norm_rcp_fma_shader_test tests/kernels/native_ple_grouped_norm_effective_shader_test.cpp)
+    target_compile_definitions(native_ple_grouped_norm_rcp_fma_shader_test PRIVATE STRATA_PLE_NORM_RCP_FMA_OBSERVATION=1)
+    target_include_directories(native_ple_grouped_norm_rcp_fma_shader_test PRIVATE src/core "${out}")
+    target_link_libraries(native_ple_grouped_norm_rcp_fma_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan)
+    add_dependencies(native_ple_grouped_norm_rcp_fma_shader_test strata_native_ple_grouped_norm_rcp_fma_t1_shader)
+    add_test(NAME native_ple_grouped_norm_rcp_fma_shader_test COMMAND native_ple_grouped_norm_rcp_fma_shader_test)
+    add_test(NAME native_ple_grouped_norm_rcp_fma_numeric_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_ple_norm_rcp_fma_numeric.py")
+    add_test(NAME native_ple_grouped_norm_rcp_fma_startup_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_ple_grouped_norm_startup.py" "$<TARGET_FILE:native_ple_grouped_norm_rcp_fma_component>" "${CMAKE_CURRENT_BINARY_DIR}" 80)
     add_test(NAME native_ple_grouped_norm_startup_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_ple_grouped_norm_startup.py" "$<TARGET_FILE:native_ple_grouped_norm_component>" "${CMAKE_CURRENT_BINARY_DIR}")
     add_executable(native_ple_gate_reference_test tests/kernels/native_ple_gate_reference_test.cpp)
     if(MSVC)

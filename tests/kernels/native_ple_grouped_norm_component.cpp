@@ -13,6 +13,12 @@
 #include <string>
 #include <vector>
 using namespace strata::core::portable_detail;
+#ifdef STRATA_PLE_NORM_RCP_FMA_OBSERVATION
+#define strata_vk_native_ple_grouped_norm_create strata_vk_native_ple_grouped_norm_rcp_fma_observation_create
+constexpr size_t diagnostic_words=20;
+#else
+constexpr size_t diagnostic_words=12;
+#endif
 namespace {
 std::vector<uint32_t> read(const std::filesystem::path& p){
     native_hc_need(!std::filesystem::is_symlink(p),"PLE grouped norm: symlink fixture");
@@ -26,7 +32,7 @@ int main(int argc,char**argv){try{
     const uint16_t endian=1;native_hc_need(*reinterpret_cast<const uint8_t*>(&endian)==1,"PLE grouped norm: little-endian host required");
     if(argc==4&&std::string(argv[1])=="--contract"){
         read(std::filesystem::path(argv[2])/"input.f32le");read(std::filesystem::path(argv[2])/"gamma.f32le");
-        const char result[]="{\"input_bytes\":40960,\"gamma_bytes\":40960,\"output_bytes\":40960,\"diagnostic_bytes\":48,\"qualified\":false}\n";save(argv[3],result,sizeof(result)-1);return 0;
+        const std::string result="{\"input_bytes\":40960,\"gamma_bytes\":40960,\"output_bytes\":40960,\"diagnostic_bytes\":"+std::to_string(diagnostic_words*4)+",\"qualified\":false}\n";save(argv[3],result.data(),result.size());return 0;
     }
     native_hc_need(argc==9&&std::string(argv[1])=="--device"&&std::string(argv[3])=="--expect-device"&&std::string(argv[5])=="--fixture"&&std::string(argv[7])=="--output","PLE grouped norm arguments");
     const auto fixture=std::filesystem::path(argv[6]);auto input=read(fixture/"input.f32le"),gamma=read(fixture/"gamma.f32le");
@@ -36,7 +42,7 @@ int main(int argc,char**argv){try{
     std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_vk_init(device),ggml_backend_free);
     native_hc_need(backend&&*argv[4]&&std::string(ggml_backend_dev_description(ggml_backend_get_device(backend.get()))).find(argv[4])!=std::string::npos,"PLE grouped norm: device identity differs");
     std::unique_ptr<ggml_context,decltype(&ggml_free)> ctx(ggml_init({32768,nullptr,true}),ggml_free);native_hc_need(bool(ctx),"PLE grouped norm: metadata");
-    std::array<ggml_tensor*,4> bank{},t{};const size_t words[]={10240,10240,10240,12};
+    std::array<ggml_tensor*,4> bank{},t{};const size_t words[]={10240,10240,10240,diagnostic_words};
     for(size_t i=0;i<t.size();++i){bank[i]=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,words[i]+16);t[i]=ggml_view_1d(ctx.get(),bank[i],words[i],32);}
     const size_t bound=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(),ggml_backend_get_default_buffer_type(backend.get()));native_hc_need(bound<=1u<<20,"PLE grouped norm: bank bound");
     std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)> buffer(ggml_backend_alloc_ctx_tensors(ctx.get(),backend.get()),ggml_backend_buffer_free);
@@ -54,7 +60,12 @@ int main(int argc,char**argv){try{
         }
     }
     native_hc_need(strata_vk_native_ple_grouped_norm_calls(owner.get())==2,"PLE grouped norm: dispatch count");
-    save(out/"output.f32le",first[0].data(),40960);save(out/"diagnostic.f32le",first[1].data(),48);
-    const char report[]="{\"actual_vulkan\":true,\"immutable_inputs_canaries_repeat\":true,\"qualified\":false}\n";save(out/"report.json",report,sizeof(report)-1);
+    save(out/"output.f32le",first[0].data(),40960);save(out/"diagnostic.f32le",first[1].data(),diagnostic_words*4);
+    #ifdef STRATA_PLE_NORM_RCP_FMA_OBSERVATION
+    const char report[]="{\"actual_vulkan\":true,\"immutable_inputs_canaries_repeat\":true,\"rcp_fma_observation\":true,\"qualified\":false}\n";
+#else
+    const char report[]="{\"actual_vulkan\":true,\"immutable_inputs_canaries_repeat\":true,\"qualified\":false}\n";
+#endif
+    save(out/"report.json",report,sizeof(report)-1);
     return 0;
 }catch(const std::exception&e){std::fprintf(stderr,"PLE grouped norm: %s\n",e.what());return 1;}}

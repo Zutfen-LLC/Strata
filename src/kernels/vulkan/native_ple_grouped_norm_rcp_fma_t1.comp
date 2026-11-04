@@ -1,0 +1,56 @@
+#version 450
+// Reciprocal/FMA observation candidate for native_gr_rms_norm_weighted PLE
+// normalization sites. Four 2560-element F32 rows; no model/history mutation.
+// CUDA fast division/rsqrt and denormal behavior are not assumed identical.
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427)
+float native_fma(float a,float b,float c);
+layout(local_size_x=1024) in;
+layout(binding=0,std430) readonly buffer X {float x[];};
+layout(binding=1,std430) readonly buffer W {float gamma[];};
+layout(binding=2,std430) writeonly buffer Y {float y[];};
+layout(binding=3,std430) writeonly buffer D {float diagnostic[];};
+layout(binding=4,std430) buffer S {uint status[];};
+layout(push_constant) uniform Params {uint off[5];uint cols;} p;
+shared float partial[1024];
+shared float warps[32];
+float checked(float v){
+ uint bits=floatBitsToUint(v)&0x7fffffffu;
+ if(bits>=0x7f800000u||(bits!=0u&&bits<0x00800000u))atomicOr(status[p.off[4]],1u);
+ return v;
+}
+void main(){
+ uint tid=gl_LocalInvocationID.x,lane=tid&31u,row=gl_WorkGroupID.x;
+ if(row>=4u)return;
+ precise float sum=0.0;
+ for(uint col=tid;col<p.cols;col+=1024u){
+  float v=checked(x[p.off[0]+row*p.cols+col]);
+  sum=checked(native_fma(v,v,sum));
+ }
+ partial[tid]=sum;barrier();
+ for(uint offset=16u;offset>0u;offset>>=1u){
+  precise float next=checked(partial[tid]+partial[tid^offset]);
+  barrier();partial[tid]=next;barrier();
+ }
+ if(lane==0u)warps[tid/32u]=partial[tid];barrier();
+ partial[tid]=warps[lane];barrier();
+ for(uint offset=16u;offset>0u;offset>>=1u){
+  precise float next=checked(partial[tid]+partial[tid^offset]);
+  barrier();partial[tid]=next;barrier();
+ }
+ // Keep the divisor a runtime input, as in the CUDA per-token launcher.
+ precise float reciprocal=checked(1.0/float(p.cols));
+ // Mean is a diagnostic only. The rsqrt input is the explicit fused value,
+ // matching retained SM86 FFMA(sum, MUFU.RCP(float(cols)), epsilon).
+ // OpFDiv does not establish MUFU.RCP bit equivalence.
+ precise float mean=checked(partial[tid]*reciprocal);
+ precise float shifted=checked(native_fma(partial[tid],reciprocal,0.000001));
+ float scale=checked(inversesqrt(shifted));
+ if(tid==0u){diagnostic[p.off[3]+row*5u]=partial[0];diagnostic[p.off[3]+row*5u+1u]=reciprocal;diagnostic[p.off[3]+row*5u+2u]=shifted;diagnostic[p.off[3]+row*5u+3u]=scale;diagnostic[p.off[3]+row*5u+4u]=mean;}
+ for(uint col=tid;col<p.cols;col+=1024u){
+  uint at=row*p.cols+col;
+  precise float scaled=checked(scale*checked(x[p.off[0]+at]));
+  precise float result=checked(scaled*checked(gamma[p.off[1]+at]));
+  y[p.off[2]+at]=result;
+ }
+}
