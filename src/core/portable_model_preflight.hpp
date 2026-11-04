@@ -31,7 +31,7 @@ inline bool model_deferred_producer(const PortableModelOptions&o,size_t l) {
 }
 inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer) {
     if(opts.native_hc_serial && layer>=1) {
-        size_t b=0;
+        size_t b=opts.native_ple_value_t1 && layer==1 ? PortableGdnOptions::native_ple_value_host_bound : 0;
         if(layer>=2) b+=(layer%4==3 ? PortableQsaOptions::native_hc_host_bound : PortableGdnOptions::native_hc_pending_host_bound)+PortableFfnOptions::native_hc_pending_host_bound;
         b+=layer==47 ? PortableFfnOptions::native_hc_write_host_bound : PortableFfnOptions::deferred_hc_host_bound;
         if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_recurrence_host_bound;
@@ -47,7 +47,8 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         if(opts.qsa_score_select_banks&&layer%4==3)b+=PortableQsaOptions::native_select_host_bound;
         return b;
     }
-    size_t bound=opts.qsa_norm_rope_resident_weights&&layer%4==3?PortableQsaOptions::native_norm_rope_host_bound:0;
+    size_t bound=opts.native_ple_value_t1 && layer==1 ? PortableGdnOptions::native_ple_value_host_bound : 0;
+    bound+=opts.qsa_norm_rope_resident_weights&&layer%4==3?PortableQsaOptions::native_norm_rope_host_bound:0;
     if(opts.qsa_indexer_resident_weights&&layer%4==3)bound+=PortableQsaOptions::native_indexer_host_bound;
     if(opts.qsa_attention_banks&&layer%4==3)bound+=PortableQsaOptions::native_attention_host_bound;
     if(opts.native_qsa_wo_t1&&layer%4==3)bound+=PortableQsaOptions::native_wo_host_bound;
@@ -71,6 +72,8 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
     return bound;
 }
 inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,PortableGdnOptions& o) {
+    o.native_ple_value_t1=opts.native_ple_value_t1 && layer==1;
+    if(o.native_ple_value_t1){o.state_budget+=PortableGdnOptions::native_ple_value_host_bound;o.native_ple_value_receipt=opts.native_ple_value_receipt_prefix+".layer-1";}
     o.native_preparation_weights=opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer);
     o.native_preparation_t1=opts.native_gdn_preparation_t1&&model_gdn_t1_layer(layer);
     if(o.native_preparation_weights)o.state_budget+=PortableGdnOptions::native_preparation_host_bound;
@@ -215,6 +218,8 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
     require(!opts.native_qsa_norm_rope_t1||opts.qsa_norm_rope_resident_weights,"native QSA norm/RoPE requires matched resident roles");
     require(!opts.qsa_norm_rope_resident_weights||(selected_accelerators&&!opts.allow_cpu_fallback&&!opts.qsa_production&&!opts.prompt_chunk_size&&opts.dense_topology==PortableDenseTopology::primary&&!opts.qsa_norm_rope_receipt_prefix.empty()),"native QSA norm/RoPE requires serial eager primary dense/strict accelerator/receipt");
     if(opts.qsa_norm_rope_resident_weights){native_qsa_model_environment();require(PortableGdnLayer::native_hc_compiled(),"native QSA norm/RoPE: strict native-stage build required");native_hc_environment();}
+    require(!opts.native_ple_value_t1 || (selected_accelerators && !opts.allow_cpu_fallback && !opts.gdn_production && !opts.prompt_chunk_size && !opts.gdn_batch_input_projections && !opts.gdn_causal_chunk && (opts.gdn_resident_weights || opts.dense_resident_weights) && !opts.native_ple_value_receipt_prefix.empty()), "native PLE value: serial eager strict accelerator, resident roles and receipt required");
+    if(opts.native_ple_value_t1)require(PortableGdnLayer::native_hc_compiled(),"native PLE value: native stage build required");
     require(!opts.native_gdn_t1 || (opts.gdn_resident_state && (opts.gdn_resident_weights||opts.dense_resident_weights) &&
             selected_accelerators && !opts.allow_cpu_fallback && !opts.gdn_production && !opts.gdn_batch_input_projections &&
             !opts.gdn_causal_chunk && !opts.prompt_chunk_size && !opts.native_gdn_receipt_prefix.empty() && opts.dense_topology==PortableDenseTopology::primary),
