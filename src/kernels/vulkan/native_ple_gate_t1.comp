@@ -1,0 +1,78 @@
+#version 450
+// Arithmetic adapted from llama.cpp 3cf03257f219afbe7334045ff7c6a06ac68c627d:
+// src/models/qwen4exp.cpp and ggml-cuda/{reduce_rows.cuh,sumrows.cu,unary.cu}.
+// MIT License
+// Copyright (c) 2023-2026 The ggml authors
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+// Observation candidate for native_ple_postops.cu::gate_kernel, T1 only.
+// Key and query are already grouped-normalized; four workgroups compute four
+// independent 2,560-element rows. CUDA and Vulkan exp/div are not assumed
+// bit-identical. This component is not wired into the model.
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427) float native_fma(float a,float b,float c);
+layout(local_size_x=512) in;
+layout(binding=0,std430) readonly buffer K {float key[];};
+layout(binding=1,std430) readonly buffer Q {float query[];};
+layout(binding=2,std430) writeonly buffer O {float gate[];};
+layout(binding=3,std430) writeonly buffer D {float diagnostic[];};
+layout(binding=4,std430) buffer S {uint status[];};
+layout(push_constant) uniform Params {uint off[5];} p;
+shared float partial[512];
+shared float warps[16];
+float checked(float v) {
+    uint bits=floatBitsToUint(v)&0x7fffffffu;
+    if(bits>=0x7f800000u || (bits!=0u && bits<0x00800000u)) atomicOr(status[p.off[4]],1u);
+    return v;
+}
+void main() {
+    uint tid=gl_LocalInvocationID.x, row=gl_WorkGroupID.x, lane=tid&31u;
+    if(row>=4u) return;
+    float products[8];
+    for(uint j=0u;j<8u;++j) {
+        uint d=tid+j*512u;
+        precise float product=0.0;
+        if(d<2560u) product=checked(checked(key[p.off[0]+row*2560u+d])*checked(query[p.off[1]+row*2560u+d]));
+        precise float accumulated=checked(0.0+product);
+        products[j]=accumulated;
+    }
+    precise float sum=0.0;
+    for(uint j=0u;j<8u;++j) sum=checked(sum+products[j]);
+    partial[tid]=sum;barrier();
+    for(uint offset=16u;offset>0u;offset>>=1u) {
+        precise float next=checked(partial[tid]+partial[tid^offset]);
+        barrier();partial[tid]=next;barrier();
+    }
+    if(lane==0u)warps[tid/32u]=partial[tid];barrier();
+    partial[tid]=lane<16u?warps[lane]:0.0;barrier();
+    for(uint offset=16u;offset>0u;offset>>=1u) {
+        precise float next=checked(partial[tid]+partial[tid^offset]);
+        barrier();partial[tid]=next;barrier();
+    }
+    if(tid==0u) {
+        precise float score=checked(native_fma(uintBitsToFloat(0x3ca1e89bu),partial[0],0.0));
+        precise float magnitude=checked(sqrt(max(abs(score),1e-6)));
+        precise float signed_magnitude=checked(sign(score)*magnitude);
+        float exponent=checked(exp(-signed_magnitude));
+        precise float denominator=checked(1.0+exponent);
+        precise float result=checked(1.0/denominator);
+        diagnostic[p.off[3]+4u*row]=partial[0];
+        diagnostic[p.off[3]+4u*row+1u]=score;
+        diagnostic[p.off[3]+4u*row+2u]=exponent;
+        diagnostic[p.off[3]+4u*row+3u]=denominator;
+        gate[p.off[2]+row]=result;
+    }
+}

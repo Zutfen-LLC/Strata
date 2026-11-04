@@ -1,5 +1,17 @@
 # Standalone observation only; no portable-model option or default integration.
 function(strata_native_hc_enable out)
+  add_custom_command(OUTPUT "${out}/strata_native_ple_gate_t1_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_ple_gate_t1.comp" -o "${out}/native_ple_gate_t1.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_ple_gate_t1.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_ple_gate_t1.spv" "-DOUTPUT=${out}/strata_native_ple_gate_t1_spv.hpp"
+      -DARRAY_NAME=strata_native_ple_gate_t1_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_ple_gate_t1.comp cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_ple_gate_t1_shader DEPENDS "${out}/strata_native_ple_gate_t1_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_ple_gate_t1_shader)
+  add_executable(native_ple_gate_component tests/kernels/native_ple_gate_component.cpp)
+  target_include_directories(native_ple_gate_component PRIVATE src/core)
+  target_link_libraries(native_ple_gate_component PRIVATE ggml-vulkan ggml-base)
   set(shader "${out}/native_hc.spv")
   add_custom_command(OUTPUT "${out}/strata_native_hc_spv.hpp"
     COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
@@ -180,6 +192,25 @@ function(strata_native_hc_enable out)
   endif()
   add_executable(native_qsa_norm_rope_component tests/kernels/native_qsa_norm_rope_component.cpp)
   if(STRATA_BUILD_TESTS)
+    add_executable(native_ple_gate_reference_test tests/kernels/native_ple_gate_reference_test.cpp)
+    if(MSVC)
+      target_compile_options(native_ple_gate_reference_test PRIVATE /fp:strict)
+    else()
+      target_compile_options(native_ple_gate_reference_test PRIVATE -fno-fast-math -ffp-contract=off)
+    endif()
+    add_test(NAME native_ple_gate_reference_test COMMAND native_ple_gate_reference_test)
+    add_executable(native_ple_gate_dispatch_test tests/kernels/native_ple_gate_dispatch_test.cpp)
+    target_include_directories(native_ple_gate_dispatch_test PRIVATE src/core "${out}" "${vk_source}/..")
+    target_link_libraries(native_ple_gate_dispatch_test PRIVATE ggml-base)
+    add_dependencies(native_ple_gate_dispatch_test strata_native_ple_gate_t1_shader)
+    add_test(NAME native_ple_gate_dispatch_test COMMAND native_ple_gate_dispatch_test)
+    add_test(NAME native_ple_gate_startup_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_ple_gate_startup.py" "$<TARGET_FILE:native_ple_gate_component>" "${CMAKE_CURRENT_BINARY_DIR}")
+    if(STRATA_SPIRV_DIS)
+      add_test(NAME native_ple_gate_shader_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_ple_gate_shader.py"
+        --shader "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_ple_gate_t1.comp"
+        --glslc "${Vulkan_GLSLC_EXECUTABLE}" --validator "${STRATA_SPIRV_VAL}"
+        --disassembler "${STRATA_SPIRV_DIS}" --scratch "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
     add_test(NAME native_qsa_norm_rope_output_contract_test COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_qsa_producer_contract.py"
       "$<TARGET_FILE:native_qsa_norm_rope_input_test>" "$<TARGET_FILE:native_qsa_norm_rope_component>")
