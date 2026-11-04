@@ -7,7 +7,7 @@
 #include <vector>
 #include <cstdio>
 #include <cstring>
-struct MockDevice{struct{struct{uint32_t maxComputeWorkGroupCount[3]={65535,65535,65535};uint32_t maxComputeWorkGroupSize[3]={1024,1024,64};uint32_t maxComputeWorkGroupInvocations=1024,maxComputeSharedMemorySize=32768,maxPerStageDescriptorStorageBuffers=16,maxDescriptorSetStorageBuffers=16;}limits;}properties;};
+struct MockDevice{struct{struct{uint32_t maxComputeWorkGroupCount[3]={65535,65535,65535};uint32_t maxComputeWorkGroupSize[3]={1024,1024,64};uint32_t maxComputeWorkGroupInvocations=1024,maxComputeSharedMemorySize=32768,maxPerStageDescriptorStorageBuffers=16,maxDescriptorSetStorageBuffers=16,maxStorageBufferRange=131072;}limits;}properties;};
 struct ggml_backend_vk_context{std::shared_ptr<MockDevice> device=std::make_shared<MockDevice>();};
 struct ggml_backend_vk_buffer_context{std::weak_ptr<MockDevice> device;};
 namespace strata::core::portable_detail {
@@ -47,6 +47,8 @@ int main(){try{
  auto stride=k->nb[0];k->nb[0]=8;reject(run);k->nb[0]=stride;
  auto old=d->data;d->data=k->data;reject(run);d->data=old;auto type=q->type;q->type=GGML_TYPE_I32;reject(run);q->type=type;
  old=q->data;q->data=(void*)0x20000d;reject(run);q->data=old;bad_input=true;reject(run);bad_input=false;
+ old=s->data;s->data=(void*)0x500019;reject(run);s->data=old;
+ vk.device->properties.limits.maxStorageBufferRange=40960;reject(run);vk.device->properties.limits.maxStorageBufferRange=131072;
  ggml_backend_vk_buffer_context other;other.device=std::make_shared<MockDevice>();ggml_backend_buffer foreign{};foreign.context=&other;foreign.size=100;auto* saved=q->buffer;q->buffer=&foreign;reject(run);q->buffer=saved;
  p->budget=200511;reject(run);p->budget=200512;native_hc_need(run()==0,"exact budget refused");p->budget=300000;fake_status=1;native_hc_need(run()==1&&submissions==4&&strata_vk_native_ple_gate_calls(p.get())==3,"gate device refusal accepted");
  fake_status=0;native_hc_need(run()==0&&strata_vk_native_ple_gate_calls(p.get())==4,"gate retry differs");

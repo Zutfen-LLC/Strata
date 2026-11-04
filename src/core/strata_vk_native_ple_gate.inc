@@ -27,7 +27,7 @@ uint32_t strata_vk_native_ple_gate_run(StrataVkNativePleGate* p,const ggml_tenso
     for(size_t i=0;i<4;++i){const auto* t=tensors[i];
         native_hc_need(t&&t->type==GGML_TYPE_F32&&ggml_nbytes(t)==bytes[i]&&ggml_is_contiguous(t)&&t->buffer&&ggml_backend_buffer_is_vk(t->buffer),"native PLE gate: exact contiguous Vulkan F32 span required");
         auto* b=static_cast<ggml_backend_vk_buffer_context*>(t->buffer->context);native_hc_need(b->device.lock()==ctx->device,"native PLE gate: foreign device");
-        auto bias=get_misalign_bytes(ctx,t);native_hc_need(bias%4==0,"native PLE gate: alignment");off[i]=bias/4;
+        auto bias=get_misalign_bytes(ctx,t);native_hc_need(bias%4==0&&uint64_t(bias)+ggml_nbytes(t)<=ctx->device->properties.limits.maxStorageBufferRange,"native PLE gate: alignment or descriptor range");off[i]=bias/4;
         bool duplicate=false;for(size_t j=0;j<nseen;++j)duplicate|=seen[j]==t->buffer;
         if(!duplicate){seen[nseen++]=t->buffer;const size_t n=ggml_backend_buffer_get_size(t->buffer);native_hc_need(n<=std::numeric_limits<size_t>::max()-used,"native PLE gate: budget overflow");used+=n;}
         for(size_t j=0;j<i;++j)if((i>=2||j>=2)&&t->buffer==tensors[j]->buffer){auto x=reinterpret_cast<uintptr_t>(t->data),y=reinterpret_cast<uintptr_t>(tensors[j]->data);native_hc_need(x<=y?y-x>=ggml_nbytes(t):x-y>=ggml_nbytes(tensors[j]),"native PLE gate: output overlap");}
@@ -35,7 +35,7 @@ uint32_t strata_vk_native_ple_gate_run(StrataVkNativePleGate* p,const ggml_tenso
     native_hc_need(used<=p->budget,"native PLE gate: allocation budget exceeded");
     ggml_backend_vk_synchronize(g.backend);std::vector<float> input(10240);
     for(const auto* t:{key,query}){ggml_backend_tensor_get(t,input.data(),0,40960);for(float x:input)native_hc_normal(x);}
-    off[4]=get_misalign_bytes(ctx,g.status)/4;const uint32_t zero=0;ggml_backend_tensor_set(g.status,&zero,0,4);
+    const auto status_bias=get_misalign_bytes(ctx,g.status);native_hc_need(status_bias%4==0,"native PLE gate: status alignment");off[4]=status_bias/4;const uint32_t zero=0;ggml_backend_tensor_set(g.status,&zero,0,4);
     ggml_pipeline_request_descriptor_sets(ctx,g.pipeline,1);auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
     ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,key,true),ggml_vk_tensor_subbuffer(ctx,query,true),
         ggml_vk_tensor_subbuffer(ctx,gate,true),ggml_vk_tensor_subbuffer(ctx,diagnostic,true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},off,{4,1,1});
