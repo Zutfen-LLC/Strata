@@ -174,6 +174,14 @@ struct PortableModelSession::Impl {
             10 * (3 * (H * FF / 32 * 34)) + (32u << 20) + size_t(opts.expert_workers + 1) * (9u << 20);
         require(expert_host_bound <= opts.host_cap, "portable model: host cap cannot admit expert staging/pool");
         inventory(model);
+        if(opts.native_ple_key_t1) {
+            auto role=view(model,"blk.1.ple_key.weight");
+            require(role.type==8 && role.shape==std::vector<int64_t>({2560,10240}) && role.data && role.bytes==10240u*80u*34u,
+                    "native PLE key: unsupported role type or shape");
+            auto classes=portable_detail::qsa_wo_scale_classes(static_cast<const uint8_t*>(role.data),10240u*80u,34);
+            portable_detail::qsa_wo_require_scales(classes,role.name,true);
+            std::clog<<"ple_key_role "<<role.name<<" type=Q8_0 bytes="<<role.bytes<<" zero="<<classes.zero<<" normal="<<classes.normal<<" subnormal="<<classes.subnormal<<" nonfinite="<<classes.nonfinite<<'\n';
+        }
         if(opts.native_qsa_indexer_projection_t1){
             for(size_t l=3;l<48;l+=4)for(const auto& spec:std::array<std::pair<const char*,size_t>,2>{{{"indexer.k_proj.weight",128},{"indexer.q_proj.weight",512}}}){
                 auto role=view(model,"blk."+std::to_string(l)+"."+spec.first);
@@ -889,6 +897,7 @@ PortableModelWork PortableModelSession::model_work(bool state_digests) const {
             add(layer.qsa->keys());add(layer.qsa->values());add(layer.qsa->pooled_keys());add(layer.qsa->indexer_tail());if(!layer.qsa->native_indexer_state().empty())add(layer.qsa->native_indexer_state());auto d=worker::blob_digest(parts.data(),at*sizeof(uint64_t));work.qsa_state_a[l]=d.a;work.qsa_state_b[l]=d.b;
         }if(l==3&&layer.qsa)work.native_hc_pending_layer3_calls+=layer.qsa->native_hc_pending_calls();if(!layer.gdn)continue;
         work.native_gdn_t1_calls[l]=layer.gdn->native_recurrence_calls();
+        work.native_ple_key_calls[l]=layer.gdn->native_ple_key_calls();
         for(unsigned i=0;i<6;++i)work.native_gdn_input_projection_calls[i][l]=layer.gdn->native_input_projection_calls(i);
         for(unsigned i=0;i<6;++i)work.native_gdn_output_projection_calls[i][l]=layer.gdn->native_output_projection_calls(i);
         work.native_gdn_conv_calls[l]=layer.gdn->native_convolution_calls();work.native_gdn_ab_calls[l]=layer.gdn->native_ab_calls();

@@ -106,6 +106,8 @@ public:
     }
     size_t bytes() const { return bytes_; }
     uint64_t calls() const { return completed_; }
+    // The caller may bind this owner-backed bank into its graph before run().
+    ggml_tensor *output_bank() const { return logits_; }
     ggml_tensor *run(ggml_tensor *mixed) {
         valid_ = false;
         if (mixed != mixed_)
