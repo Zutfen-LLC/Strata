@@ -20,6 +20,9 @@ int main(int argc,char** argv){try{
         for(size_t l=0;l<48;++l){PortableGdnOptions per;model_gdn_hc_options(model,l,per);
             check(per.native_ple_norm_t1==(l==1),"PLE norm leaked to another layer");
             check(model_hc_host_bound(model,l)-model_hc_host_bound(no_norm,l)==(l==1?PortableGdnOptions::native_ple_norm_host_bound:0),"PLE norm host admission differs");}
+        model.native_hc_serial=true;no_norm.native_hc_serial=true;
+        check(model_hc_host_bound(model,1)-model_hc_host_bound(no_norm,1)==PortableGdnOptions::native_ple_norm_host_bound,"serial PLE norm host admission differs");
+        model.native_hc_serial=false;
         model.native_ple_gate_t1=false;rejected=false;try{validate_model_modes(model,1);}catch(const std::exception&){rejected=true;}check(rejected,"PLE norm without native gate accepted");
     }
     ple_fixture::Fixture fixture;std::vector<uint16_t> role(40960);
