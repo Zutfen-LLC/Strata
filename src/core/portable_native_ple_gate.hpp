@@ -1,6 +1,7 @@
 #pragma once
 #include "strata_vk_native_ple_gate.hpp"
 #include "ggml-alloc.h"
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -23,6 +24,8 @@ class PortableNativePleGate {
     std::filesystem::path directory_;
     size_t bytes_ = 0;
     bool candidate_ = false, recorded_ = false;
+    std::array<uint8_t, 40960> last_key_{}, last_query_{};
+    std::array<uint8_t, 16> last_gate_{};
 
     static void need(bool condition, const char* message) {
         if (!condition) throw std::runtime_error(message);
@@ -102,6 +105,9 @@ class PortableNativePleGate {
         require_normalized_source(query_copy, query_, residual);
         need(strata_vk_native_ple_gate_run(component_.get(), key_, query_, gate_, diagnostic_) == 0,
              "PLE gate: finite domain refused");
+        ggml_backend_tensor_get(key_, last_key_.data(), 0, last_key_.size());
+        ggml_backend_tensor_get(query_, last_query_.data(), 0, last_query_.size());
+        ggml_backend_tensor_get(gate_, last_gate_.data(), 0, last_gate_.size());
         candidate_ = true;
     }
     // This records a graph-completed candidate; the FFN and token are not yet committed.
@@ -112,6 +118,12 @@ class PortableNativePleGate {
              broadcast->src[1] == gate_ && broadcast->src[0] && broadcast->src[0]->src[0] &&
              broadcast->src[0]->src[0]->src[0] == value,
              "PLE gate: actual value broadcast or gate bank differs");
+        auto unchanged = [&](ggml_tensor* tensor, const auto& expected) {
+            std::vector<uint8_t> bytes(expected.size());
+            ggml_backend_tensor_get(tensor, bytes.data(), 0, bytes.size());
+            need(std::equal(bytes.begin(), bytes.end(), expected.begin()), "PLE gate: producer or gate bank changed");
+        };
+        unchanged(key_, last_key_); unchanged(query_, last_query_); unchanged(gate_, last_gate_);
         if (recorded_) return;
         auto path = directory_ / "first-candidate";
         need(std::filesystem::create_directory(path), "PLE gate: receipt exists");
@@ -130,7 +142,7 @@ class PortableNativePleGate {
              << ",\"previous\":[" << previous[0] << "," << previous[1] << "],\"rows\":[";
         for (size_t i = 0; i < rows.size(); ++i) meta << (i ? "," : "") << rows[i];
         meta << "],\"direct_normalized_banks\":true,\"direct_gate_broadcast\":true,"
-                "\"graph_completed\":true,\"committed\":false,\"qualified\":false}\n";
+                "\"input_and_gate_unchanged\":true,\"graph_completed\":true,\"committed\":false,\"qualified\":false}\n";
         meta.flush();
         need(bool(meta), "PLE gate: metadata write");
         recorded_ = true;

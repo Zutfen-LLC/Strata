@@ -91,8 +91,11 @@ int main(int argc, char** argv) { try {
     auto initial_gate_history=gate_layer->ple_convolution_history();fail_ple_gate=true;
     check(!gate_layer->step(19,f.input(0),ple_fixture::experts(),route,error),"gate domain failure accepted");
     check(gate_layer->tokens()==0&&gate_layer->native_ple_gate_calls()==0&&gate_layer->ple_convolution_history()==initial_gate_history&&gate_layer->token_history()==std::array<int32_t,2>{{-1,-1}}&&!std::filesystem::exists(root/"gate/first-candidate"),"gate failure committed state or receipt");
-    fail_ple_gate=false;PortableGdnTrace gate_trace;check(gate_layer->step(19,f.input(0),ple_fixture::experts(),route,error,&gate_trace),error);
-    check(ple_gate_links>0&&actual_ple_gate_bank&&gate_layer->native_ple_gate_calls()==1,"value broadcast ignored actual gate bank");
+    fail_ple_gate=false;corrupt_ple_gate=true;
+    check(!gate_layer->step(19,f.input(0),ple_fixture::experts(),route,error),"changed gate bank accepted");
+    check(gate_layer->tokens()==0&&gate_layer->ple_convolution_history()==initial_gate_history&&!std::filesystem::exists(root/"gate/first-candidate"),"changed gate committed state or receipt");
+    PortableGdnTrace gate_trace;check(gate_layer->step(19,f.input(0),ple_fixture::experts(),route,error,&gate_trace),error);
+    check(ple_gate_links>0&&actual_ple_gate_bank&&gate_layer->native_ple_gate_calls()==2,"value broadcast ignored actual gate bank");
     check(std::filesystem::file_size(root/"gate/first-candidate/key.f32le")==40960&&std::filesystem::file_size(root/"gate/first-candidate/query.f32le")==40960&&std::filesystem::file_size(root/"gate/first-candidate/gate.f32le")==16,"PLE gate candidate receipt missing");
     auto read_capture=[&](const char* name,size_t count){std::vector<float> data(count);std::ifstream file(root/"gate/first-candidate"/name,std::ios::binary);file.read(reinterpret_cast<char*>(data.data()),count*sizeof(float));check(file.gcount()==std::streamsize(count*sizeof(float))&&file.peek()==EOF,"PLE gate receipt span differs");return data;};
     check(read_capture("key.f32le",10240)==actual_ple_gate_key&&read_capture("query.f32le",10240)==actual_ple_gate_query&&actual_ple_gate_key==gate_trace.ple_key&&read_capture("gate.f32le",4)==gate_trace.ple_gate,"PLE gate receipt is not the executed producer/consumer data");
