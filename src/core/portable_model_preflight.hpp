@@ -39,6 +39,7 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         if(opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_input_projection_host_bound;
         if(opts.native_gdn_output_projection_t1&&model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_output_projection_host_bound;
         if(opts.native_ple_key_t1&&layer==1)b+=PortableGdnOptions::native_ple_key_host_bound;
+        if(opts.native_ple_conv_t1&&layer==1)b+=PortableGdnOptions::native_ple_conv_host_bound;
         if(opts.native_ple_gate_t1&&layer==1)b+=PortableGdnOptions::native_ple_gate_host_bound;
         if(opts.qsa_norm_rope_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_norm_rope_host_bound;
         if(opts.qsa_indexer_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_indexer_host_bound;
@@ -72,10 +73,13 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
     if(opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_input_projection_host_bound;
     if(opts.native_gdn_output_projection_t1&&model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_output_projection_host_bound;
     if(opts.native_ple_key_t1&&layer==1)bound+=PortableGdnOptions::native_ple_key_host_bound;
+    if(opts.native_ple_conv_t1&&layer==1)bound+=PortableGdnOptions::native_ple_conv_host_bound;
     if(opts.native_ple_gate_t1&&layer==1)bound+=PortableGdnOptions::native_ple_gate_host_bound;
     return bound;
 }
 inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,PortableGdnOptions& o) {
+    o.native_ple_conv_t1=opts.native_ple_conv_t1&&layer==1;
+    if(o.native_ple_conv_t1){o.state_budget+=PortableGdnOptions::native_ple_conv_host_bound;o.native_ple_conv_receipt=opts.native_ple_conv_receipt_prefix+".layer-1";}
     o.native_ple_gate_t1=opts.native_ple_gate_t1&&layer==1;
     if(o.native_ple_gate_t1){o.state_budget+=PortableGdnOptions::native_ple_gate_host_bound;o.native_ple_gate_receipt=opts.native_ple_gate_receipt_prefix+".layer-1";}
     o.native_ple_key_t1=opts.native_ple_key_t1&&layer==1;
@@ -240,6 +244,8 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
     if(opts.native_ple_gate_t1)require(PortableGdnLayer::native_hc_compiled(),"native PLE gate: native stage build required");
     require(!opts.native_ple_key_t1 || (!opts.prompt_chunk_size && !opts.gdn_production && !opts.gdn_batch_input_projections && !opts.gdn_causal_chunk && selected_accelerators && !opts.allow_cpu_fallback && (opts.gdn_resident_weights || opts.dense_resident_weights) && !opts.native_ple_key_receipt_prefix.empty()), "native PLE key requires serial eager strict accelerator, resident GDN weights and receipt");
     if(opts.native_ple_key_t1)require(PortableGdnLayer::native_hc_compiled(),"native PLE key: native stage build required");
+    require(!opts.native_ple_conv_t1 || (!opts.prompt_chunk_size && !opts.gdn_production && !opts.gdn_batch_input_projections && !opts.gdn_causal_chunk && selected_accelerators && !opts.allow_cpu_fallback && (opts.gdn_resident_weights || opts.dense_resident_weights) && !opts.native_ple_conv_receipt_prefix.empty()), "native PLE conv requires serial eager strict accelerator, resident roles and receipt");
+    if(opts.native_ple_conv_t1)require(PortableGdnLayer::native_hc_compiled(),"native PLE conv: native stage build required");
     if(opts.native_gdn_output_projection_t1){const char* fused=std::getenv("STRATA_QFUSE");require(!fused||std::atoi(fused)==0,"native GDN output projection: fused quantization unsupported");}
     if(opts.native_gdn_t1)require(PortableGdnLayer::native_hc_compiled(),"native GDN T1: strict-FMA native stage build required");
     require(!opts.gdn_production || (opts.gdn_resident_state && selected_accelerators && !opts.allow_cpu_fallback),
