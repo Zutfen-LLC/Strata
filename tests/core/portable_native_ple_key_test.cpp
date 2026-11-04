@@ -77,6 +77,17 @@ int main(int argc, char** argv) { try {
     auto* output = key.run(embedding); need(output == graph_bank && key.calls() == 1, "actual output bank");
     std::vector<float> values(10240); ggml_backend_tensor_get(output, values.data(), 0, values.size() * 4);
     need(values.front() == 0.f && values.back() == 10239.f && quant_calls == 1 && dot_calls == 1, "one quantizer and MMVQ");
+    const std::array<int32_t,2> previous{{-1,-1}}; const std::array<uint32_t,16> indices{};
+    refused = false; try { key.verify_and_record(input_bank, 0, 19, previous, indices); } catch (...) { refused = true; }
+    need(refused && !std::filesystem::exists(path / "first-candidate"), "wrong consumer accepted");
+    uint8_t changed = 1; ggml_backend_tensor_set(const_cast<ggml_tensor*>(packed_bank), &changed, 0, 1);
+    refused = false; try { key.verify_and_record(output, 0, 19, previous, indices); } catch (...) { refused = true; }
+    need(refused && !std::filesystem::exists(path / "first-candidate"), "changed packed bank accepted");
+    changed = 0; ggml_backend_tensor_set(const_cast<ggml_tensor*>(packed_bank), &changed, 0, 1);
+    key.verify_and_record(output, 0, 19, previous, indices);
+    need(std::filesystem::file_size(path / "first-candidate/input.f32le") == 10240 &&
+         std::filesystem::file_size(path / "first-candidate/qx.bin") == 2880 &&
+         std::filesystem::file_size(path / "first-candidate/key.f32le") == 40960, "candidate receipt sizes");
     embedding[0] = std::numeric_limits<float>::infinity(); refused = false;
     try { key.run(embedding); } catch (...) { refused = true; }
     need(refused && key.calls() == 1 && quant_calls == 1 && dot_calls == 1, "invalid embedding must not dispatch");
@@ -85,5 +96,9 @@ int main(int argc, char** argv) { try {
     need(refused && key.calls() == 1, "failed dot must not publish a completed call");
     fail_dot = false; output = key.run(embedding);
     need(output && key.calls() == 2 && quant_calls == 3 && dot_calls == 2, "retry after failed dot");
+    key.verify_and_record(output, 1, 20, {{-1,19}}, indices);
+    std::ifstream receipt(path / "first-candidate/metadata.json"); std::string metadata((std::istreambuf_iterator<char>(receipt)), {});
+    need(metadata.find("\"position\":0") != std::string::npos && metadata.find("\"token\":19") != std::string::npos,
+         "lifetime candidate was overwritten");
     std::puts("PLE key owner, admitted budget, actual banks, refusal and retry passed with host providers"); return 0;
 } catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; } }

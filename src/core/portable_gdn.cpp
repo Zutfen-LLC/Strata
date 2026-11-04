@@ -479,6 +479,7 @@ struct PortableGdnLayer::Impl {
             }
             require(status == GGML_STATUS_SUCCESS, "portable GDN: attention graph failed");
 #ifdef STRATA_PORTABLE_NATIVE_HC
+            if(s.native_ple_key)s.native_ple_key->verify_and_record(s.ple_raw_key,s.count,token,cursor.previous,ple_rows);
             if(s.native_ple_value)s.native_ple_value->verify_and_record(s.ple_value,s.count,token,cursor.previous,ple_rows);
             if(s.native_hc)s.native_hc->record_first();
             if(trace && s.native_hc) {
@@ -568,7 +569,7 @@ struct PortableGdnLayer::Impl {
     ggml_tensor *input = nullptr, *state_input = nullptr, *history_input = nullptr, *attn_residual = nullptr;
     ggml_tensor *state_output = nullptr, *history_output = nullptr, *qkv = nullptr, *conv = nullptr, *q = nullptr,
                 *k = nullptr, *v = nullptr, *g = nullptr, *beta = nullptr, *attention = nullptr;
-    ggml_tensor *ple_emb = nullptr, *ple_hist = nullptr, *ple_hist_out = nullptr, *ple_key = nullptr,
+    ggml_tensor *ple_emb = nullptr, *ple_hist = nullptr, *ple_hist_out = nullptr, *ple_key = nullptr, *ple_raw_key = nullptr,
                 *ple_value = nullptr, *ple_gate = nullptr, *ple_norm = nullptr, *ple_conv = nullptr,
                 *ple_result = nullptr;
     std::array<int32_t, 2> previous{{-1, -1}};
@@ -656,6 +657,7 @@ struct PortableGdnLayer::Impl {
             if (native_ple_key) raw_key = native_ple_key->output_bank(); else
 #endif
                 raw_key = ggml_mul_mat(c, w.at("ple_key.weight"), ple_emb);
+            ple_raw_key = raw_key;
             ple_key = grouped(raw_key, "ple_norm_key.weight");
 #ifdef STRATA_PORTABLE_NATIVE_HC
             ple_value = native_ple_value ? native_ple_value->output() : ggml_mul_mat(c, w.at("ple_value.weight"), ple_emb);

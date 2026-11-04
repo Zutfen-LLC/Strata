@@ -1,6 +1,7 @@
 #pragma once
 #include "portable_native_head_vocab.hpp"
 #include "ggml-alloc.h"
+#include <fstream>
 #include <memory>
 #include <vector>
 
@@ -17,6 +18,10 @@ class PortableNativePleKey {
     Buffer input_buffer_{nullptr, ggml_backend_buffer_free};
     ggml_tensor* input_ = nullptr;
     std::unique_ptr<PortableNativeHeadVocab> projection_;
+    std::vector<float> last_input_, last_output_;
+    std::array<uint8_t, head_vocab_packed_bytes> last_packed_{};
+    std::filesystem::path directory_;
+    bool recorded_ = false;
     size_t bytes_ = 0;
 
     static Context context() {
@@ -40,7 +45,7 @@ public:
         return bank + projection;
     }
     PortableNativePleKey(ggml_backend_t backend, ggml_tensor* weight, const void* role, size_t role_bytes,
-                         const std::string& directory, size_t budget) {
+                         const std::string& directory, size_t budget) : directory_(directory) {
         if (!backend || !weight || !role || weight->type != GGML_TYPE_Q8_0 || weight->ne[0] != width ||
             weight->ne[1] != rows || ggml_nbytes(weight) != rows * 80 * 34 ||
             role_bytes != ggml_nbytes(weight) || estimate(backend) > budget)
@@ -64,7 +69,44 @@ public:
         // Check before touching the device input or dispatching either component.
         qsa_q8_input_domain(embedding, 80, "native PLE key");
         ggml_backend_tensor_set(input_, embedding.data(), 0, width * sizeof(float));
-        return projection_->run(input_);
+        auto* output = projection_->run(input_);
+        last_input_ = embedding;
+        last_packed_ = projection_->packed_for_candidate(input_, output);
+        last_output_.resize(rows);
+        ggml_backend_tensor_get(output, last_output_.data(), 0, rows * sizeof(float));
+        return output;
+    }
+    // The first graph-completed candidate is lifetime-scoped and not an FFN commit.
+    void verify_and_record(const ggml_tensor* consumed, uint64_t position, int32_t token,
+                           const std::array<int32_t,2>& previous, const std::array<uint32_t,16>& indices) {
+        if (consumed != projection_->output_bank() || !consumed->buffer || !ggml_is_contiguous(consumed) ||
+            ggml_nbytes(consumed) != rows * sizeof(float) || last_input_.size() != width || last_output_.size() != rows)
+            throw std::runtime_error("native PLE key: actual consumer bank differs");
+        std::vector<float> input(width), output(rows);
+        ggml_backend_tensor_get(input_, input.data(), 0, width * sizeof(float));
+        ggml_backend_tensor_get(consumed, output.data(), 0, rows * sizeof(float));
+        if (std::memcmp(input.data(), last_input_.data(), width * sizeof(float)) ||
+            std::memcmp(output.data(), last_output_.data(), rows * sizeof(float)) ||
+            projection_->packed_for_candidate(input_, consumed) != last_packed_)
+            throw std::runtime_error("native PLE key: graph changed candidate banks");
+        if (recorded_) return;
+        const auto path = directory_ / "first-candidate";
+        if (!std::filesystem::create_directory(path)) throw std::runtime_error("native PLE key: candidate exists");
+        auto save = [&](const char* name, const void* data, size_t size) {
+            std::ofstream f(path / name, std::ios::binary);
+            f.write(static_cast<const char*>(data), size); f.flush();
+            if (!f) throw std::runtime_error("native PLE key: candidate write");
+        };
+        save("input.f32le", input.data(), width * sizeof(float));
+        save("qx.bin", last_packed_.data(), last_packed_.size());
+        save("key.f32le", output.data(), rows * sizeof(float));
+        std::ofstream meta(path / "metadata.json");
+        meta << "{\"position\":" << position << ",\"token\":" << token << ",\"previous\":[" << previous[0] << "," << previous[1] << "],\"rows\":[";
+        for (size_t i = 0; i < indices.size(); ++i) meta << (i ? "," : "") << indices[i];
+        meta << "],\"direct_producer_bank\":true,\"packed_consumer_bank\":true,\"graph_completed\":true,\"committed\":false,\"qualified\":false}\n";
+        meta.flush();
+        if (!meta) throw std::runtime_error("native PLE key: candidate metadata write");
+        recorded_ = true;
     }
 };
 } // namespace strata::core::portable_detail

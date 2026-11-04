@@ -108,6 +108,16 @@ public:
     uint64_t calls() const { return completed_; }
     // The caller may bind this owner-backed bank into its graph before run().
     ggml_tensor *output_bank() const { return logits_; }
+    std::array<uint8_t, head_vocab_packed_bytes> packed_for_candidate(const ggml_tensor *mixed,
+                                                                       const ggml_tensor *output) const {
+        if (!valid_ || mixed != mixed_ || output != logits_ || !packed_ || !packed_->buffer)
+            throw std::runtime_error("native head vocabulary: current candidate banks required");
+        std::array<uint8_t, head_vocab_packed_bytes> packed{};
+        ggml_backend_tensor_get(packed_, packed.data(), 0, packed.size());
+        if (!recorded_ && packed != consumed_packed_)
+            throw std::runtime_error("native head vocabulary: consumed packed bank changed");
+        return packed;
+    }
     ggml_tensor *run(ggml_tensor *mixed) {
         valid_ = false;
         if (mixed != mixed_)

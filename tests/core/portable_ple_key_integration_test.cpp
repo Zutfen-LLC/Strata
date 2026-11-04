@@ -43,6 +43,10 @@ int main(int argc, char** argv) { try {
     fail_ple_key=false;PortableGdnTrace first;
     check(layer->step(19,f.input(0),ple_fixture::experts(),route,error,&first),error);
     check(actual_ple_key_input&&actual_ple_key_output&&ple_key_links>0,"graph did not consume actual PLE key producer bank");
+    check(std::filesystem::file_size(root/"candidate/first-candidate/input.f32le")==10240 &&
+          std::filesystem::file_size(root/"candidate/first-candidate/qx.bin")==2880 &&
+          std::filesystem::file_size(root/"candidate/first-candidate/key.f32le")==40960,
+          "graph-completed actual key capture missing");
     check(layer->native_ple_key_calls()==1,"successful native key call not counted");
     check(get(actual_ple_key_input)==first.ple_embedding,"actual quantizer input differs from gathered PLE embedding");
     ple_fixture::reference(f,f.input(0),before,first,*layer);
