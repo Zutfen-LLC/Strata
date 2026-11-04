@@ -11,6 +11,7 @@ using namespace strata::core::portable_detail;
 namespace strata::core::portable_detail {
 struct StrataVkNativePleConv {};
 bool fail_conv = false;
+bool corrupt_history = false, nonfinite_output = false;
 StrataVkNativePleConv* strata_vk_native_ple_conv_create(ggml_backend_t,const char*,size_t) { return new StrataVkNativePleConv; }
 void strata_vk_native_ple_conv_destroy(StrataVkNativePleConv* p) noexcept { delete p; }
 size_t strata_vk_native_ple_conv_bytes(const StrataVkNativePleConv*) { return 0; }
@@ -20,6 +21,8 @@ void strata_vk_native_ple_conv_run(StrataVkNativePleConv*,ggml_tensor* const t[1
     ggml_backend_tensor_get(t[0],h.data(),0,h.size()*4);
     ggml_backend_tensor_get(t[1],n.data(),0,n.size()*4);
     for(size_t c=0;c<n.size();++c){for(size_t j=0;j<8;++j)next[c*9+j]=h[c*9+j+1];next[c*9+8]=n[c];}
+    if(corrupt_history)next[0]=77.f;
+    if(nonfinite_output)output[0]=std::numeric_limits<float>::infinity();
     ggml_backend_tensor_set(t[5],next.data(),0,next.size()*4);
     for(size_t i=6;i<10;++i)ggml_backend_tensor_set(t[i],output.data(),0,output.size()*4);
 }
@@ -45,9 +48,12 @@ int main() {
     assert(unchanged==history && next[0]==1 && next[7]==8 && next[8]==4);
     fail_conv=true; bool refused=false; try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused);
     assert(!owner.ready()); fail_conv=false; owner.run(copies,originals); assert(owner.ready());
+    corrupt_history=true; refused=false; try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused && !owner.ready()); corrupt_history=false;
+    nonfinite_output=true; refused=false; try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused && !owner.ready()); nonfinite_output=false;
     auto* wrong=originals[0]; originals[0]=originals[1]; refused=false;
     try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused && !owner.ready()); originals[0]=wrong;
     norm[0]=std::numeric_limits<float>::quiet_NaN();
+    ggml_backend_tensor_set(originals[1],norm.data(),0,norm.size()*4);
     ggml_backend_tensor_set(owner.input(1),norm.data(),0,norm.size()*4);
     refused=false; try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused && !owner.ready());
     std::cout << "PLE convolution candidate ownership, refusal and retry passed with host provider\n";

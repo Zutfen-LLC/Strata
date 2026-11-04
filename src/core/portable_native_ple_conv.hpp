@@ -4,6 +4,8 @@
 #include "ggml-alloc.h"
 #include <array>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <vector>
 
@@ -20,7 +22,10 @@ class PortableNativePleConv {
     std::array<ggml_tensor*,10> tensors_{};
     std::array<const ggml_tensor*,4> copies_{},originals_{};
     size_t bytes_=0;
-    bool ready_=false;
+    bool ready_=false,recorded_=false;
+    std::filesystem::path directory_;
+    std::array<std::vector<float>,4> before_;
+    std::vector<float> next_,result_;
     static constexpr std::array<size_t,10> sizes_{92160,10240,20480,10240,10240,92160,10240,10240,10240,10240};
     static constexpr std::array<size_t,4> slots_{0,1,3,4};
     static void need(bool b,const char* message){if(!b)throw std::runtime_error(message);}
@@ -34,7 +39,7 @@ class PortableNativePleConv {
         need(type==ggml_backend_get_default_buffer_type(backend_)&&owner&&(dev?dev==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE conv: producer device");
     }
 public:
-    PortableNativePleConv(ggml_backend_t backend,const void* weights,size_t weight_bytes,const char* module,size_t budget):backend_(backend){
+    PortableNativePleConv(ggml_backend_t backend,const void* weights,size_t weight_bytes,const char* module,size_t budget):backend_(backend),directory_(std::filesystem::path(module).parent_path()){
         need(backend&&weights&&weight_bytes==81920,"PLE conv: native F16 role required");
         const auto* p=static_cast<const uint8_t*>(weights);
         for(size_t i=0;i<weight_bytes;i+=2){uint16_t h;std::memcpy(&h,p+i,2);need((h&0x7c00u)!=0x7c00u,"PLE conv: nonfinite weight");}
@@ -73,7 +78,31 @@ public:
         std::vector<float> next(sizes_[5]);ggml_backend_tensor_get(history(),next.data(),0,next.size()*4);
         for(size_t c=0;c<10240;++c){for(size_t j=0;j<8;++j)need(std::memcmp(&next[9*c+j],&before[0][9*c+j+1],4)==0,"PLE conv: candidate history differs");need(std::memcmp(&next[9*c+8],&before[1][c],4)==0,"PLE conv: appended history differs");}
         for(size_t i=6;i<10;++i){std::vector<float> out(sizes_[i]);ggml_backend_tensor_get(tensors_[i],out.data(),0,out.size()*4);for(float x:out)native_hc_normal(x);}
+        before_=std::move(before);next_=std::move(next);result_.resize(sizes_[7]);
+        ggml_backend_tensor_get(result(),result_.data(),0,result_.size()*4);
         ready_=true;
+    }
+    // The suffix must read these same persistent banks. This is a candidate
+    // receipt, emitted before the FFN and token transaction commit.
+    void verify_and_record(const ggml_tensor* result_view,const ggml_tensor* history_view,
+                           uint64_t position,int32_t token,const std::array<int32_t,2>& previous){
+        need(ready_&&result_view&&history_view&&result_view->view_src==result()&&history_view->view_src==history(),
+             "PLE conv: downstream producer identity");
+        span(result_view,10240*4);span(history_view,92160*4);
+        auto unchanged=[&](ggml_tensor* t,const std::vector<float>& expected){
+            std::vector<float> got(expected.size());ggml_backend_tensor_get(t,got.data(),0,got.size()*4);
+            need(std::memcmp(got.data(),expected.data(),got.size()*4)==0,"PLE conv: candidate changed");
+        };
+        for(size_t i=0;i<4;++i)unchanged(input(i),before_[i]);
+        unchanged(history(),next_);unchanged(result(),result_);
+        if(recorded_)return;
+        const auto path=directory_/"first-candidate";
+        need(std::filesystem::create_directory(path),"PLE conv: candidate receipt exists");
+        const char* names[]={"history.f32le","normalized.f32le","weight.f16le","hidden.f32le","gated.f32le","next-history.f32le","conv.f32le","result.f32le","preactivation.f32le","exponent.f32le"};
+        for(size_t i=0;i<10;++i){std::vector<char> data(ggml_nbytes(tensors_[i]));ggml_backend_tensor_get(tensors_[i],data.data(),0,data.size());std::ofstream f(path/names[i],std::ios::binary);f.write(data.data(),data.size());f.flush();need(bool(f),"PLE conv: receipt write");}
+        std::ofstream meta(path/"metadata.json");
+        meta<<"{\"position\":"<<position<<",\"token\":"<<token<<",\"previous\":["<<previous[0]<<","<<previous[1]<<"],\"producer_banks\":true,\"graph_completed\":true,\"committed\":false,\"qualified\":false}\n";
+        meta.flush();need(bool(meta),"PLE conv: metadata write");recorded_=true;
     }
 };
 }
