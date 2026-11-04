@@ -30,7 +30,8 @@ bool observe_indexer_projection=false;int fail_indexer_projection=0;size_t index
 bool observe_gdn_input=false;int fail_gdn_input=0;size_t gdn_input_links=0;std::array<ggml_tensor*,2> actual_gdn_input_banks{};ggml_backend_t gdn_input_backend=nullptr;
 bool observe_gdn_output=false;size_t gdn_output_quant_links=0,gdn_output_pending_links=0;ggml_tensor* actual_gdn_gated=nullptr;ggml_tensor* actual_gdn_output_bank=nullptr;ggml_backend_t gdn_output_backend=nullptr;
 bool observe_head_consumer=false;size_t head_consumer_links=0;
-bool observe_ple_gate=false,fail_ple_gate=false,corrupt_ple_gate=false;size_t ple_gate_links=0;
+bool observe_ple_gate=false,fail_ple_gate=false,corrupt_ple_gate=false,simulate_ple_scheduler_copies=false;size_t ple_gate_links=0,ple_scheduler_copies=0;
+ggml_tensor ple_scheduler_copy[2]{};
 ggml_tensor* actual_ple_gate_bank=nullptr;ggml_backend_t ple_gate_backend=nullptr;std::vector<float> actual_ple_gate_key,actual_ple_gate_query;
 bool observe_ple_key=false,fail_ple_key=false;size_t ple_key_links=0;
 const ggml_tensor* actual_ple_key_input=nullptr;ggml_tensor* actual_ple_key_output=nullptr;ggml_backend_t ple_key_backend=nullptr;
@@ -67,6 +68,15 @@ ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){
 if(observe_ple_key&&actual_ple_key_output)for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_RMS_NORM&&t->src[0]){auto*root=t->src[0];while(root->view_src)root=root->view_src;if(root==actual_ple_key_output){check(root->buffer&&ggml_is_contiguous(root)&&ggml_nbytes(root)==10240*4,"PLE norm ignored actual key bank/span");auto type=ggml_backend_buffer_get_type(root->buffer);auto device=ggml_backend_buft_get_device(type);auto owner=ggml_backend_get_device(ple_key_backend);check(type==ggml_backend_get_default_buffer_type(ple_key_backend)&&owner&&(device?device==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE key consumer device differs");++ple_key_links;}}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(observe_head_consumer&&t->op==GGML_OP_MUL_MAT&&std::string(ggml_get_name(t))=="portable_logits"){check(t->src[1]==live_mixed&&live_mixed->buffer&&ggml_backend_buffer_get_type(live_mixed->buffer)==ggml_backend_get_default_buffer_type(b),"head vocabulary did not borrow actual mixed bank/device");++head_consumer_links;}if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.attn_qkv.weight"&&live_mixed){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"composed mixed backing ignored/reused");++mixed_consumers;}}if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ffn_gate_inp.weight"){
  auto* root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"FFN router ignored native mixed leaf");++ffn_mixed_consumers;}}
  const auto status=original_compute(b,g);
+ // Simulate the scheduler replacing a cross-backend RMS input edge with its
+ // backend copy after execution, as ggml_backend_sched_split_graph does.
+ if(simulate_ple_scheduler_copies) {
+  ggml_tensor* rms[2]{};size_t count=0;
+  for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);
+   if(t->op==GGML_OP_CPY && t->src[0] && t->src[0]->op==GGML_OP_MUL && t->src[0]->src[0] && t->src[0]->src[0]->op==GGML_OP_RMS_NORM && ggml_nbytes(t)==40960 && count<2) rms[count++]=t->src[0]->src[0];}
+  if(count==2){for(size_t i=0;i<2;++i){ple_scheduler_copy[i]=*rms[i]->src[0];ple_scheduler_copy[i].src[0]=nullptr;ple_scheduler_copy[i].view_src=nullptr;rms[i]->src[0]=&ple_scheduler_copy[i];}simulate_ple_scheduler_copies=false;++ple_scheduler_copies;}
+ }
+
  if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ssm_out.weight"){
  check(t->flags&GGML_TENSOR_FLAG_OUTPUT,"actual producer was not retained as output");actual_projected.resize(size_t(ggml_nelements(t)));ggml_backend_tensor_get(t,actual_projected.data(),0,actual_projected.size()*4);}}
  return status;}

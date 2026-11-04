@@ -24,6 +24,7 @@ class PortableNativePleGate {
     std::filesystem::path directory_;
     size_t bytes_ = 0;
     bool candidate_ = false, recorded_ = false;
+    const ggml_tensor *key_copy_ = nullptr, *query_copy_ = nullptr, *raw_key_ = nullptr, *residual_ = nullptr;
     std::array<uint8_t, 40960> last_key_{}, last_query_{};
     std::array<uint8_t, 16> last_gate_{};
 
@@ -43,16 +44,24 @@ class PortableNativePleGate {
         diagnostic = ggml_new_tensor_2d(c, GGML_TYPE_F32, 4, 4);
         for (auto* tensor : {key, query, gate, diagnostic}) ggml_set_input(tensor);
     }
-    void require_normalized_source(const ggml_tensor* copy, const ggml_tensor* bank,
-                                   const ggml_tensor* original) const {
+    // GGML may rewrite graph edges to backend-copy tensors during scheduling.
+    // Establish the logical producer chain before handing the graph to it.
+    static void require_logical_source(const ggml_tensor* copy, const ggml_tensor* bank,
+                                       const ggml_tensor* original) {
         need(copy && copy->op == GGML_OP_CPY && copy->src[1] == bank &&
              copy->view_src == bank && copy->src[0], "PLE gate: prefix destination differs");
         const auto* norm = copy->src[0];
         need(norm->op == GGML_OP_MUL && norm->src[0] && norm->src[0]->op == GGML_OP_RMS_NORM &&
              norm->src[0]->src[0] && norm->src[0]->src[0]->src[0] == original,
              "PLE gate: normalized producer differs");
-        for (auto* tensor : {norm, bank}) {
-            need(tensor->buffer && ggml_is_contiguous(tensor) && ggml_nbytes(tensor) == 40960,
+    }
+    void require_scheduled_source(const ggml_tensor* copy, const ggml_tensor* bank) const {
+        need(copy && copy->op == GGML_OP_CPY && copy->src[1] == bank &&
+             copy->view_src == bank && copy->src[0], "PLE gate: prefix destination differs");
+        // The copy source can be the scheduler's backend copy, but the actual
+        // source and the persistent destination must both be on this device.
+        for (const ggml_tensor* tensor : std::array<const ggml_tensor*, 2>{copy->src[0], bank}) {
+            need(tensor->type == GGML_TYPE_F32 && tensor->buffer && ggml_is_contiguous(tensor) && ggml_nbytes(tensor) == 40960,
                  "PLE gate: normalized device span");
             auto type = ggml_backend_buffer_get_type(tensor->buffer);
             auto owner = ggml_backend_get_device(backend_);
@@ -97,12 +106,22 @@ class PortableNativePleGate {
     ggml_tensor* key() const { return key_; }
     ggml_tensor* query() const { return query_; }
     ggml_tensor* gate() const { return gate_; }
+    void bind(const ggml_tensor* key_copy, const ggml_tensor* query_copy,
+              const ggml_tensor* raw_key, const ggml_tensor* residual) {
+        need(key_copy && query_copy && key_copy != query_copy && raw_key && residual,
+             "PLE gate: missing logical producers");
+        require_logical_source(key_copy, key_, raw_key);
+        require_logical_source(query_copy, query_, residual);
+        key_copy_ = key_copy; query_copy_ = query_copy; raw_key_ = raw_key; residual_ = residual;
+    }
     void begin() { candidate_ = false; }
     void run(const ggml_tensor* key_copy, const ggml_tensor* query_copy,
              const ggml_tensor* raw_key, const ggml_tensor* residual) {
         candidate_ = false;
-        require_normalized_source(key_copy, key_, raw_key);
-        require_normalized_source(query_copy, query_, residual);
+        need(key_copy == key_copy_ && query_copy == query_copy_ && raw_key == raw_key_ && residual == residual_,
+             "PLE gate: logical producer binding differs");
+        require_scheduled_source(key_copy, key_);
+        require_scheduled_source(query_copy, query_);
         need(strata_vk_native_ple_gate_run(component_.get(), key_, query_, gate_, diagnostic_) == 0,
              "PLE gate: finite domain refused");
         ggml_backend_tensor_get(key_, last_key_.data(), 0, last_key_.size());

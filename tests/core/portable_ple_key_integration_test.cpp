@@ -32,7 +32,15 @@ int main(int argc, char** argv) { try {
     {const size_t bound=PortableNativePleGate::estimate(cpu.get());bool refused=false;
      try{PortableNativePleGate short_budget(cpu.get(),(root/"gate-short").string(),bound-1);}catch(const std::exception&){refused=true;}
      check(refused&&!std::filesystem::exists(root/"gate-short"),"PLE gate accepted short device admission");
-     PortableNativePleGate exact_budget(cpu.get(),(root/"gate-exact").string(),bound);check(exact_budget.bytes()<=bound,"PLE gate exact device admission failed");}
+     PortableNativePleGate exact_budget(cpu.get(),(root/"gate-exact").string(),bound);check(exact_budget.bytes()<=bound,"PLE gate exact device admission failed");
+     auto* c=ggml_init({65536,nullptr,true});check(c,"gate binding test context");
+     auto* raw=ggml_new_tensor_2d(c,GGML_TYPE_F32,2560,4);auto* residual=ggml_new_tensor_2d(c,GGML_TYPE_F32,2560,4);
+     auto* weight=ggml_new_tensor_3d(c,GGML_TYPE_F32,2560,4,1);
+     auto norm=[&](ggml_tensor* t){return ggml_mul(c,ggml_rms_norm(c,ggml_reshape_3d(c,t,2560,4,1),1e-6f),weight);};
+     auto* key=ggml_cpy(c,norm(raw),exact_budget.key());auto* query=ggml_cpy(c,norm(residual),exact_budget.query());
+     refused=false;try{exact_budget.bind(key,query,residual,raw);}catch(const std::exception&){refused=true;}check(refused,"wrong logical producer accepted");
+     exact_budget.bind(key,query,raw,residual);
+     refused=false;try{exact_budget.run(query,key,raw,residual);}catch(const std::exception&){refused=true;}check(refused,"changed bound copy accepted");ggml_free(c);}
     PortableGdnOptions options; options.execution.threads=1; options.execution.accelerator=cpu.get();
     options.execution.request_accelerator=true; options.execution.allow_cpu_fallback=false;
     options.resident_attention_weights=true; options.ple_table=table;
@@ -117,5 +125,9 @@ int main(int argc, char** argv) { try {
     ple_fixture::reference(f,f.input(0),all_history,all_trace,*all);auto all_after=all->ple_convolution_history();
     fail_ple_gate=true;check(!all->step(20,f.input(1),ple_fixture::experts(),route,error),"combined gate failure accepted");fail_ple_gate=false;
     check(all->tokens()==1&&all->ple_convolution_history()==all_after&&all->token_history()==std::array<int32_t,2>{{-1,19}},"combined gate refusal committed history");
+    all.reset();options.native_ple_key_receipt=(root/"split-key").string();options.native_ple_value_receipt=(root/"split-value").string();options.native_ple_gate_receipt=(root/"split-gate").string();
+    auto split=PortableGdnLayer::create(1,f.views,options,error);check(bool(split),error);check(split->reset(error),error);
+    simulate_ple_scheduler_copies=true;check(split->step(19,f.input(0),ple_fixture::experts(),route,error),error);
+    check(ple_scheduler_copies==1&&split->tokens()==1&&split->native_ple_gate_calls()==1,"scheduled source-copy path not exercised");
     std::puts("PLE key/gate graph ownership, failure noncommit, retry and history reset passed with host providers");return 0;
 } catch(const std::exception&e) { std::cerr<<e.what()<<'\n';return 1; } }

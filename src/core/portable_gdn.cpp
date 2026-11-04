@@ -687,6 +687,7 @@ struct PortableGdnLayer::Impl {
                 ple_gate_query_copy=ggml_cpy(c,query,native_ple_gate->query());
                 ggml_build_forward_expand(ple_gate_prefix_graph,ple_gate_key_copy);
                 ggml_build_forward_expand(ple_gate_prefix_graph,ple_gate_query_copy);
+                native_ple_gate->bind(ple_gate_key_copy,ple_gate_query_copy,raw_key,input);
                 ple_key=native_ple_gate->key();ple_gate=native_ple_gate->gate();
             } else
 #endif
