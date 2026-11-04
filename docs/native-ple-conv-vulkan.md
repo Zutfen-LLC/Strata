@@ -1,0 +1,9 @@
+# PLE convolution observation
+
+This is a standalone Vulkan shader observation for the T1 convolution and residual in `native_ple_postops.cu`, together with the candidate history that `ple_history_advance` produces. It is not wired into the portable model or selected by any option. The default execution path is unchanged.
+
+For each of 10,240 channels, native reads the old nine-row history at offsets 0, 3 and 6, then the current normalized value. The four F16 weights are tap-fast. Native rounds each multiply and adds the terms in sequence, applies SiLU, then computes `hidden + (gated + activation)`. History stores nine values per channel; its next candidate shifts rows 1–8 and appends the current normalized value. Input and candidate history must be separate, and the caller must commit the candidate only after the complete token succeeds. No model integration is included here.
+
+The shader preserves those data layouts and basic-operation associations. Its `exp` and division use Vulkan primitives and are an observation, not a claim of identical CUDA intrinsic results. Native F32 FTZ behavior, half-weight edge cases, overlapping buffers, resource admission, error handling and actual device execution remain to be qualified by the native launcher and a Vulkan runner. There is no numerical tolerance or ULP adjustment in this change.
+
+`test_native_ple_conv_observation.py` checks literal tap, cancellation and history controls and compiles, validates and inspects the optimized SPIR-V for separate protected multiplies and adds. It does not execute the shader or establish native parity. The next step is an actual same-input native/Vulkan component comparison, followed by integration with producer-owned buffers and transactional history only if the bounded component results support it.

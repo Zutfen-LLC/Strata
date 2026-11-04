@@ -278,6 +278,11 @@ function(strata_native_hc_enable out)
     add_test(NAME native_gdn_ab_effective_shader_test COMMAND native_gdn_ab_effective_shader_test)
   endif()
   if(STRATA_BUILD_TESTS)
+    add_test(NAME native_ple_conv_observation_test COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_ple_conv_observation.py"
+      --shader "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_ple_conv_t1.comp"
+      --glslc "${Vulkan_GLSLC_EXECUTABLE}" --validator "${STRATA_SPIRV_VAL}"
+      --disassembler "${STRATA_SPIRV_DIS}" --scratch "${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME native_hc_write_fixture_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_hc_write_fixture.py" "$<TARGET_FILE:native_hc_write_component>")
     add_test(NAME native_hc_write_extract_test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_hc_write_extract.py")
     add_executable(native_hc_write_input_test tests/kernels/native_hc_write_input_test.cpp)
