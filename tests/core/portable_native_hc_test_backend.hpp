@@ -88,10 +88,14 @@ std::vector<float> get(const ggml_tensor* t){std::vector<float>x(size_t(ggml_nel
 void put(ggml_tensor*t,const std::vector<float>&x){ggml_backend_tensor_set(t,x.data(),0,x.size()*4);}
 }
 namespace strata::core::portable_detail {
-struct StrataVkNativePleConv{};
-StrataVkNativePleConv* strata_vk_native_ple_conv_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"PLE conv budget");std::ofstream(path)<<"mock; not shader evidence\n";return new StrataVkNativePleConv;}
+struct StrataVkNativePleConv{size_t bytes;};
+StrataVkNativePleConv* strata_vk_native_ple_conv_create(ggml_backend_t backend,const char*path,size_t budget){
+ auto c=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({4096,nullptr,true}),ggml_free);
+ ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,1);
+ auto bytes=ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(backend));
+ check(bytes&&budget>=bytes,"PLE conv budget");std::ofstream(path)<<"mock; not shader evidence\n";return new StrataVkNativePleConv{bytes};}
 void strata_vk_native_ple_conv_destroy(StrataVkNativePleConv*p)noexcept{delete p;}
-size_t strata_vk_native_ple_conv_bytes(const StrataVkNativePleConv*){return 512;}
+size_t strata_vk_native_ple_conv_bytes(const StrataVkNativePleConv*p){return p->bytes;}
 void strata_vk_native_ple_conv_run(StrataVkNativePleConv*,ggml_tensor* const t[10]){
  check(!fail_ple_conv,"injected PLE conv refusal");
  auto h=get(t[0]),n=get(t[1]),hidden=get(t[3]),gated=get(t[4]);

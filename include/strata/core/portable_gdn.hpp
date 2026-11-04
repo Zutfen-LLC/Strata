@@ -146,6 +146,7 @@ class PortableGdnLayer {
     uint64_t input_projection_calls() const;
     uint64_t native_ple_key_calls() const;
     uint64_t native_ple_gate_calls() const;
+    uint64_t native_ple_conv_calls() const;
     uint64_t native_ffn_hc_pending_calls() const;
     uint64_t native_ffn_hc_write_calls() const;
     const PortableHcPendingWrite& pending_write() const;

@@ -22,6 +22,7 @@ class PortableNativePleConv {
     std::array<ggml_tensor*,10> tensors_{};
     std::array<const ggml_tensor*,4> copies_{},originals_{};
     size_t bytes_=0;
+    uint64_t calls_=0;
     bool ready_=false,recorded_=false;
     std::filesystem::path directory_;
     std::array<std::vector<float>,4> before_;
@@ -39,10 +40,22 @@ class PortableNativePleConv {
         need(type==ggml_backend_get_default_buffer_type(backend_)&&owner&&(dev?dev==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE conv: producer device");
     }
 public:
+    static size_t estimate(ggml_backend_t backend){
+        need(backend,"PLE conv: backend");
+        auto c=context();std::array<ggml_tensor*,10> t{};leaves(c.get(),t);
+        auto type=ggml_backend_get_default_buffer_type(backend);
+        const auto bank=ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),type);
+        auto metadata=context();ggml_new_tensor_1d(metadata.get(),GGML_TYPE_I32,1);
+        const auto status=ggml_backend_alloc_ctx_tensors_from_buft_size(metadata.get(),type);
+        need(bank<=SIZE_MAX-status,"PLE conv: budget overflow");
+        return bank+status;
+    }
     PortableNativePleConv(ggml_backend_t backend,const void* weights,size_t weight_bytes,const char* module,size_t budget):backend_(backend),directory_(std::filesystem::path(module).parent_path()){
         need(backend&&weights&&weight_bytes==81920,"PLE conv: native F16 role required");
         const auto* p=static_cast<const uint8_t*>(weights);
         for(size_t i=0;i<weight_bytes;i+=2){uint16_t h;std::memcpy(&h,p+i,2);need((h&0x7c00u)!=0x7c00u,"PLE conv: nonfinite weight");}
+        const auto admitted=estimate(backend);
+        need(admitted<=budget,"PLE conv: allocation budget");
         ctx_=context();leaves(ctx_.get(),tensors_);
         const auto bound=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),ggml_backend_get_default_buffer_type(backend));
         need(bound<=budget,"PLE conv: allocation budget");
@@ -50,9 +63,11 @@ public:
         buffer_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),backend));need(bool(buffer_),"PLE conv: allocation");
         const auto actual=ggml_backend_buffer_get_size(buffer_.get()),extra=strata_vk_native_ple_conv_bytes(component_.get());
         need(actual<=budget&&extra<=budget-actual,"PLE conv: actual budget");bytes_=actual+extra;
+        need(bytes_<=admitted,"PLE conv: allocation exceeds estimate");
         ggml_backend_tensor_set(tensors_[2],weights,0,weight_bytes);
     }
     size_t bytes()const{return bytes_;}
+    uint64_t calls()const{return calls_;}
     ggml_tensor* input(size_t i)const{return tensors_.at(slots_.at(i));}
     ggml_tensor* history()const{return tensors_[5];}
     ggml_tensor* convolution()const{return tensors_[6];}
@@ -80,7 +95,7 @@ public:
         for(size_t i=6;i<10;++i){std::vector<float> out(sizes_[i]);ggml_backend_tensor_get(tensors_[i],out.data(),0,out.size()*4);for(float x:out)native_hc_normal(x);}
         before_=std::move(before);next_=std::move(next);result_.resize(sizes_[7]);
         ggml_backend_tensor_get(result(),result_.data(),0,result_.size()*4);
-        ready_=true;
+        ready_=true;++calls_;
     }
     // The suffix must read these same persistent banks. This is a candidate
     // receipt, emitted before the FFN and token transaction commit.

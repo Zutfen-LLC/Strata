@@ -9,12 +9,18 @@
 
 using namespace strata::core::portable_detail;
 namespace strata::core::portable_detail {
-struct StrataVkNativePleConv {};
+struct StrataVkNativePleConv {size_t bytes;};
 bool fail_conv = false;
 bool corrupt_history = false, nonfinite_output = false;
-StrataVkNativePleConv* strata_vk_native_ple_conv_create(ggml_backend_t,const char*,size_t) { return new StrataVkNativePleConv; }
+size_t component_creates=0;
+StrataVkNativePleConv* strata_vk_native_ple_conv_create(ggml_backend_t backend,const char*,size_t) {
+    auto metadata=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({4096,nullptr,true}),ggml_free);
+    ggml_new_tensor_1d(metadata.get(),GGML_TYPE_I32,1);
+    auto bytes=ggml_backend_alloc_ctx_tensors_from_buft_size(metadata.get(),ggml_backend_get_default_buffer_type(backend));
+    assert(bytes>0);++component_creates;return new StrataVkNativePleConv{bytes};
+}
 void strata_vk_native_ple_conv_destroy(StrataVkNativePleConv* p) noexcept { delete p; }
-size_t strata_vk_native_ple_conv_bytes(const StrataVkNativePleConv*) { return 0; }
+size_t strata_vk_native_ple_conv_bytes(const StrataVkNativePleConv* p) { return p->bytes; }
 void strata_vk_native_ple_conv_run(StrataVkNativePleConv*,ggml_tensor* const t[10]) {
     if (fail_conv) throw std::runtime_error("injected refusal");
     std::vector<float> h(92160), n(10240), next(92160), output(10240, 1.0f);
@@ -30,7 +36,12 @@ void strata_vk_native_ple_conv_run(StrataVkNativePleConv*,ggml_tensor* const t[1
 int main() {
     auto backend=std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>(ggml_backend_cpu_init(),ggml_backend_free);
     std::vector<uint16_t> weights(40960,0x3c00);
-    PortableNativePleConv owner(backend.get(),weights.data(),weights.size()*2,"",2u<<20);
+    const auto exact=PortableNativePleConv::estimate(backend.get());
+    bool short_refused=false;
+    try{PortableNativePleConv short_owner(backend.get(),weights.data(),weights.size()*2,"",exact-1);}catch(...){short_refused=true;}
+    assert(short_refused && component_creates==0);
+    PortableNativePleConv owner(backend.get(),weights.data(),weights.size()*2,"",exact);
+    assert(component_creates==1 && owner.bytes()==exact);
     auto ctx=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({16384,nullptr,true}),ggml_free);
     ggml_tensor* originals[4]; ggml_tensor* copies[4];
     for(size_t i=0;i<4;++i){originals[i]=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,i?10240:92160);copies[i]=ggml_cpy(ctx.get(),originals[i],owner.input(i));}

@@ -28,9 +28,10 @@ int main(int argc,char** argv){try{
     auto layer=PortableGdnLayer::create(1,fixture.views,options,error);check(bool(layer),error);
     check(layer->reset(error),error);auto initial=layer->ple_convolution_history();PortableRoute route;
     fail_ple_conv=true;check(!layer->step(19,fixture.input(0),ple_fixture::experts(),route,error),"component refusal accepted");
-    check(layer->tokens()==0&&layer->ple_convolution_history()==initial,"component refusal committed history");
+    check(layer->tokens()==0&&layer->native_ple_conv_calls()==0&&layer->ple_convolution_history()==initial,"component refusal committed history");
     fail_ple_conv=false;observe_ple_conv=true;PortableGdnTrace trace;
     check(layer->step(19,fixture.input(0),ple_fixture::experts(),route,error,&trace),error);
+    check(layer->native_ple_conv_calls()==1,"successful convolution was not counted");
     check(ple_conv_links>0&&actual_ple_conv_result,"suffix did not consume actual conv result bank");
     check(std::filesystem::file_size(root/"candidate/first-candidate/history.f32le")==92160*4 &&
           std::filesystem::file_size(root/"candidate/first-candidate/normalized.f32le")==10240*4 &&
@@ -47,8 +48,10 @@ int main(int argc,char** argv){try{
     }
     PortableExpertRows refuse=[](int64_t,const PortableRoute&,std::vector<float>&,std::string& e){e="intentional FFN failure";return false;};
     check(!layer->step(20,fixture.input(1),refuse,route,error),"FFN refusal accepted");
+    check(layer->native_ple_conv_calls()==2,"completed candidate before FFN refusal was not counted");
     check(layer->tokens()==1&&layer->ple_convolution_history()==history,"FFN refusal committed candidate history");
     check(layer->step(20,fixture.input(1),ple_fixture::experts(),route,error),error);
+    check(layer->native_ple_conv_calls()==3,"retry convolution was not counted");
     check(layer->token_history()==std::array<int32_t,2>{{19,20}},"retry token history differs");
     check(layer->reset(error),error);check(layer->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
     check(layer->last_residual()==residual&&layer->ple_convolution_history()==history,"reset did not restore first result");

@@ -602,6 +602,8 @@ int main(int argc, char **argv) {
         std::vector<int32_t> executed_tokens;
         const auto heads_before = session->model_work((opts.gdn_resident_state&&!opts.gdn_production)||opts.qsa_norm_rope_resident_weights||opts.qsa_indexer_resident_weights);
         const auto router_fields = [&](std::ostream& out) {
+            if(opts.native_ple_conv_t1)out<<",\"native_ple_conv_t1\":true,\"native_ple_conv_calls_delta\":"
+                <<session->model_work().native_ple_conv_calls[1]-heads_before.native_ple_conv_calls[1];
             if(opts.native_ple_gate_t1)out<<",\"native_ple_gate_t1\":true,\"native_ple_gate_calls_delta\":"
                 <<session->model_work().native_ple_gate_calls[1]-heads_before.native_ple_gate_calls[1];
             if(opts.native_ple_key_t1)out<<",\"native_ple_key_t1\":true,\"native_ple_key_calls_delta\":"

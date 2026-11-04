@@ -174,6 +174,7 @@ struct PortableModelWork {
     std::array<std::array<uint64_t,48>,6> native_gdn_input_projection_calls{};
     std::array<uint64_t,48> native_ple_key_calls{};
     std::array<uint64_t,48> native_ple_gate_calls{};
+    std::array<uint64_t,48> native_ple_conv_calls{};
     std::array<std::array<uint64_t,48>,6> native_gdn_output_projection_calls{};
     std::array<uint64_t,48> native_qsa_indexer_projection_submitted{},native_qsa_indexer_projection_completed{},native_qsa_indexer_projection_uncertain{};
     std::array<uint64_t,48> native_qsa_qkv_quant_submitted{},native_qsa_qkv_quant_completed{},native_qsa_qkv_submitted{},native_qsa_qkv_completed{};

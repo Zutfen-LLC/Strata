@@ -1550,6 +1550,13 @@ size_t PortableGdnLayer::native_output_projection_bytes() const {
     return 0;
 #endif
 }
+uint64_t PortableGdnLayer::native_ple_conv_calls() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_ple_conv ? impl_->native_ple_conv->calls() : 0;
+#else
+    return 0;
+#endif
+}
 uint64_t PortableGdnLayer::native_ple_gate_calls() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     return impl_->native_ple_gate ? impl_->native_ple_gate->calls() : 0;
