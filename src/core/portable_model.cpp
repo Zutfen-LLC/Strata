@@ -180,7 +180,7 @@ struct PortableModelSession::Impl {
                     "native PLE key: unsupported role type or shape");
             auto classes=portable_detail::qsa_wo_scale_classes(static_cast<const uint8_t*>(role.data),10240u*80u,34);
             portable_detail::qsa_wo_require_scales(classes,role.name,true);
-            std::clog<<"ple_key_role "<<role.name<<" type=Q8_0 bytes="<<role.bytes<<" zero="<<classes.zero<<" normal="<<classes.normal<<" subnormal="<<classes.subnormal<<" nonfinite="<<classes.nonfinite<<'\n';
+            std::clog<<"ple_key_role "<<role.name<<" type=Q8_0 bytes="<<role.bytes<<" zero="<<classes.zero<<" normal="<<classes.normal<<" subnormal="<<classes.subnormal<<" nonfinite="<<classes.nonfinite<<'\n'<<std::flush;
         }
         if(opts.native_qsa_indexer_projection_t1){
             for(size_t l=3;l<48;l+=4)for(const auto& spec:std::array<std::pair<const char*,size_t>,2>{{{"indexer.k_proj.weight",128},{"indexer.q_proj.weight",512}}}){
