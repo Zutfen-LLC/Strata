@@ -3,6 +3,8 @@
 #include <iostream>
 int main(int argc,char** argv){try{
     check(argc==2,"scratch root required");
+    check(!native_hc_boundary(0).defer_ffn&&!native_hc_boundary(1).pending_attention,
+          "layer 0 must materialize its FFN write before PLE");
     {
         PortableModelOptions model;model.native_ple_conv_t1=true;model.native_ple_conv_receipt_prefix="ple-conv";
         model.gdn_resident_weights=true;model.allow_cpu_fallback=false;validate_model_modes(model,1);
@@ -12,6 +14,13 @@ int main(int argc,char** argv){try{
             check(model_hc_host_bound(model,l)-model_hc_host_bound(off,l)==(l==1?PortableGdnOptions::native_ple_conv_host_bound:0),"PLE conv admission differs");}
         model.allow_cpu_fallback=true;bool rejected=false;try{validate_model_modes(model,1);}catch(const std::exception&){rejected=true;}
         check(rejected,"PLE conv accepted CPU fallback");
+        model.allow_cpu_fallback=false;model.native_ple_gate_t1=true;model.native_ple_gate_receipt_prefix="gate";
+        model.native_ple_norm_t1=true;model.native_ple_norm_receipt_prefix="norm";validate_model_modes(model,1);
+        auto no_norm=model;no_norm.native_ple_norm_t1=false;
+        for(size_t l=0;l<48;++l){PortableGdnOptions per;model_gdn_hc_options(model,l,per);
+            check(per.native_ple_norm_t1==(l==1),"PLE norm leaked to another layer");
+            check(model_hc_host_bound(model,l)-model_hc_host_bound(no_norm,l)==(l==1?PortableGdnOptions::native_ple_norm_host_bound:0),"PLE norm host admission differs");}
+        model.native_ple_gate_t1=false;rejected=false;try{validate_model_modes(model,1);}catch(const std::exception&){rejected=true;}check(rejected,"PLE norm without native gate accepted");
     }
     ple_fixture::Fixture fixture;std::vector<uint16_t> role(40960);
     for(size_t i=0;i<role.size();++i)role[i]=ggml_fp32_to_fp16(fixture.f32(5,i));
@@ -100,5 +109,37 @@ int main(int argc,char** argv){try{
     check(shared->step(20,fixture.input(1),ple_fixture::experts(),route,error),error);
     check(shared->reset(error),error);check(shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
     check(shared->ple_convolution_history()==shared_history&&shared->last_residual()==shared_residual,"shared scheduler rebind/reset differs");
+    shared.reset();options.scratch.reset();options.resident_state=false;actual_ple_conv_result=nullptr;
+    options.native_ple_conv_receipt=(root/"norm-conv").string();options.native_ple_gate_receipt=(root/"norm-gate").string();
+    options.native_ple_norm_t1=true;options.native_ple_norm_receipt=(root/"norm").string();options.state_budget+=PortableGdnOptions::native_ple_norm_host_bound;
+    observe_ple_norm=true;ple_norm_calls=0;ple_norm_conv_links=0;ple_norm_outputs={};
+    auto normalized=PortableGdnLayer::create(1,fixture.views,options,error);check(bool(normalized),error);
+    check(normalized->reset(error),error);auto before=normalized->ple_convolution_history();fail_ple_norm=true;
+    check(!normalized->step(19,fixture.input(0),ple_fixture::experts(),route,error),"norm refusal accepted");
+    check(normalized->tokens()==0&&normalized->ple_convolution_history()==before,"norm refusal committed state");
+    fail_ple_norm=false;fail_ple_norm_stage=3;
+    check(!normalized->step(19,fixture.input(0),ple_fixture::experts(),route,error),"gated norm refusal accepted");
+    check(normalized->tokens()==0&&normalized->ple_convolution_history()==before&&normalized->native_ple_conv_calls()==0,"gated norm refusal committed state");
+    fail_ple_norm_stage=0;ple_norm_calls=0;ple_norm_outputs={};
+    check(normalized->step(19,fixture.input(0),ple_fixture::experts(),route,error,&trace),error);
+    check(ple_norm_calls==3&&normalized->native_ple_norm_calls()==5&&ple_norm_conv_links>0,"norm to gate/convolution producer links differ");
+    auto norm_history=normalized->ple_convolution_history();
+    check(!normalized->step(20,fixture.input(1),refuse,route,error),"norm FFN failure accepted");
+    check(normalized->tokens()==1&&normalized->ple_convolution_history()==norm_history,"norm FFN failure committed state");
+    check(normalized->step(20,fixture.input(1),ple_fixture::experts(),route,error),error);
+    check(normalized->reset(error),error);check(normalized->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
+    check(normalized->ple_convolution_history()==norm_history,"norm reset differs");
+    normalized.reset();actual_ple_conv_result=nullptr;ple_norm_outputs={};ple_norm_calls=0;ple_norm_conv_links=0;
+    options.native_ple_conv_receipt=(root/"norm-shared-conv").string();options.native_ple_gate_receipt=(root/"norm-shared-gate").string();options.native_ple_norm_receipt=(root/"norm-shared").string();
+    options.resident_state=true;options.scratch=PortableGdnScratch::create(options.execution,error);check(bool(options.scratch),error);
+    auto norm_shared=PortableGdnLayer::create(1,fixture.views,options,error);check(bool(norm_shared),error);
+    check(norm_shared->reset(error),error);check(norm_shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
+    check(ple_norm_calls==3&&ple_norm_conv_links>0,"shared norm producer links differ");
+    auto shared_norm_history=norm_shared->ple_convolution_history();
+    check(!norm_shared->step(20,fixture.input(1),refuse,route,error),"shared norm FFN failure accepted");
+    check(norm_shared->tokens()==1&&norm_shared->ple_convolution_history()==shared_norm_history,"shared norm failure committed state");
+    check(norm_shared->step(20,fixture.input(1),ple_fixture::experts(),route,error),error);
+    check(norm_shared->reset(error),error);check(norm_shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
+    check(norm_shared->ple_convolution_history()==shared_norm_history,"shared norm reset differs");
     std::puts("PLE conv producer, candidate history, refusal, retry and reset passed with host provider");return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

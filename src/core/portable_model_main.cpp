@@ -122,6 +122,7 @@ int main(int argc, char **argv) {
                              " [--native-ple-key-t1 PREFIX (trial, layer-1 PLE key projection)]\n"
                              " [--native-ple-conv-t1 PREFIX (trial, layer-1 PLE convolution)]\n"
                              " [--native-ple-gate-t1 PREFIX (trial, layer-1 PLE gate)]\n"
+                             " [--native-ple-norm-t1 PREFIX (trial, layer-1 PLE normalization)]\n"
                              " [--native-hc-pending-layer2-3 RECEIPT_PREFIX (experimental ordinary QSA HC carry)]\n"
                              " [--native-hc-pending-layer1-2 RECEIPT_PREFIX (experimental ordinary inter-layer carry)]\n"
                              " [--native-hc-ffn-write-layer0 RECEIPT_PREFIX (experimental final materialization before PLE)]\n"
@@ -231,6 +232,7 @@ int main(int argc, char **argv) {
             else if(key=="--native-gdn-input-projection-t1") {opts.native_gdn_input_projection_t1=true;opts.native_gdn_input_projection_receipt_prefix=value;}
             else if(key=="--native-gdn-output-projection-t1") {opts.native_gdn_output_projection_t1=true;opts.native_gdn_output_projection_receipt_prefix=value;}
             else if(key=="--native-ple-gate-t1") {opts.native_ple_gate_t1=true;opts.native_ple_gate_receipt_prefix=value;}
+            else if(key=="--native-ple-norm-t1") {opts.native_ple_norm_t1=true;opts.native_ple_norm_receipt_prefix=value;}
             else if(key=="--native-ple-key-t1") {opts.native_ple_key_t1=true;opts.native_ple_key_receipt_prefix=value;}
             else if(key=="--native-ple-conv-t1") {opts.native_ple_conv_t1=true;opts.native_ple_conv_receipt_prefix=value;}
             else if(key=="--native-gdn-t1") {opts.native_gdn_t1=true;opts.native_gdn_receipt_prefix=value;}
@@ -402,6 +404,7 @@ int main(int argc, char **argv) {
                      <<(opts.native_gdn_input_projection_t1?",\"native_gdn_input_projection_t1\":true":"")
                      <<(opts.native_gdn_output_projection_t1?",\"native_gdn_output_projection_t1\":true":"")
                      <<(opts.native_ple_gate_t1?",\"native_ple_gate_t1\":true":"")
+                     <<(opts.native_ple_norm_t1?",\"native_ple_norm_t1\":true,\"native_ple_norm_cuda_bitwise_qualified\":false,\"full_ple_parity\":false":"")
                      <<(opts.native_ple_key_t1?",\"native_ple_key_t1\":true":"")
                      <<(opts.native_ple_conv_t1?",\"native_ple_conv_t1\":true":"")
                      <<(opts.native_qsa_indexer_projection_t1?",\"native_qsa_indexer_projection_t1\":true":"")
@@ -606,6 +609,8 @@ int main(int argc, char **argv) {
                 <<session->model_work().native_ple_conv_calls[1]-heads_before.native_ple_conv_calls[1];
             if(opts.native_ple_gate_t1)out<<",\"native_ple_gate_t1\":true,\"native_ple_gate_calls_delta\":"
                 <<session->model_work().native_ple_gate_calls[1]-heads_before.native_ple_gate_calls[1];
+            if(opts.native_ple_norm_t1)out<<",\"native_ple_norm_t1\":true,\"native_ple_norm_calls_delta\":"
+                <<session->model_work().native_ple_norm_calls[1]-heads_before.native_ple_norm_calls[1];
             if(opts.native_ple_key_t1)out<<",\"native_ple_key_t1\":true,\"native_ple_key_calls_delta\":"
                 <<session->model_work().native_ple_key_calls[1]-heads_before.native_ple_key_calls[1];
             if((opts.native_hc_pending_layer1_2 || opts.native_hc_pending_layer2_3) && !opts.native_hc_norm_inject_layer0)out<<",\"full_hc_parity\":false";

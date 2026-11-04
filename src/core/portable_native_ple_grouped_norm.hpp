@@ -55,9 +55,11 @@ public:
         buffer_.reset(ggml_backend_alloc_ctx_tensors(context_.get(),backend));need(bool(buffer_),"PLE grouped norm: allocation");
         const size_t actual=ggml_backend_buffer_get_size(buffer_.get()),extra=strata_vk_native_ple_grouped_norm_bytes(component_.get());
         need(actual<=budget&&extra<=budget-actual&&actual+extra<=admitted,"PLE grouped norm: actual allocation budget");bytes_=actual+extra;
+        ggml_backend_buffer_clear(buffer_.get(),0);
         for(size_t i=0;i<3;++i)ggml_backend_tensor_set(gammas_[i],gamma[i],0,40960);
     }
     size_t bytes()const{return bytes_;}
+    uint64_t calls()const{return strata_vk_native_ple_grouped_norm_calls(component_.get());}
     ggml_tensor* input(size_t i)const{return inputs_.at(i);}
     ggml_tensor* gamma(size_t i)const{return gammas_.at(i);}
     ggml_tensor* output(size_t i)const{return outputs_.at(i);}

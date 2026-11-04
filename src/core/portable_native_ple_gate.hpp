@@ -25,6 +25,8 @@ class PortableNativePleGate {
     size_t bytes_ = 0;
     bool candidate_ = false, recorded_ = false;
     const ggml_tensor *key_copy_ = nullptr, *query_copy_ = nullptr, *raw_key_ = nullptr, *residual_ = nullptr;
+    const ggml_tensor *direct_key_ = nullptr, *direct_query_ = nullptr;
+    ggml_tensor *active_key_ = nullptr, *active_query_ = nullptr;
     std::array<uint8_t, 40960> last_key_{}, last_query_{};
     std::array<uint8_t, 16> last_gate_{};
 
@@ -115,6 +117,20 @@ class PortableNativePleGate {
         key_copy_ = key_copy; query_copy_ = query_copy; raw_key_ = raw_key; residual_ = residual;
     }
     void begin() { candidate_ = false; }
+    void bind_direct(ggml_tensor* key, ggml_tensor* query) {
+        need(key && query && key != query, "PLE gate: missing direct normalized producers");
+        direct_key_ = key; direct_query_ = query;
+    }
+    void run_direct(ggml_tensor* key, ggml_tensor* query) {
+        candidate_ = false;
+        need(key && query && key == direct_key_ && query == direct_query_, "PLE gate: direct producer binding differs");
+        need(strata_vk_native_ple_gate_run(component_.get(), key, query, gate_, diagnostic_) == 0,
+             "PLE gate: finite domain refused");
+        ggml_backend_tensor_get(key, last_key_.data(), 0, last_key_.size());
+        ggml_backend_tensor_get(query, last_query_.data(), 0, last_query_.size());
+        ggml_backend_tensor_get(gate_, last_gate_.data(), 0, last_gate_.size());
+        active_key_ = key; active_query_ = query; candidate_ = true;
+    }
     void run(const ggml_tensor* key_copy, const ggml_tensor* query_copy,
              const ggml_tensor* raw_key, const ggml_tensor* residual) {
         candidate_ = false;
@@ -127,7 +143,7 @@ class PortableNativePleGate {
         ggml_backend_tensor_get(key_, last_key_.data(), 0, last_key_.size());
         ggml_backend_tensor_get(query_, last_query_.data(), 0, last_query_.size());
         ggml_backend_tensor_get(gate_, last_gate_.data(), 0, last_gate_.size());
-        candidate_ = true;
+        active_key_ = key_; active_query_ = query_; candidate_ = true;
     }
     // This records a graph-completed candidate; the FFN and token are not yet committed.
     void verify_and_record(ggml_tensor* consumed, ggml_tensor* value, ggml_tensor* broadcast,
@@ -142,7 +158,7 @@ class PortableNativePleGate {
             ggml_backend_tensor_get(tensor, bytes.data(), 0, bytes.size());
             need(std::equal(bytes.begin(), bytes.end(), expected.begin()), "PLE gate: producer or gate bank changed");
         };
-        unchanged(key_, last_key_); unchanged(query_, last_query_); unchanged(gate_, last_gate_);
+        unchanged(active_key_, last_key_); unchanged(active_query_, last_query_); unchanged(gate_, last_gate_);
         if (recorded_) return;
         auto path = directory_ / "first-candidate";
         need(std::filesystem::create_directory(path), "PLE gate: receipt exists");
@@ -154,7 +170,7 @@ class PortableNativePleGate {
             file.flush();
             need(bool(file), "PLE gate: receipt write");
         };
-        save("key.f32le", key_); save("query.f32le", query_);
+        save("key.f32le", active_key_); save("query.f32le", active_query_);
         save("gate.f32le", gate_); save("diagnostic.f32le", diagnostic_);
         std::ofstream meta(path / "metadata.json");
         meta << "{\"position\":" << position << ",\"token\":" << token

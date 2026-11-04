@@ -15,6 +15,7 @@
 #include "portable_native_gdn_input.hpp"
 #include "portable_native_ple_key.hpp"
 #include "portable_native_ple_gate.hpp"
+#include "portable_native_ple_grouped_norm.hpp"
 #include "portable_native_ple_value.hpp"
 #include "portable_native_ple_conv.hpp"
 #include "portable_native_qsa_wo.hpp"
@@ -170,6 +171,7 @@ struct PortableGdnLayer::Impl {
     std::unique_ptr<portable_detail::PortableNativePleKey> native_ple_key;
     std::unique_ptr<portable_detail::PortableNativePleConv> native_ple_conv;
     std::unique_ptr<portable_detail::PortableNativePleGate> native_ple_gate;
+    std::unique_ptr<portable_detail::PortableNativePleGroupedNorm> native_ple_norm;
     std::unique_ptr<portable_detail::PortableNativeQsaWo> native_output_projection;
     std::unique_ptr<portable_detail::PortableNativeQsaWo::Candidate> native_output_candidate;
     std::vector<float> native_output_input;
@@ -180,6 +182,7 @@ struct PortableGdnLayer::Impl {
     ggml_cgraph* ple_gate_prefix_graph=nullptr;
     ggml_tensor* ple_gate_broadcast=nullptr;
     ggml_tensor *ple_gate_key_copy=nullptr,*ple_gate_query_copy=nullptr;
+    ggml_tensor* ple_norm_gated_copy=nullptr;
     ggml_tensor* preparation_mixed=nullptr;
     size_t preparation_reserved=0;
     size_t preparation_credit()const {
@@ -191,7 +194,7 @@ struct PortableGdnLayer::Impl {
     }
     size_t native_gdn_bytes()const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
-        return (native_ple_conv?native_ple_conv->bytes():0)+(native_ple_value?native_ple_value->bytes():0)+(native_gdn?native_gdn->bytes():0)+(native_preparation?native_preparation->bytes():0)+(native_input_projection?native_input_projection->bytes():0)+(native_output_projection?native_output_projection->bytes():0)+(native_ple_key?native_ple_key->bytes():0)+(native_ple_gate?native_ple_gate->bytes():0);
+        return (native_ple_norm?native_ple_norm->bytes():0)+(native_ple_conv?native_ple_conv->bytes():0)+(native_ple_value?native_ple_value->bytes():0)+(native_gdn?native_gdn->bytes():0)+(native_preparation?native_preparation->bytes():0)+(native_input_projection?native_input_projection->bytes():0)+(native_output_projection?native_output_projection->bytes():0)+(native_ple_key?native_ple_key->bytes():0)+(native_ple_gate?native_ple_gate->bytes():0);
 #else
         return 0;
 #endif
@@ -472,9 +475,14 @@ struct PortableGdnLayer::Impl {
 #ifdef STRATA_PORTABLE_NATIVE_HC
             if(s.native_ple_gate) {
                 s.native_ple_gate->begin();
+                if(s.native_ple_norm)s.native_ple_norm->begin();
                 require(!projected && s.ple_gate_prefix_graph && s.projection_scheduler,"native PLE gate: prefix unavailable");
                 require(ggml_backend_sched_graph_compute(s.projection_scheduler.get(),s.ple_gate_prefix_graph)==GGML_STATUS_SUCCESS,"native PLE gate: normalization prefix failed");
-                s.native_ple_gate->run(s.ple_gate_key_copy,s.ple_gate_query_copy,s.ple_raw_key,s.input);
+                if(s.native_ple_norm){
+                    s.native_ple_norm->run(0,s.ple_gate_key_copy,s.ple_raw_key);
+                    s.native_ple_norm->run(1,s.ple_gate_query_copy,s.input);
+                    s.native_ple_gate->run_direct(s.native_ple_norm->output(0),s.native_ple_norm->output(1));
+                }else s.native_ple_gate->run(s.ple_gate_key_copy,s.ple_gate_query_copy,s.ple_raw_key,s.input);
             }
 #endif
             ggml_status status;
@@ -486,6 +494,13 @@ struct PortableGdnLayer::Impl {
                     require(!s.native_hc,"native PLE conv: hidden residual owner differs");
                     auto* prefix=s.native_ple_gate?s.tail_scheduler.get():s.projection_scheduler.get();
                     require(ggml_backend_sched_graph_compute(prefix,s.ple_prefix_graph)==GGML_STATUS_SUCCESS,"native PLE conv: prefix graph failed");
+                    if(s.native_ple_norm){
+                        // The prefix only writes candidate banks. Its first pass
+                        // materializes the actual gated value; no convolution is
+                        // dispatched until the normalized candidate is ready.
+                        s.native_ple_norm->run(2,s.ple_norm_gated_copy,s.ple_gate_broadcast);
+                        require(ggml_backend_sched_graph_compute(prefix,s.ple_prefix_graph)==GGML_STATUS_SUCCESS,"native PLE conv: normalized prefix graph failed");
+                    }
                     s.native_ple_conv->run(s.ple_conv_copies.data(),s.ple_conv_sources.data(),residual);
                 }
                 if(s.native_gdn) {
@@ -609,7 +624,7 @@ struct PortableGdnLayer::Impl {
 
     bool production() const { return options.policy == PortableGdnPolicy::device_production; }
     size_t host_state_bytes() const {
-        return (options.native_ple_gate_t1?PortableGdnOptions::native_ple_gate_host_bound:0)+(options.native_ple_conv_t1?PortableGdnOptions::native_ple_conv_host_bound:0)+(options.native_ple_value_t1?PortableGdnOptions::native_ple_value_host_bound:0)+(options.native_ple_key_t1?PortableGdnOptions::native_ple_key_host_bound:0)+(options.native_output_projection_t1?PortableGdnOptions::native_output_projection_host_bound:0)+(options.native_input_projection_t1?PortableGdnOptions::native_input_projection_host_bound:0)+(options.native_preparation_weights?PortableGdnOptions::native_preparation_host_bound:0)+(options.native_recurrence_t1?PortableGdnOptions::native_recurrence_host_bound:0)+(options.native_hc_norm_inject?(options.native_hc_pending?PortableGdnOptions::native_hc_pending_host_bound:(options.native_hc_mix?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound)):0)+HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
+        return (options.native_ple_norm_t1?PortableGdnOptions::native_ple_norm_host_bound:0)+(options.native_ple_gate_t1?PortableGdnOptions::native_ple_gate_host_bound:0)+(options.native_ple_conv_t1?PortableGdnOptions::native_ple_conv_host_bound:0)+(options.native_ple_value_t1?PortableGdnOptions::native_ple_value_host_bound:0)+(options.native_ple_key_t1?PortableGdnOptions::native_ple_key_host_bound:0)+(options.native_output_projection_t1?PortableGdnOptions::native_output_projection_host_bound:0)+(options.native_input_projection_t1?PortableGdnOptions::native_input_projection_host_bound:0)+(options.native_preparation_weights?PortableGdnOptions::native_preparation_host_bound:0)+(options.native_recurrence_t1?PortableGdnOptions::native_recurrence_host_bound:0)+(options.native_hc_norm_inject?(options.native_hc_pending?PortableGdnOptions::native_hc_pending_host_bound:(options.native_hc_mix?PortableGdnOptions::native_hc_read_host_bound:PortableGdnOptions::native_hc_host_bound)):0)+HOST_STATE_BYTES - (production() ? (2 * STATES + 2 * HISTORY) * sizeof(float) : 0) +
             (options.ple_table ? PLE_STATE_BYTES - (production() ? 2 * PLE_HISTORY * sizeof(float) : 0) : 0);
     }
 
@@ -694,12 +709,19 @@ struct PortableGdnLayer::Impl {
 #ifdef STRATA_PORTABLE_NATIVE_HC
             if(native_ple_gate) {
                 ple_gate_prefix_graph=ggml_new_graph(c);
-                ple_gate_key_copy=ggml_cpy(c,key_normalized,native_ple_gate->key());
-                ple_gate_query_copy=ggml_cpy(c,query,native_ple_gate->query());
+                if(native_ple_norm){
+                    ple_gate_key_copy=ggml_cpy(c,raw_key,native_ple_norm->input(0));
+                    ple_gate_query_copy=ggml_cpy(c,input,native_ple_norm->input(1));
+                    native_ple_norm->bind(0,ple_gate_key_copy,raw_key);native_ple_norm->bind(1,ple_gate_query_copy,input);
+                    native_ple_gate->bind_direct(native_ple_norm->output(0),native_ple_norm->output(1));
+                }else{
+                    ple_gate_key_copy=ggml_cpy(c,key_normalized,native_ple_gate->key());
+                    ple_gate_query_copy=ggml_cpy(c,query,native_ple_gate->query());
+                    native_ple_gate->bind(ple_gate_key_copy,ple_gate_query_copy,raw_key,input);
+                }
                 ggml_build_forward_expand(ple_gate_prefix_graph,ple_gate_key_copy);
                 ggml_build_forward_expand(ple_gate_prefix_graph,ple_gate_query_copy);
-                native_ple_gate->bind(ple_gate_key_copy,ple_gate_query_copy,raw_key,input);
-                ple_key=native_ple_gate->key();ple_gate=native_ple_gate->gate();
+                ple_key=native_ple_norm?native_ple_norm->output(0):native_ple_gate->key();ple_gate=native_ple_gate->gate();
             } else
 #endif
             {
@@ -714,6 +736,12 @@ struct PortableGdnLayer::Impl {
 #ifdef STRATA_PORTABLE_NATIVE_HC
             if(native_ple_conv) {
                 ple_prefix_graph=ggml_new_graph(c);
+                if(native_ple_norm){
+                    ple_norm_gated_copy=ggml_cpy(c,gated_value,native_ple_norm->input(2));
+                    ggml_build_forward_expand(ple_prefix_graph,ple_norm_gated_copy);
+                    native_ple_norm->bind(2,ple_norm_gated_copy,gated_value);
+                    ple_norm=native_ple_norm->output(2);
+                }
                 ple_conv_sources={ple_hist,ple_norm,input,gated_value};
                 for(size_t i=0;i<4;++i){
                     ggml_set_output(ple_conv_sources[i]);
@@ -909,7 +937,7 @@ struct PortableGdnLayer::Impl {
             o.schedulers[2]=std::move(s.tail_scheduler);
             o.active={};
             s.ctx.reset(); s.projection_ctx.reset();
-            s.graph=nullptr; s.tail_graph=nullptr; s.projection_graph=nullptr; s.native_prefix_graph=nullptr; s.ple_prefix_graph=nullptr; s.ple_gate_prefix_graph=nullptr; s.ple_gate_broadcast=nullptr; s.ple_gate_key_copy=nullptr; s.ple_gate_query_copy=nullptr;
+            s.graph=nullptr; s.tail_graph=nullptr; s.projection_graph=nullptr; s.native_prefix_graph=nullptr; s.ple_prefix_graph=nullptr; s.ple_gate_prefix_graph=nullptr; s.ple_gate_broadcast=nullptr; s.ple_gate_key_copy=nullptr; s.ple_gate_query_copy=nullptr; s.ple_norm_gated_copy=nullptr;
             s.projection_tokens=0; s.projection_bytes=0;
             s.graphs_size=s.ffn->graph_bytes()+s.native_hc_bytes()+s.native_gdn_bytes();
             if(!s.state_buffer) { s.state_input=nullptr; s.history_input=nullptr; s.ple_hist=nullptr; }
@@ -936,12 +964,14 @@ struct PortableGdnLayer::Impl {
         require(!options.native_input_projection_t1 || (layer!=1 && options.native_hc_mix && options.native_preparation_t1 && options.native_recurrence_t1 && !options.native_input_projection_receipt.empty()),"native GDN input projection: ordinary native HC, preparation, recurrence and receipt required");
         require(!options.native_output_projection_t1 || (layer!=1 && options.native_hc_ffn_read && options.native_preparation_t1 && options.native_recurrence_t1 && !options.native_output_projection_receipt.empty()),"native GDN output projection: ordinary native recurrence, FFN read and receipt required");
         require(!options.native_ple_gate_t1 || (layer==1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && !options.native_recurrence_t1 && !options.native_hc_norm_inject && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_gate_receipt.empty()), "native PLE gate: layer 1 serial eager strict accelerator, resident weights and receipt required");
+        require(!options.native_ple_norm_t1 || (options.native_ple_gate_t1 && options.native_ple_conv_t1 && !options.native_ple_norm_receipt.empty()), "native PLE norm: native gate, convolution and receipt required");
         require(!options.native_ple_key_t1 || (layer == 1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_key_receipt.empty()), "native PLE key: layer 1 serial eager strict accelerator, resident role and receipt required");
         require(!options.native_ple_conv_t1 || (layer == 1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && !options.native_hc_norm_inject && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_conv_receipt.empty()), "native PLE conv: layer 1 serial eager strict accelerator, resident role and receipt required");
 #ifndef STRATA_PORTABLE_NATIVE_HC
         require(!options.native_ple_key_t1, "native PLE key: native stage build required");
         require(!options.native_ple_conv_t1, "native PLE conv: native stage build required");
         require(!options.native_ple_gate_t1, "native PLE gate: native stage build required");
+        require(!options.native_ple_norm_t1, "native PLE norm: native stage build required");
 #endif
         if(options.native_output_projection_t1){const char* fused=std::getenv("STRATA_QFUSE");require(!fused||std::atoi(fused)==0,"native GDN output projection: fused quantization unsupported");}
         if(options.native_recurrence_t1) {
@@ -1081,6 +1111,17 @@ struct PortableGdnLayer::Impl {
         weights_size = ffn->weight_bytes() + actual_weights;
         weights=w;
 #ifdef STRATA_PORTABLE_NATIVE_HC
+        if(options.native_ple_norm_t1){
+            std::array<const float*,3> gamma{};const char* names[]={"ple_norm_key.weight","ple_norm_query.weight","ple_norm_conv.weight"};
+            for(size_t i=0;i<3;++i){auto role=std::find_if(aw.begin(),aw.end(),[&](const auto& v){return v.name==prefix+names[i];});
+                require(role!=aw.end()&&role->type==0&&role->bytes==40960&&role->data,"native PLE norm: F32 gamma role required");gamma[i]=static_cast<const float*>(role->data);}
+            require(graphs_size<options.execution.graph_budget,"native PLE norm: no graph room");
+            require(std::filesystem::create_directory(options.native_ple_norm_receipt),"native PLE norm: fresh receipt required");
+            auto path=(std::filesystem::path(options.native_ple_norm_receipt)/"effective.spv").string();
+            native_ple_norm=std::make_unique<portable_detail::PortableNativePleGroupedNorm>(options.execution.accelerator,gamma,path.c_str(),options.execution.graph_budget-graphs_size);
+            graphs_size+=native_ple_norm->bytes();
+            placement.push_back({"native-ple","NATIVE_GROUPED_NORM_T1_DIAGNOSTIC","key/query/gated candidate banks; intrinsic parity unqualified","F32",ggml_backend_name(options.execution.accelerator),"",{H,HC}});
+        }
         if(options.native_ple_conv_t1){
             auto role=std::find_if(aw.begin(),aw.end(),[&](const auto& v){return v.name==prefix+"ple_conv1d.weight";});
             require(role!=aw.end() && ((role->type==1 && role->bytes==81920)||(role->type==0 && role->bytes==163840)),"native PLE conv: F32/F16 role required");
@@ -1561,6 +1602,13 @@ uint64_t PortableGdnLayer::native_ple_conv_calls() const {
 uint64_t PortableGdnLayer::native_ple_gate_calls() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC
     return impl_->native_ple_gate ? impl_->native_ple_gate->calls() : 0;
+#else
+    return 0;
+#endif
+}
+uint64_t PortableGdnLayer::native_ple_norm_calls() const {
+#ifdef STRATA_PORTABLE_NATIVE_HC
+    return impl_->native_ple_norm ? impl_->native_ple_norm->calls() : 0;
 #else
     return 0;
 #endif

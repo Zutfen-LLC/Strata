@@ -3,6 +3,7 @@
 #include "portable_gdn_fixture.hpp"
 #include "strata_vk_native_hc.hpp"
 #include "strata_vk_native_ple_gate.hpp"
+#include "strata_vk_native_ple_grouped_norm.hpp"
 #include "native_hc_layout.hpp"
 #include "native_hc_pending.hpp"
 #include "strata_vk_native_shared.hpp"
@@ -32,6 +33,7 @@ bool observe_gdn_input=false;int fail_gdn_input=0;size_t gdn_input_links=0;std::
 bool observe_gdn_output=false;size_t gdn_output_quant_links=0,gdn_output_pending_links=0;ggml_tensor* actual_gdn_gated=nullptr;ggml_tensor* actual_gdn_output_bank=nullptr;ggml_backend_t gdn_output_backend=nullptr;
 bool observe_head_consumer=false;size_t head_consumer_links=0;
 bool observe_ple_gate=false,fail_ple_gate=false,corrupt_ple_gate=false,simulate_ple_scheduler_copies=false;size_t ple_gate_links=0,ple_scheduler_copies=0;
+bool observe_ple_norm=false,fail_ple_norm=false;int fail_ple_norm_stage=0;size_t ple_norm_calls=0,ple_norm_conv_links=0;std::array<const ggml_tensor*,3> ple_norm_outputs{};
 ggml_tensor ple_scheduler_copy[2]{};
 ggml_tensor* actual_ple_gate_bank=nullptr;ggml_backend_t ple_gate_backend=nullptr;std::vector<float> actual_ple_gate_key,actual_ple_gate_query;
 bool observe_ple_key=false,fail_ple_key=false;size_t ple_key_links=0;
@@ -67,6 +69,7 @@ std::vector<uint16_t> expected_weights;
 const ggml_tensor* bound_weight=nullptr;const ggml_tensor* live_normalized=nullptr;size_t direct_consumers=0;
 decltype(ggml_backend_i::graph_compute) original_compute=nullptr;
 ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){
+ if(observe_ple_norm&&ple_norm_outputs[2])for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_CPY&&t->src[0]==ple_norm_outputs[2]){check(t->src[0]->buffer&&ggml_is_contiguous(t->src[0])&&ggml_backend_buffer_get_type(t->src[0]->buffer)==ggml_backend_get_default_buffer_type(b),"PLE conv ignored normalized bank/device");++ple_norm_conv_links;}}
  if(observe_ple_conv&&actual_ple_conv_result)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);for(auto*s:t->src){if(!s)continue;auto*root=s;while(root->view_src)root=root->view_src;if(root==actual_ple_conv_result){check(root->buffer&&ggml_is_contiguous(root)&&ggml_nbytes(root)==10240*4&&ggml_backend_buffer_get_type(root->buffer)==ggml_backend_get_default_buffer_type(b),"PLE conv downstream producer/device differs");++ple_conv_links;}}}
  if(observe_ple_gate&&actual_ple_gate_bank)for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL&&t->src[1]==actual_ple_gate_bank){auto*g=t->src[1];check(g->buffer&&ggml_is_contiguous(g)&&ggml_nbytes(g)==16&&ggml_backend_buffer_get_type(g->buffer)==ggml_backend_get_default_buffer_type(ple_gate_backend),"PLE gate broadcast ignored producer tensor/device");check(t->src[0]&&t->src[0]->src[0]&&t->src[0]->src[0]->src[0],"PLE value broadcast missing");if(corrupt_ple_gate){float wrong[4]={0,0,0,0};ggml_backend_tensor_set(g,wrong,0,sizeof(wrong));corrupt_ple_gate=false;}++ple_gate_links;}}
 
@@ -370,6 +373,19 @@ void strata_vk_native_shared_run(StrataVkNativeShared*p,uint32_t mode,const ggml
 }
 
 namespace strata::core::portable_detail {
+struct StrataVkNativePleGroupedNorm {size_t bytes;uint64_t calls=0;};
+StrataVkNativePleGroupedNorm* strata_vk_native_ple_grouped_norm_create(ggml_backend_t b,const char* path,size_t budget){
+ auto c=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({4096,nullptr,true}),ggml_free);ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,1);
+ auto bytes=ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(b));check(bytes&&budget>=bytes,"PLE norm mock admission");std::ofstream(path)<<"host mock only\n";return new StrataVkNativePleGroupedNorm{bytes};}
+void strata_vk_native_ple_grouped_norm_destroy(StrataVkNativePleGroupedNorm*p)noexcept{delete p;}
+size_t strata_vk_native_ple_grouped_norm_bytes(const StrataVkNativePleGroupedNorm*p){return p->bytes;}
+uint64_t strata_vk_native_ple_grouped_norm_calls(const StrataVkNativePleGroupedNorm*p)noexcept{return p?p->calls:0;}
+uint32_t strata_vk_native_ple_grouped_norm_run(StrataVkNativePleGroupedNorm*p,const ggml_tensor*in,const ggml_tensor*gamma,ggml_tensor*out,ggml_tensor*){
+ check(observe_ple_norm&&in&&gamma&&out&&in!=gamma&&in!=out&&gamma!=out&&in->buffer&&gamma->buffer&&out->buffer,"PLE norm producer bank differs");
+ if(fail_ple_norm||fail_ple_norm_stage==int(ple_norm_calls%3+1))return 1;auto x=get(in),w=get(gamma);std::vector<float>y(x.size());
+ for(int row=0;row<4;++row){float sum=0;for(int i=0;i<2560;++i)sum=std::fma(x[row*2560+i],x[row*2560+i],sum);float rs=1.f/std::sqrt(sum/2560.f+1e-6f);for(int i=0;i<2560;++i)y[row*2560+i]=(x[row*2560+i]*rs)*w[row*2560+i];}
+ put(out,y);ple_norm_outputs[ple_norm_calls%3]=out;++ple_norm_calls;++p->calls;return 0;
+}
 struct StrataVkNativePleGate {ggml_backend_t backend;size_t bytes=0;uint64_t calls=0;};
 StrataVkNativePleGate* strata_vk_native_ple_gate_create(ggml_backend_t b,const char*path,size_t budget){check(b&&budget>=128,"PLE gate mock admission");ple_gate_backend=b;std::ofstream(path)<<"host mock only\n";auto*c=ggml_init({4096,nullptr,true});ggml_new_tensor_1d(c,GGML_TYPE_I32,1);auto size=ggml_backend_alloc_ctx_tensors_from_buft_size(c,ggml_backend_get_default_buffer_type(b));ggml_free(c);return new StrataVkNativePleGate{b,size};}
 void strata_vk_native_ple_gate_destroy(StrataVkNativePleGate*p)noexcept{delete p;}
@@ -377,6 +393,7 @@ size_t strata_vk_native_ple_gate_bytes(const StrataVkNativePleGate*p){return p->
 uint64_t strata_vk_native_ple_gate_calls(const StrataVkNativePleGate*p)noexcept{return p?p->calls:0;}
 uint32_t strata_vk_native_ple_gate_run(StrataVkNativePleGate*p,const ggml_tensor*k,const ggml_tensor*q,ggml_tensor*g,ggml_tensor*d){
  check(observe_ple_gate&&k&&q&&k!=q&&k->buffer&&q->buffer&&ggml_is_contiguous(k)&&ggml_is_contiguous(q)&&ggml_nbytes(k)==40960&&ggml_nbytes(q)==40960,"PLE gate normalized banks/spans differ");
+ if(observe_ple_norm)check(k==ple_norm_outputs[0]&&q==ple_norm_outputs[1],"PLE gate ignored actual normalized producers");
  auto type=ggml_backend_get_default_buffer_type(p->backend);auto owner=ggml_backend_get_device(p->backend);for(auto*t:{k,q,static_cast<const ggml_tensor*>(g),static_cast<const ggml_tensor*>(d)}){auto bt=ggml_backend_buffer_get_type(t->buffer);auto dev=ggml_backend_buft_get_device(bt);check(bt==type&&owner&&(dev?dev==owner:(ggml_backend_buft_is_host(bt)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE gate tensor device differs");}
  if(fail_ple_gate)return 1;auto key=get(k),query=get(q);actual_ple_gate_key=key;actual_ple_gate_query=query;std::array<float,4> values{};std::array<float,16> diag{};
  for(int row=0;row<4;++row){float lanes[512]{};for(int lane=0;lane<512;++lane){float sum=0;for(int j=0;j<8;++j){int at=lane+j*512;volatile float product=at<2560?key[row*2560+at]*query[row*2560+at]:0.f;sum+=product;}lanes[lane]=sum;}
