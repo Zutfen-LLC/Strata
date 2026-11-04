@@ -12,7 +12,9 @@ layout(binding=4,std430) readonly buffer Gated { float gated[]; };
 layout(binding=5,std430) writeonly buffer NextHistory { float next_history[]; };
 layout(binding=6,std430) writeonly buffer Convolution { float convolution[]; };
 layout(binding=7,std430) writeonly buffer Result { float result[]; };
-layout(push_constant) uniform P { uint off[8]; } p;
+layout(binding=8,std430) writeonly buffer Preactivation { float preactivation[]; };
+layout(binding=9,std430) writeonly buffer Exponent { float exponent_out[]; };
+layout(push_constant) uniform P { uint off[10]; } p;
 void main() {
     uint c=gl_GlobalInvocationID.x;
     if(c>=10240u)return;
@@ -26,10 +28,13 @@ void main() {
     precise float s01=t0+t1;
     precise float s012=s01+t2;
     precise float sum=s012+t3;
-    precise float denominator=1.0+exp(-sum);
+    float exponent=exp(-sum);
+    precise float denominator=1.0+exponent;
     precise float activation=sum/denominator;
     precise float gated_conv=gated[p.off[4]+c]+activation;
     precise float output_value=hidden[p.off[3]+c]+gated_conv;
+    preactivation[p.off[8]+c]=sum;
+    exponent_out[p.off[9]+c]=exponent;
     convolution[p.off[6]+c]=activation;
     result[p.off[7]+c]=output_value;
     for(uint i=0u;i<8u;++i)next_history[p.off[5]+c*9u+i]=history[p.off[0]+c*9u+i+1u];

@@ -43,6 +43,21 @@ function(strata_native_hc_enable out)
   if(NOT MSVC)
     target_compile_options(native_gdn_t1_component PRIVATE -fno-fast-math -ffp-contract=off)
   endif()
+  add_custom_command(OUTPUT "${out}/strata_native_ple_conv_t1_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_ple_conv_t1.comp" -o "${out}/native_ple_conv_t1.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_ple_conv_t1.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_ple_conv_t1.spv" "-DOUTPUT=${out}/strata_native_ple_conv_t1_spv.hpp"
+      -DARRAY_NAME=strata_native_ple_conv_t1_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_ple_conv_t1.comp cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_ple_conv_t1_shader DEPENDS "${out}/strata_native_ple_conv_t1_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_ple_conv_t1_shader)
+  add_executable(native_ple_conv_component tests/kernels/native_ple_conv_component.cpp)
+  target_include_directories(native_ple_conv_component PRIVATE src/core)
+  target_link_libraries(native_ple_conv_component PRIVATE ggml-vulkan ggml-base)
+  if(NOT MSVC)
+    target_compile_options(native_ple_conv_component PRIVATE -fno-fast-math -ffp-contract=off)
+  endif()
   add_custom_command(OUTPUT "${out}/strata_native_gdn_conv_t1_spv.hpp"
     COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
       "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_gdn_conv_t1.comp" -o "${out}/native_gdn_conv_t1.spv"
@@ -278,6 +293,11 @@ function(strata_native_hc_enable out)
     add_test(NAME native_gdn_ab_effective_shader_test COMMAND native_gdn_ab_effective_shader_test)
   endif()
   if(STRATA_BUILD_TESTS)
+    add_executable(native_ple_conv_effective_shader_test tests/kernels/native_ple_conv_effective_shader_test.cpp)
+    target_include_directories(native_ple_conv_effective_shader_test PRIVATE src/core "${out}")
+    target_link_libraries(native_ple_conv_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)
+    add_dependencies(native_ple_conv_effective_shader_test strata_native_ple_conv_t1_shader)
+    add_test(NAME native_ple_conv_effective_shader_test COMMAND native_ple_conv_effective_shader_test)
     add_test(NAME native_ple_conv_observation_test COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_ple_conv_observation.py"
       --shader "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_ple_conv_t1.comp"
