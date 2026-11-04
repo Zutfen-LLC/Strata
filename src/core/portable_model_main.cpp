@@ -232,7 +232,7 @@ int main(int argc, char **argv) {
             else if(key=="--native-gdn-input-projection-t1") {opts.native_gdn_input_projection_t1=true;opts.native_gdn_input_projection_receipt_prefix=value;}
             else if(key=="--native-gdn-output-projection-t1") {opts.native_gdn_output_projection_t1=true;opts.native_gdn_output_projection_receipt_prefix=value;}
             else if(key=="--native-ple-gate-t1") {opts.native_ple_gate_t1=true;opts.native_ple_gate_receipt_prefix=value;}
-            else if(key=="--native-ple-hc-read-t1") {opts.native_ple_hc_read_t1=true;opts.native_hc_receipt_prefix=value;}
+            else if(key=="--native-ple-hc-read-t1") {opts.native_ple_hc_read_t1=true;opts.native_ple_hc_receipt_prefix=value;}
             else if(key=="--native-ple-norm-t1") {opts.native_ple_norm_t1=true;opts.native_ple_norm_receipt_prefix=value;}
             else if(key=="--native-ple-key-t1") {opts.native_ple_key_t1=true;opts.native_ple_key_receipt_prefix=value;}
             else if(key=="--native-ple-conv-t1") {opts.native_ple_conv_t1=true;opts.native_ple_conv_receipt_prefix=value;}

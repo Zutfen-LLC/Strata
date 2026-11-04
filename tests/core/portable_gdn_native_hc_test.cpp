@@ -193,10 +193,10 @@ int main(){try{
   wo.native_hc_final_write=false;auto read=PortableFfn::create({2560,4,320,640,512,10,1e-6f},0,fw,wo,error);check(bool(read),error);check(read->weight_bytes()==weights,"final write duplicated/replaced weight banks");}
  {auto write_model=model;write_model.native_hc_ffn_write_layer0=true;PortableGdnOptions w0,w1;model_gdn_hc_options(write_model,0,w0);model_gdn_hc_options(write_model,1,w1);
  check(w0.native_hc_ffn_write&&!w1.native_hc_ffn_write,"write escaped layer0");check(model_hc_host_bound(write_model,0)==model_hc_host_bound(model,0)+PortableFfnOptions::native_hc_write_host_bound&&model_hc_host_bound(write_model,1)==0,"write host preadmission not conservative/scoped");}
- {PortableModelOptions ple;ple.native_ple_hc_read_t1=true;ple.native_hc_receipt_prefix="test";
+ {PortableModelOptions ple;ple.native_ple_hc_read_t1=true;ple.native_hc_receipt_prefix="layer0";ple.native_ple_hc_receipt_prefix="test";
  PortableGdnOptions target,other;model_gdn_hc_options(ple,1,target);model_gdn_hc_options(ple,0,other);
  check(target.native_ple_hc_read_t1&&target.native_hc_norm_inject&&target.native_hc_mix&&!target.native_hc_pending,"PLE HC mode/order wiring");
- check(!other.native_ple_hc_read_t1,"PLE HC escaped layer1");
+ check(!other.native_ple_hc_read_t1,"PLE HC escaped layer1");check(target.native_hc_receipt_prefix=="test.ple-layer-1","PLE HC receipt prefix differs");
  }
  o.native_hc_ffn_write=false;
  o.native_hc_ffn_read=false;o.native_hc_mix=false;o.native_hc_norm_inject=false;o.execution.resident_dense_weights=false;o.resident_state=false;o.scratch.reset();

@@ -138,6 +138,7 @@ struct PortableModelOptions {
     std::string native_ple_gate_receipt_prefix;
     // Native-order observation; backend division/rsqrt are not bitwise CUDA-qualified.
     bool native_ple_hc_read_t1=false;
+    std::string native_ple_hc_receipt_prefix;
     bool native_ple_norm_t1=false;
     std::string native_ple_norm_receipt_prefix;
     bool native_ple_key_t1=false; // opt-in Q8_0 layer-1 key projection
