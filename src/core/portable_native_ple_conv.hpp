@@ -95,21 +95,29 @@ public:
         ready_=false;
         for(size_t i=0;i<4;++i){need(copy[i]&&original[i]&&copy[i]->op==GGML_OP_CPY&&copy[i]->src[0]==original[i]&&copy[i]->src[1]==input(i)&&copy[i]->view_src==input(i),"PLE conv: logical producer binding");copies_[i]=copy[i];originals_[i]=original[i];}
     }
-    void run(ggml_tensor* const copy[4],ggml_tensor* const original[4]){
+    void run(ggml_tensor* const copy[4],ggml_tensor* const original[4],const std::vector<float>& hidden_expected){
         ready_=false;
+        need(hidden_expected.size()==sizes_[slots_[2]],"PLE conv: hidden residual span");
         std::array<std::vector<float>,4> before;
         for(size_t i=0;i<4;++i){
             need(copy[i]==copies_[i]&&original[i]==originals_[i]&&copy[i]->op==GGML_OP_CPY&&copy[i]->src[1]==input(i)&&copy[i]->view_src==input(i),"PLE conv: producer binding changed");
             span(copy[i]->src[0],sizes_[slots_[i]]*4);span(input(i),sizes_[slots_[i]]*4);
             before[i].resize(sizes_[slots_[i]]);ggml_backend_tensor_get(input(i),before[i].data(),0,before[i].size()*4);
-            std::vector<float> source(before[i].size());ggml_backend_tensor_get(copy[i]->src[0],source.data(),0,source.size()*4);
+            std::vector<float> source(before[i].size());
+            // This path forbids native HC: the immutable request residual is
+            // uploaded to the bound hidden graph input before either prefix.
+            // A post-graph scheduler copy can have a shorter lifetime than
+            // the persistent bank; compare the bank to that request instead.
+            if(i==2)std::memcpy(source.data(),hidden_expected.data(),source.size()*4);
+            else ggml_backend_tensor_get(copy[i]->src[0],source.data(),0,source.size()*4);
             if(std::memcmp(source.data(),before[i].data(),source.size()*4)!=0){
                 const char* names[]={"history","normalized","hidden","gated"};
                 const auto* src=reinterpret_cast<const unsigned char*>(source.data());
                 const auto* dst=reinterpret_cast<const unsigned char*>(before[i].data());
                 size_t byte=0;while(byte<source.size()*4&&src[byte]==dst[byte])++byte;
                 std::string logical="unavailable";
-                if(original[i]==copy[i]->src[0])logical="scheduled-source";
+                if(i==2)logical="request-residual";
+                else if(original[i]==copy[i]->src[0])logical="scheduled-source";
                 else if(original[i]->data&&(original[i]->flags&GGML_TENSOR_FLAG_OUTPUT)){
                     try{
                         span(original[i],source.size()*4);
@@ -118,7 +126,7 @@ public:
                                 std::memcmp(value.data(),source.data(),value.size()*4)==0?"scheduled-source":"neither";
                     }catch(const std::exception&){}
                 }
-                throw std::runtime_error(std::string("PLE conv: prefix copy differs: ")+names[i]+" byte "+std::to_string(byte)+" logical="+logical);
+                throw std::runtime_error(std::string("PLE conv: prefix copy differs: ")+names[i]+" byte "+std::to_string(byte)+(i==2?" expected=":" logical=")+logical);
             }
             for(float x:before[i])native_hc_normal(x);
         }

@@ -483,9 +483,10 @@ struct PortableGdnLayer::Impl {
                     timing.attention_compute_ms, timing.attention_compute_calls);
 #ifdef STRATA_PORTABLE_NATIVE_HC
                 if(s.native_ple_conv) {
+                    require(!s.native_hc,"native PLE conv: hidden residual owner differs");
                     auto* prefix=s.native_ple_gate?s.tail_scheduler.get():s.projection_scheduler.get();
                     require(ggml_backend_sched_graph_compute(prefix,s.ple_prefix_graph)==GGML_STATUS_SUCCESS,"native PLE conv: prefix graph failed");
-                    s.native_ple_conv->run(s.ple_conv_copies.data(),s.ple_conv_sources.data());
+                    s.native_ple_conv->run(s.ple_conv_copies.data(),s.ple_conv_sources.data(),residual);
                 }
                 if(s.native_gdn) {
                     portable_detail::PortableNativeGdnInput::Candidate candidate;

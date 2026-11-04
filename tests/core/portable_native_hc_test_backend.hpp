@@ -37,6 +37,7 @@ ggml_tensor* actual_ple_gate_bank=nullptr;ggml_backend_t ple_gate_backend=nullpt
 bool observe_ple_key=false,fail_ple_key=false;size_t ple_key_links=0;
 bool observe_ple_conv=false,fail_ple_conv=false;size_t ple_conv_links=0;
 ggml_tensor* ple_conv_simulated_stale=nullptr;ggml_tensor* ple_conv_rewritten_node=nullptr;ggml_tensor* ple_conv_previous_source=nullptr;
+ggml_tensor* ple_conv_hidden_stale=nullptr;bool ple_conv_corrupt_hidden=false,ple_conv_hidden_fault_applied=false;
 ggml_tensor* actual_ple_conv_result=nullptr;
 const ggml_tensor* actual_ple_key_input=nullptr;ggml_tensor* actual_ple_key_output=nullptr;ggml_backend_t ple_key_backend=nullptr;
 std::vector<uint8_t> gdn_output_weight_snapshot;
@@ -73,6 +74,20 @@ ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){
 if(observe_ple_key&&actual_ple_key_output)for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_RMS_NORM&&t->src[0]){auto*root=t->src[0];while(root->view_src)root=root->view_src;if(root==actual_ple_key_output){check(root->buffer&&ggml_is_contiguous(root)&&ggml_nbytes(root)==10240*4,"PLE norm ignored actual key bank/span");auto type=ggml_backend_buffer_get_type(root->buffer);auto device=ggml_backend_buft_get_device(type);auto owner=ggml_backend_get_device(ple_key_backend);check(type==ggml_backend_get_default_buffer_type(ple_key_backend)&&owner&&(device?device==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE key consumer device differs");++ple_key_links;}}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(observe_head_consumer&&t->op==GGML_OP_MUL_MAT&&std::string(ggml_get_name(t))=="portable_logits"){check(t->src[1]==live_mixed&&live_mixed->buffer&&ggml_backend_buffer_get_type(live_mixed->buffer)==ggml_backend_get_default_buffer_type(b),"head vocabulary did not borrow actual mixed bank/device");++head_consumer_links;}if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.attn_qkv.weight"&&live_mixed){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"composed mixed backing ignored/reused");++mixed_consumers;}}if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ffn_gate_inp.weight"){
  auto* root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"FFN router ignored native mixed leaf");++ffn_mixed_consumers;}}
  const auto status=original_compute(b,g);
+ if((ple_conv_hidden_stale||ple_conv_corrupt_hidden)&&!ple_conv_hidden_fault_applied){
+  ggml_tensor* copy=nullptr;size_t count=0;
+  for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);
+   if(t->op==GGML_OP_CPY&&t->src[0]&&t->src[1]&&t->src[0]->op==GGML_OP_NONE&&t->src[0]->ne[0]==2560&&t->src[0]->ne[1]==4&&ggml_nbytes(t)==40960){copy=t;++count;}}
+  if(count==1){
+   std::vector<float> source(10240),destination(10240);
+   ggml_backend_tensor_get(copy->src[0],source.data(),0,source.size()*4);
+   ggml_backend_tensor_get(copy->src[1],destination.data(),0,destination.size()*4);
+   check(std::memcmp(source.data(),destination.data(),source.size()*4)==0,"hidden copy differed before simulated fault");
+   if(ple_conv_corrupt_hidden){uint32_t word;std::memcpy(&word,destination.data(),4);word^=1;ggml_backend_tensor_set(copy->src[1],&word,0,4);}
+   else{ple_conv_rewritten_node=copy;ple_conv_previous_source=copy->src[0];copy->src[0]=ple_conv_hidden_stale;}
+   ple_conv_hidden_fault_applied=true;
+  }
+ }
  // Simulate a post-execution scheduler source rewrite. The graph has already
  // populated the destination, so this is distinct from a broken copy.
  if(ple_conv_simulated_stale&&!ple_conv_rewritten_node){

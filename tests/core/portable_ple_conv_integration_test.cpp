@@ -86,7 +86,14 @@ int main(int argc,char** argv){try{
     check(ple_conv_rewritten_node&&error.find("PLE conv: prefix copy differs: normalized byte ")!=std::string::npos,"scheduled-source refusal was not reproduced");
     check(shared->tokens()==0&&shared->native_ple_conv_calls()==0,"scheduled-source refusal committed state");
     ple_conv_rewritten_node->src[0]=ple_conv_previous_source;ple_conv_rewritten_node=nullptr;ple_conv_simulated_stale=nullptr;
+    ple_conv_corrupt_hidden=true;ple_conv_hidden_fault_applied=false;
+    check(!shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),"corrupted hidden destination accepted");
+    check(ple_conv_hidden_fault_applied&&error.find("PLE conv: prefix copy differs: hidden byte ")!=std::string::npos,"hidden corruption was not refused");
+    check(shared->tokens()==0&&shared->native_ple_conv_calls()==0,"hidden corruption committed state");
+    ple_conv_corrupt_hidden=false;ple_conv_hidden_fault_applied=false;ple_conv_hidden_stale=stale;
     check(shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
+    check(ple_conv_hidden_fault_applied&&ple_conv_rewritten_node,"hidden source rewrite was not exercised");
+    ple_conv_rewritten_node->src[0]=ple_conv_previous_source;ple_conv_rewritten_node=nullptr;ple_conv_hidden_stale=nullptr;
     auto shared_history=shared->ple_convolution_history(),shared_residual=shared->last_residual();
     check(!shared->step(20,fixture.input(1),refuse,route,error),"resident FFN refusal accepted");
     check(shared->tokens()==1&&shared->ple_convolution_history()==shared_history,"resident failure committed candidate history");

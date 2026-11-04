@@ -63,7 +63,7 @@ int main() {
     for(size_t c=0;c<10240;++c)for(size_t j=0;j<9;++j)history[c*9+j]=float(j);
     std::vector<float>* values[]={&history,&norm,&hidden,&gated};
     for(size_t i=0;i<4;++i){ggml_backend_tensor_set(originals[i],values[i]->data(),0,values[i]->size()*4);ggml_backend_tensor_set(owner.input(i),values[i]->data(),0,values[i]->size()*4);}
-    owner.run(copies,originals);
+    owner.run(copies,originals,hidden);
     assert(owner.result()!=originals[2] && owner.history()!=owner.input(0));
     std::vector<float> next(92160),unchanged(92160);
     ggml_backend_tensor_get(owner.history(),next.data(),0,next.size()*4);
@@ -76,23 +76,29 @@ int main() {
         auto altered=*values[i];altered[0]=88.f;
         ggml_backend_tensor_set(stale[i],altered.data(),0,altered.size()*4);
         auto* saved=copies[i]->src[0];copies[i]->src[0]=stale[i];
-        bool caught=false;try{owner.run(copies,originals);}catch(const std::exception& e){auto s=std::string(e.what());caught=s.find(std::string("PLE conv: prefix copy differs: ")+names[i]+" byte ")!=std::string::npos&&s.find("logical=destination")!=std::string::npos;}
-        assert(caught&&!owner.ready());copies[i]->src[0]=saved;
+        bool caught=false;try{owner.run(copies,originals,hidden);}catch(const std::exception& e){auto s=std::string(e.what());caught=s.find(std::string("PLE conv: prefix copy differs: ")+names[i]+" byte ")!=std::string::npos&&s.find("logical=destination")!=std::string::npos;}
+        if(i==2)assert(!caught&&owner.ready());else assert(caught&&!owner.ready());copies[i]->src[0]=saved;
         ggml_backend_tensor_set(owner.input(i),altered.data(),0,altered.size()*4);
-        caught=false;try{owner.run(copies,originals);}catch(const std::exception& e){auto s=std::string(e.what());caught=s.find(std::string("PLE conv: prefix copy differs: ")+names[i]+" byte ")!=std::string::npos&&s.find("logical=scheduled-source")!=std::string::npos;}
+        caught=false;try{owner.run(copies,originals,hidden);}catch(const std::exception& e){auto s=std::string(e.what());caught=s.find(std::string("PLE conv: prefix copy differs: ")+names[i]+" byte ")!=std::string::npos&&s.find(i==2?"expected=request-residual":"logical=scheduled-source")!=std::string::npos;}
         assert(caught&&!owner.ready());
         ggml_backend_tensor_set(owner.input(i),values[i]->data(),0,values[i]->size()*4);
-        owner.run(copies,originals);assert(owner.ready());
+        owner.run(copies,originals,hidden);assert(owner.ready());
     }
-    fail_conv=true; bool refused=false; try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused);
-    assert(!owner.ready()); fail_conv=false; owner.run(copies,originals); assert(owner.ready());
-    corrupt_history=true; refused=false; try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused && !owner.ready()); corrupt_history=false;
-    nonfinite_output=true; refused=false; try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused && !owner.ready()); nonfinite_output=false;
+    auto wrong_hidden=hidden;wrong_hidden[0]=88.f;
+    bool wrong_residual=false;try{owner.run(copies,originals,wrong_hidden);}catch(const std::exception& e){wrong_residual=std::string(e.what()).find("expected=request-residual")!=std::string::npos;}
+    assert(wrong_residual&&!owner.ready());
+    wrong_hidden.pop_back();wrong_residual=false;
+    try{owner.run(copies,originals,wrong_hidden);}catch(const std::exception& e){wrong_residual=std::string(e.what()).find("hidden residual span")!=std::string::npos;}
+    assert(wrong_residual&&!owner.ready());owner.run(copies,originals,hidden);
+    fail_conv=true; bool refused=false; try{owner.run(copies,originals,hidden);}catch(...){refused=true;} assert(refused);
+    assert(!owner.ready()); fail_conv=false; owner.run(copies,originals,hidden); assert(owner.ready());
+    corrupt_history=true; refused=false; try{owner.run(copies,originals,hidden);}catch(...){refused=true;} assert(refused && !owner.ready()); corrupt_history=false;
+    nonfinite_output=true; refused=false; try{owner.run(copies,originals,hidden);}catch(...){refused=true;} assert(refused && !owner.ready()); nonfinite_output=false;
     auto* wrong=originals[0]; originals[0]=originals[1]; refused=false;
-    try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused && !owner.ready()); originals[0]=wrong;
+    try{owner.run(copies,originals,hidden);}catch(...){refused=true;} assert(refused && !owner.ready()); originals[0]=wrong;
     norm[0]=std::numeric_limits<float>::quiet_NaN();
     ggml_backend_tensor_set(originals[1],norm.data(),0,norm.size()*4);
     ggml_backend_tensor_set(owner.input(1),norm.data(),0,norm.size()*4);
-    refused=false; try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused && !owner.ready());
+    refused=false; try{owner.run(copies,originals,hidden);}catch(...){refused=true;} assert(refused && !owner.ready());
     std::cout << "PLE convolution candidate ownership, refusal and retry passed with host provider\n";
 }
