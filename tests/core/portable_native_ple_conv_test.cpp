@@ -55,8 +55,8 @@ int main() {
     try{(void)PortableNativePleConv::native_weights(weights.data(),weights.size()*2,1);}catch(...){invalid_half=true;}
     assert(invalid_half);weights[0]=0x3c00;
     auto ctx=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({16384,nullptr,true}),ggml_free);
-    ggml_tensor* originals[4]; ggml_tensor* copies[4];
-    for(size_t i=0;i<4;++i){originals[i]=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,i?10240:92160);copies[i]=ggml_cpy(ctx.get(),originals[i],owner.input(i));}
+    ggml_tensor* originals[4]; ggml_tensor* copies[4]; ggml_tensor* stale[4];
+    for(size_t i=0;i<4;++i){originals[i]=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,i?10240:92160);ggml_set_output(originals[i]);stale[i]=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,i?10240:92160);copies[i]=ggml_cpy(ctx.get(),originals[i],owner.input(i));}
     owner.bind(copies,originals);
     auto inputs=std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>(ggml_backend_alloc_ctx_tensors(ctx.get(),backend.get()),ggml_backend_buffer_free);
     std::vector<float> history(92160), norm(10240,4), hidden(10240,1), gated(10240,2);
@@ -69,6 +69,21 @@ int main() {
     ggml_backend_tensor_get(owner.history(),next.data(),0,next.size()*4);
     ggml_backend_tensor_get(owner.input(0),unchanged.data(),0,unchanged.size()*4);
     assert(unchanged==history && next[0]==1 && next[7]==8 && next[8]==4);
+    // A post-schedule source rewrite and a real destination corruption cause
+    // the same predicate to fail. Neither establishes the physical cause.
+    const char* names[]={"history","normalized","hidden","gated"};
+    for(size_t i=0;i<4;++i){
+        auto altered=*values[i];altered[0]=88.f;
+        ggml_backend_tensor_set(stale[i],altered.data(),0,altered.size()*4);
+        auto* saved=copies[i]->src[0];copies[i]->src[0]=stale[i];
+        bool caught=false;try{owner.run(copies,originals);}catch(const std::exception& e){auto s=std::string(e.what());caught=s.find(std::string("PLE conv: prefix copy differs: ")+names[i]+" byte ")!=std::string::npos&&s.find("logical=destination")!=std::string::npos;}
+        assert(caught&&!owner.ready());copies[i]->src[0]=saved;
+        ggml_backend_tensor_set(owner.input(i),altered.data(),0,altered.size()*4);
+        caught=false;try{owner.run(copies,originals);}catch(const std::exception& e){auto s=std::string(e.what());caught=s.find(std::string("PLE conv: prefix copy differs: ")+names[i]+" byte ")!=std::string::npos&&s.find("logical=scheduled-source")!=std::string::npos;}
+        assert(caught&&!owner.ready());
+        ggml_backend_tensor_set(owner.input(i),values[i]->data(),0,values[i]->size()*4);
+        owner.run(copies,originals);assert(owner.ready());
+    }
     fail_conv=true; bool refused=false; try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused);
     assert(!owner.ready()); fail_conv=false; owner.run(copies,originals); assert(owner.ready());
     corrupt_history=true; refused=false; try{owner.run(copies,originals);}catch(...){refused=true;} assert(refused && !owner.ready()); corrupt_history=false;

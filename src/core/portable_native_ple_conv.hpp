@@ -103,7 +103,23 @@ public:
             span(copy[i]->src[0],sizes_[slots_[i]]*4);span(input(i),sizes_[slots_[i]]*4);
             before[i].resize(sizes_[slots_[i]]);ggml_backend_tensor_get(input(i),before[i].data(),0,before[i].size()*4);
             std::vector<float> source(before[i].size());ggml_backend_tensor_get(copy[i]->src[0],source.data(),0,source.size()*4);
-            need(std::memcmp(source.data(),before[i].data(),source.size()*4)==0,"PLE conv: prefix copy differs");
+            if(std::memcmp(source.data(),before[i].data(),source.size()*4)!=0){
+                const char* names[]={"history","normalized","hidden","gated"};
+                const auto* src=reinterpret_cast<const unsigned char*>(source.data());
+                const auto* dst=reinterpret_cast<const unsigned char*>(before[i].data());
+                size_t byte=0;while(byte<source.size()*4&&src[byte]==dst[byte])++byte;
+                std::string logical="unavailable";
+                if(original[i]==copy[i]->src[0])logical="scheduled-source";
+                else if(original[i]->data&&(original[i]->flags&GGML_TENSOR_FLAG_OUTPUT)){
+                    try{
+                        span(original[i],source.size()*4);
+                        std::vector<float> value(source.size());ggml_backend_tensor_get(original[i],value.data(),0,value.size()*4);
+                        logical=std::memcmp(value.data(),before[i].data(),value.size()*4)==0?"destination":
+                                std::memcmp(value.data(),source.data(),value.size()*4)==0?"scheduled-source":"neither";
+                    }catch(const std::exception&){}
+                }
+                throw std::runtime_error(std::string("PLE conv: prefix copy differs: ")+names[i]+" byte "+std::to_string(byte)+" logical="+logical);
+            }
             for(float x:before[i])native_hc_normal(x);
         }
         strata_vk_native_ple_conv_run(component_.get(),tensors_.data());

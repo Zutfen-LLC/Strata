@@ -36,6 +36,7 @@ ggml_tensor ple_scheduler_copy[2]{};
 ggml_tensor* actual_ple_gate_bank=nullptr;ggml_backend_t ple_gate_backend=nullptr;std::vector<float> actual_ple_gate_key,actual_ple_gate_query;
 bool observe_ple_key=false,fail_ple_key=false;size_t ple_key_links=0;
 bool observe_ple_conv=false,fail_ple_conv=false;size_t ple_conv_links=0;
+ggml_tensor* ple_conv_simulated_stale=nullptr;ggml_tensor* ple_conv_rewritten_node=nullptr;ggml_tensor* ple_conv_previous_source=nullptr;
 ggml_tensor* actual_ple_conv_result=nullptr;
 const ggml_tensor* actual_ple_key_input=nullptr;ggml_tensor* actual_ple_key_output=nullptr;ggml_backend_t ple_key_backend=nullptr;
 std::vector<uint8_t> gdn_output_weight_snapshot;
@@ -72,6 +73,14 @@ ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){
 if(observe_ple_key&&actual_ple_key_output)for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_RMS_NORM&&t->src[0]){auto*root=t->src[0];while(root->view_src)root=root->view_src;if(root==actual_ple_key_output){check(root->buffer&&ggml_is_contiguous(root)&&ggml_nbytes(root)==10240*4,"PLE norm ignored actual key bank/span");auto type=ggml_backend_buffer_get_type(root->buffer);auto device=ggml_backend_buft_get_device(type);auto owner=ggml_backend_get_device(ple_key_backend);check(type==ggml_backend_get_default_buffer_type(ple_key_backend)&&owner&&(device?device==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE key consumer device differs");++ple_key_links;}}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(observe_head_consumer&&t->op==GGML_OP_MUL_MAT&&std::string(ggml_get_name(t))=="portable_logits"){check(t->src[1]==live_mixed&&live_mixed->buffer&&ggml_backend_buffer_get_type(live_mixed->buffer)==ggml_backend_get_default_buffer_type(b),"head vocabulary did not borrow actual mixed bank/device");++head_consumer_links;}if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.attn_qkv.weight"&&live_mixed){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"composed mixed backing ignored/reused");++mixed_consumers;}}if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ffn_gate_inp.weight"){
  auto* root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"FFN router ignored native mixed leaf");++ffn_mixed_consumers;}}
  const auto status=original_compute(b,g);
+ // Simulate a post-execution scheduler source rewrite. The graph has already
+ // populated the destination, so this is distinct from a broken copy.
+ if(ple_conv_simulated_stale&&!ple_conv_rewritten_node){
+  ggml_tensor* candidate=nullptr;size_t count=0;
+  for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);
+   if(t->op==GGML_OP_CPY&&t->src[0]&&t->src[0]->op==GGML_OP_MUL&&t->src[0]->src[0]&&t->src[0]->src[0]->op==GGML_OP_RMS_NORM&&ggml_nbytes(t)==40960){candidate=t;++count;}}
+  if(count==1){ple_conv_rewritten_node=candidate;ple_conv_previous_source=candidate->src[0];candidate->src[0]=ple_conv_simulated_stale;}
+ }
  // Simulate the scheduler replacing a cross-backend RMS input edge with its
  // backend copy after execution, as ggml_backend_sched_split_graph does.
  if(simulate_ple_scheduler_copies) {

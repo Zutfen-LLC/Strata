@@ -76,7 +76,17 @@ int main(int argc,char** argv){try{
     options.resident_state=true;
     options.scratch=PortableGdnScratch::create(options.execution,error);check(bool(options.scratch),error);
     auto shared=PortableGdnLayer::create(1,fixture.views,options,error);check(bool(shared),error);
-    check(shared->reset(error),error);check(shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
+    check(shared->reset(error),error);
+    auto stale_ctx=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({4096,nullptr,true}),ggml_free);
+    auto* stale=ggml_new_tensor_1d(stale_ctx.get(),GGML_TYPE_F32,10240);
+    auto stale_buffer=std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>(ggml_backend_alloc_ctx_tensors(stale_ctx.get(),cpu.get()),ggml_backend_buffer_free);
+    std::vector<float> stale_values(10240,88.f);ggml_backend_tensor_set(stale,stale_values.data(),0,stale_values.size()*4);
+    ple_conv_simulated_stale=stale;
+    check(!shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),"stale scheduled source accepted");
+    check(ple_conv_rewritten_node&&error.find("PLE conv: prefix copy differs: normalized byte ")!=std::string::npos,"scheduled-source refusal was not reproduced");
+    check(shared->tokens()==0&&shared->native_ple_conv_calls()==0,"scheduled-source refusal committed state");
+    ple_conv_rewritten_node->src[0]=ple_conv_previous_source;ple_conv_rewritten_node=nullptr;ple_conv_simulated_stale=nullptr;
+    check(shared->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
     auto shared_history=shared->ple_convolution_history(),shared_residual=shared->last_residual();
     check(!shared->step(20,fixture.input(1),refuse,route,error),"resident FFN refusal accepted");
     check(shared->tokens()==1&&shared->ple_convolution_history()==shared_history,"resident failure committed candidate history");
