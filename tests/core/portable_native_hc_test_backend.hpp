@@ -5,6 +5,7 @@
 #include "native_hc_layout.hpp"
 #include "native_hc_pending.hpp"
 #include "strata_vk_native_shared.hpp"
+#include "strata_vk_native_ple_conv.hpp"
 #include "native_qsa_indexer_bf16.hpp"
 #include "portable_model_preflight.hpp"
 #include "strata/core/layer0_observer.hpp"
@@ -30,6 +31,8 @@ bool observe_gdn_input=false;int fail_gdn_input=0;size_t gdn_input_links=0;std::
 bool observe_gdn_output=false;size_t gdn_output_quant_links=0,gdn_output_pending_links=0;ggml_tensor* actual_gdn_gated=nullptr;ggml_tensor* actual_gdn_output_bank=nullptr;ggml_backend_t gdn_output_backend=nullptr;
 bool observe_head_consumer=false;size_t head_consumer_links=0;
 bool observe_ple_key=false,fail_ple_key=false;size_t ple_key_links=0;
+bool observe_ple_conv=false,fail_ple_conv=false;size_t ple_conv_links=0;
+ggml_tensor* actual_ple_conv_result=nullptr;
 const ggml_tensor* actual_ple_key_input=nullptr;ggml_tensor* actual_ple_key_output=nullptr;ggml_backend_t ple_key_backend=nullptr;
 std::vector<uint8_t> gdn_output_weight_snapshot;
 void check_gdn_output_bank(const ggml_tensor*t,const ggml_tensor*expected,size_t bytes){
@@ -58,6 +61,7 @@ std::vector<uint16_t> expected_weights;
 const ggml_tensor* bound_weight=nullptr;const ggml_tensor* live_normalized=nullptr;size_t direct_consumers=0;
 decltype(ggml_backend_i::graph_compute) original_compute=nullptr;
 ggml_status check_compute(ggml_backend_t b,ggml_cgraph*g){
+ if(observe_ple_conv&&actual_ple_conv_result)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);for(auto*s:t->src){if(!s)continue;auto*root=s;while(root->view_src)root=root->view_src;if(root==actual_ple_conv_result){check(root->buffer&&ggml_is_contiguous(root)&&ggml_nbytes(root)==10240*4&&ggml_backend_buffer_get_type(root->buffer)==ggml_backend_get_default_buffer_type(b),"PLE conv downstream producer/device differs");++ple_conv_links;}}}
  if(observe_ple_value && ple_value_bank) for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);for(auto* source:t->src){if(!source)continue;auto*root=source;while(root->view_src)root=root->view_src;if(root==ple_value_bank){check(ple_value_bank->buffer && ggml_is_contiguous(ple_value_bank) && ggml_nbytes(ple_value_bank)==2560*4 && ggml_backend_buffer_get_type(ple_value_bank->buffer)==ggml_backend_get_default_buffer_type(ple_value_backend),"PLE consumer did not use producer bank/device");++ple_value_links;}}}
 if(observe_ple_key&&actual_ple_key_output)for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_RMS_NORM&&t->src[0]){auto*root=t->src[0];while(root->view_src)root=root->view_src;if(root==actual_ple_key_output){check(root->buffer&&ggml_is_contiguous(root)&&ggml_nbytes(root)==10240*4,"PLE norm ignored actual key bank/span");auto type=ggml_backend_buffer_get_type(root->buffer);auto device=ggml_backend_buft_get_device(type);auto owner=ggml_backend_get_device(ple_key_backend);check(type==ggml_backend_get_default_buffer_type(ple_key_backend)&&owner&&(device?device==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE key consumer device differs");++ple_key_links;}}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(observe_head_consumer&&t->op==GGML_OP_MUL_MAT&&std::string(ggml_get_name(t))=="portable_logits"){check(t->src[1]==live_mixed&&live_mixed->buffer&&ggml_backend_buffer_get_type(live_mixed->buffer)==ggml_backend_get_default_buffer_type(b),"head vocabulary did not borrow actual mixed bank/device");++head_consumer_links;}if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.hc_attn_down.weight"&&live_normalized){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_normalized&&ggml_is_contiguous(t->src[1])&&t->src[1]->ne[0]==10240&&t->src[1]->ne[1]==1,"native normalized backing/contiguous consumer geometry changed");++direct_consumers;}}for(int i=0;i<ggml_graph_n_nodes(g);++i){auto*t=ggml_graph_node(g,i);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.attn_qkv.weight"&&live_mixed){auto*root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"composed mixed backing ignored/reused");++mixed_consumers;}}if(inspect_producer)for(int n=0;n<ggml_graph_n_nodes(g);++n){auto*t=ggml_graph_node(g,n);if(t->op==GGML_OP_MUL_MAT&&t->src[0]&&std::string(ggml_get_name(t->src[0]))=="blk.0.ffn_gate_inp.weight"){
  auto* root=t->src[1];while(root->view_src)root=root->view_src;check(root==live_mixed,"FFN router ignored native mixed leaf");++ffn_mixed_consumers;}}
@@ -69,6 +73,18 @@ std::vector<float> get(const ggml_tensor* t){std::vector<float>x(size_t(ggml_nel
 void put(ggml_tensor*t,const std::vector<float>&x){ggml_backend_tensor_set(t,x.data(),0,x.size()*4);}
 }
 namespace strata::core::portable_detail {
+struct StrataVkNativePleConv{};
+StrataVkNativePleConv* strata_vk_native_ple_conv_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"PLE conv budget");std::ofstream(path)<<"mock; not shader evidence\n";return new StrataVkNativePleConv;}
+void strata_vk_native_ple_conv_destroy(StrataVkNativePleConv*p)noexcept{delete p;}
+size_t strata_vk_native_ple_conv_bytes(const StrataVkNativePleConv*){return 512;}
+void strata_vk_native_ple_conv_run(StrataVkNativePleConv*,ggml_tensor* const t[10]){
+ check(!fail_ple_conv,"injected PLE conv refusal");
+ auto h=get(t[0]),n=get(t[1]),hidden=get(t[3]),gated=get(t[4]);
+ std::vector<uint16_t>w(40960);ggml_backend_tensor_get(t[2],w.data(),0,w.size()*2);
+ std::vector<float>next(92160),pre(10240),ex(10240),conv(10240),out(10240);
+ for(size_t c=0;c<10240;++c){float sum=0;for(size_t k=0;k<4;++k){float x=k==3?n[c]:h[9*c+3*k];float term=x*ggml_fp16_to_fp32(w[4*c+k]);sum=k?sum+term:term;}pre[c]=sum;ex[c]=std::exp(-sum);conv[c]=sum/(1.f+ex[c]);out[c]=hidden[c]+(gated[c]+conv[c]);for(size_t j=0;j<8;++j)next[c*9+j]=h[c*9+j+1];next[c*9+8]=n[c];}
+ put(t[5],next);put(t[6],conv);put(t[7],out);put(t[8],pre);put(t[9],ex);actual_ple_conv_result=t[7];
+}
 struct StrataVkNativeHcPending{bool final_write=false;};
 StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t,const char* path,size_t budget){check(!fail_pending_create,"injected pending create refusal");check(budget>=512,"pending metadata budget");std::ofstream(path)<<"mock; not shader evidence\n";++pending_owners;return new StrataVkNativeHcPending;}
 size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*){return 512;}

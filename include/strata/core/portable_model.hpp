@@ -136,6 +136,8 @@ struct PortableModelOptions {
     bool native_gdn_input_projection_t1=false;
     bool native_ple_key_t1=false; // opt-in Q8_0 layer-1 key projection
     std::string native_ple_key_receipt_prefix;
+    bool native_ple_conv_t1=false;
+    std::string native_ple_conv_receipt_prefix;
     std::string native_gdn_input_projection_receipt_prefix;
     bool native_gdn_output_projection_t1=false; // explicit non-fused T1 output projection
     std::string native_gdn_output_projection_receipt_prefix;

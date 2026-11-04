@@ -24,6 +24,7 @@ struct PortableGdnOptions {
     static constexpr size_t native_input_projection_host_bound=1u<<20;
     static constexpr size_t native_output_projection_host_bound=1u<<20;
     static constexpr size_t native_ple_key_host_bound=1u<<20;
+    static constexpr size_t native_ple_conv_host_bound=2u<<20;
     static constexpr size_t native_hc_host_bound = 1u << 20; // explicit metadata/preflight/trace envelope
     // Largest streamed BF16 conversion/readback is 6,553,600 B, plus the
     // existing 1 MiB metadata/trace bound; no simultaneous down/up host banks.
@@ -42,6 +43,8 @@ struct PortableGdnOptions {
     std::string native_output_projection_receipt;
     bool native_ple_key_t1=false; // layer-1 Q8_0 key projection, diagnostic and default off
     std::string native_ple_key_receipt;
+    bool native_ple_conv_t1=false; // layer-1 convolution/history experiment, default off
+    std::string native_ple_conv_receipt;
     bool native_output_projection_record_first=false;
     bool native_preparation_weights=false; // shared control/on BF16 replacement, ordinary T1 only
     std::string native_preparation_receipt;
