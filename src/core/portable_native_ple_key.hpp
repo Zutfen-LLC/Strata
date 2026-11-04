@@ -21,7 +21,7 @@ class PortableNativePleKey {
     std::vector<float> last_input_, last_output_;
     std::array<uint8_t, head_vocab_packed_bytes> last_packed_{};
     std::filesystem::path directory_;
-    bool recorded_ = false;
+    bool recorded_ = false, candidate_ready_ = false;
     size_t bytes_ = 0;
 
     static Context context() {
@@ -65,6 +65,7 @@ public:
     const ggml_tensor* input_bank() const { return input_; }
     ggml_tensor* output_bank() const { return projection_->output_bank(); }
     ggml_tensor* run(const std::vector<float>& embedding) {
+        candidate_ready_ = false;
         if (embedding.size() != width) throw std::runtime_error("native PLE key: embedding shape");
         // Check before touching the device input or dispatching either component.
         qsa_q8_input_domain(embedding, 80, "native PLE key");
@@ -74,12 +75,13 @@ public:
         last_packed_ = projection_->packed_for_candidate(input_, output);
         last_output_.resize(rows);
         ggml_backend_tensor_get(output, last_output_.data(), 0, rows * sizeof(float));
+        candidate_ready_ = true;
         return output;
     }
     // The first graph-completed candidate is lifetime-scoped and not an FFN commit.
     void verify_and_record(const ggml_tensor* consumed, uint64_t position, int32_t token,
                            const std::array<int32_t,2>& previous, const std::array<uint32_t,16>& indices) {
-        if (consumed != projection_->output_bank() || !consumed->buffer || !ggml_is_contiguous(consumed) ||
+        if (!candidate_ready_ || consumed != projection_->output_bank() || !consumed->buffer || !ggml_is_contiguous(consumed) ||
             ggml_nbytes(consumed) != rows * sizeof(float) || last_input_.size() != width || last_output_.size() != rows)
             throw std::runtime_error("native PLE key: actual consumer bank differs");
         std::vector<float> input(width), output(rows);

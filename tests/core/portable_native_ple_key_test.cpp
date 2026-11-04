@@ -91,9 +91,13 @@ int main(int argc, char** argv) { try {
     embedding[0] = std::numeric_limits<float>::infinity(); refused = false;
     try { key.run(embedding); } catch (...) { refused = true; }
     need(refused && key.calls() == 1 && quant_calls == 1 && dot_calls == 1, "invalid embedding must not dispatch");
+    refused = false; try { key.verify_and_record(output, 1, 20, previous, indices); } catch (...) { refused = true; }
+    need(refused, "failed input left stale candidate recordable");
     embedding[0] = 1.f; embedding[1] = -1.f; expected_embedding = embedding; fail_dot = true; refused = false;
     try { key.run(embedding); } catch (...) { refused = true; }
     need(refused && key.calls() == 1, "failed dot must not publish a completed call");
+    refused = false; try { key.verify_and_record(output, 1, 20, previous, indices); } catch (...) { refused = true; }
+    need(refused, "failed dot left stale candidate recordable");
     fail_dot = false; output = key.run(embedding);
     need(output && key.calls() == 2 && quant_calls == 3 && dot_calls == 2, "retry after failed dot");
     key.verify_and_record(output, 1, 20, {{-1,19}}, indices);
