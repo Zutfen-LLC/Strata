@@ -131,6 +131,8 @@ struct PortableModelOptions {
     bool native_gdn_t1 = false; // ordinary GDN recurrence/norm/gate only; PLE layer1 unchanged
     std::string native_gdn_receipt_prefix;
     bool native_gdn_preparation_t1=false;
+    bool native_ple_value_t1=false;
+    std::string native_ple_value_receipt_prefix;
     bool native_gdn_input_projection_t1=false;
     bool native_ple_key_t1=false; // opt-in Q8_0 layer-1 key projection
     std::string native_ple_key_receipt_prefix;

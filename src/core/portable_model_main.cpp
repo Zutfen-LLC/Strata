@@ -117,6 +117,7 @@ int main(int argc, char **argv) {
                              " [--qsa-production (requires --qsa-reuse-attention and strict Vulkan)]\n"
                              " [--qsa-reuse-attention (compatibility flag; session scratch is shared)]\n"
                              " [--gdn-resident-state (trial, default off)] [--native-gdn-t1 PREFIX (ordinary non-PLE T1 only)]\n"
+                             " [--native-ple-value-t1 PREFIX (trial, layer-1 BF16 PLE value)]\n"
                              " [--native-gdn-output-projection-t1 PREFIX (trial, explicit non-fused ordinary GDN output)]\n"
                              " [--native-ple-key-t1 PREFIX (trial, layer-1 PLE key projection)]\n"
                              " [--native-hc-pending-layer2-3 RECEIPT_PREFIX (experimental ordinary QSA HC carry)]\n"
@@ -224,6 +225,7 @@ int main(int argc, char **argv) {
             else if(key=="--qsa-indexer-resident-weights"){opts.qsa_indexer_resident_weights=true;opts.qsa_indexer_receipt_prefix=value;}
             else if(key=="--qsa-norm-rope-resident-weights"){opts.qsa_norm_rope_resident_weights=true;opts.qsa_norm_rope_receipt_prefix=value;}
             else if(key=="--native-gdn-prep-t1") {opts.native_gdn_preparation_t1=true;opts.native_gdn_preparation_receipt_prefix=value;}
+            else if(key=="--native-ple-value-t1") {opts.native_ple_value_t1=true;opts.native_ple_value_receipt_prefix=value;}
             else if(key=="--native-gdn-input-projection-t1") {opts.native_gdn_input_projection_t1=true;opts.native_gdn_input_projection_receipt_prefix=value;}
             else if(key=="--native-gdn-output-projection-t1") {opts.native_gdn_output_projection_t1=true;opts.native_gdn_output_projection_receipt_prefix=value;}
             else if(key=="--native-ple-key-t1") {opts.native_ple_key_t1=true;opts.native_ple_key_receipt_prefix=value;}
@@ -392,6 +394,7 @@ int main(int argc, char **argv) {
                      <<",\"native_qsa_attention_t1\":"<<(opts.native_qsa_attention_t1?"true":"false")<<",\"qsa_attention_banks\":"<<(opts.qsa_attention_banks?"true":"false")
                      <<",\"native_qsa_wo_t1\":"<<(opts.native_qsa_wo_t1?"true":"false")
                      <<(opts.native_qsa_qkv_t1?",\"native_qsa_qkv_t1\":true":"")
+                     <<(opts.native_ple_value_t1?",\"native_ple_value_t1\":true":"")
                      <<(opts.native_gdn_input_projection_t1?",\"native_gdn_input_projection_t1\":true":"")
                      <<(opts.native_gdn_output_projection_t1?",\"native_gdn_output_projection_t1\":true":"")
                      <<(opts.native_ple_key_t1?",\"native_ple_key_t1\":true":"")

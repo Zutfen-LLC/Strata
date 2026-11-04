@@ -14,6 +14,11 @@ int main(int argc, char** argv) { try {
         auto bad=model;bad.allow_cpu_fallback=true;bool rejected=false;
         try{validate_model_modes(bad,1);}catch(const std::exception&){rejected=true;}
         check(rejected,"model accepted fallback for PLE key");
+        model.native_ple_value_t1=true;model.native_ple_value_receipt_prefix="ple-value";
+        validate_model_modes(model,1);PortableGdnOptions both;model_gdn_hc_options(model,1,both);
+        check(both.native_ple_key_t1&&both.native_ple_value_t1&&
+              model_hc_host_bound(model,1)-model_hc_host_bound(off,1)==PortableGdnOptions::native_ple_key_host_bound+PortableGdnOptions::native_ple_value_host_bound,
+              "combined PLE model options or admission differ");
     }
     auto table = ple_fixture::small_table(error); check(bool(table), error);
     auto root = std::filesystem::path(argv[1]) / ("ple-key-integration-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -50,5 +55,21 @@ int main(int argc, char** argv) { try {
     ple_fixture::reference(f,f.input(1),history,second,*layer);
     check(layer->reset(error),error);check(layer->step(19,f.input(0),ple_fixture::experts(),route,error),error);
     check(layer->last_residual()==residual&&layer->ple_convolution_history()==history,"reset result differs");
+    layer.reset();baseline.reset();
+    options.native_ple_key_receipt=(root/"combined-key").string();
+    options.native_ple_value_t1=true;options.native_ple_value_receipt=(root/"combined-value").string();
+    options.state_budget+=PortableGdnOptions::native_ple_value_host_bound;
+    observe_ple_value=true;auto combined=PortableGdnLayer::create(1,f.views,options,error);check(bool(combined),error);
+    check(combined->reset(error),error);auto initial=combined->ple_convolution_history();
+    fail_ple_value=true;check(!combined->step(19,f.input(0),ple_fixture::experts(),route,error),"value failure accepted after key");
+    check(combined->tokens()==0&&combined->ple_convolution_history()==initial&&combined->token_history()==std::array<int32_t,2>{{-1,-1}},"value failure committed combined PLE history");
+    fail_ple_value=false;PortableGdnTrace both;check(combined->step(19,f.input(0),ple_fixture::experts(),route,error,&both),error);
+    check(ple_key_links>0&&ple_value_links>0&&actual_ple_key_input&&actual_ple_value_input&&get(actual_ple_key_input)==both.ple_embedding&&get(actual_ple_value_input)==both.ple_embedding,"combined key/value producer or gathered input differs");
+    ple_fixture::reference(f,f.input(0),initial,both,*combined);
+    const auto combined_residual=combined->last_residual(),combined_history=combined->ple_convolution_history();
+    check(!combined->step(20,f.input(1),refuse,route,error),"combined FFN failure accepted");
+    check(combined->tokens()==1&&combined->ple_convolution_history()==combined_history&&combined->token_history()==std::array<int32_t,2>{{-1,19}},"combined FFN failure committed history");
+    check(combined->reset(error),error);check(combined->step(19,f.input(0),ple_fixture::experts(),route,error),error);
+    check(combined->last_residual()==combined_residual&&combined->ple_convolution_history()==combined_history,"combined reset differs");
     std::puts("PLE key graph ownership, native-format reference, failure noncommit, retry and history reset passed with host providers");return 0;
 } catch(const std::exception&e) { std::cerr<<e.what()<<'\n';return 1; } }

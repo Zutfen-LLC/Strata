@@ -89,5 +89,16 @@ int main() {try {
     auto* saved=my->data;my->data=mx->data;rejects([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);});my->data=saved;
     matrix.budget=buffer.size+matrix.owner->bytes;strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);
     --matrix.budget;rejects([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);});
+    // PLE uses the same shader but has a distinct, fixed matrix contract.
+    StrataVkNativeShared ple;ple.owner=std::make_unique<StrataVkLogitsGuard>(StrataVkLogitsGuard{&backend});ple.matrix=true;ple.ple_value=true;buffer.size=32u<<20;ple.budget=buffer.size+ple.owner->bytes;
+    auto* pw=tensor(GGML_TYPE_I32,2560*2560/2,0x100000);
+    auto* px=tensor(GGML_TYPE_F32,2560,0x2000000);
+    auto* py=tensor(GGML_TYPE_F32,2560,0x2100000);
+    auto* pa=tensor(GGML_TYPE_F32,1,0x2200000);
+    rejects([&]{strata_vk_native_shared_run(&matrix,1,pw,px,py,pa,2560,2560,1);});
+    rejects([&]{strata_vk_native_shared_run(&ple,1,mw,mx,my,ma,2560,128,1);});
+    strata_vk_native_shared_run(&ple,1,pw,px,py,pa,2560,2560,1);
+    need(last_grid==std::array<uint32_t,3>{2560,1,1} && last_params[8]==256);
+    --ple.budget;rejects([&]{strata_vk_native_shared_run(&ple,1,pw,px,py,pa,2560,2560,1);});
     puts("native shared actual dispatch validation passed (mock submission)");return 0;
 }catch(const std::exception& e){fprintf(stderr,"%s\n",e.what());return 1;}}

@@ -4,7 +4,7 @@
 #include "strata_qsa_indexer_bf16_spv.hpp"
 #include <limits>
 namespace strata::core::portable_detail {
-struct StrataVkNativeShared {std::unique_ptr<StrataVkLogitsGuard> owner;bool matrix=false;size_t budget=0;uint64_t submitted=0,completed=0,uncertain=0;};
+struct StrataVkNativeShared {std::unique_ptr<StrataVkLogitsGuard> owner;bool matrix=false, ple_value=false;size_t budget=0;uint64_t submitted=0,completed=0,uncertain=0;};
 StrataVkNativeShared* strata_vk_native_shared_create(ggml_backend_t backend,const char* path,size_t budget) {
     auto result=std::make_unique<StrataVkNativeShared>();
     result->owner=strata_vk_q8_component_owner(backend,strata_native_shared_spv,sizeof(strata_native_shared_spv)/4,
@@ -17,6 +17,12 @@ StrataVkNativeShared* strata_vk_qsa_indexer_bf16_create(ggml_backend_t backend,c
         NativeComponentAddressing::descriptor,"strata_native_qsa_indexer_bf16_mmvf_candidate",4,9,path,budget);
     return result.release();
 }
+StrataVkNativeShared* strata_vk_ple_value_bf16_create(ggml_backend_t backend,const char* path,size_t budget) {
+    auto result=std::make_unique<StrataVkNativeShared>();result->matrix=true;result->ple_value=true;result->budget=budget;
+    result->owner=strata_vk_q8_component_owner(backend,strata_qsa_indexer_bf16_spv,sizeof(strata_qsa_indexer_bf16_spv)/4,
+        NativeComponentAddressing::descriptor,"strata_native_ple_value_bf16_mmvf_candidate",4,9,path,budget);
+    return result.release();
+}
 uint64_t strata_vk_native_shared_submitted(const StrataVkNativeShared* p) noexcept{return p?p->submitted:0;}
 uint64_t strata_vk_native_shared_completed(const StrataVkNativeShared* p) noexcept{return p?p->completed:0;}
 uint64_t strata_vk_native_shared_uncertain(const StrataVkNativeShared* p) noexcept{return p?p->uncertain:0;}
@@ -26,7 +32,7 @@ void strata_vk_native_shared_run(StrataVkNativeShared* s,uint32_t mode,const ggm
     const ggml_tensor* input,ggml_tensor* output,ggml_tensor* aux,uint32_t ni,uint32_t no,uint32_t tokens) {
     native_shared_need(s && mode<=2 && weights && input && output && aux,"native shared: invalid call");
     native_shared_shape(ni,mode==0?no:32,tokens);
-    if(s->matrix)native_shared_need(mode==1 && ni==2560 && (no==128 || no==512) && tokens==1,"QSA indexer BF16: unsupported geometry");
+    if(s->matrix)native_shared_need(mode==1 && ni==2560 && (s->ple_value ? no==2560 : (no==128 || no==512)) && tokens==1,"native BF16 matrix: unsupported geometry");
     else native_shared_need(mode==0 || no==1,"native shared: scalar/scale require no=1");
     native_shared_need(weights->type==(mode==2?GGML_TYPE_F32:GGML_TYPE_I32) &&
         input->type==(mode==0?GGML_TYPE_I32:GGML_TYPE_F32) && output->type==GGML_TYPE_F32 && aux->type==GGML_TYPE_F32,

@@ -9,9 +9,10 @@ existing Q8_0 MMVQ consumer produces 10,240 key values. This is the native
 or the separate BF16 key path.
 
 The PLE graph consumes the actual producer-owned device output for its
-existing grouped key normalization. Its value projection, gate, grouped
-normalization, convolution, residual and both histories remain in the
-existing portable path. The key projection runs before the graph and does not
+existing grouped key normalization. The value projection remains independently
+controlled by `--native-ple-value-t1`; gate, grouped normalization,
+convolution, residual and both histories remain in the existing portable
+path. The key projection runs before the graph and does not
 advance the token or normalized-convolution history. A later projection,
 graph or FFN failure cannot publish the candidate state; the existing layer
 transaction remains responsible for commit, reset and retry.

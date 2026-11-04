@@ -18,6 +18,7 @@ class PortableGdnScratch {
 };
 enum class PortableGdnPolicy { eager_diagnostic, device_production };
 struct PortableGdnOptions {
+    static constexpr size_t native_ple_value_host_bound = 16u << 20; // BF16 role and bounded controls
     static constexpr size_t native_recurrence_host_bound=4u<<20;
     static constexpr size_t native_preparation_host_bound=2u<<20; // streamed conversion/preflight/first receipts
     static constexpr size_t native_input_projection_host_bound=1u<<20;
@@ -30,6 +31,8 @@ struct PortableGdnOptions {
     static constexpr size_t native_hc_pending_host_bound = native_hc_read_host_bound + (128u << 10);
     PortableFfnOptions execution;
     // Experimental fixed T1 eager/resident-state path; private or shared serial scratch.
+    bool native_ple_value_t1 = false; // opt-in layer-1 PLE BF16 value projection
+    std::string native_ple_value_receipt;
     bool native_recurrence_t1 = false;
     bool native_preparation_t1=false;
     bool native_input_projection_t1=false; // ordinary T1 native QKV and gate-input projection

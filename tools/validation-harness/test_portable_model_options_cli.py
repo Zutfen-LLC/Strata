@@ -25,6 +25,8 @@ assert not a['native_hc_norm_inject_layer0'] and b['native_hc_norm_inject_layer0
 ple_key=['--native-ple-key-t1','/absent/ple-key']
 assert not a.get('native_ple_key_t1',False)
 assert run(['--gdn-resident-weights',*ple_key],True)['native_ple_key_t1']
+both=run(['--gdn-resident-weights',*ple_key,'--native-ple-value-t1','/absent/ple-value'],True)
+assert both['native_ple_key_t1'] and both['native_ple_value_t1']
 run(ple_key,False,'native PLE key requires')
 for flags in [['--allow-cpu-fallback'],['--gdn-production','--gdn-resident-state'],['--prompt-chunk-size','2']]:
  run(['--gdn-resident-weights',*ple_key,*flags],False)
