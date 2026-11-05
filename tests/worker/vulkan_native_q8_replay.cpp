@@ -110,6 +110,7 @@ int worker_replay(int argc,char** argv) {
             after.entries>=before.entries && after.entries-before.entries==uint64_t(entries),"worker lifecycle counters changed unexpectedly");
         require(remote.indices==direct.indices && remote.rows.size()==direct.rows.size() &&
             !std::memcmp(remote.rows.data(),direct.rows.data(),direct.rows.size()*sizeof(float)),"worker/direct indexed rows differ");
+        require(tier.close_orderly(err),err);
         const std::string pass="indexed rows and lifecycle counters match; same physical device/build/shaders require separate evidence\n";
         write((output/"PASS").string(),pass.data(),pass.size());return 0;
     } catch(const std::exception& e) {std::ofstream failure(output/"FAILURE");failure<<e.what()<<"\n";throw; }

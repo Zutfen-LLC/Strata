@@ -569,4 +569,30 @@ bool TlsSession::send_all(const void* p, size_t n, int ms, const std::function<b
 bool TlsSession::recv_all(void* p, size_t n, int ms, const std::function<bool()>& cancel, TransportRead* detail) {
     return io(p, n, ms, cancel, false, detail);
 }
+bool TlsSession::send_close_notify(int ms, const std::function<bool()>& cancel, std::string& err) {
+#ifdef STRATA_WORKER_TLS
+    if(!ssl_ || ms<=0) {err="TLS close requires an active session and positive deadline";return false;}
+    const sock::Budget budget(ms);
+    for(;;) {
+        if(budget.remaining()==0) {err="TLS close deadline";return false;}
+        if(cancel && cancel()) {err="TLS close cancelled";return false;}
+        ERR_clear_error();const int result=SSL_shutdown((SSL*)ssl_);
+        // SSL_shutdown returning zero means the notification was sent; do not
+        // call it again to wait for a peer notification.
+        if(result>=0 && (SSL_get_shutdown((SSL*)ssl_)&SSL_SENT_SHUTDOWN)) {
+            if(budget.remaining()==0) {err="TLS close deadline";return false;}
+            if(cancel && cancel()) {err="TLS close cancelled";return false;}
+            return true;
+        }
+        TransportOutcome why=TransportOutcome::tls_error;
+        const int ssl_error=SSL_get_error((SSL*)ssl_,result);
+        // Only wait for a blocked alert write. Never wait for peer shutdown.
+        if(ssl_error!=SSL_ERROR_WANT_WRITE || !sock::wait_fd((sock_fd)fd_,true,budget,cancel,nullptr,&why)) {
+            err=why==TransportOutcome::cancelled?"TLS close cancelled":why==TransportOutcome::timeout?"TLS close deadline":"TLS close transport error";return false;
+        }
+    }
+#else
+    (void)ms;(void)cancel;err="TLS is unavailable";return false;
+#endif
+}
 } // namespace strata::worker

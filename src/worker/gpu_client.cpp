@@ -12,6 +12,11 @@ uint64_t now_ms(){return(uint64_t)std::chrono::duration_cast<std::chrono::millis
 }
 GpuWorkerTier::~GpuWorkerTier(){close();}
 void GpuWorkerTier::close(){tls_.reset();sock_fd fd=(sock_fd)fd_;sock::close_fd(fd);fd_=~(uintptr_t)0;ready_=false;posted_=served_=false;reply_.partials.clear();rows_reply_={};cancelled_={};setup_end_=0;}
+bool GpuWorkerTier::close_orderly(std::string& err){
+    if(dead_ || !ready_ || posted_ || fd_==~(uintptr_t)0){err="GPU tier is not healthy and idle";return false;}
+    if(use_tls_ && !tls_.send_close_notify(deadline_ms_,cancelled_,err))return fail("GPU TLS close notification failed: "+err,err);
+    close();return true;
+}
 bool GpuWorkerTier::fail(const std::string& why,std::string& err){
     err=why;why_=why;dead_=true;++stats_.failures;close();return false;
 }
