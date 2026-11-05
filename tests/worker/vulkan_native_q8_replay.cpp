@@ -93,14 +93,19 @@ int worker_replay(int argc,char** argv) {
         auto status=[&](const char* label,const GpuCounters& c){meta<<label<<" assigned="<<c.assigned_bytes<<" cached="<<c.cached_bytes
             <<" transferred="<<c.transferred_bytes<<" verified="<<c.verified_bytes<<" weights="<<c.gpu_weight_bytes
             <<" allocated="<<c.gpu_allocated_bytes<<" scratch="<<c.gpu_scratch_bytes<<" allocations="<<c.gpu_allocation_count
-            <<" requests="<<c.requests<<" entries="<<c.entries<<"\n";};
+            <<" requests="<<c.requests<<" entries="<<c.entries<<" failures="<<c.failures<<"\n";};
         meta<<"session="<<remote.session<<" sequence="<<remote.sequence<<"\n";status("before",before);status("after",after);
         require(bool(meta),"worker status write failed");meta.close();
         const auto entries=std::count(q.mask.begin(),q.mask.end(),uint8_t(1));
+        // Failures are cumulative for the worker, not reset per session. This
+        // fresh-worker replay refuses a previously dirty worker as well as a
+        // failure during the call. Closing the tier happens after this status;
+        // shutdown diagnostics must be assessed separately.
         require(before.gpu_allocated_bytes==after.gpu_allocated_bytes && before.gpu_weight_bytes==after.gpu_weight_bytes &&
             before.gpu_scratch_bytes==after.gpu_scratch_bytes && before.gpu_allocation_count==after.gpu_allocation_count &&
             before.assigned_bytes==after.assigned_bytes && before.cached_bytes==after.cached_bytes &&
             before.transferred_bytes==after.transferred_bytes && before.verified_bytes==after.verified_bytes &&
+            before.failures==0 && after.failures==0 &&
             after.requests>=before.requests && after.requests-before.requests==1 &&
             after.entries>=before.entries && after.entries-before.entries==uint64_t(entries),"worker lifecycle counters changed unexpectedly");
         require(remote.indices==direct.indices && remote.rows.size()==direct.rows.size() &&

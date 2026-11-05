@@ -104,6 +104,42 @@ void codec_checks(const GpuPlan& p){
     reply.sequence=r.sequence;reply.partials[0]=std::numeric_limits<float>::quiet_NaN();bad=gpu_codec::encode_reply(p,digest,reply);
     check(!gpu_codec::decode_reply(p,digest,r,bad,output),"nonfinite output rejected");
 }
+#ifndef _WIN32
+void transport_diagnostics() {
+    auto run=[](const std::vector<uint8_t>& bytes,bool close_peer,bool cancelled,int deadline,const char* stage,TransportOutcome outcome,size_t count) {
+        int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"socketpair");
+        if(!bytes.empty())require(::send(fd[0],bytes.data(),bytes.size(),0)==(ssize_t)bytes.size(),"test send");
+        if(close_peer)::shutdown(fd[0],SHUT_WR);
+        WireFrame frame;std::string err;gpu_codec::ReceiveDiagnostic d;
+        check(!gpu_codec::receive(fd[1],frame,kGpuFrameMax,deadline,[&]{return cancelled;},err,0,nullptr,&d) &&
+              std::string(d.stage)==stage && d.transport.outcome==outcome && d.transport.bytes==count,"bounded receive diagnostic");
+        ::close(fd[0]);::close(fd[1]);
+    };
+    run({},true,false,100,"header",TransportOutcome::eof,0);
+    run({1,2,3},true,false,100,"header",TransportOutcome::eof,3);
+    std::vector<uint8_t> partial;gpu_codec::put(partial,kGpuWireMagic,4);gpu_codec::put(partial,GPU_HELLO,2);
+    gpu_codec::put(partial,ST_OK,2);gpu_codec::put(partial,4);partial.push_back(1);
+    run(partial,true,false,100,"payload",TransportOutcome::eof,1);
+    run({},false,false,20,"header",TransportOutcome::timeout,0);
+    run({},false,true,100,"header",TransportOutcome::cancelled,0);
+    {
+        int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"one-shot socketpair");
+        int calls=0;WireFrame frame;std::string why;gpu_codec::ReceiveDiagnostic detail;
+        check(!gpu_codec::receive(fd[1],frame,kGpuFrameMax,500,[&]{return ++calls==2;},why,0,nullptr,&detail) &&
+              detail.transport.outcome==TransportOutcome::cancelled && calls==2,"one-shot cancellation during wait is not re-polled");
+        ::close(fd[0]);::close(fd[1]);
+    }
+    std::vector<uint8_t> malformed(16,0);run(malformed,false,false,100,"malformed_header",TransportOutcome::none,0);
+    int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"send socketpair");
+    TransportRead send_detail;std::string err;
+    check(!gpu_codec::send(fd[0],GPU_HELLO,ST_OK,{},100,[]{return true;},err,nullptr,&send_detail) &&
+          send_detail.outcome==TransportOutcome::cancelled && send_detail.bytes==0,"send cancellation diagnostic");
+    ::close(fd[0]);::close(fd[1]);
+    TransportRead early;check(!gpu_codec::send(0,GPU_HELLO,ST_OK,{},0,{},err,nullptr,&early)&&early.outcome==TransportOutcome::timeout,"invalid send deadline classified");
+    WireFrame frame;gpu_codec::ReceiveDiagnostic receive_early;
+    check(!gpu_codec::receive(0,frame,kGpuFrameMax,0,{},err,0,nullptr,&receive_early)&&receive_early.transport.outcome==TransportOutcome::timeout,"invalid receive deadline classified");
+}
+#endif
 uint64_t raw_setup(sock_fd fd,const GpuPlan& p){
     // local_fixture.hpp also defines put<T>(buffer, value), whose width is sizeof(T).
     // SGW1 fields use explicit codec widths, independent of literal or host integer types.
@@ -353,6 +389,31 @@ void lifecycle(const Fixture& f,const GpuPlan& p){
         check(response.status==ST_STALE_SESSION,"stale session refused by service");sock::close_fd(fd);
     }
 }
+#ifndef _WIN32
+void failure_log_checks(const Fixture& f,const GpuPlan& p) {
+    FILE* capture=std::tmpfile();require(capture!=nullptr,"diagnostic capture");
+    const int saved=::dup(STDERR_FILENO);require(saved>=0 && ::dup2(::fileno(capture),STDERR_FILENO)>=0,"redirect diagnostic");
+    std::string err;
+    {
+        GpuService service(options_for(f,p,"cache-diagnostic-close"),std::make_unique<FakeExecutor>());
+        int fetches=0;GpuWorkerTier first;require(first.open(open_for(f,p,service.port,fetches),err),err);run_tier(first,p);first.close();
+        GpuWorkerTier second;require(second.open(open_for(f,p,service.port,fetches),err),err);run_tier(second,p);second.close();
+        service.stop();check(service.service.counters().requests==2,"ordinary close permits another client");
+    }
+    {
+        auto executor=std::make_unique<FakeExecutor>();executor->loss=true;
+        GpuService service(options_for(f,p,"cache-diagnostic-executor"),std::move(executor));
+        int fetches=0;GpuWorkerTier tier;require(tier.open(open_for(f,p,service.port,fetches),err),err);
+        auto r=request_for(p);std::vector<int32_t> ids(r.ids.begin(),r.ids.end());
+        check(!tier.post(r.layer,r.activations.data(),ids.data(),r.weights.data(),r.mask.data(),r.T,r.K,err),"executor failure refused");
+        service.stop();check(service.service.counters().failures>=1,"executor failure counted");
+    }
+    std::fflush(stderr);require(::dup2(saved,STDERR_FILENO)>=0,"restore diagnostic");::close(saved);
+    std::rewind(capture);std::string log;char buf[512];while(size_t n=std::fread(buf,1,sizeof(buf),capture))log.append(buf,n);std::fclose(capture);
+    check(log.find("site=receive stage=header outcome=eof bytes=0")!=std::string::npos,"clean close recorded as header EOF");
+    check(log.find("site=dispatch msg=9")!=std::string::npos,"executor failure recorded at dispatch");
+}
+#endif
 #ifdef STRATA_TEST_TLS
 void tls_lifecycle(const Fixture& f,const GpuPlan& p,bool nodelay) {
     TlsFixture certificates;
@@ -460,7 +521,14 @@ int main(int argc,char** argv){
 #ifndef STRATA_TEST_TLS
         TlsConfig disabled;disabled.ca_file="unused-test-path";
         check(!disabled.validate(err),"TLS request fails closed in TLS-disabled build");
+        TlsSession unavailable;TransportRead detail;char byte=0;
+        check(!unavailable.recv_all(&byte,1,100,{},&detail)&&detail.outcome==TransportOutcome::tls_error,"disabled TLS outcome initialized");
+        check(!unavailable.recv_all(&byte,1,0,{},&detail)&&detail.outcome==TransportOutcome::timeout,"disabled TLS deadline outcome initialized");
 #endif
-        listener_checks(fixture,plan);lifecycle(fixture,plan);return failures?1:0;
+        listener_checks(fixture,plan);lifecycle(fixture,plan);
+#ifndef _WIN32
+        transport_diagnostics();failure_log_checks(fixture,plan);
+#endif
+        return failures?1:0;
     }catch(const std::exception& e){std::fprintf(stderr,"FAIL gpu fixture: %s\n",e.what());return 1;}
 }

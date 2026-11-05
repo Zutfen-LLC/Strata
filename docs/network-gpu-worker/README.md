@@ -198,3 +198,11 @@ sequence. A match is meaningful only after separately verifying that direct and
 worker runs used the same physical device, build, driver, shaders and weights:
 SGW1 does not attest device or build identity. This check is not a full model
 or CPU/CUDA parity test.
+
+Use a fresh worker for this gate. Its failure counter is cumulative across
+connections, and the replay refuses if either the before or after status reports
+a nonzero value, including a failure from an earlier client. It does not reset
+the counter or stop the service. Both status reads happen before the replay
+client closes; a failure recorded during or after teardown is outside the replay
+`PASS` and must be reviewed separately in the worker's diagnostics and shutdown
+report. A recorded counter does not by itself establish its cause.
