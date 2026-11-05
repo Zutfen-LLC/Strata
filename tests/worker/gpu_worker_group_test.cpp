@@ -115,7 +115,8 @@ void configuration(const Network& n) {
     bad[0].tls.key_file.clear();
     check(!GpuWorkerGroup::validate(bad,err),"partial Vulkan mTLS configuration rejected");
     GpuEndpoint parsed;
-    check(parse_gpu_endpoint("vulkan@10.0.0.5:7432",parsed)&&parsed.vulkan,"Vulkan endpoint parser");
+    check(parse_gpu_endpoint("vulkan-native-q8@10.0.0.5:7432",parsed)&&parsed.vulkan&&parsed.native_q8,"native Vulkan endpoint parser");
+    check(parse_gpu_endpoint("vulkan@10.0.0.5:7432",parsed)&&parsed.vulkan&&!parsed.native_q8,"Vulkan endpoint parser");
     check(parse_gpu_endpoint("cuda@10.0.0.5:7432",parsed)&&!parsed.vulkan,"explicit CUDA endpoint parser");
     check(parse_gpu_endpoint("127.0.0.1:7432",parsed)&&parsed.port==7432,"numeric endpoint parser");
     check(!parse_gpu_endpoint("localhost:7432",parsed)&&!parse_gpu_endpoint("127.0.0.1:0",parsed)&&

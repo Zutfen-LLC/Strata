@@ -30,6 +30,7 @@ class VulkanExecutor final : public GpuExecutor {
 #endif
 public:
     VulkanExecutor(int device, bool cpu_test, uint64_t budget):device_(device),cpu_test_(cpu_test),tensor_budget_(budget) {}
+    VulkanExecutor(int device,uint64_t budget,std::string receipt):device_(device),cpu_test_(false),tensor_budget_(budget),native_receipt_(std::move(receipt)) {}
     VulkanExecutor(ggml_backend_t backend, uint64_t budget):device_(-1),cpu_test_(false),tensor_budget_(budget),borrowed_(backend) {}
     VulkanExecutor(ggml_backend_t backend,uint64_t budget,std::string receipt,std::string capture,bool capture_first_only):device_(-1),cpu_test_(false),tensor_budget_(budget),borrowed_(backend),native_receipt_(std::move(receipt)),native_capture_(std::move(capture)),capture_first_only_(capture_first_only) {}
     ~VulkanExecutor() override { GpuCounters ignored; release(ignored); }
@@ -117,6 +118,13 @@ public:
         } catch(const std::exception& e) { err=e.what(); release(c); return false; }
     }
     bool supports_rows() const override { return true; }
+    bool native_q8() const override {
+#ifdef STRATA_VULKAN_NATIVE_Q8_PROVIDER
+        return !native_receipt_.empty();
+#else
+        return false;
+#endif
+    }
     bool infer(const GpuPlan&,const InferRequest&,InferReply&,std::string& err) override {
         err="Vulkan adapter supports unweighted indexed rows only"; return false;
     }
@@ -204,6 +212,15 @@ std::unique_ptr<GpuExecutor> create_vulkan_native_q8_observation(ggml_backend_t 
 bool vulkan_native_q8_allocation_snapshot(const GpuExecutor* executor,GpuCounters& counters) {
     const auto* native=dynamic_cast<const VulkanExecutor*>(executor);
     return native && native->native_allocation_snapshot(counters);
+}
+std::unique_ptr<GpuExecutor> create_vulkan_native_q8_worker(int device,uint64_t budget,const std::string& receipt) {
+    if(receipt.empty()) throw std::runtime_error("native Q8 worker requires a shader receipt prefix");
+#ifndef STRATA_VULKAN_NATIVE_Q8_PROVIDER
+    (void)device; (void)budget;
+    throw std::runtime_error("native Q8 worker requires Vulkan native stages with strict FMA; no fallback");
+#else
+    return std::make_unique<VulkanExecutor>(device,budget,receipt);
+#endif
 }
 std::unique_ptr<GpuExecutor> create_vulkan_gpu_executor(int device, uint64_t tensor_budget) {
     return std::make_unique<VulkanExecutor>(device,false,tensor_budget);
