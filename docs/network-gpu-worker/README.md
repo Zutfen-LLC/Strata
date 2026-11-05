@@ -169,3 +169,32 @@ model testing, compare every indexed row and its identity from a pinned input
 between this worker and the existing native executor on the same device, with
 the same weights, build and shader receipts. Preserve both results and failure
 evidence.
+
+#### Retained-request replay
+
+`vulkan_native_q8_replay` records `layer.direct.reply`, the canonical request,
+plan, device description and shader receipts in its new private output directory.
+The successful direct run writes `DIRECT_PASS` only after its existing row and
+release checks. Do not reuse a failed or incomplete directory as a reference.
+Pin the capture, plan, every blob, executable, shader receipts, direct output,
+worker executable, device and driver identity with SHA-256 in an external run
+manifest. The SGW1 digest binds the comparison to the request and plan but is not
+an authentication mechanism or a substitute for that manifest.
+
+The CPU-only `native_q8_worker_replay` accepts:
+
+```
+native_q8_worker_replay --worker HOST:PORT CAPTURE RECORD PLAN BLOB_DIR DIRECT_REPLY NEW_OUTPUT --deadline-ms N [--tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer DNS]
+```
+
+It verifies every staged blob, refuses an incomplete plan rather than remasking,
+checks the direct reference binding, compares every index and row bit, and checks
+unchanged resident allocation and transfer counters plus exact request and entry
+count deltas. The new private output retains the reference, canonical request, worker rows and
+indices, status counters, and either `PASS` or `FAILURE`. Preserve stdout and
+stderr and externally hash the complete output. Session IDs differ between the
+direct and remote calls; the existing client validates the worker session and
+sequence. A match is meaningful only after separately verifying that direct and
+worker runs used the same physical device, build, driver, shaders and weights:
+SGW1 does not attest device or build identity. This check is not a full model
+or CPU/CUDA parity test.
