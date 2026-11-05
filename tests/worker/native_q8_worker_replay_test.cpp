@@ -8,18 +8,24 @@
 #include <unistd.h>
 #include <cstring>
 #include <stdexcept>
+#ifdef STRATA_TEST_TLS
+#include "tls_fixture.hpp"
+#endif
 using namespace strata::worker;
 namespace fs=std::filesystem;
 void check(bool value,const char* text) {if(!value)throw std::runtime_error(text);}
 struct Mock final:GpuExecutor {
+    bool change_allocation=false,change_requests=false;GpuCounters* counters=nullptr;
     bool native_q8()const override{return true;}
     bool supports_rows()const override{return true;}
     bool prepare(const GpuPlan& p,uint64_t,GpuCache& cache,GpuCounters& c,std::string& err) override {
-        std::vector<uint8_t> blob;for(const auto& a:p.assets)if(!cache.read(a,blob,err))return false;
+        counters=&c;std::vector<uint8_t> blob;for(const auto& a:p.assets)if(!cache.read(a,blob,err))return false;
         c.gpu_weight_bytes=c.gpu_allocated_bytes=p.assigned_bytes();c.gpu_allocation_count=1;return true;
     }
     bool infer(const GpuPlan&,const InferRequest&,InferReply&,std::string&)override{return false;}
     bool infer_rows(const GpuPlan& p,const InferRequest& q,EntryRowsReply& out,std::string&)override {
+        if(change_allocation && counters)++counters->gpu_allocated_bytes;
+        if(change_requests && counters)++counters->requests;
         out.session=q.session;out.sequence=q.sequence;
         for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]){out.indices.push_back(i);out.rows.insert(out.rows.end(),p.n_embd,float(i));}
         return true;
@@ -56,5 +62,39 @@ int main(int argc,char** argv){try {
     fs::rename(fixture/"blobs",fixture/"held-blobs");args[8]=(dir/"missing-blob").string();
     check(invoke(args)!=0 && fs::exists(dir/"missing-blob"/"FAILURE"),"missing source blob accepted");
     fs::rename(fixture/"held-blobs",fixture/"blobs");
-    std::printf("mock replay comparison, reference, marker and blob refusals passed; no GPU\n");return 0;
+    for(const std::string tag:{"cuda@","vulkan@","vulkan-native-q8@"}) {
+        args[2]=tag+"127.0.0.1:"+std::to_string(port);args[8]=(dir/("tag-"+tag.substr(0,tag.size()-1))).string();
+        check(invoke(args)!=0 && fs::exists(fs::path(args[8])/"FAILURE") && !fs::exists(fs::path(args[8])/"PASS"),"backend-tagged endpoint accepted");
+    }
+    {
+        fs::create_directory(dir/"changing-cache");auto changing_options=options;changing_options.cache_root=(dir/"changing-cache").string();
+        auto changed=std::make_unique<Mock>();changed->change_allocation=true;
+        GpuWorkerService changing(changing_options,std::move(changed));uint16_t changing_port=0;check(changing.listen(changing_port,err),err.c_str());
+        std::thread thread([&]{changing.run();});Stop guard{changing,thread};
+        args[2]="127.0.0.1:"+std::to_string(changing_port);args[8]=(dir/"changed-allocation").string();
+        check(invoke(args)!=0 && fs::exists(dir/"changed-allocation"/"FAILURE") && !fs::exists(dir/"changed-allocation"/"PASS"),"changed allocation accepted");
+    }
+    {
+        fs::create_directory(dir/"changing-request-cache");auto changing_options=options;changing_options.cache_root=(dir/"changing-request-cache").string();
+        auto changed=std::make_unique<Mock>();changed->change_requests=true;
+        GpuWorkerService changing(changing_options,std::move(changed));uint16_t changing_port=0;check(changing.listen(changing_port,err),err.c_str());
+        std::thread thread([&]{changing.run();});Stop guard{changing,thread};
+        args[2]="127.0.0.1:"+std::to_string(changing_port);args[8]=(dir/"changed-requests").string();
+        check(invoke(args)!=0 && fs::exists(dir/"changed-requests"/"FAILURE") && !fs::exists(dir/"changed-requests"/"PASS"),"changed request count accepted");
+    }
+#ifdef STRATA_TEST_TLS
+    {
+        TlsFixture tls;fs::create_directory(dir/"tls-cache");auto secure_options=options;
+        secure_options.cache_root=(dir/"tls-cache").string();secure_options.tls=tls.config("worker","coordinator.test");
+        GpuWorkerService secure(secure_options,std::make_unique<Mock>());uint16_t tls_port=0;check(secure.listen(tls_port,err),err.c_str());
+        std::thread thread([&]{secure.run();});Stop guard{secure,thread};
+        args[2]="127.0.0.1:"+std::to_string(tls_port);args[8]=(dir/"tls-bad-san").string();
+        const auto credentials=tls.config("coordinator","wrong.test");
+        args.insert(args.end(),{"--tls-ca",credentials.ca_file,"--tls-cert",credentials.cert_file,"--tls-key",credentials.key_file,"--tls-peer",credentials.peer_dns});
+        check(invoke(args)!=0 && fs::exists(dir/"tls-bad-san"/"FAILURE") && !fs::exists(dir/"tls-bad-san"/"PASS"),"wrong TLS SAN accepted");
+        args[8]=(dir/"tls-ok").string();args.back()="worker.test";
+        check(invoke(args)==0 && fs::exists(dir/"tls-ok"/"PASS"),"mTLS replay did not pass");
+    }
+#endif
+    std::printf("mock replay rows, lifecycle, tags and refusal checks passed; no GPU\n");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
