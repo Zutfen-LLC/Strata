@@ -1,13 +1,15 @@
 // One explicitly selected retained request; never a model/token campaign.
 #ifdef STRATA_Q8_REPLAY_CUDA
 #include "../../src/kernels/cuda/iq_kernels.cu"
-#else
+#elif !defined(STRATA_Q8_REPLAY_CLIENT_ONLY)
 #include "strata/worker/vulkan_executor.hpp"
 #include "ggml-vulkan.h"
 #include "native_q8_replay_timing.hpp"
 #endif
 #include "vulkan_native_q8_layout.hpp"
 #include "strata/worker/cpu_capture.hpp"
+#include "strata/worker/gpu_client.hpp"
+#include "strata/worker/gpu_endpoint.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -27,7 +29,84 @@ void write(const std::string& path,const void* data,size_t n){std::ofstream f(pa
 void cu(cudaError_t e){require(e==cudaSuccess,cudaGetErrorString(e));}
 struct Device {void* p=nullptr;size_t n;explicit Device(size_t size):n(size){cu(cudaMalloc(&p,n));}~Device(){if(p)cudaFree(p);}void put(const void* s){cu(cudaMemcpy(p,s,n,cudaMemcpyHostToDevice));}void dump(const std::string& path){std::vector<uint8_t> b(n);cu(cudaMemcpy(b.data(),p,n,cudaMemcpyDeviceToHost));write(path,b.data(),n);}};
 #endif
+#ifndef STRATA_Q8_REPLAY_CUDA
+// The reference is an SGW1 row reply bound to the complete canonical request
+// and plan. This digest detects mistakes, not a malicious evidence substitution.
+std::vector<uint8_t> file_bytes(const fs::path& path,size_t limit) {
+    std::ifstream in(path,std::ios::binary|std::ios::ate);require(bool(in),"reference open failed");
+    auto size=in.tellg();require(size>=0 && uint64_t(size)<=limit,"reference size invalid");
+    std::vector<uint8_t> data(size_t(size),uint8_t{});in.seekg(0);
+    require(bool(in.read(reinterpret_cast<char*>(data.data()),data.size())),"reference read failed");return data;
+}
+int worker_replay(int argc,char** argv) {
+    require(argc==11 || argc==19,"usage: --worker HOST:PORT CAPTURE RECORD PLAN BLOB_DIR DIRECT_REPLY NEW_OUTPUT --deadline-ms N [--tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer DNS]");
+    const fs::path output=argv[8];require(fs::create_directory(output),"output must be a new private directory");
+    fs::permissions(output,fs::perms::owner_all,fs::perm_options::replace);
+    try {
+    GpuEndpoint endpoint;require(parse_gpu_endpoint(argv[2],endpoint) && !endpoint.vulkan,"worker endpoint must be numeric HOST:PORT");
+    require(std::string(argv[9])=="--deadline-ms","explicit deadline required");
+    std::string deadline_value=argv[10];require(!deadline_value.empty() && deadline_value.find_first_not_of("0123456789")==std::string::npos,"invalid deadline");
+    const auto deadline=std::stoull(deadline_value);require(deadline && deadline<=600000,"deadline out of range");
+    TlsConfig tls;
+    if(argc==19) {
+        require(std::string(argv[11])=="--tls-ca" && std::string(argv[13])=="--tls-cert" &&
+            std::string(argv[15])=="--tls-key" && std::string(argv[17])=="--tls-peer","invalid TLS arguments");
+        tls={argv[12],argv[14],argv[16],argv[18]};
+    }
+    std::string err;require(tls.validate(err),err);
+    CpuCaptureFile f;GpuPlan p;require(read_cpu_capture(argv[3],f,err),err);require(read_gpu_plan(argv[5],p,err),err);
+    const std::string record=argv[4];require(!record.empty() && record.find_first_not_of("0123456789")==std::string::npos,"invalid record");
+    const auto ordinal=std::stoull(record);require(ordinal<f.records.size() && f.records[ordinal].sent,"record absent/not sent");
+    auto q=f.records[ordinal].request;
+    require(p.model_id==f.setup.model_id && p.n_embd==H && p.n_ff==F && p.gu_type==8 && p.d_type==8 &&
+        p.n_layers==f.setup.n_layers && p.n_expert==f.setup.n_expert && !p.assets.empty(),"capture/plan identity or native geometry mismatch");
+    for(size_t i=0;i<q.mask.size();++i)require(!q.mask[i] || p.owns(q.layer,q.ids[i]),"full request not covered by plan; refusing to remask");
+    q.model_id=p.model_id;q.partition_id=p.placement_id.a;q.session=1;q.sequence=1;
+    std::vector<uint8_t> request;require(gpu_codec::encode_request(p,q,request),"cannot encode retained request");
+    const auto marker=file_bytes(fs::path(argv[7]).parent_path()/"DIRECT_PASS",256);
+    require(std::string(marker.begin(),marker.end())=="direct replay complete\n","direct completion marker absent or invalid");
+    const auto ref=file_bytes(argv[7],kGpuFrameMax);EntryRowsReply direct;
+    require(gpu_codec::decode_rows_reply(p,blob_digest(request),q,ref,direct),"direct reference does not bind this plan and request");
+    write((output/"direct.reply").string(),ref.data(),ref.size());
+    write((output/"canonical.request").string(),request.data(),request.size());
+        GpuWorkerTier::Open open;open.host=endpoint.host;open.port=endpoint.port;open.plan=p;
+        open.vulkan=open.native_q8=open.entry_rows=true;open.deadline_ms=int(deadline);open.setup_ms=600000;open.tls=tls;
+        open.fetch=[&](int64_t layer,int64_t expert,uint8_t* dst,uint32_t n){
+            const auto* a=p.find(layer,expert);if(!a || a->bytes!=n)return false;
+            std::ifstream in(fs::path(argv[6])/key(p,*a),std::ios::binary|std::ios::ate);
+            if(!in || in.tellg()!=std::streamoff(n))return false;
+            in.seekg(0);
+            return bool(in.read(reinterpret_cast<char*>(dst),n)) && blob_digest(dst,n)==a->digest;
+        };
+        // Verify every source blob even if the service already has a cached copy.
+        for(const auto& a:p.assets) {
+            std::vector<uint8_t> blob(a.bytes);
+            require(open.fetch(a.layer,a.expert,blob.data(),uint32_t(blob.size())),"staged blob missing or digest mismatch");
+        }
+        GpuWorkerTier tier;require(tier.open(open,err),err);GpuCounters before,after;require(tier.status(before,err),err);
+        std::vector<int32_t> ids(q.ids.begin(),q.ids.end());
+        require(tier.post(q.layer,q.activations.data(),ids.data(),q.weights.data(),q.mask.data(),q.T,q.K,err) && tier.finish(err) && tier.served(),err);
+        const auto remote=tier.entry_rows();require(tier.status(after,err),err);
+        write((output/"worker.indices").string(),remote.indices.data(),remote.indices.size()*sizeof(uint16_t));
+        write((output/"worker.rows.f32").string(),remote.rows.data(),remote.rows.size()*sizeof(float));
+        std::ofstream meta(output/"worker.status");meta<<"session="<<remote.session<<" sequence="<<remote.sequence
+            <<" assigned="<<after.assigned_bytes<<" weights="<<after.gpu_weight_bytes<<" allocated_before="<<before.gpu_allocated_bytes
+            <<" allocated_after="<<after.gpu_allocated_bytes<<" scratch="<<after.gpu_scratch_bytes<<" allocations="<<after.gpu_allocation_count
+            <<" requests="<<after.requests<<" entries="<<after.entries<<"\n";require(bool(meta),"worker status write failed");meta.close();
+        require(remote.indices==direct.indices && remote.rows.size()==direct.rows.size() &&
+            !std::memcmp(remote.rows.data(),direct.rows.data(),direct.rows.size()*sizeof(float)),"worker/direct indexed rows differ");
+        const std::string pass="indexed rows and bits match; same physical device/build/shaders require separate evidence\n";
+        write((output/"PASS").string(),pass.data(),pass.size());return 0;
+    } catch(const std::exception& e) {std::ofstream failure(output/"FAILURE");failure<<e.what()<<"\n";throw; }
+}
+#endif
 int main(int argc,char** argv){try {
+#ifndef STRATA_Q8_REPLAY_CUDA
+    if(argc>1 && std::string(argv[1])=="--worker")return worker_replay(argc,argv);
+#endif
+#ifdef STRATA_Q8_REPLAY_CLIENT_ONLY
+    throw std::runtime_error("CPU-only replay supports --worker only");
+#else
     bool timing=false;size_t budget=128u<<20;
     for(int arg=10;arg<argc;++arg) {
         const std::string option=argv[arg];
@@ -87,6 +166,8 @@ int main(int argc,char** argv){try {
     ggml_backend_dev_props props{};ggml_backend_dev_get_props(ggml_backend_get_device(backend.get()),&props);
     require(props.description && std::string(props.description).find(expected)!=std::string::npos,"unexpected Vulkan device");
     std::cout<<"vulkan_device="<<props.description<<" device_id="<<(props.device_id?props.device_id:"unknown")<<"\n";
+    { std::ofstream device_file(prefix+".device");device_file<<"description="<<props.description<<"\ndevice_id="<<(props.device_id?props.device_id:"unknown")<<"\n";
+      require(bool(device_file),"device evidence write failed"); }
     // Refuse a weights-only budget before any tensor workspace can be owned.
     auto small=create_vulkan_native_q8_observation(backend.get(),p.assigned_bytes(),prefix+".budget-reject");
     GpuCounters rejected;std::string budget_error;
@@ -108,6 +189,14 @@ int main(int argc,char** argv){try {
         for(size_t i=0;i<result.samples_ms.size();++i)std::cout<<(i?",":"")<<result.samples_ms[i];
         std::cout<<"\n";
     } else require(executor->infer_rows(p,q,reply,error),error);
+    q.sequence=reply.sequence;
+    std::vector<uint8_t> canonical,reference;
+    require(gpu_codec::encode_request(p,q,canonical),"cannot encode retained request");
+    require(gpu_codec::encode_rows_reply(p,blob_digest(canonical),q,reply,reference),"cannot bind direct rows");
+    write(prefix+".direct.reply",reference.data(),reference.size());
+    write(prefix+".canonical.request",canonical.data(),canonical.size());
+    std::vector<uint8_t> encoded_plan;require(encode_gpu_plan(p,encoded_plan,error),error);
+    write(prefix+".plan",encoded_plan.data(),encoded_plan.size());
     size_t at=0;for(size_t j=0;j<q.mask.size();++j)if(q.mask[j])require(at<reply.indices.size() && reply.indices[at++]==j,"restored reply association mismatch");require(at==reply.indices.size(),"extra reply rows");
     std::vector<float> packed_output(t.original.size()*H);
     std::ifstream output(prefix+".output.f32",std::ios::binary);
@@ -128,5 +217,9 @@ int main(int argc,char** argv){try {
     std::ofstream meta(prefix+".metadata");native_q8_metadata_header(meta,ordinal,p,q);
     for(const auto& d:{blob_digest(q.activations.data(),q.activations.size()*4),blob_digest(q.ids.data(),q.ids.size()*sizeof(q.ids[0])),blob_digest(q.weights.data(),q.weights.size()*4),blob_digest(q.mask)}){meta<<hexid(d.a)<<hexid(d.b)<<' ';}meta<<'\n';
     for(const auto* a:{&t.experts,&t.asset_slots,&t.start,&t.dst,&t.tok,&t.original}){for(auto v:*a)meta<<v<<' ';meta<<'\n';}require(bool(meta),"metadata write failed");
+#ifndef STRATA_Q8_REPLAY_CUDA
+    const std::string direct_pass="direct replay complete\n";write((fs::path(argv[9])/"DIRECT_PASS").string(),direct_pass.data(),direct_pass.size());
+#endif
     std::cout<<"one_layer_observation=true qualified=false quantizer_qualified=false record="<<ordinal<<" groups="<<t.experts.size()<<" entries="<<t.dst.size()<<'\n';return 0;
+#endif
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
