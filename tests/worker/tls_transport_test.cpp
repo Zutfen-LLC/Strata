@@ -59,6 +59,7 @@ void io_cases(const TlsFixture& fixture) {
     TransportRead disconnect;
     require(!client.recv_all(&byte,1,200,{},&disconnect)&&!client.active()&&disconnect.outcome==TransportOutcome::tls_error&&disconnect.bytes==0,"abrupt disconnect is TLS failure");
     require(!client.send_all(&byte,1,200,{}),"failed stream cannot become plaintext");
+    require(!client.send_close_notify(200,{},err),"failed TLS stream cannot send orderly close");
     std::cout<<"PASS disconnect invalidates stream without fallback\n";
 }
 void deadline_cases(const TlsFixture& fixture) {
@@ -124,6 +125,37 @@ void clean_close_notify(const TlsFixture& fixture) {
     char byte=0;TransportRead detail;const bool received=connected&&client.recv_all(&byte,1,1000,{},&detail);
     server.join();require(connected&&server_ok&&!received&&detail.outcome==TransportOutcome::eof&&detail.bytes==0,"TLS close_notify classified as EOF");
 }
+void explicit_client_close(const TlsFixture& fixture) {
+    { TlsSession none;std::string err;require(!none.send_close_notify(100,{},err),"no TLS session refuses close"); }
+    {
+        Pair p;bool server_ok=false;TransportRead observed;
+        std::thread server([&]{TlsSession tls;std::string err;server_ok=tls.handshake(p.server,fixture.config("worker","coordinator.test"),true,1000,{},err);
+            if(server_ok){char byte;server_ok=!tls.recv_all(&byte,1,1000,{},&observed);}});
+        TlsSession client;std::string err;const bool connected=client.handshake(p.client,fixture.config("coordinator","worker.test"),false,1000,{},err);
+        const bool sent=connected&&client.send_close_notify(1000,{},err);server.join();
+        require(connected&&sent&&server_ok&&observed.outcome==TransportOutcome::eof&&observed.bytes==0,"client close_notify observed as clean EOF");
+    }
+    {
+        Pair p;bool server_ok=false;std::thread server([&]{TlsSession tls;std::string err;server_ok=tls.handshake(p.server,fixture.config("worker","coordinator.test"),true,1000,{},err);sock::sleep_ms(150);});
+        TlsSession client;std::string err;const bool connected=client.handshake(p.client,fixture.config("coordinator","worker.test"),false,1000,{},err);
+        int calls=0;const bool sent=connected&&client.send_close_notify(100,[&]{++calls;return true;},err);server.join();
+        require(connected&&server_ok&&!sent&&calls==1&&err=="TLS close cancelled","cancelled close refuses without waiting");
+    }
+    for(bool cancel_wait:{false,true}) {
+        int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"blocked TLS socketpair");
+        struct UnixPair { int client,server;~UnixPair(){::close(client);::close(server);} } p{fd[0],fd[1]};
+        bool server_ok=false;int size=1024;setsockopt(p.client,SOL_SOCKET,SO_SNDBUF,&size,sizeof size);
+        std::thread server([&]{TlsSession tls;std::string err;server_ok=tls.handshake(p.server,fixture.config("worker","coordinator.test"),true,1000,{},err);sock::sleep_ms(350);});
+        TlsSession client;std::string err;const bool connected=client.handshake(p.client,fixture.config("coordinator","worker.test"),false,1000,{},err);
+        std::vector<char> bytes(4096);bool full=false;
+        for(int i=0;connected&&i<2048;++i){const auto n=::send(p.client,bytes.data(),bytes.size(),MSG_DONTWAIT|MSG_NOSIGNAL);if(n<0&&(errno==EAGAIN||errno==EWOULDBLOCK)){full=true;break;}if(n<=0)break;}
+        if(full)for(int i=0;i<4096;++i){const auto n=::send(p.client,bytes.data(),1,MSG_DONTWAIT|MSG_NOSIGNAL);if(n<0&&(errno==EAGAIN||errno==EWOULDBLOCK))break;if(n!=1){full=false;break;}}
+        int calls=0;const std::function<bool()> cancel=cancel_wait?std::function<bool()>([&]{return ++calls==3;}):std::function<bool()>{};
+        const auto began=std::chrono::steady_clock::now();const bool sent=connected&&full&&client.send_close_notify(cancel_wait?500:70,cancel,err);
+        const auto elapsed=std::chrono::steady_clock::now()-began;server.join();
+        require(connected&&server_ok&&full&&!sent&&err==(cancel_wait?"TLS close cancelled":"TLS close deadline")&&(!cancel_wait||calls==3)&&elapsed<std::chrono::seconds(1),"blocked close retains deadline/cancellation: connected="+std::to_string(connected)+" server="+std::to_string(server_ok)+" full="+std::to_string(full)+" sent="+std::to_string(sent)+" error="+err);
+    }
+}
 void bounded_progress(const TlsFixture& fixture) {
     for(bool write:{false,true}) {
         Pair p;std::atomic<bool> done{false};bool server_ready=false;
@@ -178,5 +210,5 @@ int main(){try{
     for(const std::string name:{".test","*.test","worker..test","worker.test.","worker/test"}) {
         auto invalid=client;invalid.peer_dns=name;require(!invalid.validate(err),"peer must be exact DNS identity");
     }
-    absent_certificate(fixture);absent_certificate(fixture,true);io_cases(fixture);deadline_cases(fixture);partial_and_cancel(fixture);clean_close_notify(fixture);bounded_progress(fixture);return 0;
+    absent_certificate(fixture);absent_certificate(fixture,true);io_cases(fixture);deadline_cases(fixture);partial_and_cancel(fixture);clean_close_notify(fixture);explicit_client_close(fixture);bounded_progress(fixture);return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<"\n";return 1;}}

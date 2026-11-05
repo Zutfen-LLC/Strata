@@ -25,6 +25,8 @@ public:
                    const std::function<bool()>& cancel, std::string& err, TransportOutcome* detail = nullptr);
     bool send_all(const void*, size_t, int ms, const std::function<bool()>& cancel, TransportRead* detail = nullptr);
     bool recv_all(void*, size_t, int ms, const std::function<bool()>& cancel, TransportRead* detail = nullptr);
+    // Explicit healthy-path close: send close_notify only; never wait for peer shutdown.
+    bool send_close_notify(int ms, const std::function<bool()>& cancel, std::string& err);
     bool active() const { return ssl_ != nullptr; }
     void reset();
 private:
