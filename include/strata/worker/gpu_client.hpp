@@ -25,6 +25,8 @@ public:
     GpuWorkerTier& operator=(const GpuWorkerTier&)=delete;
     bool open(const Open&,std::string&);
     void close();
+    // Explicitly close a healthy idle session, with a bounded TLS notification.
+    bool close_orderly(std::string& err);
     bool holds(int64_t layer,int32_t expert)const{return plan_.owns((int)layer,expert);}
     bool ready()const{return ready_;}
     bool dead()const{return dead_;}

@@ -391,12 +391,17 @@ void lifecycle(const Fixture& f,const GpuPlan& p){
 }
 #ifndef _WIN32
 void failure_log_checks(const Fixture& f,const GpuPlan& p) {
+    { GpuWorkerTier empty;std::string err;check(!empty.close_orderly(err),"unopened tier cannot orderly-close"); }
     FILE* capture=std::tmpfile();require(capture!=nullptr,"diagnostic capture");
     const int saved=::dup(STDERR_FILENO);require(saved>=0 && ::dup2(::fileno(capture),STDERR_FILENO)>=0,"redirect diagnostic");
     std::string err;
     {
         GpuService service(options_for(f,p,"cache-diagnostic-close"),std::make_unique<FakeExecutor>());
-        int fetches=0;GpuWorkerTier first;require(first.open(open_for(f,p,service.port,fetches),err),err);run_tier(first,p);first.close();
+        int fetches=0;GpuWorkerTier first;require(first.open(open_for(f,p,service.port,fetches),err),err);
+        auto request=request_for(p);std::vector<int32_t> ids(request.ids.begin(),request.ids.end());
+        require(first.post(request.layer,request.activations.data(),ids.data(),request.weights.data(),request.mask.data(),request.T,request.K,err),err);
+        check(!first.close_orderly(err)&&first.ready(),"pending reply cannot be orderly-closed");
+        require(first.finish(err)&&first.served()&&first.close_orderly(err),err);
         GpuWorkerTier second;require(second.open(open_for(f,p,service.port,fetches),err),err);run_tier(second,p);second.close();
         service.stop();check(service.service.counters().requests==2,"ordinary close permits another client");
     }
@@ -427,8 +432,9 @@ void tls_lifecycle(const Fixture& f,const GpuPlan& p,bool nodelay) {
     check(first==second && counters.requests==2 && tier.stats().session==session,
           "mTLS actual GPU setup/upload/ready/status and two requests retain one session");
     check(fetches==2 && tier.stats().setup_network_bytes==p.assigned_bytes(),"mTLS upload/cache accounting unchanged");
-    tier.close();GpuWorkerTier warm;fetches=0;require(warm.open(open,err),err);
+    require(tier.close_orderly(err),err);GpuWorkerTier warm;fetches=0;require(warm.open(open,err),err);
     check(fetches==0 && warm.stats().cache_reused_bytes==p.assigned_bytes(),"mTLS reconnect reuses verified cache");
+    require(warm.status(counters,err),err);check(counters.failures==1,"orderly prior disconnect is still counted and service remains available");
     warm.close();GpuWorkerTier wrong;open.tls.peer_dns="wrong.test";
     check(!wrong.open(open,err)&&wrong.dead()&&!wrong.ready(),"GPU mTLS identity failure latches dead without plaintext retry");
     auto plain=open;plain.tls={};plain.deadline_ms=200;
@@ -524,6 +530,7 @@ int main(int argc,char** argv){
         TlsSession unavailable;TransportRead detail;char byte=0;
         check(!unavailable.recv_all(&byte,1,100,{},&detail)&&detail.outcome==TransportOutcome::tls_error,"disabled TLS outcome initialized");
         check(!unavailable.recv_all(&byte,1,0,{},&detail)&&detail.outcome==TransportOutcome::timeout,"disabled TLS deadline outcome initialized");
+        check(!unavailable.send_close_notify(100,{},err),"TLS-disabled close notification refuses");
 #endif
         listener_checks(fixture,plan);lifecycle(fixture,plan);
 #ifndef _WIN32

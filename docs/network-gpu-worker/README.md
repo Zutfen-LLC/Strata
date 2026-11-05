@@ -206,3 +206,9 @@ the counter or stop the service. Both status reads happen before the replay
 client closes; a failure recorded during or after teardown is outside the replay
 `PASS` and must be reviewed separately in the worker's diagnostics and shutdown
 report. A recorded counter does not by itself establish its cause.
+
+After validating the rows and status, the replay explicitly sends a TLS
+`close_notify` under its existing deadline and cancellation policy. It does not
+wait for the peer's notification, send `GPU_STOP`, or change destructor/error
+cleanup. Failure to send the notification prevents `PASS`. Plaintext replay
+closes the idle connection without a TLS notification.
