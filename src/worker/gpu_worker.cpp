@@ -12,6 +12,18 @@ uint64_t now_ms() { return (uint64_t)std::chrono::duration_cast<std::chrono::mil
     std::chrono::steady_clock::now().time_since_epoch()).count(); }
 uint64_t now_ns() { return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::steady_clock::now().time_since_epoch()).count(); }
+const char* outcome_name(TransportOutcome value) {
+    switch(value) {
+    case TransportOutcome::eof: return "eof";
+    case TransportOutcome::timeout: return "timeout";
+    case TransportOutcome::cancelled: return "cancelled";
+    case TransportOutcome::io_error: return "io_error";
+    case TransportOutcome::tls_error: return "tls_error";
+    case TransportOutcome::invalid: return "invalid";
+    case TransportOutcome::none: return "unknown";
+    }
+    return "unknown";
+}
 }
 GpuWorkerService::GpuWorkerService(GpuWorkerOptions o, std::unique_ptr<GpuExecutor> e)
     : options_(std::move(o)), executor_(std::move(e)) {}
@@ -90,23 +102,30 @@ void GpuWorkerService::serve(uintptr_t fd) {
     TlsSession session;
     TlsSession* tls = options_.tls.enabled() ? &session : nullptr;
     std::string handshake_error;
-    if (tls && !tls->handshake(fd,options_.tls,true,options_.deadline_ms,cancel,handshake_error)) {
+    TransportOutcome handshake_outcome=TransportOutcome::none;
+    if (tls && !tls->handshake(fd,options_.tls,true,options_.deadline_ms,cancel,handshake_error,&handshake_outcome)) {
+        std::fprintf(stderr,"gpu-worker failure site=tls_handshake outcome=%s\n",outcome_name(handshake_outcome));
         ++counters_.failures; return;
     }
     while (!cancel()) {
         WireFrame in, out; std::string err;
-        if (!gpu_codec::receive(fd,in,kGpuFrameMax,options_.deadline_ms,cancel,err,0,tls)) {
+        gpu_codec::ReceiveDiagnostic diagnostic;
+        if (!gpu_codec::receive(fd,in,kGpuFrameMax,options_.deadline_ms,cancel,err,0,tls,&diagnostic)) {
+            std::fprintf(stderr,"gpu-worker failure site=receive stage=%s outcome=%s bytes=%zu\n",diagnostic.stage,outcome_name(diagnostic.transport.outcome),diagnostic.transport.bytes);
             ++counters_.failures; return;
         }
-        if (in.status != ST_OK) { ++counters_.failures; return; }
+        if (in.status != ST_OK) { std::fprintf(stderr,"gpu-worker failure site=request_status\n"); ++counters_.failures; return; }
         const bool ok = dispatch(in,out,err);
         if (!ok) {
+            std::fprintf(stderr,"gpu-worker failure site=dispatch msg=%u\n",in.msg);
             ++counters_.failures; out.status = out.status == ST_OK ? ST_BAD_REQUEST : out.status;
             std::fprintf(stderr,"%s-worker refused msg=%u status=%s model=%llx placement=%llx:%llx reason=%s\n",
                 options_.vulkan?"vulkan":"cuda",in.msg,status_name(out.status),(unsigned long long)options_.plan.model_id,
                 (unsigned long long)options_.plan.placement_id.a,(unsigned long long)options_.plan.placement_id.b,err.c_str());
         }
-        if (!gpu_codec::send(fd,out.msg,out.status,out.payload,options_.deadline_ms,cancel,err,tls)) {
+        TransportRead send_diagnostic;
+        if (!gpu_codec::send(fd,out.msg,out.status,out.payload,options_.deadline_ms,cancel,err,tls,&send_diagnostic)) {
+            std::fprintf(stderr,"gpu-worker failure site=send outcome=%s bytes=%zu\n",outcome_name(send_diagnostic.outcome),send_diagnostic.bytes);
             ++counters_.failures; return;
         }
         // A refused operation ends this connection/session. No partial result or retry is possible.
