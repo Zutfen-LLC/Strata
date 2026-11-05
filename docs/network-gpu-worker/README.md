@@ -188,8 +188,9 @@ native_q8_worker_replay --worker HOST:PORT CAPTURE RECORD PLAN BLOB_DIR DIRECT_R
 ```
 
 It verifies every staged blob, refuses an incomplete plan rather than remasking,
-checks the direct reference binding, and compares every index and row bit. The
-new private output retains the reference, canonical request, worker rows and
+checks the direct reference binding, compares every index and row bit, and checks
+unchanged resident allocation and transfer counters plus exact request and entry
+count deltas. The new private output retains the reference, canonical request, worker rows and
 indices, status counters, and either `PASS` or `FAILURE`. Preserve stdout and
 stderr and externally hash the complete output. Session IDs differ between the
 direct and remote calls; the existing client validates the worker session and

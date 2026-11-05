@@ -43,7 +43,7 @@ int worker_replay(int argc,char** argv) {
     const fs::path output=argv[8];require(fs::create_directory(output),"output must be a new private directory");
     fs::permissions(output,fs::perms::owner_all,fs::perm_options::replace);
     try {
-    GpuEndpoint endpoint;require(parse_gpu_endpoint(argv[2],endpoint) && !endpoint.vulkan,"worker endpoint must be numeric HOST:PORT");
+    GpuEndpoint endpoint;require(std::string(argv[2]).find('@')==std::string::npos && parse_gpu_endpoint(argv[2],endpoint) && !endpoint.vulkan,"worker endpoint must be numeric HOST:PORT without a backend tag");
     require(std::string(argv[9])=="--deadline-ms","explicit deadline required");
     std::string deadline_value=argv[10];require(!deadline_value.empty() && deadline_value.find_first_not_of("0123456789")==std::string::npos,"invalid deadline");
     const auto deadline=std::stoull(deadline_value);require(deadline && deadline<=600000,"deadline out of range");
@@ -89,13 +89,23 @@ int worker_replay(int argc,char** argv) {
         const auto remote=tier.entry_rows();require(tier.status(after,err),err);
         write((output/"worker.indices").string(),remote.indices.data(),remote.indices.size()*sizeof(uint16_t));
         write((output/"worker.rows.f32").string(),remote.rows.data(),remote.rows.size()*sizeof(float));
-        std::ofstream meta(output/"worker.status");meta<<"session="<<remote.session<<" sequence="<<remote.sequence
-            <<" assigned="<<after.assigned_bytes<<" weights="<<after.gpu_weight_bytes<<" allocated_before="<<before.gpu_allocated_bytes
-            <<" allocated_after="<<after.gpu_allocated_bytes<<" scratch="<<after.gpu_scratch_bytes<<" allocations="<<after.gpu_allocation_count
-            <<" requests="<<after.requests<<" entries="<<after.entries<<"\n";require(bool(meta),"worker status write failed");meta.close();
+        std::ofstream meta(output/"worker.status");
+        auto status=[&](const char* label,const GpuCounters& c){meta<<label<<" assigned="<<c.assigned_bytes<<" cached="<<c.cached_bytes
+            <<" transferred="<<c.transferred_bytes<<" verified="<<c.verified_bytes<<" weights="<<c.gpu_weight_bytes
+            <<" allocated="<<c.gpu_allocated_bytes<<" scratch="<<c.gpu_scratch_bytes<<" allocations="<<c.gpu_allocation_count
+            <<" requests="<<c.requests<<" entries="<<c.entries<<"\n";};
+        meta<<"session="<<remote.session<<" sequence="<<remote.sequence<<"\n";status("before",before);status("after",after);
+        require(bool(meta),"worker status write failed");meta.close();
+        const auto entries=std::count(q.mask.begin(),q.mask.end(),uint8_t(1));
+        require(before.gpu_allocated_bytes==after.gpu_allocated_bytes && before.gpu_weight_bytes==after.gpu_weight_bytes &&
+            before.gpu_scratch_bytes==after.gpu_scratch_bytes && before.gpu_allocation_count==after.gpu_allocation_count &&
+            before.assigned_bytes==after.assigned_bytes && before.cached_bytes==after.cached_bytes &&
+            before.transferred_bytes==after.transferred_bytes && before.verified_bytes==after.verified_bytes &&
+            after.requests>=before.requests && after.requests-before.requests==1 &&
+            after.entries>=before.entries && after.entries-before.entries==uint64_t(entries),"worker lifecycle counters changed unexpectedly");
         require(remote.indices==direct.indices && remote.rows.size()==direct.rows.size() &&
             !std::memcmp(remote.rows.data(),direct.rows.data(),direct.rows.size()*sizeof(float)),"worker/direct indexed rows differ");
-        const std::string pass="indexed rows and bits match; same physical device/build/shaders require separate evidence\n";
+        const std::string pass="indexed rows and lifecycle counters match; same physical device/build/shaders require separate evidence\n";
         write((output/"PASS").string(),pass.data(),pass.size());return 0;
     } catch(const std::exception& e) {std::ofstream failure(output/"FAILURE");failure<<e.what()<<"\n";throw; }
 }
