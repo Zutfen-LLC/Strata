@@ -15,7 +15,7 @@ using namespace strata::worker;
 namespace fs=std::filesystem;
 void check(bool value,const char* text) {if(!value)throw std::runtime_error(text);}
 struct Mock final:GpuExecutor {
-    bool change_allocation=false,change_requests=false;GpuCounters* counters=nullptr;
+    bool change_allocation=false,change_requests=false,change_failures=false;GpuCounters* counters=nullptr;
     bool native_q8()const override{return true;}
     bool supports_rows()const override{return true;}
     bool prepare(const GpuPlan& p,uint64_t,GpuCache& cache,GpuCounters& c,std::string& err) override {
@@ -26,6 +26,7 @@ struct Mock final:GpuExecutor {
     bool infer_rows(const GpuPlan& p,const InferRequest& q,EntryRowsReply& out,std::string&)override {
         if(change_allocation && counters)++counters->gpu_allocated_bytes;
         if(change_requests && counters)++counters->requests;
+        if(change_failures && counters)++counters->failures;
         out.session=q.session;out.sequence=q.sequence;
         for(size_t i=0;i<q.mask.size();++i)if(q.mask[i]){out.indices.push_back(i);out.rows.insert(out.rows.end(),p.n_embd,float(i));}
         return true;
@@ -53,6 +54,10 @@ int main(int argc,char** argv){try {
     std::thread server([&]{service.run();});struct Stop{GpuWorkerService& s;std::thread& t;~Stop(){s.stop();t.join();}} stop{service,server};
     auto args=std::vector<std::string>{argv[1],"--worker","127.0.0.1:"+std::to_string(port),(fixture/"capture.bin").string(),"0",(fixture/"one-layer.plan").string(),(fixture/"blobs").string(),(dir/"direct"/"layer.direct.reply").string(),(dir/"out").string(),"--deadline-ms","10000"};
     check(invoke(args)==0 && fs::exists(dir/"out"/"PASS"),"mock replay did not pass");
+    args[8]=(dir/"dirty-before").string();
+    check(invoke(args)!=0 && fs::exists(dir/"dirty-before"/"worker.status") && fs::exists(dir/"dirty-before"/"FAILURE") && !fs::exists(dir/"dirty-before"/"PASS"),"cumulative failure before call accepted");
+    { std::ifstream f(dir/"dirty-before"/"worker.status");std::string session,before;std::getline(f,session);std::getline(f,before);
+      check(before.find("failures=1")!=std::string::npos,"dirty replay did not record the prior failure"); }
     args[8]=(dir/"bad").string();ref.back()^=1;{std::ofstream f(dir/"direct"/"layer.direct.reply",std::ios::binary|std::ios::trunc);f.write((char*)ref.data(),ref.size());}
     check(invoke(args)!=0 && fs::exists(dir/"bad"/"FAILURE") && !fs::exists(dir/"bad"/"PASS"),"changed reference accepted");
     {std::ofstream f(dir/"direct"/"layer.direct.reply",std::ios::binary|std::ios::trunc);ref.back()^=1;f.write((char*)ref.data(),ref.size());}
@@ -82,18 +87,29 @@ int main(int argc,char** argv){try {
         args[2]="127.0.0.1:"+std::to_string(changing_port);args[8]=(dir/"changed-requests").string();
         check(invoke(args)!=0 && fs::exists(dir/"changed-requests"/"FAILURE") && !fs::exists(dir/"changed-requests"/"PASS"),"changed request count accepted");
     }
+    {
+        fs::create_directory(dir/"changing-failure-cache");auto changing_options=options;changing_options.cache_root=(dir/"changing-failure-cache").string();
+        auto changed=std::make_unique<Mock>();changed->change_failures=true;
+        GpuWorkerService changing(changing_options,std::move(changed));uint16_t changing_port=0;check(changing.listen(changing_port,err),err.c_str());
+        std::thread thread([&]{changing.run();});Stop guard{changing,thread};
+        args[2]="127.0.0.1:"+std::to_string(changing_port);args[8]=(dir/"changed-failures").string();
+        check(invoke(args)!=0 && fs::exists(dir/"changed-failures"/"FAILURE") && !fs::exists(dir/"changed-failures"/"PASS"),"nonzero failure count accepted");
+        std::ifstream status(dir/"changed-failures"/"worker.status");std::string session,before,after;
+        std::getline(status,session);std::getline(status,before);std::getline(status,after);
+        check(before.find("failures=0")!=std::string::npos && after.find("failures=1")!=std::string::npos,"changed failure counters not retained");
+    }
 #ifdef STRATA_TEST_TLS
     {
         TlsFixture tls;fs::create_directory(dir/"tls-cache");auto secure_options=options;
         secure_options.cache_root=(dir/"tls-cache").string();secure_options.tls=tls.config("worker","coordinator.test");
         GpuWorkerService secure(secure_options,std::make_unique<Mock>());uint16_t tls_port=0;check(secure.listen(tls_port,err),err.c_str());
         std::thread thread([&]{secure.run();});Stop guard{secure,thread};
-        args[2]="127.0.0.1:"+std::to_string(tls_port);args[8]=(dir/"tls-bad-san").string();
-        const auto credentials=tls.config("coordinator","wrong.test");
+        args[2]="127.0.0.1:"+std::to_string(tls_port);args[8]=(dir/"tls-ok").string();
+        const auto credentials=tls.config("coordinator","worker.test");
         args.insert(args.end(),{"--tls-ca",credentials.ca_file,"--tls-cert",credentials.cert_file,"--tls-key",credentials.key_file,"--tls-peer",credentials.peer_dns});
-        check(invoke(args)!=0 && fs::exists(dir/"tls-bad-san"/"FAILURE") && !fs::exists(dir/"tls-bad-san"/"PASS"),"wrong TLS SAN accepted");
-        args[8]=(dir/"tls-ok").string();args.back()="worker.test";
         check(invoke(args)==0 && fs::exists(dir/"tls-ok"/"PASS"),"mTLS replay did not pass");
+        args[8]=(dir/"tls-bad-san").string();args.back()="wrong.test";
+        check(invoke(args)!=0 && fs::exists(dir/"tls-bad-san"/"FAILURE") && !fs::exists(dir/"tls-bad-san"/"PASS"),"wrong TLS SAN accepted");
     }
 #endif
     std::printf("mock replay rows, lifecycle, tags and refusal checks passed; no GPU\n");return 0;
