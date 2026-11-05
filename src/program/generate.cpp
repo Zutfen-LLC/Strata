@@ -1048,7 +1048,7 @@ void usage() {
                  "  --remote-gpu-plan FILE  frozen selective expert plan (plain Q8_0/Q8_0 only)\n"
                  "  --remote-gpu-tls-ca FILE --remote-gpu-tls-cert FILE --remote-gpu-tls-key FILE\n"
                  "  --remote-gpu-tls-peer DNS  repeat per GPU endpoint in order; exact SAN identity\n"
-                 "  --remote-gpu-worker [cuda@|vulkan@]HOST:PORT PLAN  1..8 disjoint workers;\n"
+                 "  --remote-gpu-worker [cuda@|vulkan@|vulkan-native-q8@]HOST:PORT PLAN  1..8 disjoint workers;\n"
                  "                       replaces the legacy endpoint/plan pair; same fixed CPU partition\n"
                  "  --remote-gpu-setup-ms N  whole setup budget (default 600000)\n"
                  "  --remote-gpu-deadline-ms N  per-frame deadline (default 10000)\n"
@@ -2655,7 +2655,7 @@ int main(int argc, char** argv) {
         else if (a == "--remote-gpu-worker") {
             strata::worker::GpuEndpoint endpoint;
             if (!strata::worker::parse_gpu_endpoint(next("--remote-gpu-worker"),endpoint)) {
-                std::fprintf(stderr,"--remote-gpu-worker takes [cuda@|vulkan@]HOST:PORT followed by PLAN\n");return 2;
+                std::fprintf(stderr,"--remote-gpu-worker takes [cuda@|vulkan@|vulkan-native-q8@]HOST:PORT followed by PLAN\n");return 2;
             }
             endpoint.plan=next("--remote-gpu-worker PLAN");
             o.remote_gpu_workers.push_back(std::move(endpoint));o.remote_gpu_experts=true;
@@ -6900,7 +6900,7 @@ int main(int argc, char** argv) {
           size_t tls_peer_index=0;
           for(const auto& endpoint:endpoints) {
             strata::worker::GpuWorkerTier::Open item;item.entry_rows=mixed_worker_rows;
-            item.vulkan=endpoint.vulkan;
+            item.vulkan=endpoint.vulkan;item.native_q8=endpoint.native_q8;
             if(item.vulkan && !mixed_worker_rows) {
                 std::fprintf(stderr,"Vulkan requires grouped CPU backing and --remote-cpu-entry-rows for ordered reduction\n");return 1;
             }

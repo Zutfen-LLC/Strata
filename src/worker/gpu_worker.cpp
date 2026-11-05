@@ -29,7 +29,11 @@ bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
         err = "CUDA bind IP must be loopback or one specific RFC1918 private interface address";
         return false;
     }
-    if (!executor_ || options_.deadline_ms < 1 || options_.setup_ms < 1 ||
+    if (!executor_ || (options_.native_q8 && !options_.vulkan) ||
+        (executor_ && executor_->native_q8() != options_.native_q8)) {
+        err="GPU worker executor and numerical method do not match"; return false;
+    }
+    if (options_.deadline_ms < 1 || options_.setup_ms < 1 ||
         (options_.vulkan ? options_.runtime_reserve != 0 : options_.runtime_reserve < (64ull << 20)) ||
         !validate_gpu_plan(options_.plan, err)) {
         if (err.empty()) err = options_.vulkan ? "invalid Vulkan worker options or nonzero reserve" :
@@ -125,7 +129,7 @@ bool GpuWorkerService::dispatch(const WireFrame& in, WireFrame& out, std::string
     if (in.msg == GPU_HELLO) {
         const auto version = c.get(4), capability = c.get(4), numerics = c.get(4);
         const auto expected_backend=options_.vulkan ? kGpuCapabilityVulkan : kGpuCapabilityCuda;
-        const auto expected_numerics=options_.vulkan ? kGpuNumericsVulkanHybridQ8 : kGpuNumericsQ8_1;
+        const auto expected_numerics=options_.vulkan ? (options_.native_q8 ? kGpuNumericsVulkanNativeQ8 : kGpuNumericsVulkanHybridQ8) : kGpuNumericsQ8_1;
         const bool valid_capability=options_.vulkan ? capability == (expected_backend|kGpuCapabilityEntryRows) :
             (capability == expected_backend || capability == (expected_backend|kGpuCapabilityEntryRows));
         if (negotiated_ || !c.done() || version != kGpuWireVersion || !valid_capability ||

@@ -38,11 +38,12 @@ bool GpuWorkerTier::open(const Open& in,std::string& err){
     using namespace gpu_codec;
     if(dead_) {err="CUDA tier is dead; create a new engine session: "+why_;return false;}
     if(ready_){err="CUDA tier placement is already frozen";return false;}
+    if(in.native_q8 && !in.vulkan) {err="native Q8 requires Vulkan";return false;}
     if(in.vulkan && (!in.entry_rows || (in.host != "127.0.0.1" && !in.tls.enabled()))) {
-        err="Vulkan hybrid client requires indexed rows and mTLS outside 127.0.0.1"; return false;
+        err="Vulkan client requires indexed rows and mTLS outside 127.0.0.1"; return false;
     }
     if(in.deadline_ms<1 || in.setup_ms<1 || !validate_gpu_plan(in.plan,err))return false;
-    close();stats_={};remote_={};plan_=in.plan;rows_=in.entry_rows;vulkan_=in.vulkan;cancelled_=in.cancelled;deadline_ms_=in.deadline_ms;
+    close();stats_={};remote_={};plan_=in.plan;rows_=in.entry_rows;vulkan_=in.vulkan;native_q8_=in.native_q8;cancelled_=in.cancelled;deadline_ms_=in.deadline_ms;
     const auto began=now_ms();setup_end_=began+(uint64_t)in.setup_ms;
     sock_fd fd=kBadFd;
     const auto cancel=[&]{return(cancelled_&&cancelled_())||now_ms()>=setup_end_;};
@@ -56,7 +57,7 @@ bool GpuWorkerTier::open(const Open& in,std::string& err){
         return fail("CUDA worker TLS failed: "+err,err);
     std::vector<uint8_t> payload;
     const auto expected_capability=(vulkan_?kGpuCapabilityVulkan:kGpuCapabilityCuda)|(rows_?kGpuCapabilityEntryRows:0);
-    const auto expected_numerics=vulkan_?kGpuNumericsVulkanHybridQ8:kGpuNumericsQ8_1;
+    const auto expected_numerics=vulkan_?(native_q8_?kGpuNumericsVulkanNativeQ8:kGpuNumericsVulkanHybridQ8):kGpuNumericsQ8_1;
     put(payload,kGpuWireVersion,4);put(payload,expected_capability,4);put(payload,expected_numerics,4);
     WireFrame response;
     if(!exchange(GPU_HELLO,payload,GPU_HELLO_ACK,response,err))return false;
@@ -165,7 +166,7 @@ void GpuWorkerTier::report(std::string& out)const{
       "%s %s transport=%s model=%llx layout=%llx:%llx placement=%llx:%llx session=%llx "
       "assigned=%llu cached=%llu transferred=%llu reused=%llu persisted=%llu retained_disk=%llu verified=%llu host_staging_peak=%llu gpu_allocated=%llu gpu_peak=%llu gpu_scratch=%llu "
       "gpu_free_before=%llu gpu_free_after=%llu reserve=%llu requests=%llu entries=%llu failures=%llu setup_ms=%.1f request_ms=%.1f",
-      vulkan_?"Vulkan/native-Q8-host-boundaries approximate":"CUDA/q8_1 approximate",dead_?"DEAD":"READY",use_tls_?"mTLS":"plaintext-test",(unsigned long long)plan_.model_id,(unsigned long long)plan_.layout_id.a,
+      vulkan_?(native_q8_?"Vulkan/native-Q8 observation":"Vulkan/native-Q8-host-boundaries approximate"):"CUDA/q8_1 approximate",dead_?"DEAD":"READY",use_tls_?"mTLS":"plaintext-test",(unsigned long long)plan_.model_id,(unsigned long long)plan_.layout_id.a,
       (unsigned long long)plan_.layout_id.b,(unsigned long long)plan_.placement_id.a,(unsigned long long)plan_.placement_id.b,
       (unsigned long long)session_,(unsigned long long)stats_.assigned_bytes,(unsigned long long)remote_.cached_bytes,
       (unsigned long long)stats_.setup_network_bytes,(unsigned long long)stats_.cache_reused_bytes,
