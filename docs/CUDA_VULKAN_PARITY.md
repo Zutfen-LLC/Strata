@@ -8,6 +8,45 @@ Tracking: [umbrella #65](https://github.com/Zutfen-LLC/Strata/issues/65), with
 [product breadth #70](https://github.com/Zutfen-LLC/Strata/issues/70).
 This updates the existing roadmap rather than introducing a parallel plan.
 
+## Bounded prefill ownership prerequisite
+
+For open [prefill #69](https://github.com/Zutfen-LLC/Strata/issues/69),
+`native_hc_rows.hpp` is a standalone host-value transaction for one layer and
+one sequence: two consecutive rows or a one-row tail. It copies position, token
+and residual/block/injection values; layer 0 and layer 1 PLE accept materialized
+residuals only. Publication, abort, reset and same-layer continuation are
+explicit; borrowed references expire on mutation. This scaffold does not itself
+validate producer ownership or execute arithmetic.
+
+The separate standalone `portable_native_hc_composed.hpp` snapshots a typed,
+packed four-role bank and accepts live producer-issued GDN or QSA pending-tuple
+snapshots, checking producer, boundary, position and generation. Its T2/T1 owner
+stages rows, composes pending, norm/injection and mix, and publishes only after
+both synchronous consumers succeed. Consumers read independent host copies;
+failed candidate views and superseded/reset views are invalidated, but external
+consumer side effects cannot be rolled back. The backend is borrowed and must
+outlive the owner and role bank; this is not an asynchronous device consumer or
+model admission. The copied roles have a 13,230,080-byte payload before backend
+alignment, additional to the source bank; the owner budget includes the copy,
+scratch and wrapper allocations, not the still-resident source. The type-based
+source-device check relies on GGML Vulkan's per-device default buffer type and
+ordinary Vulkan allocation; it is not a general device-identity guarantee for
+arbitrary backends. The composed pending path explicitly refuses layer 0 and the
+layer 1 PLE boundary rather than substituting a pending tuple there.
+
+The actual pending and mix Vulkan wrappers support one or two rows, with span,
+non-overlap, device, offset and dispatch-limit checks and per-row domain checks
+where applicable. CPU mock dispatch tests exercise wrapper and composed-owner
+control/lifetime paths, including GDN/QSA snapshots; compiled SPIR-V validation
+and disassembly checks inspect row indexing. These checks do not establish
+physical device execution or numerical parity. The standalone owner is not wired
+into model chunk execution: all existing model native chunk refusals remain.
+Generic chunk work (PR76/77/78/79/82) does not establish native chunk parity.
+PLE and GDN/QSA causal work, fixed local/remote/CPU routing, batched matrix and
+expert execution, admission and model failure/reset qualification, and physical
+GPU validation remain. No independent-request batching, speculation, full model
+parity or throughput result is implied.
+
 ## HC norm/injection checkpoint (2026-10-31)
 
 [PR #97](https://github.com/Zutfen-LLC/Strata/pull/97) defines the standalone

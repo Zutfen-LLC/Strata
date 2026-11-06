@@ -31,9 +31,10 @@ struct NativeHcMixDomainRefusal : std::invalid_argument {
     explicit NativeHcMixDomainRefusal(uint32_t value):std::invalid_argument(
         "native HC mix: domain refusal status="+std::to_string(value)+"; no result accepted"),status(value) {}
 };
-// Standalone T1 only, no model bridge. Inputs normalized[10240], BF16 down/up
-// [320,10240]/[10240,320]. Outputs scaled-down pre/low/exp[320], up pre/gate/exp
-// [10240], mixed[2560]. All spans disjoint; zero/normal domain; derived exp/div guards in native_hc_mix_limits.h.
+// Standalone T=1 or T=2, inferred from normalized span; no model bridge.
+// Row-major normalized[T,10240], shared BF16 down/up [320,10240]/[10240,320].
+// Outputs pre/low/exp[T,320], up pre/gate/exp[T,10240], mixed[T,2560].
+// All spans disjoint; zero/normal domain; derived exp/div guards in native_hc_mix_limits.h.
 StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char* effective_spv,size_t budget=65536);
 // Separate head-only candidate; existing mixer users retain the original shader.
 StrataVkNativeHcMix* strata_vk_native_head_hc_mix_rn_create(ggml_backend_t,const char* effective_spv,size_t budget=65536);
@@ -47,7 +48,8 @@ void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor* normali
 }
 
 namespace strata::core::portable_detail {
-// Standalone T1 candidate only. Original R/bo/inject stay immutable until the
+// Standalone contiguous T=1 or T=2 candidate. Row count is inferred from the
+// residual span; all other spans must match. Original R/bo/inject stay immutable until the
 // caller explicitly commits after all consumers succeed; no product integration.
 struct StrataVkNativeHcPending;
 StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t,const char* effective_spv,size_t budget=65536);

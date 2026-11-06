@@ -242,7 +242,16 @@ PortableMemoryUsage PortableQsaAttention::memory_usage() const {
     return m;
 }
 
+struct PortableQsaSnapshot::Owner { uint64_t generation = 0; bool alive = true; };
+PortableQsaSnapshot::PortableQsaSnapshot(std::shared_ptr<Owner> owner, int64_t layer, uint64_t position,
+                                         uint64_t generation, const PortableHcPendingWrite& tuple)
+    : owner_(std::move(owner)), layer_(layer), position_(position), generation_(generation), tuple_(tuple) {}
+
 struct PortableQsaLayer::Impl {
+    std::shared_ptr<PortableQsaSnapshot::Owner> snapshot_owner = std::make_shared<PortableQsaSnapshot::Owner>();
+    bool snapshot_available = false;
+    int64_t snapshot_layer = 0;
+    ~Impl() { snapshot_owner->alive = false; }
     PortableQsaOptions options;
     portable_detail::Backend cpu{nullptr, ggml_backend_free};
     PortableHcPendingWrite pending;
@@ -616,7 +625,7 @@ struct PortableQsaLayer::Impl {
         return {ki, vi, qi, idxq, pk, mapping, bias, scores, selected, out};
     }
 
-    Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableQsaOptions opts) : options(opts) {
+    Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableQsaOptions opts) : snapshot_layer(layer), options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 == 3, "portable QSA: expected a QSA layer 3/7/.../47");
         const std::string prefix = "blk." + std::to_string(layer) + ".";
         require(!options.native_wo_t1 || (options.native_attention_t1 && options.native_hc_ffn_read &&
@@ -1201,6 +1210,7 @@ bool PortableQsaLayer::step_pending(uint64_t position,const PortableHcPendingWri
 bool PortableQsaLayer::step_impl(uint64_t position,const std::vector<float>& residual,const PortableHcPendingWrite* pending,
     const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableQsaTrace* trace) {
     error.clear();impl_->final_residual_bank=nullptr;
+    impl_->snapshot_available = false;
     route = {};
     if (trace)
         *trace = {};
@@ -1249,19 +1259,24 @@ bool PortableQsaLayer::step_impl(uint64_t position,const std::vector<float>& res
         s.placement.swap(next_placement);
         s.graphs_size = next_graphs;
         ++s.count;
+        s.snapshot_available = !s.pending.empty();
         route = std::move(candidate);
         if (trace)
             *trace = std::move(next_trace);
         s.final_residual_bank=s.ffn->final_residual_tensor();
         return true;
     } catch (const std::exception &e) {
-        if (impl_->options.production)
+        if (impl_->options.production) {
             impl_->healthy = false;
+            impl_->snapshot_owner->alive = false;
+        }
         error = e.what();
         return false;
     } catch (...) {
-        if (impl_->options.production)
+        if (impl_->options.production) {
             impl_->healthy = false;
+            impl_->snapshot_owner->alive = false;
+        }
         error = "portable QSA: unknown failure; reset required";
         return false;
     }
@@ -1336,12 +1351,19 @@ bool PortableQsaLayer::run_chunk(const std::vector<int32_t>& tokens,uint64_t pos
         s.last.swap(last); s.placement.swap(placement); s.graphs_size=graphs; s.count+=T; s.chunk_work=work;
         residual_rows.swap(completed); routes.swap(candidate);
         return true;
-    } catch(const std::exception& e) { s.healthy=false; error=e.what(); return false; }
-      catch(...) { s.healthy=false; error="portable QSA: unknown chunk failure; reset required"; return false; }
+    } catch(const std::exception& e) { s.healthy=false; s.snapshot_available=false; s.snapshot_owner->alive=false; error=e.what(); return false; }
+      catch(...) { s.healthy=false; s.snapshot_available=false; s.snapshot_owner->alive=false; error="portable QSA: unknown chunk failure; reset required"; return false; }
 }
 PortableLayerChunkWork PortableQsaLayer::chunk_work() const { return impl_->chunk_work; }
 bool PortableQsaLayer::reset(std::string &error) {
     error.clear();impl_->final_residual_bank=nullptr;
+    impl_->snapshot_available = false;
+    impl_->snapshot_owner->alive = false;
+    if (impl_->snapshot_owner->generation == UINT64_MAX) {
+        error = "portable QSA: snapshot generation exhausted";
+        return false;
+    }
+    ++impl_->snapshot_owner->generation;
     try {
         auto &s = *impl_;
         // Poison before any allocating precondition/error message, as the
@@ -1371,6 +1393,7 @@ bool PortableQsaLayer::reset(std::string &error) {
         s.placement.swap(placement);
         s.graphs_size = s.fixed_graphs + s.retained_attention_bytes();
         s.healthy = true;
+        s.snapshot_owner->alive = true;
         return true;
     } catch (const std::exception &e) {
         error = e.what();
@@ -1379,6 +1402,20 @@ bool PortableQsaLayer::reset(std::string &error) {
         error = "portable QSA: unknown reset failure; reset required";
         return false;
     }
+}
+std::shared_ptr<const PortableQsaSnapshot> PortableQsaLayer::pending_snapshot(std::string& error) const {
+    error.clear();
+    try {
+        require(impl_->snapshot_available && impl_->snapshot_owner->alive && impl_->healthy,
+                "portable QSA: no committed snapshot available");
+        return std::shared_ptr<const PortableQsaSnapshot>(new PortableQsaSnapshot(
+            impl_->snapshot_owner, impl_->snapshot_layer, impl_->count - 1,
+            impl_->snapshot_owner->generation, impl_->pending));
+    } catch (const std::exception& e) { error = e.what(); return {}; }
+}
+bool PortableQsaSnapshot::valid_for(const PortableQsaLayer& expected_owner, int64_t consumer_layer, uint64_t position) const {
+    return owner_ == expected_owner.impl_->snapshot_owner && owner_->alive &&
+           owner_->generation == generation_ && layer_ + 1 == consumer_layer && position_ == position;
 }
 uint64_t PortableQsaLayer::tokens() const { return impl_->count; }
 const std::vector<uint16_t> &PortableQsaLayer::keys() const {
