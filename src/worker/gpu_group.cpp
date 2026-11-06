@@ -23,7 +23,11 @@ struct GpuWorkerGroup::Impl {
         GpuWorkerTier tier;
         std::mutex mutex;
         std::condition_variable wake;
-        bool stopping=false, pending=false, busy=false;
+        bool stopping=false, pending=false, busy=false, orderly=false, status_request=false;
+        GpuCounters counters;
+        GpuWorkerTier::Stats stats;
+        std::string host;uint16_t port=0;bool status_observed=false;
+        std::function<bool()> cancelled;
         int interval=50;
         Request request;
         std::vector<float> output;
@@ -32,6 +36,7 @@ struct GpuWorkerGroup::Impl {
         std::thread thread;
     };
     std::vector<std::unique_ptr<Peer>> peers;
+    std::vector<GpuPeerSnapshot> archived;
     std::vector<int> owners;
     std::vector<std::vector<uint8_t>> masks;
     std::vector<std::vector<float>> outputs;
@@ -62,11 +67,13 @@ struct GpuWorkerGroup::Impl {
                 p.wake.wait_for(lock,std::chrono::milliseconds(p.interval),[&]{return p.pending || p.stopping || failed.load();});
             if (p.stopping || failed.load()) break;
             const bool job=p.pending;
-            p.pending=false;
+            const bool status_job=job && p.status_request;
+            p.pending=false; p.status_request=false;
             lock.unlock();
-            bool ok=false; std::string why, line; std::vector<float> output; EntryRowsReply rows;
+            bool ok=false; std::string why, line; std::vector<float> output; EntryRowsReply rows; GpuCounters status;
             try {
-                if (job) {
+                if (p.cancelled && p.cancelled()) {why="GPU group peer cancelled";ok=false;}
+                else if (job && !status_job) {
                     const auto& r=p.request;
                     ok=p.tier.post(r.layer,r.x.data(),r.ids.data(),r.weights.data(),r.mask.data(),r.T,r.K,why);
                     if (ok) ok=p.tier.finish(why);
@@ -76,21 +83,32 @@ struct GpuWorkerGroup::Impl {
                     }
                     else if (ok) {ok=false;why="posted CUDA share was not served";}
                 } else {
-                    GpuCounters status; ok=p.tier.status(status,why);
+                    ok=p.tier.status(status,why);
                 }
                 p.tier.report(line);
             } catch (const std::exception& e) {ok=false;why=e.what();}
               catch (...) {ok=false;why="exception in CUDA communication thread";}
             lock.lock();
-            p.report=std::move(line);
+            p.report=std::move(line);p.stats=p.tier.stats();
+            if(ok && (!job || status_job)){p.counters=status;p.status_observed=true;}
             if (!ok) {p.error=std::move(why);failed.store(true);}
-            if (job) {p.output=std::move(output);p.rows=std::move(rows);p.busy=false;p.wake.notify_all();}
+            if (job) {if(!status_job){p.output=std::move(output);p.rows=std::move(rows);}p.busy=false;p.wake.notify_all();}
             if (!ok) break;
         }
         // Failed peers stop every socket owner. An exchange already in progress
         // completes/fails under its existing deadline before this point.
+        const bool orderly=p.orderly && !failed.load() && !p.pending && !p.busy;
         p.pending=p.busy=false; p.wake.notify_all();
-        lock.unlock(); p.tier.close();
+        lock.unlock();
+        if (orderly) {
+            std::string why;
+            bool ok=false;
+            try {ok=p.tier.close_orderly(why);}
+            catch (const std::exception& e) {why=e.what();}
+            catch (...) {why="exception in CUDA orderly close";}
+            if (!ok) {std::lock_guard<std::mutex> guard(p.mutex);p.error=why;failed.store(true);p.tier.close();}
+        } else p.tier.close();
+        {std::lock_guard<std::mutex> guard(p.mutex);p.stats=p.tier.stats();}
     }
 };
 
@@ -129,21 +147,24 @@ bool GpuWorkerGroup::open(const std::vector<GpuWorkerTier::Open>& opts,std::stri
     auto& d=*impl_;
     if(d.failed.load()) {err=d.error();return false;}
     if(d.ready || !validate(opts,err)) {if(err.empty())err="CUDA group already open";return false;}
+    d.archived.clear();
+    for(const auto& o:opts){GpuPeerSnapshot snapshot;snapshot.host=o.host;snapshot.port=o.port;d.archived.push_back(std::move(snapshot));}
     d.entry_rows=opts[0].entry_rows;d.rows.resize(opts.size());
     d.layers=opts[0].plan.n_layers;d.experts=opts[0].plan.n_expert;d.H=opts[0].plan.n_embd;
     d.owners.assign((size_t)d.layers*d.experts,-1);
     d.masks.resize(opts.size());d.outputs.resize(opts.size());d.active.assign(opts.size(),0);
     try {
         for(size_t i=0;i<opts.size();++i) {
-            auto p=std::make_unique<Impl::Peer>();
+            auto p=std::make_unique<Impl::Peer>();p->host=opts[i].host;p->port=opts[i].port;p->cancelled=opts[i].cancelled;
             auto option=opts[i];const auto caller_cancel=option.cancelled;
             option.cancelled=[&d,caller_cancel]{return d.failed.load() || (caller_cancel && caller_cancel());};
             if(!p->tier.open(option,err)) {
-                d.reason="CUDA worker "+std::to_string(i)+" setup: "+err;d.failed.store(true);close();err=d.reason;return false;
+                d.reason="CUDA worker "+std::to_string(i)+" setup: "+err;p->stats=p->tier.stats();p->error=err;
+                d.peers.push_back(std::move(p));d.failed.store(true);close();err=d.reason;return false;
             }
             if(d.failed.load()) {err=d.error();close();return false;}
             p->interval=std::min(50,std::max(1,opts[i].deadline_ms/4));
-            p->tier.report(p->report);
+            p->tier.report(p->report);p->stats=p->tier.stats();
             for(const auto& a:opts[i].plan.assets)d.owners[(size_t)a.layer*d.experts+a.expert]=(int)i;
             d.peers.push_back(std::move(p));
             auto* peer=d.peers.back().get();
@@ -157,7 +178,27 @@ void GpuWorkerGroup::close() {
     auto& d=*impl_;
     for(auto& p:d.peers) {std::lock_guard<std::mutex> lock(p->mutex);p->stopping=true;p->wake.notify_all();}
     for(auto& p:d.peers) {if(p->thread.joinable())p->thread.join();p->tier.close();}
+    for(size_t i=0;i<d.peers.size();++i){auto& p=d.peers[i];std::lock_guard<std::mutex> lock(p->mutex);
+        d.archived[i]={p->host,p->port,p->stats,p->counters,p->status_observed,p->error,true};}
+
     d.peers.clear();d.ready=d.posted=d.finished=false;d.outputs.clear();d.rows.clear();d.masks.clear();d.active.clear();
+}
+bool GpuWorkerGroup::close_orderly(std::string& err) {
+    auto& d=*impl_;
+    if (!d.ready || d.failed.load() || d.posted) {err=d.error();return false;}
+    for (auto& p:d.peers) {
+        std::lock_guard<std::mutex> lock(p->mutex);
+        if (p->pending || p->busy) {err="CUDA group has work in flight";return false;}
+    }
+    for (auto& p:d.peers) {
+        std::lock_guard<std::mutex> lock(p->mutex);
+        p->orderly=true;p->stopping=true;p->wake.notify_all();
+    }
+    for (auto& p:d.peers) if (p->thread.joinable()) p->thread.join();
+    const bool ok=!d.failed.load();
+    if (!ok) err=d.error();
+    close();
+    return ok;
 }
 bool GpuWorkerGroup::holds(int64_t l,int32_t e)const{return impl_->owner(l,e)>=0;}
 bool GpuWorkerGroup::dead()const{return impl_->failed.load();}
@@ -206,6 +247,30 @@ bool GpuWorkerGroup::finish(std::string& err) {
         std::lock_guard<std::mutex> lock(d.peers[i]->mutex);d.outputs[i]=d.peers[i]->output;d.rows[i]=d.peers[i]->rows;
     }
     d.finished=true;return true;
+}
+bool GpuWorkerGroup::status(std::vector<GpuCounters>& out,std::string& err) {
+    auto& d=*impl_;out.clear();
+    if(!d.ready || d.failed.load() || d.posted){err="GPU group not healthy and idle";return false;}
+    for(auto& p:d.peers){std::lock_guard<std::mutex> lock(p->mutex);if(p->busy || p->pending){err="GPU group has work in flight";return false;}}
+    for(auto& p:d.peers){std::lock_guard<std::mutex> lock(p->mutex);if(d.failed.load())break;p->status_request=p->pending=p->busy=true;p->wake.notify_all();}
+    for(auto& p:d.peers){std::unique_lock<std::mutex> lock(p->mutex);p->wake.wait(lock,[&]{return !p->busy;});}
+    if(d.failed.load()){err=d.error();close();return false;}
+    for(auto& p:d.peers){std::lock_guard<std::mutex> lock(p->mutex);out.push_back(p->counters);}
+    return true;
+}
+std::vector<GpuPeerSnapshot> GpuWorkerGroup::snapshots() const {
+    const auto& d=*impl_;auto out=d.archived;
+    for(size_t i=0;i<d.peers.size();++i){const auto& p=d.peers[i];std::lock_guard<std::mutex> lock(p->mutex);
+        out[i]={p->host,p->port,p->stats,p->counters,p->status_observed,p->error,true};}
+    return out;
+}
+GpuWorkerTier::Stats GpuWorkerGroup::stats() const {
+    GpuWorkerTier::Stats out{};
+    for(const auto& p:snapshots()){const auto& s=p.client;
+        out.assigned_bytes+=s.assigned_bytes;out.setup_network_bytes+=s.setup_network_bytes;out.cache_reused_bytes+=s.cache_reused_bytes;
+        out.host_staging_peak+=s.host_staging_peak;out.requests+=s.requests;out.entries+=s.entries;out.failures+=s.failures;
+        out.setup_ms+=s.setup_ms;out.request_ms+=s.request_ms;}
+    return out;
 }
 bool GpuWorkerGroup::row_mode()const{return impl_->entry_rows;}
 bool GpuWorkerGroup::reduce_rows(const std::vector<float>& cpu_rows,const std::vector<uint8_t>& cpu_mask,

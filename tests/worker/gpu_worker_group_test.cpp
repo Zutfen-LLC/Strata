@@ -142,6 +142,7 @@ void exchange(bool failure,bool rows=false) {
         return n.gate.wake.wait_for(lock,std::chrono::seconds(1),[&]{return n.gate.cpu_started;});
     },[&]{return group.post(0,x,ids,weights,owned,1,4,err);},[&]{n.gate.allow_all();if(cpu.joinable())cpu.join();});
     require(submitted,err);
+    check(!group.close_orderly(err) && group.ready(),"orderly close refuses in-flight work without stopping peers");
     // Mutating caller buffers cannot affect the already-owned requests.
     ids[0]=3;weights[0]=99;x[0]=99;
     require(n.gate.wait_entered(3),"all three real SGW1 exchanges entered before any reply/CPU release");
@@ -212,12 +213,41 @@ void single_and_setup_failure() {
     {std::lock_guard<std::mutex> lock(n.gate.mutex);n.gate.cpu_started=true;n.gate.release[0]=true;}
     float x[2560]{};int32_t ids[]={0,3};float weights[]={1,1};uint8_t mask[]={1,0};
     require(group.post(0,x,ids,weights,mask,1,2,err)&&group.finish(err),err);
-    check(group.size()==1&&group.partials()[0]==1e20f,"single-worker request/partial behavior");group.close();
+    check(group.size()==1&&group.partials()[0]==1e20f,"single-worker request/partial behavior");
+    std::vector<GpuCounters> status;require(group.status(status,err),err);
+    check(status.size()==1 && status[0].requests==1 && status[0].entries==1,"fresh owner-thread status");
+    group.close();auto saved=group.snapshots();
+    check(saved.size()==1 && saved[0].worker_status_observed && saved[0].worker.requests==1 &&
+          saved[0].client.entries==1 && saved[0].port==one[0].port,"peer identity and counters survive close");
     // Worker 0 is healthy but a later connection cannot complete. Its owner must
     // be joined/closed too, rather than leaking keepalives after failed open.
     GpuWorkerGroup broken;auto opts=n.options;opts[1].cancelled=[]{return true;};
     check(!broken.open(opts,err)&&broken.dead()&&broken.size()==0,"partial setup failure closes previously ready workers");
+    const auto retained=broken.snapshots();check(retained.size()==3 && retained[0].setup_attempted && retained[1].setup_attempted && !retained[2].setup_attempted && retained[2].port==opts[2].port,
+          "partial setup failure retains attempted and unattempted peer identities");
 }
+#ifdef STRATA_TEST_TLS
+void orderly_tls_group() {
+    Fixture f;const auto m=metadata(f);std::string error;Gate gate;gate.cpu_started=true;gate.release[0]=true;
+    TlsFixture tls;GpuWorkerOptions o;require(make_gpu_plan(m,{{0,0}},o.plan,error),error);
+    o.cache_root=(f.root/"orderly-group").string();fs::create_directory(o.cache_root);o.cache_budget=16ull<<20;
+    o.tls=tls.config("worker","coordinator.test");
+    FILE* log=std::tmpfile();require(log!=nullptr,"temporary log");int saved=dup(STDERR_FILENO);require(saved>=0,"dup stderr");
+    std::fflush(stderr);require(dup2(fileno(log),STDERR_FILENO)>=0,"redirect stderr");
+    {
+        Running worker(o,std::make_unique<Executor>(gate,0));GpuWorkerTier::Open in;in.port=worker.port;in.plan=o.plan;
+        in.deadline_ms=1000;in.setup_ms=5000;in.tls=tls.config("coordinator","worker.test");
+        in.fetch=[&](int64_t,int64_t e,uint8_t* out,uint32_t n){const auto& b=f.blobs.at(size_t(e));if(n!=b.size())return false;std::memcpy(out,b.data(),n);return true;};
+        for(int i=0;i<2;++i){GpuWorkerGroup group;require(group.open({in},error),error);require(group.close_orderly(error),error);}
+        worker.stop();
+    }
+    std::fflush(stderr);require(dup2(saved,STDERR_FILENO)>=0,"restore stderr");close(saved);
+    std::rewind(log);std::string text;char buf[512];while(size_t n=std::fread(buf,1,sizeof(buf),log))text.append(buf,n);std::fclose(log);
+    check(text.find("receive stage=header outcome=tls_error") == std::string::npos,"orderly group close avoids TLS error");
+    size_t pos=0,count=0;while((pos=text.find("receive stage=header outcome=eof bytes=0",pos))!=std::string::npos){++count;++pos;}
+    check(count==2,"orderly group close sends clean EOF and shared worker accepts another client");
+}
+#endif
 // The same bounded synthetic inputs can exercise three real worker processes
 // over approved relays. Plans cannot name real weights: compare to our generated
 // metadata before uploading anything. This mode starts no local worker/engine.
@@ -267,7 +297,11 @@ int main(int argc,char** argv) {
     const rlimit memory{768ull<<20,768ull<<20},cpu{20,20},file{128ull<<20,128ull<<20};
     if(setrlimit(RLIMIT_AS,&memory)||setrlimit(RLIMIT_CPU,&cpu)||setrlimit(RLIMIT_FSIZE,&file))return 2;
     alarm(argc==1?40:120);
-    try {if(argc>1)external(argc,argv);else {exchange(false);exchange(true);exchange(false,true);exchange(true,true);single_and_setup_failure();}}
+    try {if(argc>1)external(argc,argv);else {exchange(false);exchange(true);exchange(false,true);exchange(true,true);single_and_setup_failure();
+#ifdef STRATA_TEST_TLS
+        orderly_tls_group();
+#endif
+    }}
     catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());++failures;}
     if(argc==1)std::printf("GPU_WORKER_GROUP_V1 failures=%d endpoints=3 models=0 cuda=0\n",failures);
     else std::printf("GPU_WORKER_GROUP_EXTERNAL_V1 failures=%d client_cuda=0 remote_cuda=%d models=0 GEN=0\n",

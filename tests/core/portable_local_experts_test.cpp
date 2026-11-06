@@ -231,6 +231,20 @@ int main(){
                 check(!hybrid.run(0,route,rows,error)&&rows.empty()&&local.cpu_entries()==cpu_after,
                       "local failure must not publish or run CPU fallback");state.fail=false;
                 check(hybrid.close_orderly(error),error);
+                GpuPlan second_plan;check(make_gpu_plan(cpu.identity(),{{0,8}},second_plan,error),error);
+                auto second_options=options;second_options.plan=second_plan;second_options.cache_root=(f.root/"hybrid-remote-second").string();
+                std::filesystem::create_directory(second_options.cache_root);RemoteServer server2(second_options);
+                auto open2=open;open2.port=server2.port;open2.plan=second_plan;
+                portable_detail::RemoteExperts multi;
+                check(multi.open({open,open2},{remote_plan,second_plan},local.plans(),10,complement,guard,error),error);
+                const auto cpu2=local.cpu_entries(),gpu2=local.gpu_entries();
+                check(multi.run(0,route,rows,error),error);
+                check(local.cpu_entries()==cpu2+5 && local.gpu_entries()==gpu2+3 && multi.stats().entries==2,
+                      "two remote peers, local GPU and CPU execute only their disjoint rows");
+                for(size_t slot=0;slot<10;++slot)for(size_t h=0;h<2560;++h)
+                    check(rows[slot*2560+h]==((route.ids[slot]==9||route.ids[slot]==8)?float(route.ids[slot]+100):good_rows[slot*2560+h]),"four-way original slots preserved");
+                check(multi.close_orderly(error),error);
+
                 options.cache_root=(f.root/"hybrid-remote-failure-cache").string();std::filesystem::create_directory(options.cache_root);
                 RemoteServer failing(options,true);open.port=failing.port;portable_detail::RemoteExperts failed;
                 check(failed.open(open,remote_plan,local.plans(),10,complement,guard,error),error);

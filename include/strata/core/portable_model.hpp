@@ -2,6 +2,7 @@
 #include <array>
 #include <optional>
 #include "strata/worker/gpu_client.hpp"
+#include "strata/worker/gpu_group.hpp"
 #include "strata/core/portable_gdn.hpp"
 #include "strata/core/portable_qsa.hpp"
 
@@ -120,6 +121,8 @@ struct PortableModelOptions {
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
     // Explicit single-peer native-Q8 indexed-row placement. Source fetch is supplied by the session.
     std::optional<worker::GpuWorkerTier::Open> remote_experts;
+    // Alternative fixed peers; mutually exclusive with the legacy single peer.
+    std::vector<worker::GpuWorkerTier::Open> remote_expert_peers;
     bool native_qsa_indexer_t1=false, qsa_indexer_resident_weights=false;
     bool native_qsa_attention_t1=false,qsa_attention_banks=false;
     bool native_qsa_wo_t1=false; // default-off QSA output projection experiment
@@ -269,6 +272,7 @@ class PortableModelSession {
     bool generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result, std::string &error);
     bool remote_expert_status(worker::GpuCounters& counters, std::string &error);
     worker::GpuWorkerTier::Stats remote_expert_stats() const;
+    std::vector<worker::GpuPeerSnapshot> remote_expert_peer_stats() const;
     // Explicit healthy idle shutdown; never sends GPU_STOP.
     bool close_remote_experts(std::string &error);
     bool reset(std::string &error);

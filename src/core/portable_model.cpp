@@ -244,19 +244,29 @@ struct PortableModelSession::Impl {
         }
         for (size_t s = 0; s < model.size(); ++s)
             report.mapped_bytes += model.shard(s).file_size();
+        std::vector<worker::GpuWorkerTier::Open> remote_opens=opts.remote_expert_peers;
+        if(opts.remote_experts)remote_opens.push_back(*opts.remote_experts);
+        std::vector<worker::GpuPlan> remote_expected;worker::GpuPlan remote_union;
         std::vector<std::filesystem::file_time_type> remote_source_times;
-        if(opts.remote_experts)for(size_t i=0;i<model.size();++i)remote_source_times.push_back(std::filesystem::last_write_time(model.shard(i).path()));
+        if(!remote_opens.empty())for(size_t i=0;i<model.size();++i)remote_source_times.push_back(std::filesystem::last_write_time(model.shard(i).path()));
         experts = std::make_unique<portable_detail::CpuExperts>(model, manifest, opts);
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
         // Authenticate the remote plan before any resident expert setup.
-        if(opts.remote_experts) {
-            std::vector<std::pair<uint16_t,uint16_t>> assigned;
-            for(const auto& a:opts.remote_experts->plan.assets)assigned.emplace_back(a.layer,a.expert);
-            worker::GpuPlan expected;std::vector<uint8_t> actual_bytes,expected_bytes;std::string plan_error;
-            require(worker::make_gpu_plan(experts->identity(),assigned,expected,plan_error) &&
-                worker::encode_gpu_plan(opts.remote_experts->plan,actual_bytes,plan_error) &&
-                worker::encode_gpu_plan(expected,expected_bytes,plan_error) && actual_bytes==expected_bytes,
-                "remote expert plan/model identity mismatch");
+        if(!remote_opens.empty()) {
+            std::string plan_error;
+            require(worker::GpuWorkerGroup::validate(remote_opens,plan_error),plan_error);
+            std::vector<std::pair<uint16_t,uint16_t>> all;
+            for(const auto& peer:remote_opens){
+                std::vector<std::pair<uint16_t,uint16_t>> assigned;
+                for(const auto& a:peer.plan.assets){assigned.emplace_back(a.layer,a.expert);all.emplace_back(a.layer,a.expert);}
+                worker::GpuPlan expected;std::vector<uint8_t> actual_bytes,expected_bytes;
+                require(worker::make_gpu_plan(experts->identity(),assigned,expected,plan_error) &&
+                    worker::encode_gpu_plan(peer.plan,actual_bytes,plan_error) &&
+                    worker::encode_gpu_plan(expected,expected_bytes,plan_error) && actual_bytes==expected_bytes,
+                    "remote expert plan/model identity mismatch");
+                remote_expected.push_back(std::move(expected));
+            }
+            require(worker::make_gpu_plan(experts->identity(),all,remote_union,plan_error),plan_error);
         }
 #endif
         report.expert_staging = experts->bytes();
@@ -599,15 +609,15 @@ struct PortableModelSession::Impl {
                     opts.expert_native_q8_observation+".slot-"+std::to_string(native_slot++));
             };
             local_experts=std::make_unique<portable_detail::LocalExperts>(model,*experts,opts,
-                factory,memory,opts.remote_experts ? &opts.remote_experts->plan : nullptr);
+                factory,memory,remote_opens.empty() ? nullptr : &remote_union);
             report.expert_devices=local_experts->report();
 #else
             throw std::runtime_error("local resident experts unavailable in this build");
 #endif
         }
-        if(opts.remote_experts) {
+        if(!remote_opens.empty()) {
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
-            constexpr size_t remote_host_bound=64ull<<20;
+            const size_t remote_host_bound=(64ull<<20)*remote_opens.size();
             require(report.host_weights<=opts.host_cap &&
                 report.host_state_bound<=opts.host_cap-report.host_weights &&
                 host_graph<=opts.host_cap-report.host_weights-report.host_state_bound &&
@@ -615,12 +625,7 @@ struct PortableModelSession::Impl {
                 remote_host_bound<=opts.host_cap-report.host_weights-report.host_state_bound-host_graph-report.expert_staging,
                 "remote expert setup/row host bound exceeds cap");
             report.host_state_bound+=remote_host_bound;
-            auto open=*opts.remote_experts;
-            std::vector<std::pair<uint16_t,uint16_t>> pairs;
-            for(const auto& asset:open.plan.assets)pairs.emplace_back(asset.layer,asset.expert);
-            worker::GpuPlan expected;
-            require(worker::make_gpu_plan(experts->identity(),pairs,expected,error),error);
-            open.fetch=[this](int64_t layer,int64_t expert,uint8_t* dst,uint32_t bytes) {
+            for(auto& open:remote_opens) open.fetch=[this](int64_t layer,int64_t expert,uint8_t* dst,uint32_t bytes) {
                 std::vector<uint8_t> blob;std::string err;
                 if(!experts->load_blob(layer,int32_t(expert),blob,err)||blob.size()!=bytes)return false;
                 std::copy(blob.begin(),blob.end(),dst);return true;
@@ -646,7 +651,7 @@ struct PortableModelSession::Impl {
                 } catch(const std::exception& e) {err=e.what();return false;}
             };
             remote_experts=std::make_unique<portable_detail::RemoteExperts>();
-            require(remote_experts->open(std::move(open),expected,local_experts ? local_experts->plans() : std::vector<worker::GpuPlan>{},portable_detail::K,std::move(complement),std::move(source_guard),error),error);
+            require(remote_experts->open(std::move(remote_opens),remote_expected,local_experts ? local_experts->plans() : std::vector<worker::GpuPlan>{},portable_detail::K,std::move(complement),std::move(source_guard),error),error);
 #else
             throw std::runtime_error("remote experts unavailable in this build");
 #endif
@@ -934,6 +939,12 @@ bool PortableModelSession::remote_expert_status(worker::GpuCounters& counters,st
 worker::GpuWorkerTier::Stats PortableModelSession::remote_expert_stats() const {
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
     if(impl_->remote_experts)return impl_->remote_experts->stats();
+#endif
+    return {};
+}
+std::vector<worker::GpuPeerSnapshot> PortableModelSession::remote_expert_peer_stats() const {
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+    if(impl_->remote_experts)return impl_->remote_experts->snapshots();
 #endif
     return {};
 }

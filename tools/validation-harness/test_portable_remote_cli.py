@@ -29,6 +29,21 @@ assert 'remote_experts' not in run([], True)
 doc = run(remote, True)
 assert doc['remote_experts'] and not doc['remote_plan_checked']
 run(remote + ['--remote-gpu-deadline-ms', '123', '--remote-gpu-setup-ms', '456'], True)
+remote2=['--remote-gpu-worker','vulkan-native-q8@127.0.0.1:4568','--remote-gpu-plan','/absent/plan2']
+run(remote + remote2, True)
+run(remote + remote, False)
+run(remote + ['--remote-gpu-worker','vulkan-native-q8@127.0.0.1:4568'], False)
+run(remote + remote2 + ['--remote-gpu-tls-ca','/absent/ca'], False)
+run(remote + remote2 + ['--remote-gpu-deadline-ms','0'], False)
+lan1=['--remote-gpu-worker','vulkan-native-q8@192.0.2.1:4567','--remote-gpu-plan','/absent/a',
+      '--remote-gpu-tls-ca','/absent/ca1','--remote-gpu-tls-cert','/absent/cert1',
+      '--remote-gpu-tls-key','/absent/key1','--remote-gpu-tls-peer','one.test']
+lan2=['--remote-gpu-worker','vulkan-native-q8@192.0.2.2:4567','--remote-gpu-plan','/absent/b',
+      '--remote-gpu-tls-ca','/absent/ca2','--remote-gpu-tls-cert','/absent/cert2',
+      '--remote-gpu-tls-key','/absent/key2','--remote-gpu-tls-peer','two.test']
+run(lan1+lan2,tls_enabled)
+run(lan1+lan2[:-2],False)  # missing second peer's exact identity
+
 local = ['--expert-plan', '0:/absent/local-plan', '--vulkan', '0', '--device-cap-mib', '1024']
 run(remote + local, False)
 run(remote + local + ['--expert-native-q8-observation', '/absent/receipt'], True)

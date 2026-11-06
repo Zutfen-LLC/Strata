@@ -151,6 +151,73 @@ void run(){
               "repeated all-remote requests never execute CPU complement");
         require(all.close_orderly(error),error);
     }
+    {
+        GpuPlan p0,p1;require(make_gpu_plan(f.m,{{0,0}},p0,error),error);require(make_gpu_plan(f.m,{{0,1}},p1,error),error);
+        auto a=opts;a.plan=p0;a.cache_root=(f.root/"multi-0").string();fs::create_directory(a.cache_root);
+        auto b=opts;b.plan=p1;b.cache_root=(f.root/"multi-1").string();fs::create_directory(b.cache_root);
+        std::atomic<int> prep0{0},prep1{0};RemoteService s0(a,std::make_unique<Fake>(prep0)),s1(b,std::make_unique<Fake>(prep1));
+        auto o0=open,o1=open;o0.port=s0.port;o0.plan=p0;o1.port=s1.port;o1.plan=p1;
+        std::vector<GpuWorkerTier::Open> peers{o0,o1};std::vector<GpuPlan> expected{p0,p1};
+        RemoteExperts overlap_peers;auto duplicate=peers;duplicate[1].plan=p0;
+        check(!overlap_peers.open(duplicate,{p0,p0},{},10,complement,guard,error)&&prep0==0&&prep1==0,"remote peer overlap refused before setup");
+        RemoteExperts wrong_peer_plan;check(!wrong_peer_plan.open(peers,{p0,p0},{},10,complement,guard,error)&&prep0==0&&prep1==0,"each peer plan must match its source-derived identity before setup");
+        RemoteExperts overlap_local;check(!overlap_local.open(peers,expected,{p1},10,complement,guard,error)&&prep0==0,"group/local overlap refused before setup");
+        RemoteExperts bad_endpoint;duplicate=peers;duplicate[1].port=o0.port;
+        check(!bad_endpoint.open(duplicate,expected,{},10,complement,guard,error),"duplicate endpoints refused");
+        RemoteExperts invalid_mode;duplicate=peers;duplicate[1].native_q8=false;
+        check(!invalid_mode.open(duplicate,expected,{},10,complement,guard,error),"every peer must use native Q8");
+        RemoteExperts multi;require(multi.open(peers,expected,{},10,complement,guard,error),error);
+        route.ids={9,1,3,0,2,4,5,6,7,8};route.weights={.03f,.17f,.11f,.09f,.1f,.1f,.1f,.1f,.1f,.1f};
+        const int before=complement_calls;require(multi.run(0,route,rows,error),error);
+        check(rows[plan.n_embd]==11.f&&rows[3*plan.n_embd]==10.f&&rows[0]==109.f&&complement_calls==before+1,"group restores original unweighted slots and invokes complement once");
+        check(multi.stats().requests==2 && multi.stats().entries==2,"group aggregate client counters");
+        GpuCounters total;require(multi.status(total,error),error);check(total.requests==2 && total.entries==2,"fresh group status aggregates peer counters");
+        auto snapshots=multi.snapshots();check(snapshots.size()==2&&snapshots[0].port==o0.port&&snapshots[1].port==o1.port&&snapshots[0].worker_status_observed&&snapshots[1].worker_status_observed,"per-peer identity and status retained");
+        route.ids={2,0,3,4,5,6,7,8,9,10};route.weights.assign(10,.1f);require(multi.run(0,route,rows,error),error);
+        snapshots=multi.snapshots();check(snapshots[0].client.requests==2&&snapshots[1].client.requests==1,"inactive peer receives no inference request");
+        route.ids={2,3,4,5,6,7,8,9,10,11};route.weights.assign(10,.1f);require(multi.run(0,route,rows,error),error);
+        check(multi.stats().requests==3 && complement_calls==before+3,"zero-hit group uses complement without request");
+        route.ids={9,1,3,0,2,4,5,6,7,8};route.weights.assign(10,.1f);fail_guard=guards+2;rows.assign(1,99);
+        check(!multi.run(0,route,rows,error)&&rows.empty()&&error=="source changed","changed source prevents group row publication");fail_guard=-1;
+        check_ffn_dispatch(multi);
+        const auto before_close=multi.snapshots();
+        require(multi.close_orderly(error),error);snapshots=multi.snapshots();
+        check(snapshots.size()==2&&snapshots[0].client.entries==before_close[0].client.entries&&snapshots[1].client.entries==before_close[1].client.entries,"per-peer stats survive orderly close");
+        auto setup_fail=peers;setup_fail[1].cancelled=[]{return true;};RemoteExperts bad_setup;
+        check(!bad_setup.open(setup_fail,expected,{},10,complement,guard,error)&&!bad_setup.usable(),"later setup failure closes prior peer");
+        check(bad_setup.snapshots().size()==2,"setup failure preserves peer identities");
+        std::atomic<bool> status_cancel{false};auto status_peers=peers;status_peers[1].cancelled=[&]{return status_cancel.load();};
+        RemoteExperts status_fail;require(status_fail.open(status_peers,expected,{},10,complement,guard,error),error);
+        status_cancel.store(true);GpuCounters failed_status;
+        check(!status_fail.status(failed_status,error)&&!status_fail.usable(),"failed peer status drains group and remains terminal");
+        check(status_fail.snapshots().size()==2,"failed status retains both peer snapshots");
+        std::atomic<bool> cancel{false};auto idle_fail=peers;idle_fail[0].cancelled=[&]{return cancel.load();};
+        auto delayed_complement=[&](int64_t l,const std::vector<PortableRoute>& routes,const std::vector<uint8_t>& mask,
+                                    std::vector<float>& result,std::string& e){
+            cancel.store(true);std::this_thread::sleep_for(std::chrono::milliseconds(250));return complement(l,routes,mask,result,e);};
+        RemoteExperts idle;require(idle.open(idle_fail,expected,{},10,delayed_complement,guard,error),error);
+        route.ids={2,3,4,5,6,7,8,9,10,11};route.weights.assign(10,.1f);rows.assign(1,99);
+        check(!idle.run(0,route,rows,error)&&rows.empty()&&!idle.usable(),"idle peer failure during zero-hit complement prevents row publication");
+        for(int fault:{1,3,4,5,6}) {
+            auto failing_options=b;failing_options.cache_root=(f.root/("multi-failing-"+std::to_string(fault))).string();fs::create_directory(failing_options.cache_root);
+            std::atomic<int> failprep{0};RemoteService faulty(failing_options,std::make_unique<Fake>(failprep,fault));
+            auto failed_peer=o1;failed_peer.port=faulty.port;if(fault==6)failed_peer.deadline_ms=100;RemoteExperts fail_multi;
+            require(fail_multi.open({o0,failed_peer},expected,{},10,complement,guard,error),error);
+            route.ids={9,1,3,0,2,4,5,6,7,8};route.weights.assign(10,.1f);rows.assign(1,99);
+            const int before_failure=complement_calls;
+            check(!fail_multi.run(0,route,rows,error)&&rows.empty()&&!fail_multi.usable()&&complement_calls==before_failure,
+                  "invalid, failed or timed-out peer drains group without partial rows or complement");
+            const auto failed=fail_multi.snapshots();
+            check(failed.size()==2&&(!failed[0].failure.empty()||!failed[1].failure.empty()),"failed group retains peer identities and failure context");
+        }
+        GpuPlan p12;require(make_gpu_plan(f.m,{{0,1},{0,2}},p12,error),error);
+        auto dup_options=b;dup_options.plan=p12;dup_options.cache_root=(f.root/"multi-duplicate-reply").string();fs::create_directory(dup_options.cache_root);
+        std::atomic<int> dupprep{0};RemoteService dup_server(dup_options,std::make_unique<Fake>(dupprep,2));
+        auto dup_peer=o1;dup_peer.port=dup_server.port;dup_peer.plan=p12;RemoteExperts dup_reply;
+        require(dup_reply.open({o0,dup_peer},{p0,p12},{},10,complement,guard,error),error);
+        route.ids={9,1,2,0,3,4,5,6,7,8};route.weights.assign(10,.1f);rows.assign(1,99);
+        check(!dup_reply.run(0,route,rows,error)&&rows.empty(),"duplicate peer reply refuses atomically");
+    }
     for(int mode=1;mode<=6;++mode){
         auto options=opts;options.cache_root=(f.root/("remote-fault-"+std::to_string(mode))).string();fs::create_directory(options.cache_root);
         std::atomic<int> observed{0};RemoteService faulty(options,std::make_unique<Fake>(observed,mode));
