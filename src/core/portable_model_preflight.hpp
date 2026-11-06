@@ -11,6 +11,7 @@ namespace strata::core::portable_detail {
 // Shared model-to-layer policy seam. Explicit layer-0 residency never changes
 // attention-only GDN residency, another layer, the head, or dense topology.
 inline bool model_gdn_t1_layer(size_t l){return l<48 && l%4!=3 && l!=1;}
+inline bool model_gdn_t1_layer(const PortableModelOptions& o,size_t l){return model_gdn_t1_layer(l) || (l==1 && o.native_ple_hc_read_t1);}
 inline bool model_resident_dense(const PortableModelOptions& opts,size_t index,bool output) {
     return opts.dense_resident_weights || (!output && index==0 && opts.layer0_resident_weights);
 }
@@ -35,10 +36,10 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         if(layer>=2) b+=(layer%4==3 ? PortableQsaOptions::native_hc_host_bound : PortableGdnOptions::native_hc_pending_host_bound)+PortableFfnOptions::native_hc_pending_host_bound;
         if(layer==1 && opts.native_ple_hc_read_t1)b+=PortableFfnOptions::native_hc_pending_host_bound;
         b+=layer==47 ? PortableFfnOptions::native_hc_write_host_bound : PortableFfnOptions::deferred_hc_host_bound;
-        if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_recurrence_host_bound;
-        if(opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_preparation_host_bound;
-        if(opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_input_projection_host_bound;
-        if(opts.native_gdn_output_projection_t1&&model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_output_projection_host_bound;
+        if(opts.native_gdn_t1 && model_gdn_t1_layer(opts,layer))b+=PortableGdnOptions::native_recurrence_host_bound;
+        if(opts.native_gdn_preparation_weights&&model_gdn_t1_layer(opts,layer))b+=PortableGdnOptions::native_preparation_host_bound;
+        if(opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(opts,layer))b+=PortableGdnOptions::native_input_projection_host_bound;
+        if(opts.native_gdn_output_projection_t1&&model_gdn_t1_layer(opts,layer))b+=PortableGdnOptions::native_output_projection_host_bound;
         if(opts.native_ple_key_t1&&layer==1)b+=PortableGdnOptions::native_ple_key_host_bound;
         if(opts.native_ple_conv_t1&&layer==1)b+=PortableGdnOptions::native_ple_conv_host_bound;
         if(opts.native_ple_gate_t1&&layer==1)b+=PortableGdnOptions::native_ple_gate_host_bound;
@@ -71,10 +72,10 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
     if(layer==0 && opts.native_hc_norm_inject_layer0)bound+=(opts.native_hc_mix_layer0 ? PortableGdnOptions::native_hc_read_host_bound : PortableGdnOptions::native_hc_host_bound)+
         (opts.native_hc_ffn_read_layer0 ? PortableFfnOptions::native_hc_pending_host_bound : 0)+
         (opts.native_hc_ffn_write_layer0 ? PortableFfnOptions::native_hc_write_host_bound : 0);
-    if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_recurrence_host_bound;
-    if(opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_preparation_host_bound;
-    if(opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_input_projection_host_bound;
-    if(opts.native_gdn_output_projection_t1&&model_gdn_t1_layer(layer))bound+=PortableGdnOptions::native_output_projection_host_bound;
+    if(opts.native_gdn_t1 && model_gdn_t1_layer(opts,layer))bound+=PortableGdnOptions::native_recurrence_host_bound;
+    if(opts.native_gdn_preparation_weights&&model_gdn_t1_layer(opts,layer))bound+=PortableGdnOptions::native_preparation_host_bound;
+    if(opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(opts,layer))bound+=PortableGdnOptions::native_input_projection_host_bound;
+    if(opts.native_gdn_output_projection_t1&&model_gdn_t1_layer(opts,layer))bound+=PortableGdnOptions::native_output_projection_host_bound;
     if(opts.native_ple_key_t1&&layer==1)bound+=PortableGdnOptions::native_ple_key_host_bound;
     if(opts.native_ple_conv_t1&&layer==1)bound+=PortableGdnOptions::native_ple_conv_host_bound;
     if(opts.native_ple_gate_t1&&layer==1)bound+=PortableGdnOptions::native_ple_gate_host_bound;
@@ -95,15 +96,15 @@ inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,P
     if(o.native_ple_key_t1){o.state_budget+=PortableGdnOptions::native_ple_key_host_bound;o.native_ple_key_receipt=opts.native_ple_key_receipt_prefix+".layer-1";}
     o.native_ple_value_t1=opts.native_ple_value_t1 && layer==1;
     if(o.native_ple_value_t1){o.state_budget+=PortableGdnOptions::native_ple_value_host_bound;o.native_ple_value_receipt=opts.native_ple_value_receipt_prefix+".layer-1";}
-    o.native_preparation_weights=opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer);
-    o.native_preparation_t1=opts.native_gdn_preparation_t1&&model_gdn_t1_layer(layer);
+    o.native_preparation_weights=opts.native_gdn_preparation_weights&&model_gdn_t1_layer(opts,layer);
+    o.native_preparation_t1=opts.native_gdn_preparation_t1&&model_gdn_t1_layer(opts,layer);
     if(o.native_preparation_weights)o.state_budget+=PortableGdnOptions::native_preparation_host_bound;
     if(o.native_preparation_t1){o.native_preparation_receipt=opts.native_gdn_preparation_receipt_prefix+".layer-"+std::to_string(layer);o.native_preparation_record_first=layer==0;}
-    o.native_input_projection_t1=opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(layer);
+    o.native_input_projection_t1=opts.native_gdn_input_projection_t1&&model_gdn_t1_layer(opts,layer);
     if(o.native_input_projection_t1){o.state_budget+=PortableGdnOptions::native_input_projection_host_bound;o.native_input_projection_receipt=opts.native_gdn_input_projection_receipt_prefix+".layer-"+std::to_string(layer);o.native_input_projection_record_first=layer==0;}
-    o.native_output_projection_t1=opts.native_gdn_output_projection_t1&&model_gdn_t1_layer(layer);
+    o.native_output_projection_t1=opts.native_gdn_output_projection_t1&&model_gdn_t1_layer(opts,layer);
     if(o.native_output_projection_t1){o.state_budget+=PortableGdnOptions::native_output_projection_host_bound;o.native_output_projection_receipt=opts.native_gdn_output_projection_receipt_prefix+".layer-"+std::to_string(layer);o.native_output_projection_record_first=layer==0;}
-    o.native_recurrence_t1=opts.native_gdn_t1 && model_gdn_t1_layer(layer);
+    o.native_recurrence_t1=opts.native_gdn_t1 && model_gdn_t1_layer(opts,layer);
     if(o.native_recurrence_t1){o.state_budget+=PortableGdnOptions::native_recurrence_host_bound;o.native_recurrence_receipt=opts.native_gdn_receipt_prefix+".layer-"+std::to_string(layer)+"/effective.spv";o.native_recurrence_record_first=layer==0;}
     o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && layer==0;
     o.native_hc_mix=opts.native_hc_mix_layer0 && layer==0;

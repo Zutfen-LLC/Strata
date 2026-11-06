@@ -22,8 +22,10 @@ Native control-vector execution, pipeline/split transport and fused pending head
 are not approximated: this scope only admits the existing primary dense serial
 profile. `STRATA_FUSE_HEAD_GR=1` refuses explicitly. The portable interface does
 not accept native control-vector or pipeline modes. This does not port native QSA
-numerical kernels, window scheduling, native GDN recurrence on the PLE layer, or
-final head HC arithmetic. The layer 1 handoff alone is not full-model parity.
+numerical kernels, window scheduling or final head HC arithmetic. The opt-in
+native GDN stages can consume the post-PLE HC result in serial T1 mode; their
+shared scratch reserves a fourth graph scheduler and accounts for its workspace.
+This layer path does not establish full-model or GPU numerical parity.
 
 The bounded `--native-hc-serial-cycle` profile remains available and exclusive with
 the ordinary numerical scope. No cap, reserve, expert selection or helper policy
