@@ -10,6 +10,7 @@
 #endif
 #include "strata/artifact/gguf_split.hpp"
 #include "strata/core/portable_model.hpp"
+#include "strata/worker/gpu_endpoint.hpp"
 #ifdef STRATA_PORTABLE_MODEL_VULKAN
 #include "ggml-vulkan.h"
 #endif
@@ -20,6 +21,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 
 namespace {
@@ -71,6 +73,9 @@ int main(int argc, char **argv) {
     try {
         strata::core::PortableModelOptions opts;
         std::string model, manifest, token_text, dump, executed_dump, placement_path, timings_path;
+        std::string remote_endpoint, remote_plan;
+        strata::worker::GpuWorkerTier::Open remote_open;
+        std::set<std::string> remote_seen;
         using Clock = std::chrono::steady_clock;
         Clock::time_point setup_start, prompt_start, decode_start, decode_end, last_prompt_start, last_selection;
         std::vector<int64_t> devices, caps, free_bytes, expert_tensors, expert_workspaces, expert_reserves;
@@ -145,6 +150,9 @@ int main(int argc, char **argv) {
                              " [--native-shared RECEIPT_PREFIX (native shared method; not CUDA bit identity)]\n"
                              " [--native-router RECEIPT_PREFIX (native method; not CUDA bit identity)]\n"
                              " [--expert-native-q8-observation RECEIPT_PREFIX (unqualified)] [--native-moe-combine (strict K10 observation)]\n"
+                             " [--remote-gpu-worker vulkan-native-q8@HOST:PORT --remote-gpu-plan FILE]\n"
+                             " [--remote-gpu-tls-ca FILE --remote-gpu-tls-cert FILE --remote-gpu-tls-key FILE --remote-gpu-tls-peer DNS]\n"
+                             " [--remote-gpu-deadline-ms N] [--remote-gpu-setup-ms N]\n"
                              " [--expert-plan SLOT:FILE] [--expert-tensor-mib N,N] [--expert-workspace-mib N,N]\n"
                              " [--expert-free-reserve-mib N,N] [--expert-check-rows] [--expert-record-routes]\n"
                              " [--prompt-head-elision (serial head elision; incompatible with --dump-logits)]\n"
@@ -223,6 +231,20 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
+            if(key.rfind("--remote-gpu-",0)==0) {
+                if(value.empty() || !remote_seen.insert(key).second)throw std::runtime_error("empty or duplicate remote GPU option: "+key);
+                if(key=="--remote-gpu-worker")remote_endpoint=value;
+                else if(key=="--remote-gpu-plan")remote_plan=value;
+                else if(key=="--remote-gpu-tls-ca")remote_open.tls.ca_file=value;
+                else if(key=="--remote-gpu-tls-cert")remote_open.tls.cert_file=value;
+                else if(key=="--remote-gpu-tls-key")remote_open.tls.key_file=value;
+                else if(key=="--remote-gpu-tls-peer")remote_open.tls.peer_dns=value;
+                else if(key=="--remote-gpu-deadline-ms" || key=="--remote-gpu-setup-ms") {
+                    const auto n=integer(value);if(!n || n>600000)throw std::runtime_error("remote GPU deadline must be in [1,600000] ms");
+                    if(key=="--remote-gpu-deadline-ms")remote_open.deadline_ms=int(n);else remote_open.setup_ms=int(n);
+                } else throw std::runtime_error("unknown option: "+key);
+                continue;
+            }
             if(key=="--qsa-attention-banks"){opts.qsa_attention_banks=true;opts.qsa_attention_receipt_prefix=value;}
             else if(key=="--qsa-score-select-banks"){opts.qsa_score_select_banks=true;opts.qsa_score_select_receipt_prefix=value;}
             else if(key=="--qsa-indexer-resident-weights"){opts.qsa_indexer_resident_weights=true;opts.qsa_indexer_receipt_prefix=value;}
@@ -325,6 +347,26 @@ int main(int argc, char **argv) {
             else
                 throw std::runtime_error("unknown option: " + key);
         }
+        if(!remote_seen.empty()) {
+#ifdef _WIN32
+            throw std::runtime_error("remote GPU experts unavailable in this build");
+#else
+            strata::worker::GpuEndpoint endpoint;
+            if(remote_endpoint.empty() || remote_plan.empty() ||
+               !strata::worker::parse_gpu_endpoint(remote_endpoint,endpoint) || !endpoint.vulkan || !endpoint.native_q8)
+                throw std::runtime_error("remote GPU requires one vulkan-native-q8@HOST:PORT and an explicit plan");
+            const auto& tls=remote_open.tls;
+            const bool complete=!tls.ca_file.empty() && !tls.cert_file.empty() && !tls.key_file.empty() && !tls.peer_dns.empty();
+#ifndef STRATA_PORTABLE_WORKER_TLS
+            if(tls.enabled())throw std::runtime_error("remote GPU mTLS is unavailable in this build");
+#endif
+            if((tls.enabled() && !complete) || (endpoint.host!="127.0.0.1" && !complete))
+                throw std::runtime_error("remote GPU mTLS requires CA, cert, key and exact peer DNS");
+            remote_open.host=endpoint.host;remote_open.port=endpoint.port;
+            remote_open.vulkan=remote_open.native_q8=remote_open.entry_rows=true;
+            opts.remote_experts=remote_open;
+#endif
+        }
         if(opts.gdn_causal_chunk && (!opts.prompt_chunk_size || !opts.gdn_batch_input_projections || !opts.gdn_production))
             throw std::runtime_error("--gdn-causal-chunk requires --prompt-chunk-size, --gdn-batch-input-projections and --gdn-production");
         if(opts.gdn_batch_input_projections && !opts.prompt_chunk_size)
@@ -392,6 +434,7 @@ int main(int argc, char **argv) {
         strata::core::portable_detail::validate_model_modes(opts,devices.size());
         if(validate_options) {
             std::cout<<"{\"validated_options\":true,\"backend_initialized\":false,\"model_metadata_checked\":false,\"memory_admission_checked\":false,\"selected_accelerators\":"<<devices.size()
+                     <<(opts.remote_experts?",\"remote_experts\":true,\"remote_plan_checked\":false":"")
                      <<",\"head_shape_admission\":"<<(opts.head_shape_admission?"true":"false")
                      <<",\"gdn_resident_weights\":"<<(opts.gdn_resident_weights?"true":"false")
                      <<",\"dense_resident_weights\":"<<(opts.dense_resident_weights?"true":"false")
@@ -427,6 +470,16 @@ int main(int argc, char **argv) {
                      <<",\"native_hc_mix_layer0\":"<<(opts.native_hc_mix_layer0?"true":"false")<<"}\n";
             return 0;
         }
+#ifndef _WIN32
+        if(opts.remote_experts) {
+            const std::filesystem::path path(remote_plan);
+            if(std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path))throw std::runtime_error("remote GPU plan must be a regular non-symlink file");
+            const auto size=std::filesystem::file_size(path);const auto time=std::filesystem::last_write_time(path);
+            std::string plan_error;
+            if(!strata::worker::read_gpu_plan(remote_plan,opts.remote_experts->plan,plan_error))throw std::runtime_error(plan_error);
+            if(size!=std::filesystem::file_size(path) || time!=std::filesystem::last_write_time(path))throw std::runtime_error("remote GPU plan changed while reading");
+        }
+#endif
         std::vector<std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)>> backends;
         std::vector<size_t> device_totals, device_reserves;
         for (size_t i = 0; i < devices.size(); ++i) {
@@ -499,6 +552,7 @@ int main(int argc, char **argv) {
         source_paths.push_back(manifest);
         for(const auto& d:opts.expert_devices) if(!d.plan_path.empty()) source_paths.push_back(d.plan_path);
         if(!opts.expert_native_profile.empty())source_paths.push_back(opts.expert_native_profile);
+        if(opts.remote_experts)source_paths.push_back(remote_plan);
         // Capture before loading; observed change requires a new process.
         std::unique_ptr<strata::core::stdio_detail::Sources> sources;
         if(resident) sources=std::make_unique<strata::core::stdio_detail::Sources>(source_paths);
@@ -528,7 +582,9 @@ int main(int argc, char **argv) {
                       << " headroom_bytes=" << opts.device_caps[i] - report.device_admission[i] << '\n';
         std::cerr << report.identity_evidence << '\n';
         std::cerr << (opts.prompt_chunk_size ? "Bounded prompt chunks; T=1 final prompt/decode; " : "T=1; ");
-        if(opts.expert_devices.empty())
+        if(opts.remote_experts)
+            std::cerr << "remote native Q8 indexed expert rows with CPU complement; qualified=false.\n";
+        else if(opts.expert_devices.empty())
             std::cerr << "CPU experts; host PLE; recurrent state and inter-layer residuals use host/device transfers. No performance claim.\n";
         else if(opts.native_moe_combine)
             std::cerr << "resident Vulkan/CPU expert rows; host PLE; original-order strict K10 Vulkan combine; "
@@ -934,6 +990,15 @@ int main(int argc, char **argv) {
                      << p.backend << '\t' << p.metadata_only << '\t' << p.fallback_reason << '\n';
             if (!file)
                 throw std::runtime_error("placement report write failed");
+        }
+        if(opts.remote_experts) {
+            strata::worker::GpuCounters counters;
+            if(!session->remote_expert_status(counters,error))throw std::runtime_error("remote GPU final status: "+error);
+            const auto stats=session->remote_expert_stats();
+            std::cerr << "remote_experts requests=" << counters.requests << " entries=" << counters.entries
+                      << " worker_failures=" << counters.failures << " client_requests=" << stats.requests
+                      << " client_entries=" << stats.entries << " client_failures=" << stats.failures << '\n';
+            if(!session->close_remote_experts(error))throw std::runtime_error("remote GPU orderly close: "+error);
         }
         return 0;
     } catch (const std::exception &e) {
