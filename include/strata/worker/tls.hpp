@@ -5,6 +5,8 @@
 #include <string>
 
 namespace strata::worker {
+enum class TransportOutcome { none, eof, timeout, cancelled, io_error, tls_error, invalid };
+struct TransportRead { TransportOutcome outcome = TransportOutcome::none; size_t bytes = 0; };
 // Explicit SAN DNS identity, independent of the numeric routing address. No wildcard/CN matching.
 struct TlsConfig {
     std::string ca_file, cert_file, key_file, peer_dns;
@@ -20,13 +22,15 @@ public:
     TlsSession(const TlsSession&) = delete;
     TlsSession& operator=(const TlsSession&) = delete;
     bool handshake(uintptr_t fd, const TlsConfig&, bool server, int ms,
-                   const std::function<bool()>& cancel, std::string& err);
-    bool send_all(const void*, size_t, int ms, const std::function<bool()>& cancel);
-    bool recv_all(void*, size_t, int ms, const std::function<bool()>& cancel);
+                   const std::function<bool()>& cancel, std::string& err, TransportOutcome* detail = nullptr);
+    bool send_all(const void*, size_t, int ms, const std::function<bool()>& cancel, TransportRead* detail = nullptr);
+    bool recv_all(void*, size_t, int ms, const std::function<bool()>& cancel, TransportRead* detail = nullptr);
+    // Explicit healthy-path close: send close_notify only; never wait for peer shutdown.
+    bool send_close_notify(int ms, const std::function<bool()>& cancel, std::string& err);
     bool active() const { return ssl_ != nullptr; }
     void reset();
 private:
-    bool io(void*, size_t, int, const std::function<bool()>&, bool write);
+    bool io(void*, size_t, int, const std::function<bool()>&, bool write, TransportRead* detail = nullptr);
     void* ssl_ = nullptr;
     uintptr_t fd_ = 0;
 };

@@ -15,6 +15,7 @@ inline constexpr uint32_t kGpuCapabilityVulkan = 4; // explicit opt-in, entry ro
 inline constexpr uint32_t kGpuNumericsQ8_1 = 1;
 // Q8_0 weights/matvecs on Vulkan, native host Q8 boundaries + SwiGLU; not CPU bit parity.
 inline constexpr uint32_t kGpuNumericsVulkanHybridQ8 = 2;
+inline constexpr uint32_t kGpuNumericsVulkanNativeQ8 = 3;
 inline constexpr size_t kGpuFrameMax = kGpuPlanMax + 64;
 enum GpuMsg : uint16_t {
     GPU_HELLO = 1, GPU_HELLO_ACK, GPU_SETUP, GPU_SETUP_ACK, GPU_UPLOAD, GPU_UPLOAD_ACK,
@@ -32,6 +33,7 @@ struct GpuCounters {
     uint64_t requests = 0, entries = 0, failures = 0, service_ns = 0;
 };
 namespace gpu_codec {
+struct ReceiveDiagnostic { const char* stage = "header"; TransportRead transport{}; };
 void put(std::vector<uint8_t>& p, uint64_t v, size_t n = 8);
 struct Cursor {
     const std::vector<uint8_t>& p;
@@ -41,9 +43,9 @@ struct Cursor {
     bool done() const { return ok && i == p.size(); }
 };
 bool send(uintptr_t fd, uint16_t msg, uint16_t status, const std::vector<uint8_t>& p,
-          int ms, const std::function<bool()>& cancel, std::string& err, TlsSession* tls = nullptr);
+          int ms, const std::function<bool()>& cancel, std::string& err, TlsSession* tls = nullptr, TransportRead* diagnostic = nullptr);
 bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
-             const std::function<bool()>& cancel, std::string& err, int response_wait_ms = 0, TlsSession* tls = nullptr);
+             const std::function<bool()>& cancel, std::string& err, int response_wait_ms = 0, TlsSession* tls = nullptr, ReceiveDiagnostic* diagnostic = nullptr);
 std::vector<uint8_t> binding(uint64_t session, const GpuPlan& plan);
 bool binding(Cursor& c, uint64_t session, const GpuPlan& plan);
 bool encode_request(const GpuPlan& plan, const InferRequest& r, std::vector<uint8_t>& p);

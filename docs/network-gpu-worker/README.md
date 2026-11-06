@@ -148,3 +148,67 @@ existing single-row graphs using the token at `entry / K`; weights stay resident
 See [the bounded model handoff](../../tests/amd/MODEL_OFFLOAD_HANDOFF.md) for the
 real routed row comparison and unchanged CPU trace/logit gates. Model acceptance
 and this revision's GPU execution remain pending; no fallback is permitted.
+
+### Native Q8 observation worker
+
+An experimental worker can instead select the existing native-style Q8 executor
+with `--native-q8-receipt PREFIX`. Build the `tests/amd` worker with
+`STRATA_AMD_PROBE_VULKAN=ON`, `STRATA_VULKAN_NATIVE_STAGES=ON` and
+`STRATA_VULKAN_NATIVE_Q8_STRICT_FMA=ON`. The receipt prefix names writable
+shader evidence files; choose a fresh private location for each run. The
+coordinator selects it with `--remote-gpu-worker vulkan-native-q8@HOST:PORT PLAN`
+and the same indexed-row and mTLS requirements above. Its distinct numerical
+identifier rejects hybrid, CUDA and old peers; a missing native build refuses
+startup. No arithmetic or transport fallback is used.
+
+The executor retains the existing Q8_0 H2560/FF640, T1..8 and K1..10 limits,
+resident allocation admission and zero runtime reserve. Its tensor budget does
+not bound total device or driver memory. This is an unqualified observation,
+not a claim of CPU/CUDA bit parity or full-model parity. Before distributed
+model testing, compare every indexed row and its identity from a pinned input
+between this worker and the existing native executor on the same device, with
+the same weights, build and shader receipts. Preserve both results and failure
+evidence.
+
+#### Retained-request replay
+
+`vulkan_native_q8_replay` records `layer.direct.reply`, the canonical request,
+plan, device description and shader receipts in its new private output directory.
+The successful direct run writes `DIRECT_PASS` only after its existing row and
+release checks. Do not reuse a failed or incomplete directory as a reference.
+Pin the capture, plan, every blob, executable, shader receipts, direct output,
+worker executable, device and driver identity with SHA-256 in an external run
+manifest. The SGW1 digest binds the comparison to the request and plan but is not
+an authentication mechanism or a substitute for that manifest.
+
+The CPU-only `native_q8_worker_replay` accepts:
+
+```
+native_q8_worker_replay --worker HOST:PORT CAPTURE RECORD PLAN BLOB_DIR DIRECT_REPLY NEW_OUTPUT --deadline-ms N [--tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer DNS]
+```
+
+It verifies every staged blob, refuses an incomplete plan rather than remasking,
+checks the direct reference binding, compares every index and row bit, and checks
+unchanged resident allocation and transfer counters plus exact request and entry
+count deltas. The new private output retains the reference, canonical request, worker rows and
+indices, status counters, and either `PASS` or `FAILURE`. Preserve stdout and
+stderr and externally hash the complete output. Session IDs differ between the
+direct and remote calls; the existing client validates the worker session and
+sequence. A match is meaningful only after separately verifying that direct and
+worker runs used the same physical device, build, driver, shaders and weights:
+SGW1 does not attest device or build identity. This check is not a full model
+or CPU/CUDA parity test.
+
+Use a fresh worker for this gate. Its failure counter is cumulative across
+connections, and the replay refuses if either the before or after status reports
+a nonzero value, including a failure from an earlier client. It does not reset
+the counter or stop the service. Both status reads happen before the replay
+client closes; a failure recorded during or after teardown is outside the replay
+`PASS` and must be reviewed separately in the worker's diagnostics and shutdown
+report. A recorded counter does not by itself establish its cause.
+
+After validating the rows and status, the replay explicitly sends a TLS
+`close_notify` under its existing deadline and cancellation policy. It does not
+wait for the peer's notification, send `GPU_STOP`, or change destructor/error
+cleanup. Failure to send the notification prevents `PASS`. Plaintext replay
+closes the idle connection without a TLS notification.

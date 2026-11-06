@@ -12,6 +12,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "strata/worker/tls.hpp"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -67,7 +68,7 @@ struct IoCounts {
     uint64_t polls = 0, sends = 0, receives = 0, would_block = 0, interrupted = 0;
     uint64_t sent_bytes = 0, received_bytes = 0;
 };
-struct IoDiagnostic { bool operation_first = false; IoCounts* counts = nullptr; };
+struct IoDiagnostic { bool operation_first = false; IoCounts* counts = nullptr; TransportRead* read = nullptr; };
 bool send_all_diagnostic(sock_fd fd, const void* data, size_t n, int deadline_ms,
                          const std::function<bool()>& cancel, IoDiagnostic diagnostic);
 bool recv_all_diagnostic(sock_fd fd, void* data, size_t n, int deadline_ms,

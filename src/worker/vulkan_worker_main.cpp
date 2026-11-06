@@ -13,15 +13,15 @@ void signal_stop(int) { interrupted.store(true); }
 void usage() {
     std::fprintf(stderr,"usage: strata-vulkan-expert-worker --plan FILE --cache-root DIR "
       "[--port 0] [--device 0] [--tensor-budget-mib 16] [--cache-budget-mib 64] "
-      "[--deadline-ms 10000] [--setup-ms 600000] [--tcp-nodelay]\n"
+      "[--deadline-ms 10000] [--setup-ms 600000] [--tcp-nodelay] [--native-q8-receipt PREFIX]\n"
       "[--bind-ip IPv4 --allow-peer-ip IPv4] [--tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer SAN_DNS]\n"
-      "  Q8_0 H2560/FF640 T1..8 indexed rows; private LAN requires mTLS; native host Q8 boundaries\n");
+      "  Q8_0 H2560/FF640 T1..8 indexed rows; private LAN requires mTLS\n");
 }
 }
 int main(int argc,char** argv) {
     using namespace strata::worker;
     GpuWorkerOptions o; o.vulkan=true; o.runtime_reserve=0; o.cache_budget=64ull<<20;
-    std::string path; uint16_t port=0; int device=0; uint64_t budget=16ull<<20;
+    std::string path, receipt; uint16_t port=0; int device=0; uint64_t budget=16ull<<20;
     for(int i=1;i<argc;++i) {
         const std::string arg=argv[i];
         if(arg == "--tcp-nodelay") {o.accepted_tcp_nodelay=true;continue;}
@@ -29,6 +29,7 @@ int main(int argc,char** argv) {
         const char* value=argv[++i];
         if(arg.rfind("--tls-",0)==0 && !*value) {usage();return 2;}
         if(arg == "--plan") path=value;
+        else if(arg == "--native-q8-receipt") { if(!*value) {usage();return 2;} receipt=value; o.native_q8=true; }
         else if(arg == "--cache-root") o.cache_root=value;
         else if(arg == "--bind-ip") o.bind_ip=value;
         else if(arg == "--allow-peer-ip") o.allow_peer_ips.emplace_back(value);
@@ -51,12 +52,15 @@ int main(int argc,char** argv) {
     if(path.empty() || o.cache_root.empty()) { usage(); return 2; }
     std::string err;
     if(!read_gpu_plan(path,o.plan,err)) { std::fprintf(stderr,"vulkan-worker: %s\n",err.c_str()); return 2; }
-    GpuWorkerService service(o,create_vulkan_gpu_executor(device,budget));
+    std::unique_ptr<GpuExecutor> executor;
+    try { executor=o.native_q8 ? create_vulkan_native_q8_worker(device,budget,receipt) : create_vulkan_gpu_executor(device,budget); }
+    catch(const std::exception& e) { std::fprintf(stderr,"vulkan-worker: %s\n",e.what()); return 2; }
+    GpuWorkerService service(o,std::move(executor));
     if(!service.listen(port,err)) { std::fprintf(stderr,"vulkan-worker: %s\n",err.c_str()); return 1; }
     std::signal(SIGINT,signal_stop); std::signal(SIGTERM,signal_stop);
     std::fprintf(stderr,"vulkan-worker listening %s:%u device=%d tensor_budget=%llu "
-      "Vulkan/native-Q8-host-boundaries approximate transport=%s accepted_nodelay=%s; total VRAM unbounded by tensor budget\n",
-      o.bind_ip.c_str(),port,device,(unsigned long long)budget,o.tls.enabled()?"mTLS":"plaintext-test",o.accepted_tcp_nodelay?"on":"off");
+      "method=%s transport=%s accepted_nodelay=%s; total VRAM unbounded by tensor budget\n",
+      o.bind_ip.c_str(),port,device,(unsigned long long)budget,o.native_q8?"native-Q8-observation":"hybrid-Q8",o.tls.enabled()?"mTLS":"plaintext-test",o.accepted_tcp_nodelay?"on":"off");
     std::atomic<bool> ended{false};
     std::thread signals([&] {
         while(!ended.load() && !interrupted.load()) sock::sleep_ms(50);

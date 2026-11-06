@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "strata/worker/tls.hpp"
@@ -46,7 +47,9 @@ struct TlsFixture {
         }
     }
     TlsFixture() {
-        char path[]="/tmp/strata-test-mtls-XXXXXX"; auto* p=::mkdtemp(path); need(p); root=p;
+        const auto pattern=(std::filesystem::temp_directory_path()/"strata-test-mtls-XXXXXX").string();
+        std::vector<char> path(pattern.begin(),pattern.end());path.push_back('\0');
+        auto* p=::mkdtemp(path.data()); need(p); root=p;
         ca_key=EVP_EC_gen("prime256v1"); need(ca_key); ca=certificate(ca_key,"test CA",nullptr,nullptr); save("ca",ca,nullptr);
         auto* other_key=EVP_EC_gen("prime256v1"); need(other_key);
         auto* other=certificate(other_key,"other test CA",nullptr,nullptr); save("other-ca",other,nullptr);

@@ -20,6 +20,8 @@ public:
     }
     virtual bool infer(const GpuPlan&, const InferRequest&, InferReply&, std::string&) = 0;
     virtual bool supports_rows() const { return false; }
+    // A worker must never advertise native arithmetic for another executor.
+    virtual bool native_q8() const { return false; }
     virtual bool infer_rows(const GpuPlan&, const InferRequest&, EntryRowsReply&, std::string& err) {
         err="CUDA executor does not support entry rows"; return false;
     }
@@ -39,7 +41,8 @@ struct GpuWorkerOptions {
     uint64_t cache_budget = 24ull << 30;
     uint64_t runtime_reserve = 1ull << 30;
     int deadline_ms = 10000, setup_ms = 600000;
-    bool vulkan = false; // opt-in loopback hybrid contract; reserve must be zero
+    bool vulkan = false; // reserve must be zero
+    bool native_q8 = false; // explicit Vulkan native numerical contract
 };
 class GpuWorkerService {
 public:

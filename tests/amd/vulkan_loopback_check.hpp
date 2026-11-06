@@ -3,12 +3,14 @@
 struct CountedVulkanExecutor final : strata::worker::GpuExecutor {
     std::unique_ptr<strata::worker::GpuExecutor> inner;
     std::atomic<unsigned> prepares{0};
+    bool native_contract=false;
     explicit CountedVulkanExecutor(std::unique_ptr<strata::worker::GpuExecutor> e):inner(std::move(e)) {}
     bool prepare(const strata::worker::GpuPlan& p,uint64_t reserve,strata::worker::GpuCache& cache,
                  strata::worker::GpuCounters& c,std::string& err) override {
         ++prepares; return inner->prepare(p,reserve,cache,c,err);
     }
     bool supports_rows() const override { return inner->supports_rows(); }
+    bool native_q8() const override { return native_contract; }
     bool infer_rows(const strata::worker::GpuPlan& p,const strata::worker::InferRequest& r,
                     strata::worker::EntryRowsReply& rows,std::string& err) override { return inner->infer_rows(p,r,rows,err); }
     bool infer(const strata::worker::GpuPlan& p,const strata::worker::InferRequest& r,
@@ -33,6 +35,11 @@ void loopback_check(const std::string& backend,int device,ggml_backend_t selecte
                     const std::vector<float>& expected) {
     using namespace strata::worker;
     const uint64_t budget=16ull<<20;
+#ifndef STRATA_TEST_NATIVE_WORKER_ENABLED
+    { bool refused=false; try { (void)create_vulkan_native_q8_worker(device,budget,"unused"); }
+      catch(const std::exception&) {refused=true;}
+      require(refused,"native worker without stages must refuse, without fallback"); }
+#endif
     auto executor=[&]() { return backend == "cpu" ? create_vulkan_executor_cpu_test(budget) : create_vulkan_gpu_executor(device,budget); };
 #ifdef STRATA_TEST_TLS
     TlsFixture tls_fixture;
@@ -58,6 +65,12 @@ void loopback_check(const std::string& backend,int device,ggml_backend_t selecte
 #ifdef STRATA_TEST_TLS
     o.tls=tls_fixture.config("worker","coordinator.test");
 #endif
+    // Explicit substitution tests negotiation and lifecycle only, never native arithmetic.
+    { auto mismatch=o; mismatch.native_q8=true; GpuWorkerService refused(mismatch,executor()); uint16_t port=0;
+      require(!refused.listen(port,err),"native contract accepted hybrid executor"); }
+    { auto mismatch=std::make_unique<CountedVulkanExecutor>(executor()); mismatch->native_contract=true;
+      GpuWorkerService refused(o,std::move(mismatch)); uint16_t port=0;
+      require(!refused.listen(port,err),"hybrid contract accepted native executor"); }
     auto counted=std::make_unique<CountedVulkanExecutor>(executor()); auto* observed=counted.get();
     VulkanLoopbackService worker(o,std::move(counted));
     GpuWorkerTier::Open open; open.plan=plan; open.port=worker.port; open.vulkan=true;
@@ -76,9 +89,37 @@ void loopback_check(const std::string& backend,int device,ggml_backend_t selecte
       require(!tier.open(invalid,err),"Vulkan client accepted weighted mode"); }
     { auto invalid=open; invalid.host="10.0.0.5"; invalid.tls={}; GpuWorkerTier tier;
       require(!tier.open(invalid,err),"Vulkan client accepted private plaintext"); }
+    { auto native=open; native.native_q8=true; GpuWorkerTier tier;
+      require(!tier.open(native,err) && observed->prepares == 0 && fetches == 0,
+              "hybrid service accepted native numerical contract"); }
     { auto cuda=open; cuda.vulkan=false; GpuWorkerTier tier;
       require(!tier.open(cuda,err) && observed->prepares == 0 && fetches == 0,
               "Vulkan service accepted CUDA numerical contract"); }
+    // The CPU substitute exercises native negotiation and lifecycle, not the native kernels.
+    {
+        auto native_options=o; native_options.native_q8=true;
+        native_options.cache_root=(output/"native-contract-cache").string();
+        require(std::filesystem::create_directory(native_options.cache_root),"new native contract cache required");
+        auto fake=std::make_unique<CountedVulkanExecutor>(executor()); auto* fake_observed=fake.get();
+        fake->native_contract=true;
+        VulkanLoopbackService native_worker(native_options,std::move(fake));
+        auto native_open=open; native_open.port=native_worker.port;
+        { GpuWorkerTier wrong; require(!wrong.open(native_open,err) && fake_observed->prepares==0,
+              "native service accepted hybrid numerical contract"); }
+        native_open.native_q8=true;
+        GpuWorkerTier native; require(native.open(native_open,err),err);
+        require(fake_observed->prepares==1,"native contract did not prepare exactly once");
+        const int32_t ids[]={3,1}; const float weights[]={0.25f,0.75f}; const uint8_t mask[]={1,1};
+        require(native.post(0,x.data(),ids,weights,mask,1,2,err) && native.finish(err) && native.served(),err);
+        require(native.entry_rows().indices==std::vector<uint16_t>({0,1}) &&
+                native.entry_rows().session==native.stats().session && native.entry_rows().sequence==1,
+                "native contract lost indexed row identity");
+        native.close();
+        native_worker.stop();
+        require(native_worker.service.counters().gpu_allocated_bytes==0 &&
+                native_worker.service.counters().gpu_allocation_count==0,"native contract cleanup leaked allocations");
+    }
+    fetches=0;
     GpuWorkerTier tier;
     require(tier.open(open,err),err);
     require(fetches == 2 && observed->prepares == 1,"loopback setup did not load exactly two experts once");

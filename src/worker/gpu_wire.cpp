@@ -16,8 +16,9 @@ uint64_t Cursor::get(size_t n) {
     return v;
 }
 bool send(uintptr_t fd, uint16_t msg, uint16_t status, const std::vector<uint8_t>& p,
-          int ms, const std::function<bool()>& cancel, std::string& err, TlsSession* tls) {
-    if (p.size() > kGpuFrameMax || ms <= 0) { err = "CUDA frame exceeds bound or deadline"; return false; }
+          int ms, const std::function<bool()>& cancel, std::string& err, TlsSession* tls, TransportRead* diagnostic) {
+    if(diagnostic) *diagnostic={};
+    if (p.size() > kGpuFrameMax || ms <= 0) { if(diagnostic)diagnostic->outcome=p.size()>kGpuFrameMax?TransportOutcome::invalid:TransportOutcome::timeout; err = "CUDA frame exceeds bound or deadline"; return false; }
     // Match the CPU transport: queue the complete frame through one bounded
     // writer. Separate header/body sends can leave a short write awaiting ACK.
     std::vector<uint8_t> frame;
@@ -28,18 +29,21 @@ bool send(uintptr_t fd, uint16_t msg, uint16_t status, const std::vector<uint8_t
         std::chrono::steady_clock::now()-began).count(); };
     frame.insert(frame.end(), p.begin(), p.end());
     const int left = remaining(); // Copy time cannot renew the original I/O budget.
-    if (left <= 0 || !(tls ? tls->send_all(frame.data(), frame.size(), left, cancel) :
-        sock::send_all_controlled((sock_fd)fd, frame.data(), frame.size(), left, cancel))) {
+    if(left<=0 && diagnostic) diagnostic->outcome=TransportOutcome::timeout;
+    if (left <= 0 || !(tls ? tls->send_all(frame.data(), frame.size(), left, cancel,diagnostic) :
+        sock::send_all_diagnostic((sock_fd)fd, frame.data(), frame.size(), left, cancel,{false,nullptr,diagnostic}))) {
         err = "CUDA worker send disconnected or exceeded deadline"; return false;
     }
     return true;
 }
 bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
-             const std::function<bool()>& cancel, std::string& err, int response_wait_ms, TlsSession* tls) {
+             const std::function<bool()>& cancel, std::string& err, int response_wait_ms, TlsSession* tls, ReceiveDiagnostic* diagnostic) {
+    if (diagnostic) *diagnostic = {};
     auto read = [&](void* p, size_t n, int budget) {
-        return tls ? tls->recv_all(p,n,budget,cancel) : sock::recv_all_controlled((sock_fd)fd,p,n,budget,cancel);
+        return tls ? tls->recv_all(p,n,budget,cancel,diagnostic ? &diagnostic->transport : nullptr) :
+            sock::recv_all_diagnostic((sock_fd)fd,p,n,budget,cancel,{false,nullptr,diagnostic ? &diagnostic->transport : nullptr});
     };
-    if(ms<=0){err="CUDA frame requires a positive I/O deadline";return false;}
+    if(ms<=0){if(diagnostic)diagnostic->transport.outcome=TransportOutcome::timeout;err="CUDA frame requires a positive I/O deadline";return false;}
     std::vector<uint8_t> h(kHeaderBytes);
     size_t first = 0;
     // SETUP/READY may hash or load the entire assigned set. Waiting for their first
@@ -55,6 +59,7 @@ bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
     auto remaining=[&] { return ms-(int)std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now()-began).count(); };
     if (ms <= 0 || !read(h.data()+first, h.size()-first, ms)) {
+        if(diagnostic) diagnostic->transport.bytes += first;
         err = "CUDA worker reply missing, disconnected or deadline"; return false;
     }
     Cursor c{h};
@@ -72,14 +77,20 @@ bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
     case GPU_STATUS_ACK: operation_cap=256; break;
     case GPU_HELLO: case GPU_HELLO_ACK: case GPU_UPLOAD_ACK: case GPU_READY: case GPU_READY_ACK:
     case GPU_STATUS: case GPU_STOP: case GPU_STOP_ACK: operation_cap=64; break;
-    default: err="unknown CUDA frame type"; return false;
+    default: if(diagnostic) diagnostic->stage="malformed_header"; err="unknown CUDA frame type"; return false;
     }
     cap=std::min(cap,operation_cap);
     if (!c.done() || magic != kGpuWireMagic || n > cap || n > kGpuFrameMax) {
+        if(diagnostic) diagnostic->stage="malformed_header";
         err = "unsupported or malformed CUDA protocol (requires SGW1 CUDA/q8_1 capability)"; return false;
     }
     f.payload.resize((size_t)n);
-    if (n && (remaining()<=0 || !read(f.payload.data(), f.payload.size(), remaining()))) {
+    if(diagnostic) diagnostic->stage="payload";
+    if (n && remaining()<=0) {
+        if(diagnostic) diagnostic->transport.outcome=TransportOutcome::timeout;
+        err = "incomplete CUDA worker frame"; return false;
+    }
+    if (n && !read(f.payload.data(), f.payload.size(), remaining())) {
         err = "incomplete CUDA worker frame"; return false;
     }
     return true;

@@ -33,14 +33,13 @@ struct Budget {
 };
 
 bool wait_fd(sock_fd fd, bool write, const Budget &budget, const std::function<bool()> &cancel = {},
-             IoCounts* counts = nullptr) {
+             IoCounts* counts = nullptr, TransportOutcome* outcome = nullptr) {
     for (;;) {
-        if (cancel && cancel())
-            return false;
+        if (cancel && cancel()) { if(outcome)*outcome=TransportOutcome::cancelled; return false; }
         int ms = budget.remaining();
         if (cancel && (ms < 0 || ms > 50))
             ms = 50;
-        if (ms == 0) return false;
+        if (ms == 0) { if(outcome)*outcome=TransportOutcome::timeout; return false; }
         if (counts) ++counts->polls;
 #ifdef _WIN32
         fd_set set;
@@ -57,7 +56,9 @@ bool wait_fd(sock_fd fd, bool write, const Budget &budget, const std::function<b
 #endif
         if (cancel && r == 0 && budget.remaining() != 0)
             continue;
-        return r > 0 && (!cancel || !cancel());
+        if(r<=0) { if(outcome)*outcome=r==0?TransportOutcome::timeout:TransportOutcome::io_error; return false; }
+        if(cancel && cancel()) { if(outcome)*outcome=TransportOutcome::cancelled; return false; }
+        return true;
     }
 }
 
@@ -85,15 +86,20 @@ bool send_all_controlled(sock_fd fd, const void *data, size_t n, int deadline_ms
 bool send_all_diagnostic(sock_fd fd, const void *data, size_t n, int deadline_ms,
                          const std::function<bool()> &cancel, IoDiagnostic diagnostic) {
     const Budget budget(deadline_ms);
+    if (diagnostic.read) *diagnostic.read = {};
+    auto fail_write = [&](TransportOutcome outcome, size_t bytes) {
+        if (diagnostic.read) *diagnostic.read = {outcome, bytes}; return false;
+    };
 #ifdef _WIN32
-    if (!nonblocking(fd)) return false;
+    if (!nonblocking(fd)) return fail_write(TransportOutcome::io_error,0);
 #endif
     const uint8_t* p = (const uint8_t*) data;
     size_t off = 0;
     while (off < n) {
         if (diagnostic.operation_first) {
-            if ((cancel && cancel()) || budget.remaining() == 0) return false;
-        } else if (!wait_fd(fd, true, budget, cancel, diagnostic.counts)) return false;
+            if (cancel && cancel()) return fail_write(TransportOutcome::cancelled,off);
+            if (budget.remaining() == 0) return fail_write(TransportOutcome::timeout,off);
+        } else { TransportOutcome why=TransportOutcome::io_error; if(!wait_fd(fd, true, budget, cancel, diagnostic.counts,&why)) return fail_write(why,off); }
         if (diagnostic.counts) ++diagnostic.counts->sends;
 #ifdef _WIN32
         const int chunk = (int) (::send(fd, (const char*) (p + off), (int) (n - off), 0));
@@ -111,10 +117,10 @@ bool send_all_diagnostic(sock_fd fd, const void *data, size_t n, int deadline_ms
         if (interrupted) { if (diagnostic.counts) ++diagnostic.counts->interrupted; continue; }
         if (again) {
             if (diagnostic.counts) ++diagnostic.counts->would_block;
-            if (diagnostic.operation_first && !wait_fd(fd, true, budget, cancel, diagnostic.counts)) return false;
+            if (diagnostic.operation_first) { TransportOutcome why=TransportOutcome::io_error; if(!wait_fd(fd,true,budget,cancel,diagnostic.counts,&why)) return fail_write(why,off); }
             continue;
         }
-        if (failed || chunk == 0) return false;
+        if (failed || chunk == 0) return fail_write(TransportOutcome::io_error,off);
         off += (size_t) chunk;
         if (diagnostic.counts) diagnostic.counts->sent_bytes += (size_t) chunk;
     }
@@ -131,15 +137,21 @@ bool recv_all_controlled(sock_fd fd, void *data, size_t n, int deadline_ms,
 bool recv_all_diagnostic(sock_fd fd, void *data, size_t n, int deadline_ms,
                          const std::function<bool()> &cancel, IoDiagnostic diagnostic) {
     const Budget budget(deadline_ms);
+    if (diagnostic.read) *diagnostic.read = {};
+    auto fail_read = [&](TransportOutcome outcome, size_t bytes) {
+        if (diagnostic.read) *diagnostic.read = {outcome, bytes};
+        return false;
+    };
 #ifdef _WIN32
-    if (!nonblocking(fd)) return false;
+    if (!nonblocking(fd)) return fail_read(TransportOutcome::io_error,0);
 #endif
     uint8_t* p = (uint8_t*) data;
     size_t off = 0;
     while (off < n) {
         if (diagnostic.operation_first) {
-            if ((cancel && cancel()) || budget.remaining() == 0) return false;
-        } else if (!wait_fd(fd, false, budget, cancel, diagnostic.counts)) return false;
+            if (cancel && cancel()) return fail_read(TransportOutcome::cancelled, off);
+            if (budget.remaining() == 0) return fail_read(TransportOutcome::timeout, off);
+        } else { TransportOutcome why=TransportOutcome::io_error; if(!wait_fd(fd,false,budget,cancel,diagnostic.counts,&why)) return fail_read(why,off); }
         if (diagnostic.counts) ++diagnostic.counts->receives;
 #ifdef _WIN32
         const int chunk = (int) ::recv(fd, (char*) (p + off), (int) (n - off), 0);
@@ -157,10 +169,10 @@ bool recv_all_diagnostic(sock_fd fd, void *data, size_t n, int deadline_ms,
         if (interrupted) { if (diagnostic.counts) ++diagnostic.counts->interrupted; continue; }
         if (again) {
             if (diagnostic.counts) ++diagnostic.counts->would_block;
-            if (diagnostic.operation_first && !wait_fd(fd, false, budget, cancel, diagnostic.counts)) return false;
+            if (diagnostic.operation_first) { TransportOutcome why=TransportOutcome::io_error; if(!wait_fd(fd,false,budget,cancel,diagnostic.counts,&why)) return fail_read(why,off); }
             continue;
         }
-        if (failed || chunk == 0) return false;      // error, or EOF before the frame was whole
+        if (failed || chunk == 0) return fail_read(chunk == 0 ? TransportOutcome::eof : TransportOutcome::io_error, off);
         off += (size_t) chunk;
         if (diagnostic.counts) diagnostic.counts->received_bytes += (size_t) chunk;
     }
@@ -450,10 +462,13 @@ const BIO_METHOD* socket_bio() {
     return method;
 }
 bool tls_wait(SSL* ssl, int result, sock_fd fd, const sock::Budget& budget,
-              const std::function<bool()>& cancel) {
+              const std::function<bool()>& cancel, TransportOutcome* outcome) {
     const int error = SSL_get_error(ssl, result);
-    return (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) &&
-        sock::wait_fd(fd, error == SSL_ERROR_WANT_WRITE, budget, cancel);
+    if(error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE) {
+        if(outcome)*outcome=error==SSL_ERROR_ZERO_RETURN?TransportOutcome::eof:TransportOutcome::tls_error;
+        return false;
+    }
+    return sock::wait_fd(fd, error == SSL_ERROR_WANT_WRITE, budget, cancel, nullptr, outcome);
 }
 }
 #endif
@@ -475,11 +490,13 @@ void TlsSession::reset() {
     ssl_ = nullptr;
 }
 bool TlsSession::handshake(uintptr_t fd, const TlsConfig& c, bool server, int ms,
-                           const std::function<bool()>& cancel, std::string& err) {
+                           const std::function<bool()>& cancel, std::string& err, TransportOutcome* detail) {
     reset();
+    if(detail) *detail=TransportOutcome::tls_error;
 #ifdef STRATA_WORKER_TLS
     const sock::Budget budget(ms);
-    if (ms <= 0 || (cancel && cancel())) { err = "mTLS handshake deadline/cancel"; return false; }
+    if (ms <= 0) { if(detail)*detail=TransportOutcome::timeout; err = "mTLS handshake deadline/cancel"; return false; }
+    if (cancel && cancel()) { if(detail)*detail=TransportOutcome::cancelled; err = "mTLS handshake deadline/cancel"; return false; }
     SSL_CTX* ctx = tls_context(c, err);
     if (!ctx) return false;
     SSL* ssl = SSL_new(ctx); SSL_CTX_free(ctx);
@@ -495,17 +512,22 @@ bool TlsSession::handshake(uintptr_t fd, const TlsConfig& c, bool server, int ms
         SSL_free(ssl); err = "mTLS peer identity configuration failed"; return false;
     }
     for (;;) {
-        if (budget.remaining() == 0 || (cancel && cancel())) break;
+        if (budget.remaining() == 0) { if(detail)*detail=TransportOutcome::timeout; break; }
+        if (cancel && cancel()) { if(detail)*detail=TransportOutcome::cancelled; break; }
         ERR_clear_error();
         const int result = server ? SSL_accept(ssl) : SSL_connect(ssl);
         if (result == 1) {
             X509* peer = SSL_get1_peer_certificate(ssl);
             const bool verified = peer && SSL_get_verify_result(ssl) == X509_V_OK;
             X509_free(peer);
-            if (verified && budget.remaining() != 0 && (!cancel || !cancel())) { ssl_ = ssl; fd_ = fd; return true; }
+            if (verified) {
+                if(budget.remaining()==0) { if(detail)*detail=TransportOutcome::timeout; }
+                else if(cancel && cancel()) { if(detail)*detail=TransportOutcome::cancelled; }
+                else { if(detail)*detail=TransportOutcome::none; ssl_ = ssl; fd_ = fd; return true; }
+            }
             break;
         }
-        if (!tls_wait(ssl, result, (sock_fd)fd, budget, cancel)) break;
+        if (!tls_wait(ssl, result, (sock_fd)fd, budget, cancel,detail)) break;
     }
     SSL_free(ssl); err = "mTLS handshake failed: peer verification, disconnect, cancellation or deadline";
 #else
@@ -514,30 +536,63 @@ bool TlsSession::handshake(uintptr_t fd, const TlsConfig& c, bool server, int ms
 #endif
     return false;
 }
-bool TlsSession::io(void* data, size_t n, int ms, const std::function<bool()>& cancel, bool write) {
+bool TlsSession::io(void* data, size_t n, int ms, const std::function<bool()>& cancel, bool write, TransportRead* detail) {
+    if (detail) *detail = {ms<=0?TransportOutcome::timeout:TransportOutcome::tls_error,0};
 #ifdef STRATA_WORKER_TLS
     const sock::Budget budget(ms);
-    if (!ssl_ || ms <= 0) { reset(); return false; }
+    if (!ssl_ || ms <= 0) { if(detail && ms<=0)*detail={TransportOutcome::timeout,0}; reset(); return false; }
     size_t off = 0;
     while (off < n) {
-        if (budget.remaining() == 0 || (cancel && cancel())) break;
+        if (budget.remaining() == 0) { if(detail) *detail={TransportOutcome::timeout,off}; break; }
+        if (cancel && cancel()) { if(detail) *detail={TransportOutcome::cancelled,off}; break; }
         size_t done = 0;
         ERR_clear_error();
         const int result = write ? SSL_write_ex((SSL*)ssl_, (char*)data + off, n - off, &done)
                                  : SSL_read_ex((SSL*)ssl_, (char*)data + off, n - off, &done);
         if (result == 1 && done) { off += done; continue; }
-        if (!tls_wait((SSL*)ssl_, result, (sock_fd)fd_, budget, cancel)) break;
+        TransportOutcome why=TransportOutcome::tls_error;
+        if (!tls_wait((SSL*)ssl_, result, (sock_fd)fd_, budget, cancel,&why)) { if(detail)*detail={why,off}; break; }
     }
-    if (off == n && budget.remaining() != 0 && (!cancel || !cancel())) return true;
+    if (off == n) {
+        if(budget.remaining()==0) { if(detail)*detail={TransportOutcome::timeout,off}; }
+        else if(cancel && cancel()) { if(detail)*detail={TransportOutcome::cancelled,off}; }
+        else { if(detail)*detail={TransportOutcome::none,off}; return true; }
+    }
 #else
     (void)data; (void)n; (void)ms; (void)cancel; (void)write;
 #endif
     reset(); return false;
 }
-bool TlsSession::send_all(const void* p, size_t n, int ms, const std::function<bool()>& cancel) {
-    return io(const_cast<void*>(p), n, ms, cancel, true);
+bool TlsSession::send_all(const void* p, size_t n, int ms, const std::function<bool()>& cancel, TransportRead* detail) {
+    return io(const_cast<void*>(p), n, ms, cancel, true, detail);
 }
-bool TlsSession::recv_all(void* p, size_t n, int ms, const std::function<bool()>& cancel) {
-    return io(p, n, ms, cancel, false);
+bool TlsSession::recv_all(void* p, size_t n, int ms, const std::function<bool()>& cancel, TransportRead* detail) {
+    return io(p, n, ms, cancel, false, detail);
+}
+bool TlsSession::send_close_notify(int ms, const std::function<bool()>& cancel, std::string& err) {
+#ifdef STRATA_WORKER_TLS
+    if(!ssl_ || ms<=0) {err="TLS close requires an active session and positive deadline";return false;}
+    const sock::Budget budget(ms);
+    for(;;) {
+        if(budget.remaining()==0) {err="TLS close deadline";return false;}
+        if(cancel && cancel()) {err="TLS close cancelled";return false;}
+        ERR_clear_error();const int result=SSL_shutdown((SSL*)ssl_);
+        // SSL_shutdown returning zero means the notification was sent; do not
+        // call it again to wait for a peer notification.
+        if(result>=0 && (SSL_get_shutdown((SSL*)ssl_)&SSL_SENT_SHUTDOWN)) {
+            if(budget.remaining()==0) {err="TLS close deadline";return false;}
+            if(cancel && cancel()) {err="TLS close cancelled";return false;}
+            return true;
+        }
+        TransportOutcome why=TransportOutcome::tls_error;
+        const int ssl_error=SSL_get_error((SSL*)ssl_,result);
+        // Only wait for a blocked alert write. Never wait for peer shutdown.
+        if(ssl_error!=SSL_ERROR_WANT_WRITE || !sock::wait_fd((sock_fd)fd_,true,budget,cancel,nullptr,&why)) {
+            err=why==TransportOutcome::cancelled?"TLS close cancelled":why==TransportOutcome::timeout?"TLS close deadline":"TLS close transport error";return false;
+        }
+    }
+#else
+    (void)ms;(void)cancel;err="TLS is unavailable";return false;
+#endif
 }
 } // namespace strata::worker
