@@ -41,6 +41,36 @@ struct RemoteService {
     }
     ~RemoteService(){service.stop();if(thread.joinable())thread.join();}
 };
+// Exercise the real FFN graph around the real worker adapter. The independent
+// callback returns the same unweighted rows directly in original slot order.
+void check_ffn_dispatch(RemoteExperts& provider) {
+    using namespace strata::core;
+    PortableFfnGeometry geometry{2560,4,1,32,12,10,1e-6f};
+    const char* names[]={"hc_ffn_norm.weight","hc_ffn_down.weight","hc_ffn_up.weight","hc_ffn_inject.weight",
+        "ffn_gate_inp.weight","ffn_gate_inp_shexp.weight","ffn_gate_shexp.weight","ffn_up_shexp.weight","ffn_down_shexp.weight"};
+    const std::vector<std::vector<int64_t>> shapes={{10240},{10240,1},{1,10240},{10240,4},{2560,12},{2560},{2560,32},{2560,32},{32,2560}};
+    std::vector<std::vector<float>> data(9);std::vector<PortableTensorView> views;
+    for(size_t i=0;i<9;++i){size_t n=1;for(auto v:shapes[i])n*=size_t(v);data[i].assign(n,0);}
+    std::fill(data[0].begin(),data[0].end(),1.f);
+    for(size_t e=0;e<12;++e)data[4][e*2560]=float(11-e)*0.125f;
+    data[6][0]=data[7][0]=1.f;for(size_t h=0;h<2560;++h)data[8][h*32]=1.f;
+    for(size_t i=0;i<9;++i)views.push_back({std::string("blk.0.")+names[i],shapes[i],0,data[i].data(),data[i].size()*sizeof(float)});
+    std::string error; PortableFfnOptions options;
+    auto actual=PortableFfn::create(geometry,0,views,options,error);require(bool(actual),error);
+    auto expected=PortableFfn::create(geometry,0,views,options,error);require(bool(expected),error);
+    std::vector<float> initial(10240,0.5f);
+    for(int attempt=0;attempt<2;++attempt) {
+        require(actual->reset(initial,error)&&expected->reset(initial,error),error);
+        PortableRoute observed,reference;
+        require(actual->step([&](int64_t l,const PortableRoute& r,std::vector<float>& rows,std::string& e){return provider.run(l,r,rows,e);},observed,error),error);
+        require(expected->step([](int64_t,const PortableRoute& r,std::vector<float>& rows,std::string&){
+            rows.clear();for(auto id:r.ids)rows.insert(rows.end(),2560,float(id<2?id+10:id+100));return true;
+        },reference,error),error);
+        check(observed.ids==reference.ids && observed.ids[0]==0 && observed.ids[1]==1 && observed.weights==reference.weights &&
+              observed.weights[0]!=observed.weights[1],"actual FFN routes retain nontrivial weights and slots");
+        check(actual->residual()==expected->residual(),"actual FFN combines unweighted remote rows exactly once");
+    }
+}
 void run(){
     Fixture f(12);std::string error;GpuPlan plan;require(make_gpu_plan(f.m,{{0,0},{0,1}},plan,error),error);
     GpuWorkerOptions opts;opts.plan=plan;opts.vulkan=opts.native_q8=true;opts.runtime_reserve=0;
@@ -96,11 +126,31 @@ void run(){
     fail_guard=-1;route.ids={2,0,1,3,4,5,6,7,8,9};route.weights.assign(10,0.1f);complement_fail=true;rows.assign(1,9);
     check(!dispatch(0,route,rows,error)&&rows.empty()&&!error.empty(),"complement failure does not publish partial rows");
     complement_fail=false;
+    check_ffn_dispatch(provider);
     require(provider.close_orderly(error),error);
     check(!provider.usable(),"explicitly closed provider is unusable");
     RemoteExperts next;require(next.open(open,plan,{},10,complement,guard,error),error);
     require(next.close_orderly(error),error);
     check(true,"orderly close leaves shared worker available");
+    {
+        std::vector<std::pair<uint16_t,uint16_t>> owned;
+        for(uint16_t i=0;i<10;++i)owned.emplace_back(0,i);
+        GpuPlan all_plan;require(make_gpu_plan(f.m,owned,all_plan,error),error);
+        auto all_options=opts;all_options.plan=all_plan;all_options.cache_root=(f.root/"all-remote").string();
+        fs::create_directory(all_options.cache_root);std::atomic<int> all_prepares{0};
+        RemoteService all_server(all_options,std::make_unique<Fake>(all_prepares));
+        auto all_open=open;all_open.port=all_server.port;all_open.plan=all_plan;
+        RemoteExperts all;require(all.open(all_open,all_plan,{},10,complement,guard,error),error);
+        route.ids={9,0,8,1,7,2,6,3,5,4};route.weights.assign(10,0.1f);
+        const int before=complement_calls;
+        for(int i=0;i<2;++i) {
+            require(all.run(0,route,rows,error),error);
+            for(size_t k=0;k<10;++k)check(rows[k*plan.n_embd]==float(route.ids[k]+10),"all-remote original slot row");
+        }
+        check(complement_calls==before && all.stats().requests==2 && all.stats().entries==20,
+              "repeated all-remote requests never execute CPU complement");
+        require(all.close_orderly(error),error);
+    }
     for(int mode=1;mode<=6;++mode){
         auto options=opts;options.cache_root=(f.root/("remote-fault-"+std::to_string(mode))).string();fs::create_directory(options.cache_root);
         std::atomic<int> observed{0};RemoteService faulty(options,std::make_unique<Fake>(observed,mode));
