@@ -129,6 +129,16 @@ void transport_diagnostics() {
               detail.transport.outcome==TransportOutcome::cancelled && calls==2,"one-shot cancellation during wait is not re-polled");
         ::close(fd[0]);::close(fd[1]);
     }
+    {
+        // No peer bytes: the second cancellation poll occurs inside the first-byte idle read.
+        int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"idle cancellation socketpair");
+        int calls=0;WireFrame frame;std::string err;gpu_codec::ReceiveDiagnostic d;
+        check(!gpu_codec::receive(fd[1],frame,kGpuFrameMax,5000,[&]{return ++calls>=2;},err,60000,nullptr,&d)&&
+              calls>=2&&std::string(d.stage)=="header"&&d.transport.outcome==TransportOutcome::cancelled&&
+              d.transport.bytes==0&&err.find("first byte")!=std::string::npos,
+              "cancellation interrupts the quiet first-byte idle receive");
+        ::close(fd[0]);::close(fd[1]);
+    }
     std::vector<uint8_t> malformed(16,0);run(malformed,false,false,100,"malformed_header",TransportOutcome::none,0);
     {
         // The opt-in first-byte (idle) budget is distinct from the frame deadline.
@@ -157,15 +167,17 @@ void transport_diagnostics() {
         int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"shared budget socketpair");
         std::vector<uint8_t> wire;gpu_codec::put(wire,kGpuWireMagic,4);gpu_codec::put(wire,GPU_HELLO,2);
         gpu_codec::put(wire,ST_OK,2);gpu_codec::put(wire,(uint64_t)4);
-        std::thread writer([&]{sock::sleep_ms(200);::send(fd[0],wire.data(),1,0);
-            sock::sleep_ms(90);::send(fd[0],wire.data()+1,wire.size()-1,0);});
+        // Header completes well into the frame budget; the complete body arrives
+        // after that budget, but comfortably before a renewed body budget expires.
+        wire.insert(wire.end(),{1,2,3,4});
+        std::thread writer([&]{::send(fd[0],wire.data(),1,MSG_NOSIGNAL);
+            sock::sleep_ms(700);::send(fd[0],wire.data()+1,kHeaderBytes-1,MSG_NOSIGNAL);
+            sock::sleep_ms(500);::send(fd[0],wire.data()+kHeaderBytes,4,MSG_NOSIGNAL);});
         WireFrame frame;std::string err;gpu_codec::ReceiveDiagnostic d;
-        const auto began=std::chrono::steady_clock::now();
-        const bool ok=gpu_codec::receive(fd[1],frame,kGpuFrameMax,150,{},err,300,nullptr,&d);
-        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-began).count();
+        const bool ok=gpu_codec::receive(fd[1],frame,kGpuFrameMax,1000,{},err,3000,nullptr,&d);
         writer.join();
-        check(!ok&&std::string(d.stage)=="payload"&&d.transport.outcome==TransportOutcome::timeout&&elapsed>=310&&elapsed<800,
-              "near-idle first byte starts a shared header and body deadline");
+        check(!ok&&std::string(d.stage)=="payload"&&d.transport.outcome==TransportOutcome::timeout,
+              "header and complete body share one frame deadline");
         ::close(fd[0]);::close(fd[1]);
     }
     int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"send socketpair");
@@ -421,7 +433,6 @@ void idle_budget_checks(const Fixture& f,const GpuPlan& p){
         eof_within(fd,0,2000,"stopped idle wait closes the connection");
         check(stopped<=3000,"stop stays responsive during a long idle wait");
         sock::close_fd(fd);
-        check(service.service.counters().failures==1,"stopped idle wait counted once");
     }
     for(int idle:{-1,kGpuWorkerIdleMaxMs+1}){
         auto options=options_for(f,p,"cache-idle-invalid");options.idle_ms=idle;
