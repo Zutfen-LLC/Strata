@@ -117,6 +117,12 @@ public:
             return true;
         } catch(const std::exception& e) { err=e.what(); release(c); return false; }
     }
+    bool stage_timing(NativeQ8StageTiming* timing) {
+#ifdef STRATA_VULKAN_NATIVE_Q8_PROVIDER
+        if(native_) { native_->stage_timing(timing);return true; }
+#endif
+        (void)timing;return false;
+    }
     bool supports_rows() const override { return true; }
     bool native_q8() const override {
 #ifdef STRATA_VULKAN_NATIVE_Q8_PROVIDER
@@ -208,6 +214,10 @@ std::unique_ptr<GpuExecutor> create_vulkan_executor_on_backend(ggml_backend_t ba
 std::unique_ptr<GpuExecutor> create_vulkan_native_q8_observation(ggml_backend_t backend,uint64_t budget,const std::string& receipt,const std::string& capture,bool capture_first_only) {
     if(receipt.empty())throw std::runtime_error("native Q8 observation requires a shader receipt prefix");
     return std::make_unique<VulkanExecutor>(backend,budget,receipt,capture,capture_first_only);
+}
+bool vulkan_native_q8_stage_timing(GpuExecutor* executor,NativeQ8StageTiming* timing) {
+    auto* native=dynamic_cast<VulkanExecutor*>(executor);
+    return native && native->stage_timing(timing);
 }
 bool vulkan_native_q8_allocation_snapshot(const GpuExecutor* executor,GpuCounters& counters) {
     const auto* native=dynamic_cast<const VulkanExecutor*>(executor);

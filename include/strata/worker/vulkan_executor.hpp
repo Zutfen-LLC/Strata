@@ -1,6 +1,7 @@
 #pragma once
 #include "strata/worker/gpu_worker.hpp"
 #include "ggml-backend.h"
+#include <array>
 
 namespace strata::worker {
 // Explicit in-process experiment only; not wired into any worker/listener/default.
@@ -21,6 +22,10 @@ std::unique_ptr<GpuExecutor> create_vulkan_executor_on_backend(ggml_backend_t ba
 // Plan/budget-bound resident slots; 80 active groups/entries, T1..8, K1..10.
 std::unique_ptr<GpuExecutor> create_vulkan_native_q8_observation(ggml_backend_t,uint64_t tensor_budget,
     const std::string& receipt_prefix,const std::string& capture_prefix = {},bool capture_first_only = false);
+// Optional per-call host durations; stages include synchronization, not GPU-only time.
+struct NativeQ8StageTiming { std::array<double,7> milliseconds{}; };
+// Caller owns the destination and must keep it alive through inference; nullptr disables clocks.
+bool vulkan_native_q8_stage_timing(GpuExecutor*,NativeQ8StageTiming*);
 struct NativeQ8AllocationEstimate {size_t weight_bytes=0,scratch_bytes=0,total_bytes=0,blocks=0,block_limit=0;};
 // Readonly exact cache projection: metadata only; refuses unavailable BDA/int64.
 bool estimate_vulkan_native_q8(ggml_backend_t,size_t slots,NativeQ8AllocationEstimate&,std::string&);
