@@ -3,8 +3,10 @@
 #include "native_qsa_norm_rope_layout.hpp"
 namespace native_qsa_nr {
 using namespace native_hc_fixture;
+// The host oracle also validates indexer-internal pooled positions; this does
+// not widen the separate model norm/RoPE execution admission.
 struct Fixture{uint32_t cols=256,rows=4,stride=256,theta=strata::core::portable_detail::native_qsa_theta_scale();std::vector<float>x,gamma;std::vector<int32_t>pos;};
-inline void validate(const Fixture&f){strata::core::portable_detail::native_qsa_norm_rope_geometry(f.cols,f.rows,f.stride,f.theta);native_hc_need(f.x.size()==f.rows*f.stride&&f.gamma.size()==f.cols&&f.pos.size()==f.rows,"QSA norm/RoPE fixture spans");for(size_t r=0;r<f.rows;++r){native_hc_need(f.pos[r]>=0&&f.pos[r]<=255,"QSA position domain");for(size_t c=0;c<f.cols;++c)native_hc_normal(f.x[r*f.stride+c]);}for(float v:f.gamma)native_hc_normal(v);}
+inline void validate(const Fixture&f){strata::core::portable_detail::native_qsa_norm_rope_geometry(f.cols,f.rows,f.stride,f.theta);native_hc_need(f.x.size()==f.rows*f.stride&&f.gamma.size()==f.cols&&f.pos.size()==f.rows,"QSA norm/RoPE fixture spans");for(size_t r=0;r<f.rows;++r){native_hc_need(f.pos[r]>=0&&f.pos[r]<=4095,"QSA position domain");for(size_t c=0;c<f.cols;++c)native_hc_normal(f.x[r*f.stride+c]);}for(float v:f.gamma)native_hc_normal(v);}
 inline Fixture synthetic(unsigned mode,unsigned width=256,bool strided=false){native_hc_need(mode<4,"QSA fixture mode");Fixture f;f.cols=width;f.stride=strided?2*width:width;f.x.assign(f.rows*f.stride,value(0x4acaf00d));f.gamma.resize(width);f.pos={0,1,127,255};for(size_t c=0;c<width;++c)f.gamma[c]=mode?float(int(c%9)-4)/4.f:1.f;
  for(size_t r=0;r<f.rows;++r)for(size_t c=0;c<width;++c){float x=0;if(mode==1&&(c==0||c==32||c==63||c==width-1))x=float(int(c%7)-3)/2.f;if(mode==2)x=float(int((r*17+c*23)%41)-20)/16.f;if(mode==3)x=(c%4<2?1.f:-1.f)*std::ldexp(float(c%7+1),int(r)*8-12);f.x[r*f.stride+c]=x;}validate(f);return f;}
 inline void write(const std::string&p,const Fixture&f){validate(f);native_hc_need(!std::filesystem::exists(p),"QSA fresh fixture");std::ofstream o(p,std::ios::binary);for(uint32_t v:{0x3152514eu,1u,f.cols,f.rows,f.stride,f.theta})word(o,v);for(auto*v:{&f.x,&f.gamma})for(float x:*v)word(o,bits(x));for(int32_t v:f.pos)word(o,uint32_t(v));native_hc_need(bool(o),"QSA fixture write");}

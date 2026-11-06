@@ -11,7 +11,7 @@ import native_gdn_t1_numeric as G
 def load(fixture):
  raw=Path(fixture).read_bytes();N.need(len(raw)>=24,'QSA fixture header');magic,version,cols,rows,stride,theta=struct.unpack_from('<6I',raw)
  N.need(magic==0x3152514e and version==1 and cols in (128,256) and 1<=rows<=24 and stride in (cols,2*cols),'QSA fixed geometry')
- N.need(len(raw)==24+(rows*stride+cols+rows)*4,'QSA exact fixture span');at=24;x=list(struct.unpack_from('<'+str(rows*stride)+'I',raw,at));at+=rows*stride*4;gamma=list(struct.unpack_from('<'+str(cols)+'I',raw,at));at+=cols*4;positions=struct.unpack_from('<'+str(rows)+'i',raw,at);N.need(all(0<=p<=255 for p in positions),'QSA text context domain')
+ N.need(len(raw)==24+(rows*stride+cols+rows)*4,'QSA exact fixture span');at=24;x=list(struct.unpack_from('<'+str(rows*stride)+'I',raw,at));at+=rows*stride*4;gamma=list(struct.unpack_from('<'+str(cols)+'I',raw,at));at+=cols*4;positions=struct.unpack_from('<'+str(rows)+'i',raw,at);N.need(all(0<=p<=4095 for p in positions),'QSA text context domain')
  for r in range(rows):
   for v in x[r*stride:r*stride+cols]:N.normal(v)
  for v in gamma:N.normal(v)
