@@ -1550,8 +1550,8 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
         s.placement.swap(placement); s.chunk_work = work;
         residual_rows.swap(completed); routes.swap(candidate);
         return true;
-    } catch(const std::exception& e) { s.state_healthy=false; error=e.what(); return false; }
-      catch(...) { s.state_healthy=false; error="portable GDN: unknown chunk failure; reset required"; return false; }
+    } catch(const std::exception& e) { s.state_healthy=false; s.snapshot_available=false; s.snapshot_owner->alive=false; error=e.what(); return false; }
+      catch(...) { s.state_healthy=false; s.snapshot_available=false; s.snapshot_owner->alive=false; error="portable GDN: unknown chunk failure; reset required"; return false; }
 }
 uint64_t PortableGdnLayer::causal_chunk_calls() const { return impl_->causal_calls; }
 uint64_t PortableGdnLayer::causal_residual_handoffs() const { return impl_->residual_handoffs; }

@@ -62,13 +62,25 @@ int main(){try {
  auto gexperts=[](int64_t, const PortableRoute& r, std::vector<float>& rows, std::string& e){return experts()(0,r,rows,e);};
  check(gp->step(gf.input(0),gexperts,route,error),error); auto g0=gp->pending_snapshot(error);
  check(gp->step(gf.input(1),gexperts,route,error),error); auto g1=gp->pending_snapshot(error); check(bool(g0)&&bool(g1),error);
- int calls=0; Owner::Dispatch gd;
+ int calls=0, gnorm=0, gmix=0; Owner::Dispatch gd;
  gd.pending=[&](const Owner::Bank& bank){++calls; std::vector<float> x(20480); ggml_backend_tensor_get(bank.input,x.data(),0,x.size()*4); check(std::equal(g0->tuple().residual.begin(),g0->tuple().residual.end(),x.begin()) && std::equal(g1->tuple().residual.begin(),g1->tuple().residual.end(),x.begin()+10240),"GDN staged rows");};
- gd.norm=[&](const Owner::Bank&,uint32_t n){check(n==2,"GDN rows");}; gd.mix=[](const Owner::Bank&){};
+ gd.norm=[&](const Owner::Bank&,uint32_t n){++gnorm; check(n==2,"GDN rows");}; gd.mix=[&](const Owner::Bank&){++gmix;};
  Owner gowner(cpu.get(),nw,iw,down,up,20*1024*1024,nullptr,gd); int gc=0; auto consume_g=[&](const Owner::View&,uint32_t n){check(n==2,"GDN consumer"); ++gc;};
  weights.reset(); ctx.reset();
  std::vector<unsigned char> copied(payload.size()); ggml_backend_tensor_get(gowner.role_bank()->role(2),copied.data(),0,copied.size()); check(copied==payload,"role snapshot after source destruction");
- gowner.run(2,0,*gp,{g0,g1},consume_g,consume_g); check(calls==1&&gc==2&&gowner.rows()==2,"GDN composed run");
+ std::shared_ptr<Owner::View> good_g;
+ auto capture_g=[&](const Owner::View& v,uint32_t n){consume_g(v,n); good_g=std::make_shared<Owner::View>(v);};
+ gowner.run(2,0,*gp,{g0,g1},capture_g,consume_g); check(calls==1&&gnorm==1&&gmix==1&&gc==2&&gowner.rows()==2,"GDN composed run");
+ const auto good_values=good_g->read(Owner::View::Field::mixed);
+ check(g1->valid_for(*gp,2,1),"committed GDN snapshot invalid");
+ auto chunk_rows=gf.input(2); const auto original_rows=chunk_rows; std::vector<PortableRoute> chunk_routes; bool chunk_dispatch=false;
+ check(!gp->run_chunk({2},gp->tokens(),chunk_rows,[&](int64_t,const auto&,auto&,auto&){chunk_dispatch=true; return false;},chunk_routes,error)
+       && gp->poisoned() && !chunk_dispatch && chunk_rows==original_rows && chunk_routes.empty()
+       && error=="native HC serial: chunk API unsupported","deferred GDN chunk rejection");
+ check(!g1->valid_for(*gp,2,1) && !gp->pending_snapshot(error),"poisoned GDN snapshot remained valid");
+ rejected=false; try {gowner.run(2,1,*gp,{g1},consume_g,consume_g);} catch(...) {rejected=true;}
+ check(rejected && calls==1 && gnorm==1 && gmix==1 && gc==2 && gowner.rows()==2 &&
+       good_g->rows()==2 && good_g->read(Owner::View::Field::mixed)==good_values,"poisoned GDN dispatched or changed publication");
  check(gp->reset(error),error); rejected=false; try {gowner.run(2,0,*gp,{g0,g1},consume_g,consume_g);} catch(...) {rejected=true;} check(rejected&&calls==1&&gowner.rows()==2,"GDN stale generation");
  puts("composed HC CPU control path passed");return 0;
  }catch(const std::exception& e){fprintf(stderr,"%s\n",e.what());return 1;}}
