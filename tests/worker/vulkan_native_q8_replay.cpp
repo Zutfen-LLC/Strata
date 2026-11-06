@@ -129,7 +129,7 @@ int worker_replay(int argc,char** argv) {
             strata::core::PortableRoute route;route.activation=q.activations;route.ids.assign(q.ids.begin(),q.ids.end());route.weights=q.weights;
             require(adapter.run(q.layer,route,remote.rows,err),err);require(adapter.status(after,err),err);
             for(uint16_t i=0;i<10;++i)remote.indices.push_back(i);
-            require(adapter.cpu_entries()==0 && adapter.stats().requests==1 && adapter.stats().entries==10 && adapter.stats().failures==0,"provider accounting mismatch");
+            require(adapter.complement_entries()==0 && adapter.stats().requests==1 && adapter.stats().entries==10 && adapter.stats().failures==0,"provider accounting mismatch");
         } else
 #endif
         {

@@ -1933,7 +1933,7 @@ if(STRATA_NATIVE_EXPERTS)
         if(NOT WIN32)
           find_package(Python3 COMPONENTS Interpreter REQUIRED)
           add_test(NAME portable_remote_cli_test COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_portable_remote_cli.py $<TARGET_FILE:portable_model> $<BOOL:${STRATA_WORKER_TLS}>)
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/validation-harness/test_portable_remote_cli.py $<TARGET_FILE:portable_model> $<BOOL:${STRATA_WORKER_TLS}> $<BOOL:${STRATA_VULKAN_NATIVE_Q8_STRICT_FMA}>)
           set_tests_properties(portable_remote_cli_test PROPERTIES TIMEOUT 30)
           add_executable(portable_expert_cache_test tests/core/portable_expert_cache_test.cpp)
           target_link_libraries(portable_expert_cache_test PRIVATE strata_local_experts strata_kernels_cpu)
