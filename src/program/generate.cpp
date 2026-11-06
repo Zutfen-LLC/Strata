@@ -1,4 +1,5 @@
 #include "strata/core/first_request_trace.hpp"
+#include "strata/core/remote_route_counts.hpp"
 #include "strata/core/logit_bias.hpp"
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
@@ -1168,6 +1169,7 @@ struct Drive {
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
     /// blob), which is why the layer index comes from there rather than from a counter of our own.
     std::FILE* routing = nullptr;
+    strata::core::RemoteRouteCounts route_counts;
 };
 
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
@@ -1175,6 +1177,7 @@ void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* w
     Drive* t = (Drive*) user;
     const Clock::time_point a = Clock::now();
     strata::core::expert_pool_dispatch(&t->d, x_f, ids, weights, n_embd, k, out);
+    if (!t->d.failed) t->route_counts.record(t->d.layers - 1, ids, 1, k);
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
     // THE ROUTING TRACE.  Written AFTER the dispatch so the layer index is still this layer's: `d.layers` is
@@ -1206,6 +1209,7 @@ void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t 
     t->d.layers = layer;
     const Clock::time_point a = Clock::now();
     strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
+    if (!t->d.failed) t->route_counts.record(layer, ids, n_tok, k);
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
     // the routing trace for the serve path: the same record format drive_pool writes (layer, k, ids, weights),
@@ -12742,6 +12746,7 @@ int main(int argc, char** argv) {
                 wait_before[(size_t) r] = remote_experts[(size_t) r].ms_wait();
             }
             cur = ids;
+            drive.route_counts.begin(g.n_layers, g.n_expert);
             if (!strata::core::first_request_trace().begin(ids.data(), ids.size())) {
                 std::printf("ERR first-request trace: create failed or prompt exceeds 64 tokens\n"); return 1;
             }
@@ -15675,6 +15680,7 @@ int main(int argc, char** argv) {
                               cpu_stats().request_ms - worker_req_ms0);
             }
 #endif
+            drive.route_counts.finish(produced_n, finish);
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
                         "experts_streamed=%lld%s\n",
