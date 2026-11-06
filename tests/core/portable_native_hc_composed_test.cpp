@@ -64,7 +64,8 @@ int main(){try {
  check(gp->step(gf.input(1),gexperts,route,error),error); auto g1=gp->pending_snapshot(error); check(bool(g0)&&bool(g1),error);
  int calls=0, gnorm=0, gmix=0; Owner::Dispatch gd;
  gd.pending=[&](const Owner::Bank& bank){++calls; std::vector<float> x(20480); ggml_backend_tensor_get(bank.input,x.data(),0,x.size()*4); check(std::equal(g0->tuple().residual.begin(),g0->tuple().residual.end(),x.begin()) && std::equal(g1->tuple().residual.begin(),g1->tuple().residual.end(),x.begin()+10240),"GDN staged rows");};
- gd.norm=[&](const Owner::Bank&,uint32_t n){++gnorm; check(n==2,"GDN rows");}; gd.mix=[&](const Owner::Bank&){++gmix;};
+ gd.norm=[&](const Owner::Bank&,uint32_t n){++gnorm; check(n==2,"GDN rows");};
+ gd.mix=[&](const Owner::Bank& bank){++gmix; std::vector<float> mixed(5120,1.25f); std::fill(mixed.begin()+2560,mixed.end(),-2.5f); ggml_backend_tensor_set(bank.mixed,mixed.data(),0,mixed.size()*sizeof(float));};
  Owner gowner(cpu.get(),nw,iw,down,up,20*1024*1024,nullptr,gd); int gc=0; auto consume_g=[&](const Owner::View&,uint32_t n){check(n==2,"GDN consumer"); ++gc;};
  weights.reset(); ctx.reset();
  std::vector<unsigned char> copied(payload.size()); ggml_backend_tensor_get(gowner.role_bank()->role(2),copied.data(),0,copied.size()); check(copied==payload,"role snapshot after source destruction");
@@ -72,6 +73,8 @@ int main(){try {
  auto capture_g=[&](const Owner::View& v,uint32_t n){consume_g(v,n); good_g=std::make_shared<Owner::View>(v);};
  gowner.run(2,0,*gp,{g0,g1},capture_g,consume_g); check(calls==1&&gnorm==1&&gmix==1&&gc==2&&gowner.rows()==2,"GDN composed run");
  const auto good_values=good_g->read(Owner::View::Field::mixed);
+ std::vector<float> expected_values(5120,1.25f); std::fill(expected_values.begin()+2560,expected_values.end(),-2.5f);
+ check(good_values==expected_values,"GDN mixed canaries");
  check(g1->valid_for(*gp,2,1),"committed GDN snapshot invalid");
  auto chunk_rows=gf.input(2); const auto original_rows=chunk_rows; std::vector<PortableRoute> chunk_routes; bool chunk_dispatch=false;
  check(!gp->run_chunk({2},gp->tokens(),chunk_rows,[&](int64_t,const auto&,auto&,auto&){chunk_dispatch=true; return false;},chunk_routes,error)
