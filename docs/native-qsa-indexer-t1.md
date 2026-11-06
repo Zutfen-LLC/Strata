@@ -69,8 +69,8 @@ Initial layer3 positions0..7 retain exact current raw/gamma/before operands,
 candidate and diagnostic values. Accepted-state bytes link each candidate to
 FFN-success publication. Within-arm reset hashes cover full native state, including
 the persistent spare and inactive capacity; they are not cross-arm parity claims.
-Only eager serial text/context<=256 is supported; production/chunks/table modes
-refuse. Local coordinator tests use actual graph producers/consumers and host
+Only eager serial text/context<=4096 is supported; production/chunks/table modes
+refuse. The extended range has host coverage and is not hardware-qualified. Local coordinator tests use actual graph producers/consumers and host
 component mocks; physical component and model validation remain separate.
 
 Hermes reports the component at `ba070a1072f4d9adc4172f2d0480a14bff75fc88` passes the

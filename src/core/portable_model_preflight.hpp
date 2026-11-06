@@ -33,6 +33,7 @@ inline bool model_deferred_producer(const PortableModelOptions&o,size_t l) {
 inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer) {
     if(opts.native_hc_serial && layer>=1) {
         size_t b=opts.native_ple_value_t1 && layer==1 ? PortableGdnOptions::native_ple_value_host_bound : 0;
+        if(layer%4==3 && opts.context>256)b+=PortableQsaOptions::eager_state_growth(opts.context);
         if(layer>=2) b+=(layer%4==3 ? PortableQsaOptions::native_hc_host_bound : PortableGdnOptions::native_hc_pending_host_bound)+PortableFfnOptions::native_hc_pending_host_bound;
         if(layer==1 && opts.native_ple_hc_read_t1)b+=PortableFfnOptions::native_hc_pending_host_bound;
         b+=layer==47 ? PortableFfnOptions::native_hc_write_host_bound : PortableFfnOptions::deferred_hc_host_bound;
@@ -46,22 +47,23 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
         if(opts.native_ple_hc_read_t1&&layer==1)b+=PortableGdnOptions::native_hc_read_host_bound;
         if(opts.native_ple_norm_t1&&layer==1)b+=PortableGdnOptions::native_ple_norm_host_bound;
         if(opts.qsa_norm_rope_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_norm_rope_host_bound;
-        if(opts.qsa_indexer_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_indexer_host_bound;
-        if(opts.qsa_attention_banks&&layer%4==3)b+=PortableQsaOptions::native_attention_host_bound;
+        if(opts.qsa_indexer_resident_weights&&layer%4==3)b+=PortableQsaOptions::native_indexer_host_for(opts.context);
+        if(opts.qsa_attention_banks&&layer%4==3)b+=PortableQsaOptions::native_attention_host_for(opts.context);
         if(opts.native_qsa_wo_t1&&layer%4==3)b+=PortableQsaOptions::native_wo_host_bound;
         if(opts.native_qsa_qkv_t1&&layer%4==3)b+=PortableQsaOptions::native_qkv_host_bound;
         if(opts.native_qsa_indexer_projection_t1&&layer%4==3)b+=PortableQsaOptions::native_indexer_projection_host_bound;
-        if(opts.qsa_score_select_banks&&layer%4==3)b+=PortableQsaOptions::native_select_host_bound;
+        if(opts.qsa_score_select_banks&&layer%4==3)b+=PortableQsaOptions::native_select_host_for(opts.context);
         return b;
     }
     size_t bound=opts.native_ple_value_t1 && layer==1 ? PortableGdnOptions::native_ple_value_host_bound : 0;
+    if(layer%4==3 && opts.context>256)bound+=PortableQsaOptions::eager_state_growth(opts.context);
     bound+=opts.qsa_norm_rope_resident_weights&&layer%4==3?PortableQsaOptions::native_norm_rope_host_bound:0;
-    if(opts.qsa_indexer_resident_weights&&layer%4==3)bound+=PortableQsaOptions::native_indexer_host_bound;
-    if(opts.qsa_attention_banks&&layer%4==3)bound+=PortableQsaOptions::native_attention_host_bound;
+    if(opts.qsa_indexer_resident_weights&&layer%4==3)bound+=PortableQsaOptions::native_indexer_host_for(opts.context);
+    if(opts.qsa_attention_banks&&layer%4==3)bound+=PortableQsaOptions::native_attention_host_for(opts.context);
     if(opts.native_qsa_wo_t1&&layer%4==3)bound+=PortableQsaOptions::native_wo_host_bound;
     if(opts.native_qsa_qkv_t1&&layer%4==3)bound+=PortableQsaOptions::native_qkv_host_bound;
     if(opts.native_qsa_indexer_projection_t1&&layer%4==3)bound+=PortableQsaOptions::native_indexer_projection_host_bound;
-    if(opts.qsa_score_select_banks&&layer%4==3)bound+=PortableQsaOptions::native_select_host_bound;
+    if(opts.qsa_score_select_banks&&layer%4==3)bound+=PortableQsaOptions::native_select_host_for(opts.context);
     if(opts.native_hc_pending_layer1_2 && layer==1)bound+=PortableFfnOptions::deferred_hc_host_bound;
     if(opts.native_hc_pending_layer1_2 && layer==2)bound+=PortableGdnOptions::native_hc_pending_host_bound;
     if(opts.native_hc_pending_layer2_3 && layer==2)bound+=PortableFfnOptions::deferred_hc_host_bound;
@@ -151,6 +153,14 @@ inline void model_qsa_hc_options(const PortableModelOptions& opts,size_t layer,P
     o.native_norm_rope_t1=opts.native_qsa_norm_rope_t1;
     o.native_norm_rope_record_first=layer==3;
     if(o.native_norm_rope_weights)o.native_norm_rope_receipt_prefix=opts.qsa_norm_rope_receipt_prefix+".layer-"+std::to_string(layer);
+    if (o.capacity > 256) {
+        // Preserve the old budget's headroom while pricing larger eager state
+        // and native staging. The outer model host cap still admits this sum.
+        o.state_budget += PortableQsaOptions::eager_state_growth(o.capacity);
+        if(o.native_indexer_weights)o.state_budget += PortableQsaOptions::native_indexer_host_for(o.capacity)-PortableQsaOptions::native_indexer_host_bound;
+        if(o.native_select_banks)o.state_budget += PortableQsaOptions::native_select_host_for(o.capacity)-PortableQsaOptions::native_select_host_bound;
+        if(o.native_attention_banks)o.state_budget += PortableQsaOptions::native_attention_host_for(o.capacity)-PortableQsaOptions::native_attention_host_bound;
+    }
     o.native_hc_read=o.native_hc_pending=opts.native_hc_pending_layer2_3 && layer==3;
     if(o.native_hc_read)o.native_hc_receipt_prefix=opts.native_hc_qsa_receipt_prefix;
     o.resident_ffn_weights=model_ffn_resident(opts,layer);
@@ -228,8 +238,11 @@ inline void validate_model_modes(const PortableModelOptions& opts,size_t selecte
         require(!opts.gdn_causal_chunk || (opts.prompt_chunk_size && opts.gdn_batch_input_projections && opts.gdn_production),
                 "portable model: causal GDN chunks require prompt chunks, batched projections and production");
 
-    require(opts.context>=1 && opts.context<=256 && opts.threads>=1 && opts.threads<=256,
-            "portable model: context [1,256]/thread limits");
+    require(opts.context>=1 && opts.context<=4096 && opts.threads>=1 && opts.threads<=256,
+            "portable model: context [1,4096]/thread limits");
+    require(opts.context<=256 || (!opts.prompt_chunk_size && !opts.gdn_production && !opts.qsa_production &&
+            opts.native_qsa_attention_t1 && opts.native_qsa_score_select_t1 && opts.native_qsa_indexer_t1 && opts.native_qsa_norm_rope_t1),
+            "portable model: context above 256 requires serial eager native QSA");
     require(opts.expert_workers>=1 && opts.expert_workers<=256,"portable model: expert workers must be in [1,256]");
     require(!opts.qsa_production || (opts.qsa_reuse_attention && selected_accelerators && !opts.allow_cpu_fallback),
             "portable model: QSA production requires reuse and strict accelerators");

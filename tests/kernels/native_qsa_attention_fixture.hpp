@@ -9,6 +9,15 @@ using namespace native_hc_fixture;
 using namespace strata::core::portable_detail;
 constexpr uint32_t canary=0x4acaf00d;
 inline std::array<size_t,13> counts(uint32_t cells){size_t pages=(cells+3)/4;return {{pages*1024,pages*1024,6144,pages,2051,4,12288,204400,101376,6984,6144,12288,6144}};}
+// CUDA reference peak: all 13 guarded tensors, the persistent ones/sigmoid
+// controls, and the two simultaneous input/output primitive-exp tensors.
+inline size_t reference_device_bound(uint32_t cells){
+ native_hc_need(cells>=1&&cells<=4096,"QSA reference capacity");size_t words=0;
+ for(size_t n:counts(cells)){native_hc_need(n<=SIZE_MAX-16&&words<=SIZE_MAX-n-16,"QSA reference tensor bound overflow");words+=n+16;}
+ for(size_t n:{size_t(6144),size_t(6144),size_t(50688),size_t(50688)}){native_hc_need(words<=SIZE_MAX-n,"QSA reference control bound overflow");words+=n;}
+ native_hc_need(words<=SIZE_MAX/4,"QSA reference byte bound overflow");return words*4;
+}
+inline bool reference_device_admit(size_t limit,size_t live,size_t words){return live<=limit&&words<=(limit-live)/sizeof(uint32_t);}
 struct Fixture{uint32_t cells=256;std::array<std::vector<uint32_t>,7>in;};
 inline std::array<int32_t,4> step(const Fixture&f){std::array<int32_t,4>s{};std::memcpy(s.data(),f.in[5].data(),16);return s;}
 inline float half(const std::vector<uint32_t>&v,size_t i){return ggml_fp16_to_fp32(ggml_fp16_t((v[i/2]>>((i%2)*16))&65535));}
@@ -41,8 +50,8 @@ inline Control control(const Fixture&f,const std::vector<float>&exp_chunk={},con
  }
  return r;
 }
-inline Fixture synthetic(unsigned mode){native_hc_need(mode<8,"QSA attention fixture mode");Fixture f;auto n=counts(f.cells);for(size_t i=0;i<7;++i)f.in[i].assign(n[i],0);const uint32_t lengths[]={1,1,65,129,256,63,64,65};uint32_t nk=lengths[mode];f.in[5]={nk-1,nk,nk/4,nk};for(size_t i=0;i<f.in[3].size();++i)f.in[3][i]=mode==4?uint32_t(f.in[3].size()-1-i):uint32_t(i);if(mode==5)std::fill(f.in[3].begin(),f.in[3].end(),uint32_t(-1));if(mode==4)f.in[3][3]=uint32_t(-1);std::fill(f.in[4].begin(),f.in[4].end(),canary);for(size_t i=0;i<nk;++i)f.in[4][i]=uint32_t(i);
- for(size_t page=0;page<f.in[3].size();++page)for(size_t h=0;h<2;++h)for(size_t c=0;c<4;++c)for(size_t d=0;d<256;++d){size_t at=((page*2+h)*4+c)*256+d;float k=0,v=0;if(mode==1||mode==2)v=float(int(d%17)-8)/16;if(mode==3||mode==4||mode==6){k=float(int((at*7)%31)-15)/16;v=float(int((at*13)%37)-18)/16;}set_half(f.in[0],at,k);set_half(f.in[1],at,v);}
+inline Fixture synthetic(unsigned mode){native_hc_need(mode<9,"QSA attention fixture mode");Fixture f;if(mode==8)f.cells=4096;auto n=counts(f.cells);for(size_t i=0;i<7;++i)f.in[i].assign(n[i],0);const uint32_t lengths[]={1,1,65,129,256,63,64,65,4096};uint32_t nk=lengths[mode],width=std::min(nk,2051u);f.in[5]={nk-1,nk,nk/4,width};for(size_t i=0;i<f.in[3].size();++i)f.in[3][i]=mode==4?uint32_t(f.in[3].size()-1-i):uint32_t(i);if(mode==5)std::fill(f.in[3].begin(),f.in[3].end(),uint32_t(-1));if(mode==4)f.in[3][3]=uint32_t(-1);std::fill(f.in[4].begin(),f.in[4].end(),canary);for(size_t i=0;i<width;++i)f.in[4][i]=uint32_t(i+(mode==8?2045:0));
+ for(size_t page=0;page<f.in[3].size();++page)for(size_t h=0;h<2;++h)for(size_t c=0;c<4;++c)for(size_t d=0;d<256;++d){size_t at=((page*2+h)*4+c)*256+d;float k=0,v=0;if(mode==1||mode==2)v=float(int(d%17)-8)/16;if(mode==8)v=page*4+c>=2045?1.f:32.f;if(mode==3||mode==4||mode==6){k=float(int((at*7)%31)-15)/16;v=float(int((at*13)%37)-18)/16;}set_half(f.in[0],at,k);set_half(f.in[1],at,v);}
  for(size_t i=0;i<6144;++i){float q=mode>=3?float(int((i*17)%29)-14)/32:0;f.in[2][i]=bits(q);float gate=mode==4?(i%3==0?128.f:i%3==1?-128.f:0.f):mode==3?float(int(i%19)-9):0;f.in[6][(i/256)*512+256+i%256]=bits(gate);}
  if(mode==6){std::fill(f.in[2].begin(),f.in[2].end(),0);for(size_t h=0;h<24;++h){const float q[]={0x1p24f,1,-0x1p24f,1,0,0,0,0};for(size_t j=0;j<8;++j)f.in[2][h*256+j]=bits(q[j]);}for(size_t page=0;page<f.in[3].size();++page)for(size_t h=0;h<2;++h)for(size_t c=0;c<4;++c)for(size_t j=0;j<8;++j)set_half(f.in[0],((page*2+h)*4+c)*256+j,1);}
  if(mode==7){std::fill(f.in[0].begin(),f.in[0].end(),0);std::fill(f.in[2].begin(),f.in[2].end(),0);std::fill(f.in[6].begin(),f.in[6].end(),0);for(size_t h=0;h<24;++h)f.in[2][h*256]=bits(2048.f);for(size_t cell=0;cell<256;++cell)for(size_t h=0;h<2;++h){size_t row=((cell/4)*2+h)*4+cell%4;set_half(f.in[0],row*256,cell==0?0.f:-1.f);for(size_t d=0;d<256;++d)set_half(f.in[1],row*256+d,float(int(d%17)-8)/16);}}
@@ -50,7 +59,7 @@ inline Fixture synthetic(unsigned mode){native_hc_need(mode<8,"QSA attention fix
  validate(f);return f;
 }
 inline void write(const std::string&p,const Fixture&f){validate(f);native_hc_need(!std::filesystem::exists(p),"QSA attention fresh fixture");std::ofstream o(p,std::ios::binary);for(uint32_t w:{0x3141514eu,1u,f.cells})word(o,w);for(auto&v:f.in)for(auto w:v)word(o,w);native_hc_need(bool(o),"QSA attention fixture write");}
-inline Fixture read(const std::string&p){std::ifstream i(p,std::ios::binary);native_hc_need(bool(i)&&word(i)==0x3141514e&&word(i)==1,"QSA attention header");Fixture f;f.cells=word(i);native_hc_need(f.cells>=1&&f.cells<=256,"QSA attention capacity");auto n=counts(f.cells);for(size_t j=0;j<7;++j){f.in[j].resize(n[j]);for(auto&w:f.in[j])w=word(i);}native_hc_need(i.peek()==EOF,"QSA attention fixture span");validate(f);return f;}
+inline Fixture read(const std::string&p){std::ifstream i(p,std::ios::binary);native_hc_need(bool(i)&&word(i)==0x3141514e&&word(i)==1,"QSA attention header");Fixture f;f.cells=word(i);native_hc_need(f.cells>=1&&f.cells<=4096,"QSA attention capacity");auto n=counts(f.cells);for(size_t j=0;j<7;++j){f.in[j].resize(n[j]);for(auto&w:f.in[j])w=word(i);}native_hc_need(i.peek()==EOF,"QSA attention fixture span");validate(f);return f;}
 inline const std::array<const char*,6> names{{"scratch.f32le","chunk.f32le","merge.f32le","attn.f32le","gate.f32le","gated.f32le"}};
 inline void contract(const Fixture&f,const std::string&p){validate(f);native_hc_need(!std::filesystem::exists(p),"QSA attention fresh contract");std::ofstream o(p);o<<"{\"fields\":{";auto n=counts(f.cells);for(size_t i=0;i<6;++i){if(i)o<<',';o<<'"'<<names[i]<<"\":"<<n[7+i]*4;}o<<"},\"qualified\":false}\n";native_hc_need(bool(o),"QSA attention contract write");}
 inline std::array<std::vector<uint32_t>,6> outputs(const Fixture&f,const std::filesystem::path&d){auto n=counts(f.cells);std::array<std::vector<uint32_t>,6>v;for(size_t i=0;i<6;++i)v[i]=native_qsa_ss::words(d/names[i],n[7+i]);return v;}

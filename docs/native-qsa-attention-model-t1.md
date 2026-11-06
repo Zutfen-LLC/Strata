@@ -9,7 +9,8 @@ output gate in ordinary serial QSA layers. Its specification is
 `--qsa-attention-banks PREFIX` allocates the same detached candidate bank in
 control and on. `--native-qsa-attention-t1` selects the native method. Both require
 native normalization/RoPE, native indexer and native scores/IDs, strict selected
-Vulkan execution, reusable eager scratch and context at most 256. Production,
+Vulkan execution, reusable eager scratch and context at most 4096. The larger
+context has host coverage only; the retained model run below used context 256. Production,
 chunked, alternate native attention dispatch and rotated/quantized KV modes
 refuse. These are backend plumbing constraints, not alternative algorithms.
 

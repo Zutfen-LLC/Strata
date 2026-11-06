@@ -38,6 +38,29 @@ int main() {
         } catch (const std::runtime_error &) {
         }
     }
+    if(request_limit(256)!=4096 || request_limit(4096)!=45064) return 6;
+    std::string long_request="GEN 4096 ";
+    for(size_t i=0;i<4096;++i) { if(i) long_request+=',';long_request+="2147483647"; }
+    if(long_request.size()!=request_limit(4096)) return 7;
+    LineFramer long_frame(4096);
+    for(char c:long_request) if(long_frame.append(c)) return 8;
+    if(!long_frame.append('\n')) return 9;
+    auto framed=long_frame.take();
+    auto long_valid=parse(framed,4096,size_t(INT32_MAX)+1);
+    if(long_valid.max_new!=4096 || long_valid.tokens.size()!=4096 || long_valid.tokens.back()!=INT32_MAX) return 10;
+    std::string realistic="GEN 0 ";
+    for(size_t i=0;i<4096;++i) { if(i) realistic+=',';realistic+="248046"; }
+    if(parse(realistic,4096,248047).tokens.size()!=4096) return 11;
+    auto rejects=[](const std::string &s,size_t context,size_t vocab){try{(void)parse(s,context,vocab);return false;}catch(const std::runtime_error&){return true;}};
+    if(!rejects(long_request+"0",4096,size_t(INT32_MAX)+1) ||
+       !rejects(realistic+",0",4096,248047) || !rejects("GEN 0 2147483648",4096,size_t(INT32_MAX)+2) ||
+       !rejects("GEN 0 248047",4096,248047) || !rejects("GEN 0 123 456",4096,248047) ||
+       !rejects("GEN 0 123,,456",4096,248047) || !rejects(std::string(4097,'0'),256,100)) return 12;
+    bool refused=false;try{LineFramer f(4096);for(size_t i=0;i<=request_limit(4096);++i) f.append('0');}catch(const std::runtime_error&){refused=true;}if(!refused)return 13;
+    refused=false;try{LineFramer f(4096);for(char c:std::string("GEN 0 1"))f.append(c);(void)f.eof();}catch(const std::runtime_error&){refused=true;}if(!refused)return 14;
+    {LineFramer f(256);for(size_t i=0;i<4096;++i)if(f.append('0'))return 16;refused=false;try{f.append('0');}catch(const std::runtime_error&){refused=true;}if(!refused)return 17;}
+    // A caller must parse completely before reset/mutation, even when framing succeeds.
+    int resets=0;try{LineFramer f(4096);for(char c:std::string("GEN 0 1,\n"))if(f.append(c)){(void)parse(f.take(),4096,100);++resets;}}catch(const std::runtime_error&){}if(resets)return 15;
     const auto path = std::filesystem::temp_directory_path() / "portable-stdio-source-test";
     {
         std::ofstream f(path);

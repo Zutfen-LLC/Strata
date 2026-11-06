@@ -8,7 +8,7 @@ import native_qsa_norm_rope_numeric as Q
 
 def load(path):
  b=Path(path).read_bytes();N.need(len(b)>=28,'indexer header');magic,version,cells,base,first,steps,theta=struct.unpack_from('<7I',b)
- N.need(magic==0x3149514e and version==1 and 1<=cells<=256 and 1<=steps<=8 and first+steps<=cells and base%4==0 and base+cells<=256,'indexer T1 text geometry')
+ N.need(magic==0x3149514e and version==1 and 1<=cells<=4096 and 1<=steps<=8 and first+steps<=cells and base%4==0 and base+cells<=4096,'indexer T1 text geometry')
  count=512+(cells//4+1)*128+1;N.need(len(b)==28+(steps*128+128+count)*4,'indexer fixture span');w=list(struct.unpack_from('<'+str((len(b)-28)//4)+'I',b,28));raw=w[:steps*128];gamma=w[steps*128:steps*128+128];before=w[steps*128+128:]
  N.need(all(abs(N.value(v))<65520 and math.isfinite(N.value(v)) for v in raw),'indexer finite half-roundable raw')
  return cells,base,first,steps,theta,raw,gamma,before
