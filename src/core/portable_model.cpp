@@ -916,14 +916,20 @@ std::unique_ptr<PortableModelSession> PortableModelSession::open(const std::vect
     }
 }
 bool PortableModelSession::step(int32_t token, std::vector<float> &logits, std::string &error, PortableTokenKind kind) {
-    return impl_->step(token, logits, error, kind);
+    if (!impl_->step(token, logits, error, kind)) return false;
+    sampling_history_.push_back(token);
+    return true;
 }
 bool PortableModelSession::advance(int32_t token, std::string &error) {
     std::vector<float> omitted;
-    return impl_->step(token, omitted, error, PortableTokenKind::input, false);
+    if (!impl_->step(token, omitted, error, PortableTokenKind::input, false)) return false;
+    sampling_history_.push_back(token);
+    return true;
 }
 bool PortableModelSession::advance_chunk(const std::vector<int32_t>& tokens,std::string& error) {
-    return impl_->advance_chunk(tokens,error);
+    if (!impl_->advance_chunk(tokens,error)) return false;
+    sampling_history_.insert(sampling_history_.end(),tokens.begin(),tokens.end());
+    return true;
 }
 bool PortableModelSession::remote_expert_status(worker::GpuCounters& counters,std::string &error) {
     error.clear();
@@ -962,7 +968,9 @@ bool PortableModelSession::close_remote_experts(std::string &error) {
 bool PortableModelSession::reset(std::string &error) {
     error.clear();
     try {
-        return impl_->reset(error);
+        if (!impl_->reset(error)) return false;
+        sampling_history_.clear();
+        return true;
     } catch (const std::exception &e) {
         impl_->poison = true;
         error = e.what();
@@ -1037,8 +1045,18 @@ const PortableModelReport &PortableModelSession::report() const { return impl_->
 const std::vector<PortablePlacement> &PortableModelSession::placements() const { return impl_->placement; }
 bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result,
                                     std::string &error) {
-    result = {};
+    kernels::SamplerParams p; p.greedy = true;
+    return generate(prompt, max_new, result, error, p);
+}
+bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result,
+                                    std::string &error, const kernels::SamplerParams &sampling,
+                                    const std::vector<float> &bias) {
     error.clear();
+    if (!validate_host_sampler(sampling, error)) return false;
+    if (!bias.empty() && bias.size() != vocabulary()) { error = "host sampler: invalid bias size"; return false; }
+    for (float b : bias) if (std::isnan(b) || b == std::numeric_limits<float>::infinity()) {
+        error = "host sampler: invalid bias"; return false;
+    }
     if (impl_->poison) {
         error = "portable model: session poisoned; reset/replay or reopen required";
         return false;
@@ -1048,6 +1066,7 @@ bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t m
         error = "portable model: empty prompt or generation/context bound";
         return false;
     }
+    result = {};
     std::vector<float> logits;
     size_t first=0;
     if(impl_->opts.prompt_chunk_size) while(first+1<prompt.size()) {
@@ -1065,8 +1084,10 @@ bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t m
             result.stop = PortableStop::context;
             return true;
         }
-        // max_element returns the first (lowest ID) in an exact tie.
-        const auto token = int32_t(std::max_element(logits.begin(), logits.end()) - logits.begin());
+        auto p = sampling;
+        p.counter = position() - 1;
+        int32_t token;
+        if (!sample_host_logits(logits, sampling_history_, p, bias, token, error)) return false;
         if (!step(token, logits, error, PortableTokenKind::generated))
             return false;
         result.tokens.push_back(token);

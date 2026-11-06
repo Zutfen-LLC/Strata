@@ -279,6 +279,37 @@ int main() {
         check(session->reset(error), error);
         check(!session->generate({}, 1, result, error) && !session->poisoned() && session->position() == 0,
               "generation preflight is side-effect free");
+        // Sampling rejection must not consume prompt, alter result, or run a head.
+        strata::kernels::SamplerParams sample; sample.greedy=true; sample.top_p=2;
+        result.tokens={123}; result.stop=PortableStop::eos;
+        const auto preflight_work=session->model_work();
+        check(!session->generate({5},1,result,error,sample) && session->position()==0 && !session->poisoned() &&
+              result.tokens==std::vector<int32_t>{123} && result.stop==PortableStop::eos &&
+              session->model_work().heads_executed==preflight_work.heads_executed, "sampling preflight nonmutation");
+        // Manual consumed token participates in the penalty window; reset clears it.
+        sample.top_p=1; sample.penalty_last_n=3; sample.penalty_repeat=1; sample.penalty_present=10;
+        std::vector<float> bias(session->vocabulary(),-100); bias[0]=2; bias[1]=1;
+        check(session->step(0,logits,error),error);
+        check(session->generate({5},1,result,error,sample,bias) && result.tokens==std::vector<int32_t>{1} && session->position()==3,
+              "manual history affects continued selection and terminal feed");
+        check(session->reset(error),error);
+        check(session->generate({5},1,result,error,sample,bias) && result.tokens==std::vector<int32_t>{0} && session->position()==2,
+              "reset clears sampling history");
+        // Equalize the known prompt-5 logits. Frozen Philox seed 0 yields
+        // u=.958... at position 0 and .315... at position 1: these two
+        // draws must select different halves of the two-token shortlist.
+        strata::kernels::SamplerParams draw; draw.top_k=2; draw.seed=0;
+        std::vector<float> equal_bias(reference[0].size());
+        for(size_t i=0;i<equal_bias.size();++i) equal_bias[i]=-reference[0][i];
+        check(session->reset(error) && session->generate({5},1,result,error,draw,equal_bias) &&
+              result.tokens==std::vector<int32_t>{1} && session->position()==2, "counter zero draw");
+        check(session->reset(error) && session->advance(248046,error) &&
+              session->generate({5},1,result,error,draw,equal_bias) &&
+              result.tokens==std::vector<int32_t>{0} && session->position()==3,
+              "teacher-forced separator and manual advance use consumed position");
+        check(session->reset(error) && session->generate({5},1,result,error,draw,equal_bias) &&
+              result.tokens==std::vector<int32_t>{1}, "reset replays counter zero");
+        check(session->reset(error),error);
         bool gdn = false, qsa = false, ple = false, head = false;
         for (const auto &p : session->placements()) {
             gdn |= p.operation == "GATED_DELTA_NET";

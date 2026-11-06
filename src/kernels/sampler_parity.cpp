@@ -484,6 +484,19 @@ int main(int argc, char** argv) {
     int bad = 0;
     const int NV = 512, NT = 4;
 
+    // Frozen vectors exercise both words of seed and counter independently of
+    // the production host sampler. Equal logits make the expected CDF exact.
+    {
+        if (host_philox_uniform(0, 0) * 16777216.0f != 16079353 ||
+            host_philox_uniform(0, 1) * 16777216.0f != 5293434 ||
+            host_philox_uniform(0x123456789abcdef0ULL, 0x100000002ULL) * 16777216.0f != 13186932) ++bad;
+        strata::kernels::SamplerParams p;
+        p.top_k = 4; p.seed = 0x123456789abcdef0ULL; p.counter = 0x100000002ULL;
+        bad += run("frozen high-word Philox draw", {0, 0, 0, 0}, 1, p, {3});
+        p.greedy = true; p.temperature = 0; p.top_k = 1; p.seed = 99;
+        bad += run("greedy signed-zero tie", {-0.0f, 0.0f, -1.0f, -2.0f}, 1, p, {0});
+    }
+
     // Request bias affects every target row, including greedy; omission leaves logits and the default pick intact.
     // Compare against an independently pre-biased input through each ctest sampler implementation.
     {

@@ -82,7 +82,8 @@ int main(int argc, char **argv) {
         Clock::time_point setup_start, prompt_start, decode_start, decode_end, last_prompt_start, last_selection;
         std::vector<int64_t> devices, caps, free_bytes, expert_tensors, expert_workspaces, expert_reserves;
         size_t max_new = 0, max_requests = 4;
-        bool resident = false, validate_options=false;
+        bool resident = false, validate_options=false, sampling_options=false;
+        strata::kernels::SamplerParams sampling; sampling.greedy = true;
         auto integer = [](const std::string &s) {
             const auto v = numbers(s);
             if (v.size() != 1 || v[0] < 0)
@@ -117,6 +118,8 @@ int main(int argc, char **argv) {
                              "portable_model --validate-options (argument/mode checks only; no model/backend/memory admission)\n"
                              "portable_model --model ANY_SHARD --manifest SWLOCAL1 --tokens ID,ID,...\n"
                              " [--context 16] [--max-new 0] [--threads 1] [--expert-workers 1]\n"
+                             " [--seed S --top-k K --top-p P --min-p P --temp T --min-keep N]\n"
+                             " [--penalty-last-n N --repeat-penalty P --frequency-penalty P --presence-penalty P]\n"
                              " [--vulkan 0,1 --device-cap-mib 7680,7680 (or scalar) --split 32] [--host-cap-mib 32768]\n"
                              " [--dense-topology split|primary (default split; primary keeps dense/state/head on slot 0)]\n"
                              " [--device-free-bytes N,N (optional external free evidence; only tightens admission)]\n"
@@ -233,6 +236,23 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
+            if (key == "--seed") {
+                size_t used=0; if (value.empty() || value[0]=='-') throw std::runtime_error("invalid seed");
+                sampling.seed=std::stoull(value,&used); if(used!=value.size()) throw std::runtime_error("invalid seed");
+                sampling.greedy=false; sampling_options=true; continue;
+            }
+            if (key=="--top-k" || key=="--min-keep" || key=="--penalty-last-n") {
+                size_t used=0; long n=std::stol(value,&used);
+                if(used!=value.size() || n<INT32_MIN || n>INT32_MAX) throw std::runtime_error("invalid sampling integer");
+                if(key=="--top-k") sampling.top_k=int(n); else if(key=="--min-keep") sampling.min_keep=int(n); else sampling.penalty_last_n=int(n);
+                sampling_options=true; continue;
+            }
+            if (key=="--top-p" || key=="--min-p" || key=="--temp" || key=="--repeat-penalty" || key=="--frequency-penalty" || key=="--presence-penalty") {
+                size_t used=0; float n=std::stof(value,&used); if(used!=value.size()) throw std::runtime_error("invalid sampling float");
+                if(key=="--top-p") sampling.top_p=n; else if(key=="--min-p") sampling.min_p=n; else if(key=="--temp") sampling.temperature=n;
+                else if(key=="--repeat-penalty") sampling.penalty_repeat=n; else if(key=="--frequency-penalty") sampling.penalty_freq=n; else sampling.penalty_present=n;
+                sampling_options=true; continue;
+            }
             if(key.rfind("--remote-gpu-",0)==0) {
                 if(key=="--remote-gpu-worker" && remote_seen.count(key))save_remote();
                 if(value.empty() || !remote_seen.insert(key).second)throw std::runtime_error("empty or duplicate remote GPU option: "+key);
@@ -351,6 +371,9 @@ int main(int argc, char **argv) {
             else
                 throw std::runtime_error("unknown option: " + key);
         }
+        { std::string sampling_error;
+          if (!strata::core::validate_host_sampler(sampling,sampling_error)) throw std::runtime_error(sampling_error);
+          if (resident && sampling_options) throw std::runtime_error("sampling options are one-shot only"); }
         if(!remote_seen.empty())save_remote();
         if(!remote_cli.empty()) {
 #ifdef _WIN32
@@ -851,11 +874,19 @@ int main(int argc, char **argv) {
         if (resident || !timings_path.empty())
             decode_start = Clock::now();
         size_t generated = 0;
+        std::vector<int32_t> sampling_history = tokens;
         while (!session->ended() && generated < max_new && session->position() < opts.context) {
-            const int32_t next = int32_t(std::max_element(logits.begin(), logits.end()) - logits.begin());
+            int32_t next;
+            if (resident) next = int32_t(std::max_element(logits.begin(), logits.end()) - logits.begin());
+            else {
+                if (!session->position()) throw std::runtime_error("sampling requires consumed input");
+                sampling.counter = session->position()-1;
+                if (!strata::core::sample_host_logits(logits, sampling_history, sampling, {}, next, error)) throw std::runtime_error(error);
+            }
             if (resident || !timings_path.empty())
                 last_selection = Clock::now();
             consume(next, true);
+            sampling_history.push_back(next);
             ++generated;
         }
         if (resident || !timings_path.empty())
