@@ -42,6 +42,7 @@ int main() {
     options.remote_experts=remote;
     auto session=PortableModelSession::open(fixture.paths,(fixture.root/"manifest").string(),options,e);
     check(bool(session),e);
+    const auto single_host_bound=session->report().host_state_bound;
     check(session->close_remote_experts(e),e);
     check(session->poisoned(),"closed remote must poison model");
     check(!session->reset(e) && session->poisoned() && e.find("reopen")!=std::string::npos,
@@ -54,6 +55,21 @@ int main() {
     check(session->remote_expert_stats().failures>0,"failure reached the remote tier");
     check(!session->reset(e) && session->poisoned() && e.find("reopen")!=std::string::npos,
           "reset of terminal remote must require reopening");
+    session.reset();
+    GpuPlan plan2;check(make_gpu_plan(manifest,{{0,1}},plan2,e),e);
+    auto worker2=worker;worker2.plan=plan2;worker2.cache_root=(fixture.root/"worker-cache-2").string();
+    std::filesystem::create_directory(worker2.cache_root);Server server2(worker2);
+    auto peer2=remote;peer2.port=server2.port;peer2.plan=plan2;
+    options.remote_experts.reset();options.remote_expert_peers={remote,peer2};
+    session=PortableModelSession::open(fixture.paths,(fixture.root/"manifest").string(),options,e);
+    check(bool(session),e);
+    check(session->report().host_state_bound==single_host_bound+(64ull<<20),"second peer has separate host admission charge");
+    check(!session->step(5,logits,e) && session->poisoned() && logits.empty(),"multi-peer execution failure poisons model atomically");
+    check(!session->reset(e) && session->poisoned() && e.find("reopen")!=std::string::npos,
+          "reset of terminal multi-peer group requires reopening");
+    const auto peers=session->remote_expert_peer_stats();
+    check(peers.size()==2 && peers[0].port==remote.port && peers[1].port==peer2.port,
+          "failed group preserves per-peer identities");
     std::puts("portable_model_remote_reset_test: closed and failed remote sessions require reopen");
     return 0;
  } catch(const std::exception& e) { std::fprintf(stderr,"ERROR %s\n",e.what()); return 1; }
