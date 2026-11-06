@@ -6,4 +6,6 @@ This slice supports serial T1 model dispatch with no local resident expert plans
 
 `remote_expert_status` queries worker counters while the session is open; `remote_expert_stats` preserves client counters. Call `close_remote_experts` explicitly on a healthy idle session to send the bounded TLS close notification. It does not stop the shared worker; an error or destruction uses the existing nonblocking cleanup. The portable CLI does not yet construct this option. Model-level scheduling, mixed local/remote placements and prompt batching remain future work.
 
+A terminal remote transport failure or an explicit remote close makes the session unusable. `reset` refuses and leaves it poisoned; reopen the model session rather than relying on reconnection or fallback.
+
 CPU mock and loopback tests verify wiring and protocol behavior, not native-Q8 hardware arithmetic, cross-backend parity, full-model parity or performance. A later hardware gate needs fresh same-device direct-versus-worker row evidence for the exact build, input and placement, followed by a separately scoped model test.

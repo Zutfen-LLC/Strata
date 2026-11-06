@@ -22,6 +22,7 @@ public:
     bool run_batch(int64_t, const std::vector<PortableRoute>&, std::vector<float>&, std::string&);
     const worker::GpuWorkerTier::Stats& stats() const { return tier_.stats(); }
     uint64_t cpu_entries() const { return cpu_entries_; }
+    bool usable() const { return ready_ && tier_.ready() && !tier_.dead(); }
     bool status(worker::GpuCounters& out,std::string& error) { return tier_.status(out,error); }
     bool close_orderly(std::string& error) { const bool ok=tier_.close_orderly(error); ready_=false; return ok; }
 private:

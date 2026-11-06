@@ -247,7 +247,8 @@ struct PortableGeneration {
 // Model source files must remain immutable while open (see docs/PORTABLE_MODEL.md).
 // One serial text session and its lifetime-owned six-shard model. Errors during
 // step poison the session, including failures after earlier layers committed.
-// reset() is the only way to recover; caller explicitly replays its token IDs.
+// reset() can recover a session whose providers remain usable; caller explicitly
+// replays its token IDs. A closed or terminal remote provider requires reopening.
 class PortableModelSession {
   public:
     static std::unique_ptr<PortableModelSession> open(const std::vector<std::string> &shards,
