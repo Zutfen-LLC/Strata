@@ -119,7 +119,7 @@ void run(){
     route.weights[0]=std::numeric_limits<float>::quiet_NaN();rows.assign(1,9);
     check(!dispatch(0,route,rows,error)&&rows.empty(),"nonfinite input fails atomically");
     GpuCounters counters;require(provider.status(counters,error),error);
-    check(provider.stats().requests==1 && provider.stats().entries==2 && provider.cpu_entries()==18 && counters.requests==1 && counters.entries==2,
+    check(provider.stats().requests==1 && provider.stats().entries==2 && provider.complement_entries()==18 && counters.requests==1 && counters.entries==2,
           "remote and complement counters retained");
     route.ids={0,1,2,3,4,5,6,7,8,9};route.weights.assign(10,0.1f);fail_guard=guards+2;rows.assign(1,9);
     check(!dispatch(0,route,rows,error)&&rows.empty()&&error=="source changed","source change after remote reply prevents publication");
@@ -165,8 +165,11 @@ void run(){
     strata::core::portable_detail::validate_model_modes(model,0);
     model.prompt_chunk_size=2;bool refused=false;try{strata::core::portable_detail::validate_model_modes(model,0);}catch(...){refused=true;}
     check(refused,"prompt chunks refused by remote preflight");
-    model.prompt_chunk_size=0;model.expert_devices.emplace_back();refused=false;try{strata::core::portable_detail::validate_model_modes(model,0);}catch(...){refused=true;}
-    check(refused,"local and remote mode refused by preflight");model.expert_devices.clear();
+    model.prompt_chunk_size=0;model.expert_devices.emplace_back();refused=false;
+    try{strata::core::portable_detail::validate_model_modes(model,1);}catch(...){refused=true;}
+    check(refused,"mixed local/remote requires native Q8 local method");
+    model.expert_native_q8_observation="receipt";strata::core::portable_detail::validate_model_modes(model,1);
+    model.expert_devices.clear();model.expert_native_q8_observation.clear();
     model.remote_experts->native_q8=false;refused=false;try{strata::core::portable_detail::validate_model_modes(model,0);}catch(...){refused=true;}
     check(refused,"wrong numerical method refused by remote preflight");
 }

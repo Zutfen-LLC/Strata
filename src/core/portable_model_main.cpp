@@ -583,7 +583,7 @@ int main(int argc, char **argv) {
         std::cerr << report.identity_evidence << '\n';
         std::cerr << (opts.prompt_chunk_size ? "Bounded prompt chunks; T=1 final prompt/decode; " : "T=1; ");
         if(opts.remote_experts)
-            std::cerr << "remote native Q8 indexed expert rows with CPU complement; qualified=false.\n";
+            std::cerr << "remote native Q8 indexed expert rows with local expert/CPU complement; qualified=false.\n";
         else if(opts.expert_devices.empty())
             std::cerr << "CPU experts; host PLE; recurrent state and inter-layer residuals use host/device transfers. No performance claim.\n";
         else if(opts.native_moe_combine)
