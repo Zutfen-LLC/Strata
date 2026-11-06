@@ -15,6 +15,7 @@ public:
     GpuWorkerGroup& operator=(const GpuWorkerGroup&) = delete;
     static bool validate(const std::vector<GpuWorkerTier::Open>&, std::string&);
     bool open(const std::vector<GpuWorkerTier::Open>&, std::string&);
+    bool close_orderly(std::string&); // healthy, idle peers only; bounded TLS shutdown
     void close(); // joins before closing any tier; never races descriptor reuse
     bool holds(int64_t layer, int32_t expert) const;
     bool ready() const;

@@ -16010,6 +16010,15 @@ int main(int argc, char** argv) {
             }
         }
         save_profile("exit");   // #477: QUIT, or the server closed stdin
+#if defined(STRATA_NETWORK_CUDA_WORKER)
+        if (o.remote_gpu_experts) {
+            std::string close_error;
+            if (!gpu_worker_tier.close_orderly(close_error)) {
+                std::fprintf(stderr, "strata serve: network GPU orderly close: %s\n", close_error.c_str());
+                return 1;
+            }
+        }
+#endif
 #if defined(STRATA_GPU_METAL)
         // the stdin reader (detached above) may still take in_mu when the server closes the pipe after QUIT; on macOS
         // locking that mutex once this scope has destroyed it throws (the engine ended with an abort): end here
@@ -17153,5 +17162,14 @@ int main(int argc, char** argv) {
     cudaFree(d_parts);
     cudaFree(sbuf);
     cudaFree(arena);
+#if defined(STRATA_NETWORK_CUDA_WORKER)
+    if (o.remote_gpu_experts) {
+        std::string close_error;
+        if (!gpu_worker_tier.close_orderly(close_error)) {
+            std::fprintf(stderr, "strata: network GPU orderly close: %s\n", close_error.c_str());
+            return 1;
+        }
+    }
+#endif
     return 0;
 }
