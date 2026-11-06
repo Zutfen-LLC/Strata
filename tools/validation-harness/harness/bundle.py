@@ -73,9 +73,9 @@ def validate_network_gpu(cfg):
         backend='cuda'
         if '@' in selected:
             backend,selected=selected.split('@',1)
-            if backend not in ('cuda','vulkan'):raise ValueError('unsupported GPU backend')
+            if backend not in ('cuda','vulkan','vulkan-native-q8'):raise ValueError('unsupported GPU backend')
         host,port=selected.rsplit(':',1)
-        if backend=='vulkan' and host!='127.0.0.1' and any(flag not in argv for flag in
+        if backend in ('vulkan','vulkan-native-q8') and host!='127.0.0.1' and any(flag not in argv for flag in
                 ('--remote-gpu-tls-ca','--remote-gpu-tls-cert','--remote-gpu-tls-key','--remote-gpu-tls-peer')):
             raise ValueError('private Vulkan peers require explicit mTLS')
         address=ipaddress.IPv4Address(host)  # numeric only; no DNS, IPv6 or CIDRs

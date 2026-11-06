@@ -96,12 +96,14 @@ class HarnessTests(unittest.TestCase):
         cfg.update(external_gpu_rows=True,cpu_route='group',attach_root=str(self.root))
         prefix=['@engine','--remote-cpu-worker','127.0.0.1:27431',
                 '--remote-cpu-entry-rows','--remote-cpu-resident']
-        for backend in ('cuda@','vulkan@',''):
+        for backend in ('cuda@','vulkan@','vulkan-native-q8@',''):
             bundle.validate_network_gpu(dict(cfg,argv=prefix+['--remote-gpu-worker',backend+'127.0.0.1:27432','/fixed.plan']))
         tls=['--remote-gpu-tls-ca','/ca','--remote-gpu-tls-cert','/cert','--remote-gpu-tls-key','/key','--remote-gpu-tls-peer','worker05']
         peer=['--remote-gpu-worker','vulkan@10.0.0.5:27432','/fixed.plan']
         bundle.validate_network_gpu(dict(cfg,argv=prefix+peer+tls))
-        for tail in (peer,['--remote-gpu-worker','metal@127.0.0.1:27432','/fixed.plan'],
+        native=['--remote-gpu-worker','vulkan-native-q8@10.0.0.5:27432','/fixed.plan']
+        bundle.validate_network_gpu(dict(cfg,argv=prefix+native+tls))
+        for tail in (peer,native,['--remote-gpu-worker','metal@127.0.0.1:27432','/fixed.plan'],
                      peer+tls+['--remote-gpu-worker','cuda@10.0.0.5:27432','/other.plan']):
             with self.assertRaises(ValueError):bundle.validate_network_gpu(dict(cfg,argv=prefix+tail))
 
