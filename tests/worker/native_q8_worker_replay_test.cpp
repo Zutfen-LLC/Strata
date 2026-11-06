@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <atomic>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <cstring>
@@ -15,6 +16,7 @@ using namespace strata::worker;
 namespace fs=std::filesystem;
 void check(bool value,const char* text) {if(!value)throw std::runtime_error(text);}
 struct Mock final:GpuExecutor {
+    std::atomic<int>* calls=nullptr;
     bool change_allocation=false,change_requests=false,change_failures=false;GpuCounters* counters=nullptr;
     bool native_q8()const override{return true;}
     bool supports_rows()const override{return true;}
@@ -24,6 +26,7 @@ struct Mock final:GpuExecutor {
     }
     bool infer(const GpuPlan&,const InferRequest&,InferReply&,std::string&)override{return false;}
     bool infer_rows(const GpuPlan& p,const InferRequest& q,EntryRowsReply& out,std::string&)override {
+        if(calls)++*calls;
         if(change_allocation && counters)++counters->gpu_allocated_bytes;
         if(change_requests && counters)++counters->requests;
         if(change_failures && counters)++counters->failures;
@@ -50,7 +53,8 @@ int main(int argc,char** argv){try {
     {std::ofstream f(dir/"direct"/"DIRECT_PASS");f<<"direct replay complete\n";}
     fs::create_directory(dir/"cache");GpuWorkerOptions options;options.vulkan=options.native_q8=true;options.runtime_reserve=0;
     options.plan=plan;options.cache_root=(dir/"cache").string();options.cache_budget=64ull<<20;
-    GpuWorkerService service(options,std::make_unique<Mock>());uint16_t port=0;check(service.listen(port,err),err.c_str());
+    std::atomic<int> inference_calls{0};auto mock=std::make_unique<Mock>();mock->calls=&inference_calls;
+    GpuWorkerService service(options,std::move(mock));uint16_t port=0;check(service.listen(port,err),err.c_str());
     std::thread server([&]{service.run();});struct Stop{GpuWorkerService& s;std::thread& t;~Stop(){s.stop();t.join();}} stop{service,server};
     auto args=std::vector<std::string>{argv[1],"--worker","127.0.0.1:"+std::to_string(port),(fixture/"capture.bin").string(),"0",(fixture/"one-layer.plan").string(),(fixture/"blobs").string(),(dir/"direct"/"layer.direct.reply").string(),(dir/"out").string(),"--deadline-ms","10000"};
     check(invoke(args)==0 && fs::exists(dir/"out"/"PASS"),"mock replay did not pass");
@@ -108,9 +112,27 @@ int main(int argc,char** argv){try {
         const auto credentials=tls.config("coordinator","worker.test");
         args.insert(args.end(),{"--tls-ca",credentials.ca_file,"--tls-cert",credentials.cert_file,"--tls-key",credentials.key_file,"--tls-peer",credentials.peer_dns});
         check(invoke(args)==0 && fs::exists(dir/"tls-ok"/"PASS"),"mTLS replay did not pass");
+        auto setup=std::vector<std::string>{argv[1],"--setup-only","127.0.0.1:"+std::to_string(tls_port),
+            (fixture/"one-layer.plan").string(),"--deadline-ms","10000","--setup-ms","30000",
+            "--tls-ca",credentials.ca_file,"--tls-cert",credentials.cert_file,"--tls-key",credentials.key_file,"--tls-peer",credentials.peer_dns};
+        check(invoke(setup)==0,"mTLS cached setup-only failed");setup.back()="wrong.test";
+        check(invoke(setup)!=0,"mTLS setup-only accepted wrong SAN");
         args[8]=(dir/"tls-bad-san").string();args.back()="wrong.test";
         check(invoke(args)!=0 && fs::exists(dir/"tls-bad-san"/"FAILURE") && !fs::exists(dir/"tls-bad-san"/"PASS"),"wrong TLS SAN accepted");
     }
 #endif
+    {
+        auto setup=std::vector<std::string>{argv[1],"--setup-only","127.0.0.1:"+std::to_string(port),
+            (fixture/"one-layer.plan").string(),"--deadline-ms","10000","--setup-ms","30000"};
+        const int before=inference_calls.load();check(invoke(setup)==0,"cached setup-only failed");
+        check(inference_calls.load()==before,"setup-only issued inference");
+        setup[2]="cuda@"+setup[2];check(invoke(setup)!=0,"setup-only accepted tagged endpoint");
+        fs::create_directory(dir/"empty-setup-cache");auto empty_options=options;empty_options.cache_root=(dir/"empty-setup-cache").string();
+        auto empty_mock=std::make_unique<Mock>();empty_mock->calls=&inference_calls;
+        GpuWorkerService empty(empty_options,std::move(empty_mock));uint16_t empty_port=0;check(empty.listen(empty_port,err),err.c_str());
+        std::thread thread([&]{empty.run();});Stop guard{empty,thread};
+        setup[2]="127.0.0.1:"+std::to_string(empty_port);
+        check(invoke(setup)!=0 && inference_calls.load()==before,"missing cache or unexpected inference accepted");
+    }
     std::printf("mock replay rows, lifecycle, tags and refusal checks passed; no GPU\n");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

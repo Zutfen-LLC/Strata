@@ -38,6 +38,37 @@ std::vector<uint8_t> file_bytes(const fs::path& path,size_t limit) {
     std::vector<uint8_t> data(size_t(size),uint8_t{});in.seekg(0);
     require(bool(in.read(reinterpret_cast<char*>(data.data()),data.size())),"reference read failed");return data;
 }
+int worker_setup_only(int argc,char** argv) {
+    require(argc==8 || argc==16,"usage: --setup-only HOST:PORT PLAN --deadline-ms N --setup-ms N [--tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer DNS]");
+    GpuEndpoint endpoint;
+    require(std::string(argv[2]).find('@')==std::string::npos && parse_gpu_endpoint(argv[2],endpoint) && !endpoint.vulkan,
+            "worker endpoint must be numeric HOST:PORT without a backend tag");
+    require(std::string(argv[4])=="--deadline-ms" && std::string(argv[6])=="--setup-ms","explicit deadlines required");
+    auto number=[](const char* value,uint64_t maximum){const std::string s=value;
+        require(!s.empty() && s.find_first_not_of("0123456789")==std::string::npos,"invalid deadline");
+        const auto n=std::stoull(s);require(n && n<=maximum,"deadline out of range");return int(n);};
+    GpuWorkerTier::Open open;open.host=endpoint.host;open.port=endpoint.port;
+    open.vulkan=open.native_q8=open.entry_rows=true;
+    open.deadline_ms=number(argv[5],600000);open.setup_ms=number(argv[7],86400000);
+    if(argc==16) {
+        require(std::string(argv[8])=="--tls-ca" && std::string(argv[10])=="--tls-cert" &&
+                std::string(argv[12])=="--tls-key" && std::string(argv[14])=="--tls-peer","invalid TLS arguments");
+        open.tls={argv[9],argv[11],argv[13],argv[15]};
+    }
+    std::string err;require(open.tls.validate(err),err);
+    require(read_gpu_plan(argv[3],open.plan,err),err);
+    // No source callback: an absent or corrupt worker-cache blob must refuse.
+    GpuWorkerTier tier;require(tier.open(open,err),err);
+    const auto stats=tier.stats();
+    require(stats.cache_reused_bytes==open.plan.assigned_bytes() && stats.setup_network_bytes==0,
+            "setup did not reuse the complete cache");
+    GpuCounters before,after;require(tier.status(before,err) && tier.status(after,err),err);
+    require(before.requests==after.requests && before.entries==after.entries && before.failures==after.failures,
+            "worker counters changed during setup-only status");
+    std::string report;tier.report(report);std::cout<<report<<"\n";
+    require(tier.close_orderly(err),err);
+    std::cout<<"SETUP_ONLY_READY cached_reuse=complete uploaded=0 inference=0 qualified=false\n";return 0;
+}
 int worker_replay(int argc,char** argv) {
     require(argc==11 || argc==19,"usage: --worker HOST:PORT CAPTURE RECORD PLAN BLOB_DIR DIRECT_REPLY NEW_OUTPUT --deadline-ms N [--tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer DNS]");
     const fs::path output=argv[8];require(fs::create_directory(output),"output must be a new private directory");
@@ -118,10 +149,11 @@ int worker_replay(int argc,char** argv) {
 #endif
 int main(int argc,char** argv){try {
 #ifndef STRATA_Q8_REPLAY_CUDA
+    if(argc>1 && std::string(argv[1])=="--setup-only")return worker_setup_only(argc,argv);
     if(argc>1 && std::string(argv[1])=="--worker")return worker_replay(argc,argv);
 #endif
 #ifdef STRATA_Q8_REPLAY_CLIENT_ONLY
-    throw std::runtime_error("CPU-only replay supports --worker only");
+    throw std::runtime_error("CPU-only replay supports --worker or --setup-only");
 #else
     bool timing=false;size_t budget=128u<<20;
     for(int arg=10;arg<argc;++arg) {
