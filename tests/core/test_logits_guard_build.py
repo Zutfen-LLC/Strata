@@ -62,7 +62,7 @@ class GuardBuild(unittest.TestCase):
         if NATIVE_STAGES:
             suffix += b'#include "strata_vk_native_stages.inc"\n'
         if NATIVE_STAGES:
-            # Exactly these five native-only hunks; all remaining backend bytes
+            # Exactly these native-only dot hunks; all remaining backend bytes
             # and the acceleration assignment/disable controls stay unchanged.
             replacements = {
                 'vk_device ggml_vk_get_device(size_t idx) {': '#include "native_q8_vk_device.hpp"\nvk_device ggml_vk_get_device(size_t idx) {',
@@ -93,6 +93,12 @@ class GuardBuild(unittest.TestCase):
             original = original.replace(cache, cache + b'\n        try {')
             original = original.replace(tail, b'        } catch (...) {\n            vk_instance.devices[idx].reset();\n            throw;\n        }\n' + tail)
             original = original.replace(destructor, destructor + b'\n    if (!device) return; // strict diagnostic: no logical device, no Vulkan resources')
+        if NATIVE_STAGES:
+            # This receipt is inserted after the optional FMA patch, so it must
+            # appear immediately after createDevice, before FMA/dot receipts.
+            create = b'        device->device = device->physical_device.createDevice(device_create_info);'
+            self.assertEqual(original.count(create), 1)
+            original = original.replace(create, create + b'\n        strata_q8_device->strata_float64_enabled = device_features2.features.shaderFloat64 != VK_FALSE;')
         self.assertEqual(copy, original + suffix)
 
     def test_native_dot_patch_rejects_wrong_pin_and_ambiguous_anchors(self):
