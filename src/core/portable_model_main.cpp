@@ -358,6 +358,9 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("remote GPU requires one vulkan-native-q8@HOST:PORT and an explicit plan");
             const auto& tls=remote_open.tls;
             const bool complete=!tls.ca_file.empty() && !tls.cert_file.empty() && !tls.key_file.empty() && !tls.peer_dns.empty();
+#ifndef STRATA_PORTABLE_WORKER_TLS
+            if(tls.enabled())throw std::runtime_error("remote GPU mTLS is unavailable in this build");
+#endif
             if((tls.enabled() && !complete) || (endpoint.host!="127.0.0.1" && !complete))
                 throw std::runtime_error("remote GPU mTLS requires CA, cert, key and exact peer DNS");
             remote_open.host=endpoint.host;remote_open.port=endpoint.port;
