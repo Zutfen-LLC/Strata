@@ -1,9 +1,13 @@
 // Standalone consumer of already packed inputs; included in the pin-checked TU.
 #include "strata_vk_q8_gu.hpp"
 #include "native_q8_address.hpp"
+#include "native_q8_subgroup.hpp"
 #include "strata_q8_gu_spv.hpp"
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
 #include "strata_q8_gu_strict_fma_spv.hpp"
+#ifdef STRATA_NATIVE_Q8_SUBGROUP_EXPERIMENT
+#include "strata_q8_gu_subgroup_fma_spv.hpp"
+#endif
 #endif
 #include "native_q8_gu_spirv.hpp"
 namespace strata::core::portable_detail {
@@ -28,10 +32,15 @@ static uint64_t strata_vk_q8_weight_address(ggml_backend_vk_context* ctx,const g
 }
 struct StrataVkQ8Gu {std::unique_ptr<StrataVkLogitsGuard> owner;};
 static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_backend_t backend,
-    const uint32_t* shader,size_t shader_words,NativeComponentAddressing addressing,const char* name,uint32_t parameters,uint32_t push_words,const char* effective_spv_path,size_t budget=size_t(-1),size_t metadata_words=128) {
+    const uint32_t* shader,size_t shader_words,NativeComponentAddressing addressing,const char* name,uint32_t parameters,uint32_t push_words,const char* effective_spv_path,size_t budget=size_t(-1),size_t metadata_words=128,bool subgroup_experiment=false) {
     logits_guard_need(backend && ggml_backend_is_vk(backend),"Q8 component: Vulkan required");
     auto owner=std::make_unique<StrataVkLogitsGuard>(backend);
     auto& g=*owner;auto* ctx=static_cast<ggml_backend_vk_context*>(backend->context);
+    if(subgroup_experiment) {
+        logits_guard_need(native_q8_subgroup_supported(ctx->device->subgroup_basic,ctx->device->subgroup_shuffle,
+            ctx->device->subgroup_require_full_support,ctx->device->subgroup_size),
+            "native Q8 subgroup experiment requires full compute subgroups of 32 or 64 with shuffle");
+    }
     const auto& limits=ctx->device->properties.limits;
     logits_guard_need(limits.maxComputeWorkGroupInvocations>=256 && limits.maxComputeWorkGroupSize[0]>=256 &&
         limits.maxComputeSharedMemorySize>=256*4,"Q8 component: geometry unsupported");
@@ -61,16 +70,24 @@ static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_ba
     pipe->name=name;pipe->parameter_count=parameters;pipe->push_constant_size=push_words*4;
     pipe->wg_denoms={1,1,1};pipe->align=1;pipe->initialized=true;
     const auto code=native_component_float_controls(shader,shader_words,addressing);
-    strata_vk_observation_create_pipeline_func(ctx->device,pipe,code.size()*4,code.data(),"main",parameters,{1,1,1},{},false,false,0,effective_spv_path);
+    strata_vk_observation_create_pipeline_func(ctx->device,pipe,code.size()*4,code.data(),"main",parameters,{1,1,1},{},false,subgroup_experiment,0,effective_spv_path);
     return owner;
 }
-StrataVkQ8Gu* strata_vk_q8_gu_create(ggml_backend_t backend,const char* effective_spv_path) {
+StrataVkQ8Gu* strata_vk_q8_gu_create(ggml_backend_t backend,const char* effective_spv_path,bool subgroup_experiment) {
     strata_vk_q8_resident_block_limit(backend);
     auto result=std::make_unique<StrataVkQ8Gu>();
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
-    result->owner=strata_vk_q8_component_owner(backend,strata_q8_gu_strict_fma_spv,sizeof(strata_q8_gu_strict_fma_spv)/4,
-        NativeComponentAddressing::physical64,"strata_native_gu_q8_0_strict_fma_component",4,7,effective_spv_path,size_t(-1),q8_metadata_words);
+    const uint32_t* shader=strata_q8_gu_strict_fma_spv;
+    size_t words=sizeof(strata_q8_gu_strict_fma_spv)/4;
+#ifdef STRATA_NATIVE_Q8_SUBGROUP_EXPERIMENT
+    if(subgroup_experiment) { shader=strata_q8_gu_subgroup_fma_spv; words=sizeof(strata_q8_gu_subgroup_fma_spv)/4; }
 #else
+    logits_guard_need(!subgroup_experiment,"native Q8 subgroup experiment not built");
+#endif
+    result->owner=strata_vk_q8_component_owner(backend,shader,words,
+        NativeComponentAddressing::physical64,"strata_native_gu_q8_0_strict_fma_component",4,7,effective_spv_path,size_t(-1),q8_metadata_words,subgroup_experiment);
+#else
+    logits_guard_need(!subgroup_experiment,"native Q8 subgroup experiment requires strict FMA");
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_gu_spv,sizeof(strata_q8_gu_spv)/4,
         NativeComponentAddressing::physical64,"strata_native_gu_q8_0_fullwarp_component",4,7,effective_spv_path,size_t(-1),q8_metadata_words);
 #endif

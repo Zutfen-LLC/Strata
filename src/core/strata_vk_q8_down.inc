@@ -2,16 +2,27 @@
 #include "strata_q8_down_spv.hpp"
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
 #include "strata_q8_down_strict_fma_spv.hpp"
+#ifdef STRATA_NATIVE_Q8_SUBGROUP_EXPERIMENT
+#include "strata_q8_down_subgroup_fma_spv.hpp"
+#endif
 #endif
 namespace strata::core::portable_detail {
 struct StrataVkQ8Down {std::unique_ptr<StrataVkLogitsGuard> owner;};
-StrataVkQ8Down* strata_vk_q8_down_create(ggml_backend_t backend,const char* path) {
+StrataVkQ8Down* strata_vk_q8_down_create(ggml_backend_t backend,const char* path,bool subgroup_experiment) {
     strata_vk_q8_resident_block_limit(backend);
     auto result=std::make_unique<StrataVkQ8Down>();
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
-    result->owner=strata_vk_q8_component_owner(backend,strata_q8_down_strict_fma_spv,sizeof(strata_q8_down_strict_fma_spv)/4,
-        NativeComponentAddressing::physical64,"strata_native_down_q8_0_strict_fma_component",3,6,path,size_t(-1),q8_metadata_words);
+    const uint32_t* shader=strata_q8_down_strict_fma_spv;
+    size_t words=sizeof(strata_q8_down_strict_fma_spv)/4;
+#ifdef STRATA_NATIVE_Q8_SUBGROUP_EXPERIMENT
+    if(subgroup_experiment) { shader=strata_q8_down_subgroup_fma_spv; words=sizeof(strata_q8_down_subgroup_fma_spv)/4; }
 #else
+    logits_guard_need(!subgroup_experiment,"native Q8 subgroup experiment not built");
+#endif
+    result->owner=strata_vk_q8_component_owner(backend,shader,words,
+        NativeComponentAddressing::physical64,"strata_native_down_q8_0_strict_fma_component",3,6,path,size_t(-1),q8_metadata_words,subgroup_experiment);
+#else
+    logits_guard_need(!subgroup_experiment,"native Q8 subgroup experiment requires strict FMA");
     result->owner=strata_vk_q8_component_owner(backend,strata_q8_down_spv,sizeof(strata_q8_down_spv)/4,
         NativeComponentAddressing::physical64,"strata_native_down_q8_0_fullwarp_component",3,6,path,size_t(-1),q8_metadata_words);
 #endif

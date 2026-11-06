@@ -1495,3 +1495,27 @@ and verifies all824 blob files sequentially using one-blob readback; use a real
 disk with adequate space. No giant host array or new GPU allocation path is
 introduced. This remains a synthetic addressing check, with no native-placement,
 model, numerical-qualification or performance claim.
+
+### Opt-in subgroup reduction experiment
+
+Build with `-DSTRATA_VULKAN_NATIVE_Q8_SUBGROUP_EXPERIMENT=ON` to include
+the separate shaders. The retained replay accepts `--subgroup-experiment` for a separate strict-FMA
+shader variant. The default remains the shared-memory reduction. Admission
+requires full compute subgroups, basic and shuffle operations, and a subgroup
+size of 32 or 64; unsupported devices refuse rather than falling back. The
+variant derives logical lane IDs from full subgroup IDs, retains the 32-lane
+XOR tree and its operand order, and writes effective shader receipts. It is an
+unqualified experiment: host and SPIR-V tests are not hardware parity proof.
+
+Run baseline and experiment from the same build, inputs, selected device and
+runtime into fresh separate directories, adding `--timing --stage-timing` to
+both and `--subgroup-experiment` only to the second. Compare consumed stage
+boundaries and exact original-slot reply bytes before interpreting timing:
+
+```sh
+python3 tools/compare_native_q8_layer.py "$BASE/layer" "$EXPERIMENT/layer" "$REPORT"
+cmp "$BASE/layer.direct.reply" "$EXPERIMENT/layer.direct.reply"
+```
+
+The comparison is specific to the retained request and does not establish
+full-model parity or a throughput improvement.

@@ -95,6 +95,21 @@ function(strata_native_q8_strict_fma_enable out)
       DEPENDS src/kernels/vulkan/native_q8_${stage}.comp src/kernels/vulkan/native_q8_dot.glsl src/kernels/vulkan/native_q8_abi.h cmake/strata_native_stages_embed.cmake VERBATIM)
     add_custom_target(strata_q8_${stage}_strict_fma_shader DEPENDS "${out}/strata_q8_${stage}_strict_fma_spv.hpp")
     add_dependencies(ggml-vulkan strata_q8_${stage}_strict_fma_shader)
+    if(STRATA_VULKAN_NATIVE_Q8_SUBGROUP_EXPERIMENT)
+    set(subgroup_shader "${out}/native_q8_${stage}_subgroup_fma.spv")
+    add_custom_command(OUTPUT "${out}/strata_q8_${stage}_subgroup_fma_spv.hpp"
+      COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O -DSTRATA_NATIVE_Q8_STRICT_FMA=1 -DSTRATA_NATIVE_Q8_SUBGROUP_EXPERIMENT=1
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_q8_${stage}.comp" -o "${subgroup_shader}"
+      COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${subgroup_shader}"
+      COMMAND "${CMAKE_COMMAND}" "-DINPUT=${subgroup_shader}" "-DOUTPUT=${out}/strata_q8_${stage}_subgroup_fma_spv.hpp"
+        "-DARRAY_NAME=strata_q8_${stage}_subgroup_fma_spv" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+      DEPENDS src/kernels/vulkan/native_q8_${stage}.comp src/kernels/vulkan/native_q8_dot.glsl src/kernels/vulkan/native_q8_abi.h cmake/strata_native_stages_embed.cmake VERBATIM)
+    add_custom_target(strata_q8_${stage}_subgroup_fma_shader DEPENDS "${out}/strata_q8_${stage}_subgroup_fma_spv.hpp")
+    add_dependencies(ggml-vulkan strata_q8_${stage}_subgroup_fma_shader)
+    endif()
   endforeach()
   target_compile_definitions(ggml-vulkan PRIVATE STRATA_NATIVE_Q8_STRICT_FMA=1)
+  if(STRATA_VULKAN_NATIVE_Q8_SUBGROUP_EXPERIMENT)
+    target_compile_definitions(ggml-vulkan PRIVATE STRATA_NATIVE_Q8_SUBGROUP_EXPERIMENT=1)
+  endif()
 endfunction()

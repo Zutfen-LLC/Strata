@@ -21,7 +21,7 @@ std::unique_ptr<GpuExecutor> create_vulkan_executor_on_backend(ggml_backend_t ba
 // capture_first_only is for bounded replay timing; default capture behavior stays unchanged.
 // Plan/budget-bound resident slots; 80 active groups/entries, T1..8, K1..10.
 std::unique_ptr<GpuExecutor> create_vulkan_native_q8_observation(ggml_backend_t,uint64_t tensor_budget,
-    const std::string& receipt_prefix,const std::string& capture_prefix = {},bool capture_first_only = false);
+    const std::string& receipt_prefix,const std::string& capture_prefix = {},bool capture_first_only = false,bool subgroup_experiment = false);
 // Optional per-call host durations; stages include synchronization, not GPU-only time.
 struct NativeQ8StageTiming { std::array<double,7> milliseconds{}; };
 // Caller owns the destination and must keep it alive through inference; nullptr disables clocks.

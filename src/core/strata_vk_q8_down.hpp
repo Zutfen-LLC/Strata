@@ -4,7 +4,7 @@
 #include "native_q8_down_layout.hpp"
 namespace strata::core::portable_detail {
 struct StrataVkQ8Down;
-StrataVkQ8Down* strata_vk_q8_down_create(ggml_backend_t,const char* effective_spv_path);
+StrataVkQ8Down* strata_vk_q8_down_create(ggml_backend_t,const char* effective_spv_path,bool subgroup_experiment=false);
 size_t strata_vk_q8_down_bytes(const StrataVkQ8Down*);
 const ggml_tensor* strata_vk_q8_down_metadata_tensor(const StrataVkQ8Down*);
 void strata_vk_q8_down_destroy(StrataVkQ8Down*) noexcept;

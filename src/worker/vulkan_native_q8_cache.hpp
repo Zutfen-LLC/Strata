@@ -37,7 +37,7 @@ class NativeQ8Cache {
         std::ofstream f(capture_+suffix,std::ios::binary);require(bool(f.write(reinterpret_cast<const char*>(b.data()),b.size())),"native Q8 boundary write failed");
     }
 public:
-    NativeQ8Cache(ggml_backend_t backend,size_t slots,size_t budget,const std::string& receipt,const std::string& capture,bool capture_first_only):backend_(backend),slots_(slots),capture_(capture),capture_first_only_(capture_first_only) {
+    NativeQ8Cache(ggml_backend_t backend,size_t slots,size_t budget,const std::string& receipt,const std::string& capture,bool capture_first_only,bool subgroup_experiment=false):backend_(backend),slots_(slots),capture_(capture),capture_first_only_(capture_first_only) {
         using namespace strata::core::portable_detail;
         require(!receipt.empty(),"native Q8 requires receipt prefix");
         native_q8_weight_bytes(slots,budget);
@@ -53,8 +53,8 @@ public:
         uploaded_.resize(slots,false);
         // All size and budget checks finish before any backend allocation.
         activation_.reset(strata_vk_native_stages_create_quant_rn_observation(backend,(receipt+".activation.spv").c_str()));
-        gu_.reset(strata_vk_q8_gu_create(backend,(receipt+".gu.spv").c_str()));
-        down_.reset(strata_vk_q8_down_create(backend,(receipt+".down.spv").c_str()));
+        gu_.reset(strata_vk_q8_gu_create(backend,(receipt+".gu.spv").c_str(),subgroup_experiment));
+        down_.reset(strata_vk_q8_down_create(backend,(receipt+".down.spv").c_str(),subgroup_experiment));
         const size_t component_bytes=strata_vk_native_stages_bytes(activation_.get())+strata_vk_q8_gu_bytes(gu_.get())+strata_vk_q8_down_bytes(down_.get());
         require(component_bytes==projected_components,"native Q8 component allocation accounting changed");
         for(auto& block:blocks_) {

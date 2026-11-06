@@ -32,7 +32,7 @@ void test_upload(ggml_tensor* tensor,const void* data,size_t offset,size_t size)
 using namespace strata::worker;
 using namespace strata::worker::vulkan_detail;
 namespace {
-int owners=0,gu_calls=0,down_calls=0,stage_calls=0,fail_create=0;
+int owners=0,gu_calls=0,down_calls=0,stage_calls=0,fail_create=0,subgroup_creates=0;
 size_t metadata_bytes=0;
 bool fail_down=false,check_weight_owners=false;
 int address_features=3;
@@ -55,8 +55,8 @@ struct StrataVkNativeStages:MetadataOwner{using MetadataOwner::MetadataOwner;};
 struct StrataVkQ8Gu:MetadataOwner{using MetadataOwner::MetadataOwner;};
 struct StrataVkQ8Down:MetadataOwner{using MetadataOwner::MetadataOwner;};
 StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_backend_t b,const char*,size_t){return new StrataVkNativeStages(b,STRATA_Q8_STAGE_WORDS);}
-StrataVkQ8Gu* strata_vk_q8_gu_create(ggml_backend_t b,const char*){return new StrataVkQ8Gu(b,q8_metadata_words);}
-StrataVkQ8Down* strata_vk_q8_down_create(ggml_backend_t b,const char*){return new StrataVkQ8Down(b,q8_metadata_words);}
+StrataVkQ8Gu* strata_vk_q8_gu_create(ggml_backend_t b,const char*,bool subgroup){subgroup_creates+=subgroup;return new StrataVkQ8Gu(b,q8_metadata_words);}
+StrataVkQ8Down* strata_vk_q8_down_create(ggml_backend_t b,const char*,bool subgroup){subgroup_creates+=subgroup;return new StrataVkQ8Down(b,q8_metadata_words);}
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages* p){return p?p->bytes():0;}
 size_t strata_vk_q8_gu_bytes(const StrataVkQ8Gu* p){return p?p->bytes():0;}
 size_t strata_vk_q8_down_bytes(const StrataVkQ8Down* p){return p?p->bytes():0;}
@@ -140,6 +140,15 @@ int main(){try {
             const auto after=cache.allocation_snapshot();require(after.gpu_allocated_bytes==initial.gpu_allocated_bytes && after.gpu_scratch_bytes==initial.gpu_scratch_bytes && after.gpu_allocation_count==5,"run allocation growth");
         }
         const auto prior=cache.run(p,r);auto retained=prior;
+        {
+            const int before=subgroup_creates;
+            NativeQ8Cache experiment(backend.get(),2,128u<<20,"subgroup","",false,true);
+            require(subgroup_creates==before+2,"subgroup selection not passed to both components");
+            experiment.upload(0,blob);experiment.upload(1,blob);
+            const auto experimental=experiment.run(p,r);
+            require(experimental.indices==prior.indices && experimental.rows==prior.rows && experimental.session==prior.session && experimental.sequence==prior.sequence,
+                    "mock subgroup selection changed rows or identity");
+        }
         NativeQ8StageTiming observation;observation.milliseconds.fill(-1);
         cache.stage_timing(&observation);const auto timed=cache.run(p,r);cache.stage_timing(nullptr);
         require(timed.indices==prior.indices && timed.rows==prior.rows && timed.session==prior.session && timed.sequence==prior.sequence,

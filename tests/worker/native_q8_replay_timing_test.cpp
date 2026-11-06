@@ -1,6 +1,7 @@
 #include "native_q8_replay_timing.hpp"
 #include <iostream>
 #include <sstream>
+#include "../../src/core/native_q8_subgroup.hpp"
 using namespace strata::worker;
 using namespace strata::worker::vulkan_detail;
 struct FakeClock {
@@ -20,6 +21,24 @@ int main(){try {
         samples[2].milliseconds[3]=-1;bool rejected=false;
         try{print_native_q8_stage_timing(out,samples);}catch(const std::exception&){rejected=true;}
         require(rejected,"invalid stage duration accepted");
+    }
+    {
+        using strata::core::portable_detail::native_q8_subgroup_supported;
+        for(unsigned size:{16u,32u,64u,128u})for(int flags=0;flags<8;++flags)
+            require(native_q8_subgroup_supported(flags&1,flags&2,flags&4,size)==(flags==7 && (size==32 || size==64)),"subgroup capability admission");
+        for(unsigned width:{32u,64u}) {
+            std::array<float,256> shared{},shuffled{};
+            for(size_t i=0;i<256;++i)shared[i]=shuffled[i]=(i%4==0?1.0e20f:i%4==1?1.0f:i%4==2?-1.0e20f:float(i%31));
+            for(unsigned offset=16;offset;offset>>=1) {
+                auto old=shared,prev=shuffled;
+                for(unsigned tid=0;tid<256;++tid) {
+                    shared[tid]=offset==16?old[tid^offset]+old[tid]:old[tid]+old[tid^offset];
+                    const unsigned subgroup=tid/width,lane=tid%width,partner=subgroup*width+(lane^offset);
+                    shuffled[tid]=offset==16?prev.at(partner)+prev[tid]:prev[tid]+prev.at(partner);
+                }
+            }
+            require(!std::memcmp(shared.data(),shuffled.data(),sizeof(shared)),"subgroup logical XOR tree mismatch");
+        }
     }
     GpuCounters baseline;baseline.gpu_allocated_bytes=1024;baseline.gpu_weight_bytes=512;
     baseline.gpu_scratch_bytes=512;baseline.gpu_allocation_count=4;

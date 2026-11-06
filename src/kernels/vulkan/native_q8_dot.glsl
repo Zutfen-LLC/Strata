@@ -35,6 +35,17 @@ float q8_row_dot(uint64_t base,uint entry,uint nb,uint tid) {
         sum=fma(scale,float(dot),sum);
 #endif
     }
+#ifdef STRATA_NATIVE_Q8_SUBGROUP_EXPERIMENT
+    float first=subgroupShuffle(sum,gl_SubgroupInvocationID ^ 16u);
+    precise float initial=first+sum;
+    sum=initial;
+    for(uint offset=8;offset>0;offset>>=1) {
+        float other=subgroupShuffle(sum,gl_SubgroupInvocationID ^ offset);
+        precise float next=sum+other;
+        sum=next;
+    }
+    return sum;
+#else
     partial[tid]=sum;barrier();
     for(uint offset=16;offset>0;offset>>=1) {
         // The first native FADD lists the shuffled operand first.
@@ -43,4 +54,5 @@ float q8_row_dot(uint64_t base,uint entry,uint nb,uint tid) {
         barrier();partial[tid]=next;barrier();
     }
     return partial[tid];
+#endif
 }

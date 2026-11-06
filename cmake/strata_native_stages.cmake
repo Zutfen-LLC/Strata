@@ -70,6 +70,10 @@ function(strata_enable_native_stages)
         add_dependencies(native_q8_${stage}_strict_fma_shader_test strata_q8_${stage}_strict_fma_shader)
         add_test(NAME native_q8_${stage}_strict_fma_shader_test COMMAND native_q8_${stage}_strict_fma_shader_test "${out}/native_q8_${stage}_strict_effective")
       endforeach()
+      if(STRATA_VULKAN_NATIVE_Q8_SUBGROUP_EXPERIMENT)
+      add_test(NAME native_q8_subgroup_shader_test COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_q8_subgroup.py" "${out}" "${STRATA_SPIRV_DIS}")
+      endif()
       add_test(NAME native_q8_strict_fma_shader_test COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_q8_strict_fma_shader.py" "${out}" "${STRATA_SPIRV_DIS}" "${STRATA_SPIRV_VAL}")
     endif()

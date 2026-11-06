@@ -155,10 +155,11 @@ int main(int argc,char** argv){try {
 #ifdef STRATA_Q8_REPLAY_CLIENT_ONLY
     throw std::runtime_error("CPU-only replay supports --worker or --setup-only");
 #else
-    bool timing=false,stage_timing=false;size_t budget=128u<<20;
+    bool timing=false,stage_timing=false,subgroup_experiment=false;size_t budget=128u<<20;
     for(int arg=10;arg<argc;++arg) {
         const std::string option=argv[arg];
         if(option=="--timing") {require(!timing,"duplicate timing option");timing=true;}
+        else if(option=="--subgroup-experiment") {require(!subgroup_experiment,"duplicate subgroup option");subgroup_experiment=true;}
         else if(option=="--stage-timing") {require(!stage_timing,"duplicate stage timing option");stage_timing=true;}
         else if(option=="--budget-bytes") {
             require(++arg<argc,"budget bytes required");const std::string value=argv[arg];
@@ -168,9 +169,9 @@ int main(int argc,char** argv){try {
     }
     require(!stage_timing || timing,"--stage-timing requires --timing");
     require(argc>=10 && std::string(argv[1])=="--device" && std::string(argv[3])=="--expect-device",
-        "usage: --device INDEX --expect-device NAME CAPTURE RECORD ONE_LAYER_PLAN BLOB_DIR NEW_OUTPUT [--timing [--stage-timing]] [--budget-bytes N]");
+        "usage: --device INDEX --expect-device NAME CAPTURE RECORD ONE_LAYER_PLAN BLOB_DIR NEW_OUTPUT [--timing [--stage-timing]] [--subgroup-experiment] [--budget-bytes N]");
 #ifdef STRATA_Q8_REPLAY_CUDA
-    require(!timing,"--timing is the Vulkan provider observation only");
+    require(!timing && !subgroup_experiment,"timing and subgroup experiment are Vulkan provider observations only");
 #endif
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(60);
     struct Deadline {
@@ -225,8 +226,9 @@ int main(int argc,char** argv){try {
         !rejected.gpu_allocated_bytes && !rejected.gpu_weight_bytes && !rejected.gpu_scratch_bytes && !rejected.gpu_allocation_count &&
         !vulkan_native_q8_allocation_snapshot(small.get(),rejected),"native Q8 weights-only budget refusal/rollback failed");
     small.reset();
-    auto executor=create_vulkan_native_q8_observation(backend.get(),budget,prefix,prefix,timing);GpuCounters counters;EntryRowsReply reply;
+    auto executor=create_vulkan_native_q8_observation(backend.get(),budget,prefix,prefix,timing,subgroup_experiment);GpuCounters counters;EntryRowsReply reply;
     require(executor->prepare_source(p,reader,counters,error),error);
+    std::cout<<"subgroup_experiment="<<int(subgroup_experiment)<<" qualified=false\n";
     if(timing) {
         std::array<NativeQ8StageTiming,16> stage_samples{};size_t call=0;
         auto infer=[&](EntryRowsReply& rows){
