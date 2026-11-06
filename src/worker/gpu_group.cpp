@@ -23,7 +23,7 @@ struct GpuWorkerGroup::Impl {
         GpuWorkerTier tier;
         std::mutex mutex;
         std::condition_variable wake;
-        bool stopping=false, pending=false, busy=false;
+        bool stopping=false, pending=false, busy=false, orderly=false;
         int interval=50;
         Request request;
         std::vector<float> output;
@@ -89,8 +89,17 @@ struct GpuWorkerGroup::Impl {
         }
         // Failed peers stop every socket owner. An exchange already in progress
         // completes/fails under its existing deadline before this point.
+        const bool orderly=p.orderly && !failed.load() && !p.pending && !p.busy;
         p.pending=p.busy=false; p.wake.notify_all();
-        lock.unlock(); p.tier.close();
+        lock.unlock();
+        if (orderly) {
+            std::string why;
+            bool ok=false;
+            try {ok=p.tier.close_orderly(why);}
+            catch (const std::exception& e) {why=e.what();}
+            catch (...) {why="exception in CUDA orderly close";}
+            if (!ok) {std::lock_guard<std::mutex> guard(p.mutex);p.error=why;failed.store(true);p.tier.close();}
+        } else p.tier.close();
     }
 };
 
@@ -158,6 +167,23 @@ void GpuWorkerGroup::close() {
     for(auto& p:d.peers) {std::lock_guard<std::mutex> lock(p->mutex);p->stopping=true;p->wake.notify_all();}
     for(auto& p:d.peers) {if(p->thread.joinable())p->thread.join();p->tier.close();}
     d.peers.clear();d.ready=d.posted=d.finished=false;d.outputs.clear();d.rows.clear();d.masks.clear();d.active.clear();
+}
+bool GpuWorkerGroup::close_orderly(std::string& err) {
+    auto& d=*impl_;
+    if (!d.ready || d.failed.load() || d.posted) {err=d.error();return false;}
+    for (auto& p:d.peers) {
+        std::lock_guard<std::mutex> lock(p->mutex);
+        if (p->pending || p->busy) {err="CUDA group has work in flight";return false;}
+    }
+    for (auto& p:d.peers) {
+        std::lock_guard<std::mutex> lock(p->mutex);
+        p->orderly=true;p->stopping=true;p->wake.notify_all();
+    }
+    for (auto& p:d.peers) if (p->thread.joinable()) p->thread.join();
+    const bool ok=!d.failed.load();
+    if (!ok) err=d.error();
+    close();
+    return ok;
 }
 bool GpuWorkerGroup::holds(int64_t l,int32_t e)const{return impl_->owner(l,e)>=0;}
 bool GpuWorkerGroup::dead()const{return impl_->failed.load();}
