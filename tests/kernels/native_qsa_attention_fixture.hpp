@@ -9,6 +9,15 @@ using namespace native_hc_fixture;
 using namespace strata::core::portable_detail;
 constexpr uint32_t canary=0x4acaf00d;
 inline std::array<size_t,13> counts(uint32_t cells){size_t pages=(cells+3)/4;return {{pages*1024,pages*1024,6144,pages,2051,4,12288,204400,101376,6984,6144,12288,6144}};}
+// CUDA reference peak: all 13 guarded tensors, the persistent ones/sigmoid
+// controls, and the two simultaneous input/output primitive-exp tensors.
+inline size_t reference_device_bound(uint32_t cells){
+ native_hc_need(cells>=1&&cells<=4096,"QSA reference capacity");size_t words=0;
+ for(size_t n:counts(cells)){native_hc_need(n<=SIZE_MAX-16&&words<=SIZE_MAX-n-16,"QSA reference tensor bound overflow");words+=n+16;}
+ for(size_t n:{size_t(6144),size_t(6144),size_t(50688),size_t(50688)}){native_hc_need(words<=SIZE_MAX-n,"QSA reference control bound overflow");words+=n;}
+ native_hc_need(words<=SIZE_MAX/4,"QSA reference byte bound overflow");return words*4;
+}
+inline bool reference_device_admit(size_t limit,size_t live,size_t words){return live<=limit&&words<=(limit-live)/sizeof(uint32_t);}
 struct Fixture{uint32_t cells=256;std::array<std::vector<uint32_t>,7>in;};
 inline std::array<int32_t,4> step(const Fixture&f){std::array<int32_t,4>s{};std::memcpy(s.data(),f.in[5].data(),16);return s;}
 inline float half(const std::vector<uint32_t>&v,size_t i){return ggml_fp16_to_fp32(ggml_fp16_t((v[i/2]>>((i%2)*16))&65535));}
