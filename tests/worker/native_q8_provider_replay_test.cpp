@@ -58,13 +58,16 @@ int main(int argc,char** argv) {try {
         auto cache=f.root/("worker-"+std::to_string(token));fs::create_directory(cache);
         GpuWorkerOptions options;options.vulkan=options.native_q8=true;options.runtime_reserve=0;options.plan=plan;options.cache_root=cache.string();options.cache_budget=64ull<<20;
 #ifdef STRATA_TEST_TLS
-        TlsFixture tls;if(token==0)options.tls=tls.config("worker","coordinator.test");
+        std::unique_ptr<TlsFixture> tls;
+        if(token==0 && !std::getenv("STRATA_PROVIDER_TEST_SKIP_TLS_FIXTURE")) {
+            tls=std::make_unique<TlsFixture>();options.tls=tls->config("worker","coordinator.test");
+        }
 #endif
         GpuWorkerService service(options,std::make_unique<MockProviderExecutor>());uint16_t port=0;require(service.listen(port,error),error);
         std::thread server([&]{service.run();});struct Join{GpuWorkerService& s;std::thread& t;~Join(){s.stop();t.join();}} join{service,server};
         std::vector<std::string> args={argv[1],"--provider","127.0.0.1:"+std::to_string(port),path,"0",plan_path,(f.root/"blobs").string(),(direct/"layer.direct.reply").string(),(f.root/("out-"+std::to_string(token))).string(),"--deadline-ms","10000","--token-index",std::to_string(token)};
 #ifdef STRATA_TEST_TLS
-        if(token==0){const auto c=tls.config("coordinator","worker.test");args.insert(args.end(),{"--tls-ca",c.ca_file,"--tls-cert",c.cert_file,"--tls-key",c.key_file,"--tls-peer",c.peer_dns});}
+        if(tls){const auto c=tls->config("coordinator","worker.test");args.insert(args.end(),{"--tls-ca",c.ca_file,"--tls-cert",c.cert_file,"--tls-key",c.key_file,"--tls-peer",c.peer_dns});}
 #endif
         require(invoke_provider(args)==0 && fs::exists(fs::path(args[8])/"PASS"),"provider replay failed");
         args[8]=(f.root/("wrong-reference-"+std::to_string(token))).string();args[12]=std::to_string(1-token);
@@ -76,7 +79,7 @@ int main(int argc,char** argv) {try {
         const int missing_result=invoke_provider(args);fs::rename(first_blob.string()+".held",first_blob);
         require(missing_result!=0 && fs::exists(fs::path(args[8])/"FAILURE"),"missing blob accepted");
 #ifdef STRATA_TEST_TLS
-        if(token==0){args[8]=(f.root/"wrong-san").string();args.back()="wrong.test";
+        if(tls){args[8]=(f.root/"wrong-san").string();args.back()="wrong.test";
             require(invoke_provider(args)!=0 && fs::exists(fs::path(args[8])/"FAILURE") && !fs::exists(fs::path(args[8])/"PASS"),"wrong SAN accepted");}
 #endif
     }
