@@ -66,8 +66,9 @@ struct Fixture {
                 "paired synthetic range starts on an even expert");
         n_expert = experts;
         blobs.resize(2 * experts);
-        char path[] = "/tmp/strata-worker-local-XXXXXX";
-        const auto r = ::mkdtemp(path);
+        const auto pattern = (fs::temp_directory_path() / "strata-worker-local-XXXXXX").string();
+        std::vector<char> path(pattern.begin(),pattern.end());path.push_back('\0');
+        const auto r = ::mkdtemp(path.data());
         require(r, "mkdtemp");
         root = r;
         struct Construction {

@@ -38,7 +38,8 @@ int invoke(const std::vector<std::string>& args) {
     int status;check(waitpid(child,&status,0)==child && WIFEXITED(status),"wait");return WEXITSTATUS(status);
 }
 int main(int argc,char** argv){try {
-    check(argc==3,"expected replay and fixture binaries");char tmp[]="/tmp/native-q8-worker-test-XXXXXX";const char* root=mkdtemp(tmp);check(root,"mkdtemp");fs::path dir=root,fixture=dir/"fixture";
+    check(argc==3,"expected replay and fixture binaries");const auto pattern=(fs::temp_directory_path()/"native-q8-worker-test-XXXXXX").string();
+    std::vector<char> tmp(pattern.begin(),pattern.end());tmp.push_back('\0');const char* root=mkdtemp(tmp.data());check(root,"mkdtemp");fs::path dir=root,fixture=dir/"fixture";
     check(invoke({argv[2],"--stage-check80",fixture.string()})==0,"stage fixture");
     std::string err;CpuCaptureFile capture;GpuPlan plan;check(read_cpu_capture((fixture/"capture.bin").string(),capture,err),err.c_str());
     check(read_gpu_plan((fixture/"one-layer.plan").string(),plan,err),err.c_str());auto q=capture.records[0].request;
