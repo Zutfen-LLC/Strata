@@ -60,15 +60,16 @@ void activate(float v,bool silu,out float e,out float a){
   checked(a);if(top!=0.0&&a==0.0)flag(64u);
  }
 }
-void main(){uint tid=gl_LocalInvocationID.x,row=gl_WorkGroupID.x;
+void main(){uint tid=gl_LocalInvocationID.x,row=gl_WorkGroupID.x,token=gl_WorkGroupID.y;
+ if(token>=p.tokens)return;
  if(p.mode==3u){uint i=row*256u+tid;if(i<10240u){float e,a;activate(checked(x[p.xb+i]),false,e,a);output_values[p.ob+i]=e;activation[p.ab+i]=a;}return;}
 
  if(p.mode<2u){uint width=p.mode==0u?10240u:320u;precise float acc=0.0;
   // Native eight-FMA chunks, then chunk addition, then logical warp XOR.
-  if(tid<32u)for(uint chunk=tid;chunk<width/8u;chunk+=32u){precise float d=0.0;for(uint k=0u;k<8u;++k){uint j=chunk*8u+k,at=row*width+j,word=weights[p.wb+at/2u];float w=uintBitsToFloat(at%2u==0u?word<<16:word&0xffff0000u);d=checked(hc_fma(checked(w),checked(x[p.xb+j]),d));}if(p.mode==1u&&chunk==tid)acc=d;else acc=checked(acc+d);}
+  if(tid<32u)for(uint chunk=tid;chunk<width/8u;chunk+=32u){precise float d=0.0;for(uint k=0u;k<8u;++k){uint j=chunk*8u+k,at=row*width+j,word=weights[p.wb+at/2u];float w=uintBitsToFloat(at%2u==0u?word<<16:word&0xffff0000u);d=checked(hc_fma(checked(w),checked(x[p.xb+token*width+j]),d));}if(p.mode==1u&&chunk==tid)acc=d;else acc=checked(acc+d);}
   sums[tid]=acc;barrier();for(uint offset=16u;offset>0u;offset>>=1u){precise float next=sums[tid]+sums[tid^offset];barrier();sums[tid]=checked(next);barrier();}
-  if(tid==0u){precise float v=sums[0];if(p.mode==0u)v=checked(v*0.25);pre[p.pb+row]=v;
-   float e,a;activate(v,p.mode==0u,e,a);output_values[p.ob+row]=e;activation[p.ab+row]=a;}
+  if(tid==0u){precise float v=sums[0];if(p.mode==0u)v=checked(v*0.25);pre[p.pb+token*(p.mode==0u?320u:10240u)+row]=v;
+   float e,a;activate(v,p.mode==0u,e,a);output_values[p.ob+token*(p.mode==0u?320u:10240u)+row]=e;activation[p.ab+token*(p.mode==0u?320u:10240u)+row]=a;}
 
- }else{uint d=row*256u+tid;if(d>=2560u)return;precise float s=0.0;for(uint c=0u;c<4u;++c){precise float term=checked(checked(x[p.xb+c*2560u+d])*checked(gates[p.gb+c*2560u+d]));s=checked(s+term);}precise float mean=s*0.25;output_values[p.ob+d]=checked(mean);}
+ }else{uint d=row*256u+tid;if(d>=2560u)return;precise float s=0.0;for(uint c=0u;c<4u;++c){precise float term=checked(checked(x[p.xb+token*10240u+c*2560u+d])*checked(gates[p.gb+token*10240u+c*2560u+d]));s=checked(s+term);}precise float mean=s*0.25;output_values[p.ob+token*2560u+d]=checked(mean);}
 }

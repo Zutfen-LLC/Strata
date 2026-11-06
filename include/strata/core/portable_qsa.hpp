@@ -99,6 +99,26 @@ struct PortableQsaTrace {
     std::vector<float> projected_output; // actual post-attn_output.weight producer
     PortableFfnHcTrace hc; // existing HC tuple/own-input field representation
 };
+class PortableQsaLayer;
+
+// Immutable owned values; validity is scoped to the issuing producer generation.
+class PortableQsaSnapshot {
+  public:
+    int64_t layer() const { return layer_; }
+    uint64_t position() const { return position_; }
+    uint64_t generation() const { return generation_; }
+    const PortableHcPendingWrite& tuple() const { return tuple_; }
+    bool valid_for(const PortableQsaLayer& expected_owner, int64_t consumer_layer, uint64_t position) const;
+  private:
+    struct Owner;
+    PortableQsaSnapshot(std::shared_ptr<Owner>, int64_t, uint64_t, uint64_t, const PortableHcPendingWrite&);
+    std::shared_ptr<Owner> owner_;
+    int64_t layer_;
+    uint64_t position_, generation_;
+    PortableHcPendingWrite tuple_;
+    friend class PortableQsaLayer;
+};
+
 // Opt-in complete qwen4exp QSA layers 3/7/.../47, one text sequence, T1 or causal T1..8 chunks.
 // Positions must be contiguous starting at zero. K/V retain the CUDA FP16
 // storage policy; raw indexer tail and normalized/rotated pooled keys are F32.
@@ -132,6 +152,8 @@ class PortableQsaLayer {
     uint64_t native_ffn_hc_write_calls() const;
     uint64_t deferred_hc_outputs() const;
     const PortableHcPendingWrite& pending_write() const;
+    // Latest successful deferred T1 commit only; retained snapshots survive later commits.
+    std::shared_ptr<const PortableQsaSnapshot> pending_snapshot(std::string& error) const;
     // Opt-in T1..8 causal layer chunk. Token IDs bind the single-sequence
     // interface (QSA uses contiguous positions); rows are [H,HC,T]. Failure
     // preserves public receipts and poisons either policy until reset/replay.
@@ -174,6 +196,7 @@ class PortableQsaLayer {
   private:
     bool step_impl(uint64_t position,const std::vector<float>& residual,const PortableHcPendingWrite* pending,
                    const PortableExpertRows& dispatch,PortableRoute& route,std::string& error,PortableQsaTrace* trace);
+    friend class PortableQsaSnapshot;
     struct Impl;
     explicit PortableQsaLayer(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;

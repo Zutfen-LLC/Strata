@@ -153,7 +153,19 @@ size_t PortableGdnScratch::graph_bytes() const {
     return bytes;
 }
 
+struct PortableGdnSnapshot::Owner {
+    uint64_t generation = 0;
+    bool alive = true;
+};
+PortableGdnSnapshot::PortableGdnSnapshot(std::shared_ptr<Owner> owner, int64_t layer, uint64_t position,
+                                         uint64_t generation, const PortableHcPendingWrite& tuple)
+    : owner_(std::move(owner)), layer_(layer), position_(position), generation_(generation), tuple_(tuple) {}
+
 struct PortableGdnLayer::Impl {
+    std::shared_ptr<PortableGdnSnapshot::Owner> snapshot_owner = std::make_shared<PortableGdnSnapshot::Owner>();
+    int64_t layer;
+    bool snapshot_available = false;
+    ~Impl() { snapshot_owner->alive = false; }
     PortableGdnOptions options;
     portable_detail::Backend cpu{nullptr, ggml_backend_free};
     Context weights_ctx{nullptr, ggml_free}, ctx{nullptr, ggml_free};
@@ -954,7 +966,7 @@ struct PortableGdnLayer::Impl {
         ~Borrow() { release(); }
     };
 
-    Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : options(opts) {
+    Impl(int64_t layer, const std::vector<PortableTensorView> &tensors, PortableGdnOptions opts) : layer(layer), options(opts) {
         require(layer >= 0 && layer < 48 && layer % 4 != 3,
                 "portable GDN: expected a non-QSA layer in [0,47]");
         require(!options.execution.defer_hc_write,"portable GDN: configure deferred write through layer option");
@@ -1302,6 +1314,15 @@ std::unique_ptr<PortableGdnLayer> PortableGdnLayer::from_gguf(const GgufModel &m
 }
 bool PortableGdnLayer::reset(std::string &error) {
     error.clear();
+    // Invalidate even if reset subsequently fails; never wrap a generation.
+    impl_->snapshot_available = false;
+    if (impl_->snapshot_owner->generation == UINT64_MAX) {
+        impl_->snapshot_owner->alive = false;
+        error = "portable GDN: snapshot generation exhausted";
+        return false;
+    }
+    ++impl_->snapshot_owner->generation;
+    impl_->snapshot_owner->alive = false;
     try {
         Impl::Borrow borrow(*impl_,false);
         impl_->state_healthy = false;
@@ -1333,6 +1354,7 @@ bool PortableGdnLayer::reset(std::string &error) {
         impl_->count = 0;
         if(!next_placement.empty()) impl_->placement.swap(next_placement);
         impl_->state_healthy = true;
+        impl_->snapshot_owner->alive = true;
         return true;
     } catch (const std::exception &e) {
         error = e.what();
@@ -1411,6 +1433,7 @@ bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residua
         }
         s.previous = next_previous;
         s.last.swap(next_residual);s.pending.swap(next_pending);
+        s.snapshot_available = !s.pending.empty();
         ++s.count;
         if(!next_placement.empty()) s.placement.swap(next_placement);
         route = std::move(candidate);
@@ -1418,13 +1441,19 @@ bool PortableGdnLayer::step_impl(int32_t token,const std::vector<float>& residua
             *trace = std::move(next_trace);
         return true;
     } catch (const std::exception &e) {
-        if (impl_->production())
+        impl_->snapshot_available = false;
+        if (impl_->production()) {
             impl_->state_healthy = false;
+            impl_->snapshot_owner->alive = false;
+        }
         error = e.what();
         return false;
     } catch (...) {
-        if (impl_->production())
+        impl_->snapshot_available = false;
+        if (impl_->production()) {
             impl_->state_healthy = false;
+            impl_->snapshot_owner->alive = false;
+        }
         error = "portable GDN: unknown execution failure; reset required";
         return false;
     }
@@ -1521,8 +1550,8 @@ bool PortableGdnLayer::run_chunk(const std::vector<int32_t>& tokens, uint64_t po
         s.placement.swap(placement); s.chunk_work = work;
         residual_rows.swap(completed); routes.swap(candidate);
         return true;
-    } catch(const std::exception& e) { s.state_healthy=false; error=e.what(); return false; }
-      catch(...) { s.state_healthy=false; error="portable GDN: unknown chunk failure; reset required"; return false; }
+    } catch(const std::exception& e) { s.state_healthy=false; s.snapshot_available=false; s.snapshot_owner->alive=false; error=e.what(); return false; }
+      catch(...) { s.state_healthy=false; s.snapshot_available=false; s.snapshot_owner->alive=false; error="portable GDN: unknown chunk failure; reset required"; return false; }
 }
 uint64_t PortableGdnLayer::causal_chunk_calls() const { return impl_->causal_calls; }
 uint64_t PortableGdnLayer::causal_residual_handoffs() const { return impl_->residual_handoffs; }
@@ -1550,6 +1579,30 @@ uint64_t PortableGdnLayer::tokens() const { return impl_->count; }
 uint64_t PortableGdnLayer::native_ffn_hc_write_calls() const {return impl_->ffn->native_hc_write_calls();}
 uint64_t PortableGdnLayer::native_ffn_hc_pending_calls() const {return impl_->ffn->native_hc_pending_calls();}
 const PortableHcPendingWrite& PortableGdnLayer::pending_write() const {return impl_->pending;}
+std::shared_ptr<const PortableGdnSnapshot> PortableGdnLayer::pending_snapshot(std::string& error) const {
+    error.clear();
+    try {
+        require(impl_->snapshot_available && impl_->snapshot_owner->alive && impl_->state_healthy,
+                "portable GDN: no committed snapshot available");
+        return std::shared_ptr<const PortableGdnSnapshot>(new PortableGdnSnapshot(
+            impl_->snapshot_owner, impl_->layer, impl_->count-1, impl_->snapshot_owner->generation, impl_->pending));
+    } catch (const std::exception& e) { error=e.what(); return {}; }
+}
+bool PortableGdnSnapshot::valid_for(const PortableGdnLayer& producer, int64_t consumer_layer, uint64_t position) const {
+    return owner_ == producer.impl_->snapshot_owner && owner_->alive && owner_->generation == generation_ &&
+           layer_ + 1 == consumer_layer && position_ == position;
+}
+bool PortableGdnLayer::step_pending(const PortableGdnLayer& producer, const PortableGdnSnapshot& snapshot, const PortableExpertRows& dispatch,
+                                    PortableRoute& route, std::string& error, PortableGdnTrace* trace, PortableGdnWork* work) {
+    if (!snapshot.valid_for(producer, impl_->layer, impl_->count)) {
+        error = "portable GDN: stale or mismatched pending snapshot";
+        route = {};
+        if (trace) *trace = {};
+        return false;
+    }
+    const auto& tuple = snapshot.tuple_;
+    return step_pending(tuple.residual, tuple.block, tuple.injection, dispatch, route, error, trace, work);
+}
 uint64_t PortableGdnLayer::deferred_hc_outputs() const {return impl_->ffn->work().deferred_hc_outputs;}
 uint64_t PortableGdnLayer::native_hc_pending_calls() const {
 #ifdef STRATA_PORTABLE_NATIVE_HC

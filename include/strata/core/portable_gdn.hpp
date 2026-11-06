@@ -101,9 +101,31 @@ struct PortableGdnTrace {
     std::vector<float> ple_embedding, ple_key, ple_value, ple_gate, ple_normalized, ple_convolution, ple_residual;
 };
 
+class PortableGdnLayer;
+// Producer-issued value object. Copies share immutable values and a lifetime/generation
+// guard; only PortableGdnLayer can construct one.
+class PortableGdnSnapshot {
+  public:
+    int64_t layer() const { return layer_; }
+    uint64_t position() const { return position_; }
+    uint64_t generation() const { return generation_; }
+    const PortableHcPendingWrite& tuple() const { return tuple_; }
+    bool valid_for(const PortableGdnLayer& expected_owner, int64_t consumer_layer, uint64_t position) const;
+  private:
+    struct Owner;
+    PortableGdnSnapshot(std::shared_ptr<Owner> owner, int64_t layer, uint64_t position,
+                        uint64_t generation, const PortableHcPendingWrite& tuple);
+    std::shared_ptr<Owner> owner_;
+    int64_t layer_;
+    uint64_t position_, generation_;
+    PortableHcPendingWrite tuple_;
+    friend class PortableGdnLayer;
+};
+
 // Complete qwen4exp non-QSA layers 0..47, T1 and causal T1..8 chunks: configured PLE, HC/GDN,
 // PortableFfn. Exact fleet geometry only. QSA layers are rejected.
 class PortableGdnLayer {
+    friend class PortableGdnSnapshot;
   public:
     static std::unique_ptr<PortableGdnLayer> create(int64_t layer, const std::vector<PortableTensorView> &tensors,
                                                     PortableGdnOptions options, std::string &error);
@@ -155,6 +177,14 @@ class PortableGdnLayer {
     uint64_t native_ffn_hc_pending_calls() const;
     uint64_t native_ffn_hc_write_calls() const;
     const PortableHcPendingWrite& pending_write() const;
+    // Null unless the latest attempt committed a deferred tuple. Owned snapshots
+    // survive later successful commits, but not producer reset/destruction.
+    std::shared_ptr<const PortableGdnSnapshot> pending_snapshot(std::string& error) const;
+    // The caller must identify the actual expected producer, not just its layer.
+    // Validate its identity and generation, adjacent layer and consumer position.
+    bool step_pending(const PortableGdnLayer& producer, const PortableGdnSnapshot& snapshot, const PortableExpertRows& dispatch,
+                      PortableRoute& route, std::string& error, PortableGdnTrace* trace=nullptr,
+                      PortableGdnWork* work=nullptr);
     uint64_t deferred_hc_outputs() const;
     uint64_t native_convolution_calls() const;
     uint64_t native_ab_calls() const;
