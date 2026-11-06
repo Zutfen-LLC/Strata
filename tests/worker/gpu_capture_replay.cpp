@@ -3,6 +3,7 @@
 #include "strata/worker/cpu_capture.hpp"
 #include "strata/worker/gpu_group.hpp"
 #include "strata/worker/gpu_worker.hpp"
+#include "strata/worker/gpu_wire.hpp"
 #include "mixed_rows.hpp"
 #include "cpu_capture_rows.hpp"
 #include "ggml-cpu.h"
@@ -179,6 +180,62 @@ void export_cpu_row(const fs::path& prefix,const CpuRows& c,const cpu::NativeFmt
     write(".gate.f32",c.gate.data()+t*640,640*4);write(".up.f32",c.up.data()+t*640,640*4);
     write(".hidden.f32",c.hidden.data()+t*640,640*4);write(".hidden.q8_0",c.hq.data()+t*fmt.h_bytes,fmt.h_bytes);
     write(".row.f32",c.rows.data()+t*2560,2560*4);
+}
+std::vector<float> retained_gpu_rows(const InferRequest& captured,const GpuPlan& plan,
+                                     const std::vector<uint8_t>& request,const std::vector<uint8_t>& reply) {
+    InferRequest q;
+    require(gpu_codec::decode_request(plan,request,q),"invalid direct canonical request");
+    require(q.layer==captured.layer && q.T==captured.T && q.K==captured.K && q.ids==captured.ids &&
+            q.mask==captured.mask && q.weights.size()==captured.weights.size() &&
+            q.activations.size()==captured.activations.size() &&
+            !std::memcmp(q.weights.data(),captured.weights.data(),q.weights.size()*4) &&
+            !std::memcmp(q.activations.data(),captured.activations.data(),q.activations.size()*4),
+            "direct request differs from captured entries, weights or activations");
+    EntryRowsReply decoded;
+    require(gpu_codec::decode_rows_reply(plan,blob_digest(request),q,reply,decoded),"invalid direct row reply binding");
+    require(decoded.indices.size()==q.mask.size() && decoded.rows.size()==q.mask.size()*2560,
+            "direct reply incomplete");
+    for(size_t i=0;i<decoded.indices.size();++i)require(decoded.indices[i]==i && q.mask[i]==1,"direct row association mismatch");
+    return decoded.rows;
+}
+std::vector<uint8_t> bounded_file(const fs::path& path,size_t limit) {
+    std::ifstream in(path,std::ios::binary|std::ios::ate);require(bool(in),"direct artifact open failed");
+    const auto size=in.tellg();require(size>=0 && uint64_t(size)<=limit,"direct artifact size invalid");
+    std::vector<uint8_t> bytes(size_t(size),uint8_t{});in.seekg(0);
+    require(bool(in.read(reinterpret_cast<char*>(bytes.data()),bytes.size())),"direct artifact read failed");return bytes;
+}
+// The retained record has one entry per expert. Refuse repeats rather than
+// substituting one-token calls for the worker's grouped multi-token dispatch.
+void cpu_record(const CpuCaptureFile& f,size_t record,const GpuPlan& plan,const fs::path& blobs,const fs::path& root) {
+    require(record<f.records.size() && f.records[record].sent,"CPU record absent/not sent");
+    (void)select(f,{plan});
+    const auto& q=f.records[record].request;
+    require(q.T>=1 && q.T<=2 && q.K>=1 && q.K<=10 && q.mask.size()==size_t(q.T)*q.K &&
+            q.ids.size()==q.mask.size() && q.weights.size()==q.mask.size() &&
+            q.activations.size()==size_t(q.T)*2560 && !q.packed,"CPU record geometry");
+    std::set<uint16_t> seen;
+    for(size_t i=0;i<q.mask.size();++i)
+        require(q.mask[i]==1 && seen.insert(q.ids[i]).second && plan.find(q.layer,q.ids[i]),
+                "CPU record requires all original entries and distinct assigned experts");
+    require(fs::create_directory(root),"CPU record output must be a new directory");
+    fs::permissions(root,fs::perms::owner_all,fs::perm_options::replace);
+    cpu_info();cpu::NativeFmt fmt;std::string err;
+    require(cpu::native_fmt(8,8,2560,640,fmt,err),err);
+    std::vector<float> rows(q.mask.size()*2560);
+    for(size_t i=0;i<q.mask.size();++i) {
+        const auto& asset=*plan.find(q.layer,q.ids[i]);
+        const auto blob=read_blob((blobs/key(plan,asset)).string(),asset);
+        const auto result=cpu_rows(q,blob,fmt);const size_t token=i/q.K;
+        export_cpu_row(root/("entry-"+std::to_string(i)),result,fmt,token);
+        std::copy_n(result.rows.data()+token*2560,2560,rows.data()+i*2560);
+        std::printf("CPU_ENTRY record=%zu entry=%zu token=%zu expert=%u\n",record,i,token,q.ids[i]);
+    }
+    std::vector<float> union_rows(size_t(q.T)*2560);
+    ExpertWorkerService::accumulate_partial(q.T,q.K,q.mask.data(),q.weights.data(),rows.data(),2560,union_rows.data());
+    auto write=[&](const char* name,const std::vector<float>& values){std::ofstream out(root/name,std::ios::binary);
+        require(bool(out.write(reinterpret_cast<const char*>(values.data()),values.size()*sizeof(float))),"CPU record write failed");};
+    write("rows.f32",rows);write("union.f32",union_rows);
+    std::printf("CPU_RECORD record=%zu T=%u K=%u entries=%zu native_rows=1 grouped_distinct=1\n",record,q.T,q.K,q.mask.size());
 }
 void cpu_control(const CpuCaptureFile& f,const std::vector<GpuPlan>& plans,const fs::path& blobs,const fs::path& root) {
     (void)select(f,plans);require(f.records.size()>828,"CPU control requires original record IDs 0 and 828");
@@ -840,6 +897,24 @@ int main(int argc,char** argv) {
             throw std::runtime_error("--boundary needs CUDA target gpu_capture_replay; CPU reuse gates passed, CUDA not run");
 #endif
         }
+        if((argc==7 || argc==9) && std::string(argv[1])=="--cpu-record") {
+            CpuCaptureFile f;GpuPlan p;std::string err;
+            require(read_cpu_capture(argv[2],f,err),err);
+            const std::string ordinal=argv[3];
+            require(!ordinal.empty() && ordinal.find_first_not_of("0123456789")==std::string::npos,"invalid record index");
+            require(read_gpu_plan(argv[6],p,err),err);
+            const size_t record=std::stoull(ordinal);require(record<f.records.size(),"record absent");
+            std::vector<float> gpu;
+            if(argc==9)gpu=retained_gpu_rows(f.records[record].request,p,bounded_file(argv[7],1u<<20),bounded_file(argv[8],1u<<20));
+            cpu_record(f,record,p,argv[4],argv[5]);
+            if(argc==9) {
+                const auto& q=f.records[record].request;std::vector<float> sum(size_t(q.T)*2560);
+                ExpertWorkerService::accumulate_partial(q.T,q.K,q.mask.data(),q.weights.data(),gpu.data(),2560,sum.data());
+                std::ofstream out(fs::path(argv[5])/"vulkan-union.f32",std::ios::binary);
+                require(bool(out.write(reinterpret_cast<const char*>(sum.data()),sum.size()*4)),"Vulkan union write failed");
+            }
+            return 0;
+        }
         if(argc==2 && std::string(argv[1])=="--self-check") {
             // The real fixture writes GGUF slices, so test digest refusal separately below.
             Fixture fixture;GpuPlan p;std::string err;require(make_gpu_plan(fixture.m,{{0,1}},p,err),err);
@@ -878,6 +953,28 @@ int main(int argc,char** argv) {
             trace_check(tq,p,tr);tr.tok[1]=0;refused=false;try{trace_check(tq,p,tr);}catch(...){refused=true;}require(refused,"bad actual trace mapping refused");
             GpuPlan full;require(make_gpu_plan(fixture.m,{{0,0},{0,1}},full,err),err);
             require(subset_plan(full,full.assets).placement_id==full.placement_id,"multi-expert subset preserves metadata");
+            auto distinct=f;auto& dq=distinct.records[0].request;
+            dq.K=1;dq.ids={0,1};dq.mask={1,1};dq.weights={.25f,.75f};
+            const auto record_out=fixture.root/"cpu-record";
+            cpu_record(distinct,0,full,fixture.root,record_out);
+            require(fs::file_size(record_out/"rows.f32")==2*2560*4 &&
+                    fs::file_size(record_out/"union.f32")==2*2560*4 &&
+                    fs::file_size(record_out/"entry-1.row.f32")==2560*4,"CPU record exports original rows and union");
+            auto duplicate=distinct;duplicate.records[0].request.ids[1]=0;refused=false;
+            try{cpu_record(duplicate,0,full,fixture.root,fixture.root/"duplicate");}catch(...){refused=true;}
+            require(refused && !fs::exists(fixture.root/"duplicate"),"CPU record refuses grouped duplicate before output");
+            auto direct=dq;direct.model_id=full.model_id;direct.partition_id=full.placement_id.a;direct.session=1;direct.sequence=1;
+            std::vector<uint8_t> canonical,encoded;
+            require(gpu_codec::encode_request(full,direct,canonical),"fixture canonical request");
+            EntryRowsReply reply;reply.session=1;reply.sequence=1;reply.indices={0,1};reply.rows.assign(2*2560,0.5f);
+            require(gpu_codec::encode_rows_reply(full,blob_digest(canonical),direct,reply,encoded),"fixture row reply");
+            require(retained_gpu_rows(dq,full,canonical,encoded)==reply.rows,"retained direct rows preserve slots");
+            auto changed=dq;changed.weights[0]=.5f;refused=false;
+            try{retained_gpu_rows(changed,full,canonical,encoded);}catch(...){refused=true;}
+            require(refused,"changed retained weights refused");
+            encoded[48]^=1;refused=false;
+            try{retained_gpu_rows(dq,full,canonical,encoded);}catch(...){refused=true;}
+            require(refused,"tampered direct reply binding refused");
             const auto out=fixture.root/"cpu-export";export_cpu_row(out,c,fixture.fmt,0);size_t exported=0;
             for(const char* suffix:{".input.q8_0",".gate.f32",".up.f32",".hidden.f32",".hidden.q8_0",".row.f32"})exported+=fs::file_size(out.string()+suffix);
             require(exported==21320,"one-entry CPU export size bound");
