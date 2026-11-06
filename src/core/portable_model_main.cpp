@@ -237,8 +237,15 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("missing value: " + key);
             const std::string value = argv[++i];
             if (key == "--seed") {
-                size_t used=0; if (value.empty() || value[0]=='-') throw std::runtime_error("invalid seed");
-                sampling.seed=std::stoull(value,&used); if(used!=value.size()) throw std::runtime_error("invalid seed");
+                uint64_t seed=0;
+                if (value.empty()) throw std::runtime_error("invalid seed");
+                for (char c : value) {
+                    if (c<'0' || c>'9') throw std::runtime_error("invalid seed");
+                    const uint64_t digit=uint64_t(c-'0');
+                    if (seed>(UINT64_MAX-digit)/10) throw std::runtime_error("invalid seed: out of range");
+                    seed=seed*10+digit;
+                }
+                sampling.seed=seed;
                 sampling.greedy=false; sampling_options=true; continue;
             }
             if (key=="--top-k" || key=="--min-keep" || key=="--penalty-last-n") {

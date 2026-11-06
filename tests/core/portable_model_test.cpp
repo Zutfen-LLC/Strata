@@ -290,6 +290,10 @@ int main() {
         sample.top_p=1; sample.penalty_last_n=3; sample.penalty_repeat=1; sample.penalty_present=10;
         std::vector<float> bias(session->vocabulary(),-100); bias[0]=2; bias[1]=1;
         check(session->step(0,logits,error),error);
+        sample.top_p=2;
+        check(!session->generate({5},1,result,error,sample,bias) && session->position()==1 && !session->poisoned(),
+              "sampling preflight failure preserves consumed history for continuation");
+        sample.top_p=1;
         check(session->generate({5},1,result,error,sample,bias) && result.tokens==std::vector<int32_t>{1} && session->position()==3,
               "manual history affects continued selection and terminal feed");
         check(session->reset(error),error);

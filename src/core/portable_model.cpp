@@ -899,7 +899,11 @@ struct PortableModelSession::Impl {
         }
     }
 };
-PortableModelSession::PortableModelSession(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+PortableModelSession::PortableModelSession(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {
+    // Successful forwards consume at most context tokens; reset clears without
+    // releasing capacity. Reserve under open()'s exception handler, before use.
+    sampling_history_.reserve(impl_->opts.context);
+}
 PortableModelSession::~PortableModelSession() = default;
 std::unique_ptr<PortableModelSession> PortableModelSession::open(const std::vector<std::string> &shards,
                                                                  const std::string &manifest, PortableModelOptions opts,

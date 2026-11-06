@@ -18,7 +18,8 @@ oneshot=['--model','/absent/model.gguf','--manifest','/absent/manifest','--token
 for flags in (['--seed','0'], ['--seed','18446744073709551615','--top-k','64','--top-p','1','--min-p','0','--temp','0']):
  p=subprocess.run([binary,*oneshot,*flags],capture_output=True,text=True,timeout=5)
  assert p.returncode==0,p.stderr
-for flags in (['--top-p','nan'],['--min-p','2'],['--temp','inf'],['--repeat-penalty','0'],['--min-keep','0'],['--seed','-1']):
+for flags in (['--top-p','nan'],['--min-p','2'],['--temp','inf'],['--repeat-penalty','0'],['--min-keep','0'],
+              *(['--seed', value] for value in ('-1', ' -1', '\t-1', '', '+1', '1 ', '1x', '18446744073709551616'))):
  p=subprocess.run([binary,*oneshot,*flags,'--dump-logits','/absent/dump'],capture_output=True,text=True,timeout=5)
  assert p.returncode!=0 and ('sampling' in p.stderr or 'sampler' in p.stderr or 'seed' in p.stderr),p.stderr
  assert 'backend' not in p.stderr and 'model.gguf' not in p.stderr,p.stderr

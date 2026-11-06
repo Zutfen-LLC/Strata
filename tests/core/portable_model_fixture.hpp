@@ -4,6 +4,7 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/worker/local_source.hpp"
 #include <chrono>
+#include <cstdlib>
 #include <map>
 
 namespace model_fixture {
@@ -192,6 +193,11 @@ struct SparseModel {
         check(strata::worker::write_local_manifest((root / "manifest").string(), manifest, error), error);
     }
     ~SparseModel() {
+        // Test-only opt-in: STRATA_TEST_PRESERVE_MODEL_FIXTURE=1 keeps the generated
+        // temp_directory_path()/strata-model-<timestamp> root, including its sparse files.
+        const char *preserve = std::getenv("STRATA_TEST_PRESERVE_MODEL_FIXTURE");
+        if (preserve && std::string(preserve) == "1")
+            return;
         std::error_code e;
         std::filesystem::remove_all(root, e);
     }
