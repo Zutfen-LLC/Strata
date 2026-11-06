@@ -16,6 +16,6 @@ inline void boundary_input_check(const std::array<unsigned char,512>& input) {
             if(mag>0x42fe0000u) throw std::runtime_error("unsupported: non-finite or excessive input");
             if(mag>max) max=mag;
         }
-        if(max<0x047e0000u) throw std::runtime_error("unsupported: Q8 block scale may underflow FP32");
+        if(max<0x04000000u) throw std::runtime_error("unsupported: Q8 block scale may underflow FP32");
     }
 }

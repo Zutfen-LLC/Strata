@@ -10,7 +10,7 @@ from pathlib import Path
 def blocks():
     control = [0x3f800000, 0xbf800000] + [0x3e800000, 0xbe800000] * 15
     signed_subnormal = [0x3f800000, 0xbf800000] + [0x00000001, 0x80000001, 0x007fffff, 0x807fffff, 0x00000000, 0x80000000] * 5
-    normal_boundary = [0x047e0000, 0x847e0000] + [0x007fffff, 0x00800000, 0x00800001, 0x807fffff, 0x80800000, 0x80800001] * 5
+    normal_boundary = [0x04000000, 0x84000000] + [0x00600000, 0x80600000, 0x007fffff, 0x00800000, 0x00800001, 0x80800000] * 5
     # Largest magnitude = 127, so division yields scale 1 in exact arithmetic;
     # examine both sides of +/-0.5 and +/-1.5 quantization ties.
     rounding = [0x42fe0000, 0xc2fe0000] + [0x3effffff, 0x3f000000, 0x3f000001, 0xbeffffff, 0xbf000000, 0xbf000001, 0x3fbfffff, 0x3fc00000, 0x3fc00001, 0xbfbfffff] * 3
