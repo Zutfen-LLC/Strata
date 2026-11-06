@@ -247,6 +247,18 @@ struct PortableModelSession::Impl {
         std::vector<std::filesystem::file_time_type> remote_source_times;
         if(opts.remote_experts)for(size_t i=0;i<model.size();++i)remote_source_times.push_back(std::filesystem::last_write_time(model.shard(i).path()));
         experts = std::make_unique<portable_detail::CpuExperts>(model, manifest, opts);
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+        // Authenticate the remote plan before any resident expert setup.
+        if(opts.remote_experts) {
+            std::vector<std::pair<uint16_t,uint16_t>> assigned;
+            for(const auto& a:opts.remote_experts->plan.assets)assigned.emplace_back(a.layer,a.expert);
+            worker::GpuPlan expected;std::vector<uint8_t> actual_bytes,expected_bytes;std::string plan_error;
+            require(worker::make_gpu_plan(experts->identity(),assigned,expected,plan_error) &&
+                worker::encode_gpu_plan(opts.remote_experts->plan,actual_bytes,plan_error) &&
+                worker::encode_gpu_plan(expected,expected_bytes,plan_error) && actual_bytes==expected_bytes,
+                "remote expert plan/model identity mismatch");
+        }
+#endif
         report.expert_staging = experts->bytes();
         report.retained_manifest_identity_a = experts->identity().identity.a;
         report.retained_manifest_identity_b = experts->identity().identity.b;
@@ -587,7 +599,7 @@ struct PortableModelSession::Impl {
                     opts.expert_native_q8_observation+".slot-"+std::to_string(native_slot++));
             };
             local_experts=std::make_unique<portable_detail::LocalExperts>(model,*experts,opts,
-                factory,memory);
+                factory,memory,opts.remote_experts ? &opts.remote_experts->plan : nullptr);
             report.expert_devices=local_experts->report();
 #else
             throw std::runtime_error("local resident experts unavailable in this build");
@@ -615,6 +627,7 @@ struct PortableModelSession::Impl {
             };
             auto complement=[this](int64_t layer,const std::vector<PortableRoute>& routes,
                                    const std::vector<uint8_t>& mask,std::vector<float>& rows,std::string& err) {
+                if(local_experts)return local_experts->run_batch(layer,routes,rows,err,&mask);
                 std::vector<std::array<bool,portable_detail::K>> active(routes.size());
                 if(mask.size()!=routes.size()*portable_detail::K){err="remote complement mask invalid";return false;}
                 for(size_t t=0;t<routes.size();++t)for(size_t k=0;k<portable_detail::K;++k)active[t][k]=mask[t*portable_detail::K+k]!=0;
@@ -633,7 +646,7 @@ struct PortableModelSession::Impl {
                 } catch(const std::exception& e) {err=e.what();return false;}
             };
             remote_experts=std::make_unique<portable_detail::RemoteExperts>();
-            require(remote_experts->open(std::move(open),expected,{},portable_detail::K,std::move(complement),std::move(source_guard),error),error);
+            require(remote_experts->open(std::move(open),expected,local_experts ? local_experts->plans() : std::vector<worker::GpuPlan>{},portable_detail::K,std::move(complement),std::move(source_guard),error),error);
 #else
             throw std::runtime_error("remote experts unavailable in this build");
 #endif
@@ -956,8 +969,8 @@ PortableExpertWork PortableModelSession::expert_work() const {
     work.provider_calls=impl_->provider_calls;
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
     if (impl_->remote_experts) {
-        work.gpu_entries=impl_->remote_experts->stats().entries;
-        work.cpu_entries=impl_->remote_experts->cpu_entries();
+        work.gpu_entries=impl_->remote_experts->stats().entries + (impl_->local_experts ? impl_->local_experts->gpu_entries() : 0);
+        work.cpu_entries=impl_->local_experts ? impl_->local_experts->cpu_entries() : impl_->remote_experts->complement_entries();
     } else if (impl_->local_experts) {
         work.gpu_entries=impl_->local_experts->gpu_entries();
         work.cpu_entries=impl_->local_experts->cpu_entries();

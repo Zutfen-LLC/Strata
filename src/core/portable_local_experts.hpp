@@ -8,12 +8,14 @@ class LocalExperts {
 public:
     using Factory = std::function<std::unique_ptr<worker::GpuExecutor>(ggml_backend_t,size_t)>;
     using Memory = std::function<std::pair<size_t,size_t>(ggml_backend_t)>;
-    LocalExperts(const GgufModel&, CpuExperts&, const PortableModelOptions&, Factory, Memory);
+    LocalExperts(const GgufModel&, CpuExperts&, const PortableModelOptions&, Factory, Memory, const worker::GpuPlan* excluded = nullptr);
     ~LocalExperts();
     bool run(int64_t, const PortableRoute&, std::vector<float>&, std::string&);
     // Flatten T x K entries per die; executor remains single-row per entry.
-    bool run_batch(int64_t, const std::vector<PortableRoute>&, std::vector<float>&, std::string&);
+    bool run_batch(int64_t, const std::vector<PortableRoute>&, std::vector<float>&, std::string&,
+                   const std::vector<uint8_t>* allowed = nullptr);
     const std::vector<PortableExpertDeviceReport>& report() const { return report_; }
+    std::vector<worker::GpuPlan> plans() const;
     uint64_t gpu_entries() const { return gpu_entries_; }
     uint64_t cpu_entries() const { return cpu_entries_; }
 private:

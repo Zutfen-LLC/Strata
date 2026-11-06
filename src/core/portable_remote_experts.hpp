@@ -21,7 +21,7 @@ public:
     bool run(int64_t, const PortableRoute&, std::vector<float>&, std::string&);
     bool run_batch(int64_t, const std::vector<PortableRoute>&, std::vector<float>&, std::string&);
     const worker::GpuWorkerTier::Stats& stats() const { return tier_.stats(); }
-    uint64_t cpu_entries() const { return cpu_entries_; }
+    uint64_t complement_entries() const { return complement_entries_; }
     bool usable() const { return ready_ && tier_.ready() && !tier_.dead(); }
     bool status(worker::GpuCounters& out,std::string& error) { return tier_.status(out,error); }
     bool close_orderly(std::string& error) { const bool ok=tier_.close_orderly(error); ready_=false; return ok; }
@@ -31,7 +31,7 @@ private:
     Complement complement_;
     SourceGuard source_guard_;
     bool ready_=false;
-    uint64_t cpu_entries_=0;
+    uint64_t complement_entries_=0;
     size_t required_k_=0;
 };
 } // namespace strata::core::portable_detail

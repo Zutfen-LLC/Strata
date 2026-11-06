@@ -1,6 +1,7 @@
 #include "portable_local_experts.hpp"
 #include "portable_expert_timer.hpp"
 #include <cmath>
+#include <algorithm>
 #include "ggml-backend.h"
 #include <set>
 #include <iomanip>
@@ -54,7 +55,7 @@ void LocalExperts::guard(size_t i, const char* phase, size_t entry, const worker
         require(false,diagnostic("resident expert tensor/runtime growth budget exceeded"));
 }
 LocalExperts::LocalExperts(const GgufModel& model,CpuExperts& cpu,const PortableModelOptions& opts,
-                           Factory factory,Memory memory):model_(model),cpu_(cpu),memory_(std::move(memory)),check_rows_(opts.expert_check_rows),timings_(opts.expert_timings) {
+                           Factory factory,Memory memory,const worker::GpuPlan* excluded):model_(model),cpu_(cpu),memory_(std::move(memory)),check_rows_(opts.expert_check_rows),timings_(opts.expert_timings) {
     for (size_t s=0;s<model.size();++s) times_.push_back(std::filesystem::last_write_time(model.shard(s).path()));
     std::set<std::pair<int,int>> owned;
     std::set<size_t> dies;
@@ -72,6 +73,7 @@ LocalExperts::LocalExperts(const GgufModel& model,CpuExperts& cpu,const Portable
             worker::decode_gpu_plan(option.native_frozen_plan.data(),option.native_frozen_plan.size(),d.plan,error),error);
         std::vector<std::pair<uint16_t,uint16_t>> pairs;
         for (const auto& a:d.plan.assets) {
+            require(!excluded || !excluded->owns(a.layer,a.expert),"remote/local expert ownership overlaps");
             require(owned.emplace(a.layer,a.expert).second,"duplicate resident expert ownership");
             pairs.emplace_back(a.layer,a.expert);
         }
@@ -112,6 +114,9 @@ LocalExperts::LocalExperts(const GgufModel& model,CpuExperts& cpu,const Portable
         r.staging_peak=d.counters.host_staging_peak;
         guard(i,"prepare-complete"); sources();
     }
+}
+std::vector<worker::GpuPlan> LocalExperts::plans() const {
+    std::vector<worker::GpuPlan> result;for(const auto& d:devices_)result.push_back(d.plan);return result;
 }
 LocalExperts::~LocalExperts() {
     for(auto& d:devices_) if(d.executor) d.executor->release(d.counters);
@@ -187,12 +192,13 @@ bool LocalExperts::run(int64_t layer,const PortableRoute& route,std::vector<floa
         rows=std::move(result); return true;
     } catch(const std::exception& e) { rows.clear(); error=e.what(); return false; }
 }
-bool LocalExperts::run_batch(int64_t layer,const std::vector<PortableRoute>& routes,std::vector<float>& rows,std::string& error) {
+bool LocalExperts::run_batch(int64_t layer,const std::vector<PortableRoute>& routes,std::vector<float>& rows,std::string& error,const std::vector<uint8_t>* allowed) {
     rows.clear(); error.clear();
     try {
         sources();
         const size_t T=routes.size(), entries=T*K;
         require(layer>=0 && layer<int64_t(L) && T>=1 && T<=8,"resident batch shape mismatch");
+        require(!allowed || (allowed->size()==entries && std::all_of(allowed->begin(),allowed->end(),[](uint8_t v){return v<=1;})),"resident allowed mask invalid");
         std::vector<int32_t> ids_flat;
         std::vector<float> weights_flat, activations;
         for(const auto& route:routes) {
@@ -209,7 +215,7 @@ bool LocalExperts::run_batch(int64_t layer,const std::vector<PortableRoute>& rou
         require(sequence_<UINT64_MAX,"resident request sequence exhausted");
         const uint64_t sequence=++sequence_;
         std::vector<std::array<bool,K>> cold(T);
-        for(auto& token:cold) token.fill(true);
+        for(size_t i=0;i<entries;++i)cold[i/K][i%K]=!allowed || (*allowed)[i];
         std::vector<float> result(entries*H,0);
         for(size_t die=0;die<devices_.size();++die) {
             auto& d=devices_[die]; auto& report=report_[die];
@@ -218,7 +224,7 @@ bool LocalExperts::run_batch(int64_t layer,const std::vector<PortableRoute>& rou
             req.session=1; req.sequence=sequence; req.layer=uint16_t(layer); req.T=uint16_t(T); req.K=K;
             req.ids.assign(ids_flat.begin(),ids_flat.end()); req.weights=weights_flat; req.activations=activations; req.mask.assign(entries,0);
             size_t count=0;
-            for(size_t slot=0;slot<entries;++slot) if(d.plan.owns(int(layer),ids_flat[slot])) {
+            for(size_t slot=0;slot<entries;++slot) if((!allowed || (*allowed)[slot]) && d.plan.owns(int(layer),ids_flat[slot])) {
                 req.mask[slot]=1; cold[slot/K][slot%K]=false; ++count;
             }
             if(!count) continue;

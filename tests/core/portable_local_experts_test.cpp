@@ -1,4 +1,6 @@
 #include "../../src/core/portable_local_experts.hpp"
+#include "../../src/core/portable_remote_experts.hpp"
+#include <thread>
 #include "strata/worker/vulkan_executor.hpp"
 #include "../../src/worker/vulkan_expert_graph.hpp"
 #include "portable_model_fixture.hpp"
@@ -9,6 +11,33 @@ using namespace strata::core;
 using namespace model_fixture;
 namespace {
 struct State { std::function<void(size_t,strata::worker::GpuCounters&)> prepared_entry; int prepares=0,releases=0,inferences=0; size_t last_T=0; bool fail=false,bad=false,nonfinite=false; float bad_value=NAN; size_t bad_offset=0; };
+class RemoteFake final:public strata::worker::GpuExecutor {
+    bool fail_;
+public:
+    explicit RemoteFake(bool fail=false):fail_(fail){}
+    bool native_q8()const override{return true;}
+    bool supports_rows()const override{return true;}
+    bool prepare(const strata::worker::GpuPlan& p,uint64_t,strata::worker::GpuCache& cache,
+                 strata::worker::GpuCounters& c,std::string& error) override {
+        std::vector<uint8_t> blob;for(const auto& a:p.assets)if(!cache.read(a,blob,error))return false;
+        c.gpu_weight_bytes=c.gpu_allocated_bytes=p.assigned_bytes();c.gpu_allocation_count=1;return true;
+    }
+    bool infer(const strata::worker::GpuPlan&,const strata::worker::InferRequest&,strata::worker::InferReply&,std::string&)override{return false;}
+    bool infer_rows(const strata::worker::GpuPlan& p,const strata::worker::InferRequest& r,
+                    strata::worker::EntryRowsReply& out,std::string&)override {
+        if(fail_)return false;
+        for(size_t i=0;i<r.mask.size();++i)if(r.mask[i]){out.indices.push_back(uint16_t(i));out.rows.insert(out.rows.end(),p.n_embd,float(r.ids[i]+100));}
+        return true;
+    }
+    void release(strata::worker::GpuCounters& c)override{c.gpu_allocated_bytes=c.gpu_weight_bytes=c.gpu_allocation_count=0;}
+};
+struct RemoteServer {
+    strata::worker::GpuWorkerService service;uint16_t port=0;std::thread thread;
+    explicit RemoteServer(strata::worker::GpuWorkerOptions options,bool fail=false):service(std::move(options),std::make_unique<RemoteFake>(fail)) {
+        std::string error;check(service.listen(port,error),error);thread=std::thread([this]{service.run();});
+    }
+    ~RemoteServer(){service.stop();if(thread.joinable())thread.join();}
+};
 class Fake final:public strata::worker::GpuExecutor {
     State& s;
 public:
@@ -85,6 +114,12 @@ int main(){
         route.ids={9,3,7,1,5,2,4,8,6,0};std::string error;std::vector<float> ref,rows;
         check(cpu.run(0,route,ref,error),error);
         {
+            strata::worker::GpuPlan excluded;check(strata::worker::read_gpu_plan(a.plan_path,excluded,error),error);
+            const int before=state.prepares;bool refused=false;
+            try{portable_detail::LocalExperts overlap(model,cpu,opts,factory,memory,&excluded);}catch(const std::exception&){refused=true;}
+            check(refused && state.prepares==before,"overlap must refuse before any local executor setup");
+        }
+        {
             portable_detail::LocalExperts local(model,cpu,opts,factory,memory);
             check(state.prepares==2,"one executor per die");
             check(local.run(0,route,rows,error),error);
@@ -99,6 +134,15 @@ int main(){
             for(const auto& d:local.report()) check(d.infer_rows_calls==2 && std::isfinite(d.infer_rows_ms) && d.infer_rows_ms>0,
                   "one finite executor-call capture per participating device");
             const auto good_rows=rows;
+            {
+                std::vector<uint8_t> mask(10,1);mask[0]=0;mask[1]=0;
+                const auto cpu_before=local.cpu_entries(),gpu_before=local.gpu_entries();
+                check(local.run_batch(0,{route},rows,error,&mask),error);
+                check(local.cpu_entries()==cpu_before+6 && local.gpu_entries()==gpu_before+2,"excluded slots executed in complement");
+                for(size_t i=0;i<10;++i)for(size_t h=0;h<2560;++h)
+                    check(rows[i*2560+h]==(mask[i]?good_rows[i*2560+h]:0.f),"masked complement slot mismatch");
+                mask[0]=2;check(!local.run_batch(0,{route},rows,error,&mask)&&rows.empty(),"nonbinary complement mask accepted");
+            }
             auto bad=route;bad.ids.pop_back();check(!local.run(0,bad,rows,error)&&rows.empty(),"shape refusal");
             const auto before_inferences=state.inferences;
             for(float invalid:{NAN,INFINITY,-INFINITY}) {
@@ -161,6 +205,39 @@ int main(){
                 }
             state.nonfinite=false;
             check(local.run(0,route,rows,error)&&rows==good_rows,"valid provider replay after finite failures");
+            {
+                using namespace strata::worker;
+                GpuPlan remote_plan;check(make_gpu_plan(cpu.identity(),{{0,9}},remote_plan,error),error);
+                GpuWorkerOptions options;options.plan=remote_plan;options.vulkan=options.native_q8=true;
+                options.runtime_reserve=0;options.cache_budget=16ull<<20;
+                options.cache_root=(f.root/"hybrid-remote-cache").string();std::filesystem::create_directory(options.cache_root);
+                RemoteServer server(options);GpuWorkerTier::Open open;
+                open.host="127.0.0.1";open.port=server.port;open.plan=remote_plan;open.vulkan=open.native_q8=open.entry_rows=true;
+                open.fetch=[&](int64_t layer,int64_t expert,uint8_t* dst,uint32_t n){
+                    std::vector<uint8_t> blob;std::string e;
+                    if(!cpu.load_blob(layer,int32_t(expert),blob,e)||blob.size()!=n)return false;
+                    std::copy(blob.begin(),blob.end(),dst);return true;};
+                auto complement=[&](int64_t layer,const std::vector<PortableRoute>& routes,const std::vector<uint8_t>& mask,
+                                    std::vector<float>& out,std::string& e){return local.run_batch(layer,routes,out,e,&mask);};
+                auto guard=[](std::string&){return true;};portable_detail::RemoteExperts hybrid;
+                check(hybrid.open(open,remote_plan,local.plans(),10,complement,guard,error),error);
+                const auto cpu0=local.cpu_entries(),gpu0=local.gpu_entries();
+                check(hybrid.run(0,route,rows,error),error);
+                check(local.cpu_entries()==cpu0+6 && local.gpu_entries()==gpu0+3 && hybrid.stats().entries==1,
+                      "remote, local and CPU must execute disjoint entries");
+                for(size_t slot=0;slot<10;++slot)for(size_t h=0;h<2560;++h)
+                    check(rows[slot*2560+h]==(route.ids[slot]==9?109.f:good_rows[slot*2560+h]),"hybrid original slot mismatch");
+                const auto cpu_after=local.cpu_entries();state.fail=true;rows={123};
+                check(!hybrid.run(0,route,rows,error)&&rows.empty()&&local.cpu_entries()==cpu_after,
+                      "local failure must not publish or run CPU fallback");state.fail=false;
+                check(hybrid.close_orderly(error),error);
+                options.cache_root=(f.root/"hybrid-remote-failure-cache").string();std::filesystem::create_directory(options.cache_root);
+                RemoteServer failing(options,true);open.port=failing.port;portable_detail::RemoteExperts failed;
+                check(failed.open(open,remote_plan,local.plans(),10,complement,guard,error),error);
+                const auto cpu_before_fail=local.cpu_entries(),gpu_before_fail=local.gpu_entries();rows={123};
+                check(!failed.run(0,route,rows,error)&&rows.empty()&&local.cpu_entries()==cpu_before_fail && local.gpu_entries()==gpu_before_fail,
+                      "remote failure must not execute the local or CPU complement");
+            }
             const auto calls_before_failure=local.report()[0].infer_rows_calls;
             state.fail=true;check(!local.run(0,route,rows,error)&&rows.empty(),"failure no CPU replay");state.fail=false;
             check(local.report()[0].infer_rows_calls==calls_before_failure+1,"failed executor attempt captured once");

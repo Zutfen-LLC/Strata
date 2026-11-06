@@ -28,6 +28,9 @@ assert 'remote_experts' not in run([], True)
 doc = run(remote, True)
 assert doc['remote_experts'] and not doc['remote_plan_checked']
 run(remote + ['--remote-gpu-deadline-ms', '123', '--remote-gpu-setup-ms', '456'], True)
+local = ['--expert-plan', '0:/absent/local-plan', '--vulkan', '0', '--device-cap-mib', '1024']
+run(remote + local, False)
+run(remote + local + ['--expert-native-q8-observation', '/absent/receipt'], True)
 run(['--remote-gpu-worker', 'vulkan-native-q8@192.0.2.1:4567', '--remote-gpu-plan', '/absent/plan',
      '--remote-gpu-tls-ca', '/absent/ca', '--remote-gpu-tls-cert', '/absent/cert',
      '--remote-gpu-tls-key', '/absent/key', '--remote-gpu-tls-peer', 'worker.test'], tls_enabled)
@@ -45,7 +48,6 @@ for args in [
     remote + ['--prompt-chunk-size', '2'],
     remote + ['--allow-cpu-fallback'],
     remote + ['--expert-check-rows'],
-    remote + ['--expert-plan', '0:/absent/local-plan', '--vulkan', '0', '--device-cap-mib', '1024'],
     remote + ['--expert-native-q8-observation', '/absent/receipt'],
 ]:
     run(args, False)

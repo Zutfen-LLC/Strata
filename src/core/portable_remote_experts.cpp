@@ -67,7 +67,7 @@ bool RemoteExperts::run_batch(int64_t layer,const std::vector<PortableRoute>& ro
             for(size_t i=0;i<cold.size();++i)if(cold[i])for(size_t h=0;h<H;++h){float v=fallback[i*H+h];if(!std::isfinite(v))throw std::runtime_error("complement reply nonfinite");result[i*H+h]=v;}
         }
         if(!source_guard_(error))return false;
-        rows=std::move(result);cpu_entries_+=T*K-count;return true;
+        rows=std::move(result);complement_entries_+=T*K-count;return true;
     }catch(const std::exception& e){rows.clear();error=e.what();return false;}
 }
 } // namespace strata::core::portable_detail
