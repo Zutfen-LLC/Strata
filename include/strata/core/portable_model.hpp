@@ -1,5 +1,7 @@
 #pragma once
 #include <array>
+#include <optional>
+#include "strata/worker/gpu_client.hpp"
 #include "strata/core/portable_gdn.hpp"
 #include "strata/core/portable_qsa.hpp"
 
@@ -116,6 +118,8 @@ struct PortableModelOptions {
     size_t expert_native_primary_slots=0,expert_native_helper_slots=0;
     bool expert_timings = false; // opt-in coarse provider/executor host-call boundaries
     std::vector<PortableExpertDevice> expert_devices; // opt-in; empty preserves CPU path
+    // Explicit single-peer native-Q8 indexed-row placement. Source fetch is supplied by the session.
+    std::optional<worker::GpuWorkerTier::Open> remote_experts;
     bool native_qsa_indexer_t1=false, qsa_indexer_resident_weights=false;
     bool native_qsa_attention_t1=false,qsa_attention_banks=false;
     bool native_qsa_wo_t1=false; // default-off QSA output projection experiment
@@ -260,6 +264,10 @@ class PortableModelSession {
     // earlier layers may have advanced, so any execution error poisons/reset.
     bool advance_chunk(const std::vector<int32_t>& tokens, std::string& error);
     bool generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result, std::string &error);
+    bool remote_expert_status(worker::GpuCounters& counters, std::string &error);
+    worker::GpuWorkerTier::Stats remote_expert_stats() const;
+    // Explicit healthy idle shutdown; never sends GPU_STOP.
+    bool close_remote_experts(std::string &error);
     bool reset(std::string &error);
     uint64_t position() const;
     bool poisoned() const;
