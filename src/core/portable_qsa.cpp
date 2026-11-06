@@ -628,7 +628,7 @@ struct PortableQsaLayer::Impl {
         require(!options.native_attention_t1||(options.native_attention_banks&&options.native_select_t1&&options.native_norm_rope_t1),"native QSA attention requires actual native IDs/query and matched banks");
         if(options.native_attention_banks){
             portable_detail::native_qsa_attention_environment();
-            require(options.native_select_t1&&options.native_norm_rope_t1&&options.reuse_attention&&!options.production&&options.capacity<=256&&options.execution.accelerator&&options.execution.request_accelerator&&!options.execution.allow_cpu_fallback&&!options.execution.layer0_observer&&!options.native_attention_receipt_prefix.empty(),"native QSA attention requires native query/IDs serial eager strict accelerator and receipt");
+            require(options.native_select_t1&&options.native_norm_rope_t1&&options.reuse_attention&&!options.production&&options.capacity<=4096&&options.execution.accelerator&&options.execution.request_accelerator&&!options.execution.allow_cpu_fallback&&!options.execution.layer0_observer&&!options.native_attention_receipt_prefix.empty(),"native QSA attention requires native query/IDs serial eager strict accelerator and receipt");
 #ifndef STRATA_PORTABLE_NATIVE_HC
             throw std::runtime_error("native QSA attention requires strict native-stage build");
 #endif
@@ -636,7 +636,7 @@ struct PortableQsaLayer::Impl {
         require(!options.native_select_t1||(options.native_select_banks&&options.native_indexer_t1),"native QSA selection requires matched banks and actual native indexer candidate");
         if(options.native_select_banks){
             portable_detail::native_qsa_select_environment();
-            require(options.native_indexer_t1&&options.reuse_attention&&!options.production&&options.capacity<=256&&options.execution.accelerator&&options.execution.request_accelerator&&!options.execution.allow_cpu_fallback&&!options.execution.layer0_observer&&!options.native_select_receipt_prefix.empty(),"native QSA selection requires native candidate/serial eager/strict accelerator/receipt");
+            require(options.native_indexer_t1&&options.reuse_attention&&!options.production&&options.capacity<=4096&&options.execution.accelerator&&options.execution.request_accelerator&&!options.execution.allow_cpu_fallback&&!options.execution.layer0_observer&&!options.native_select_receipt_prefix.empty(),"native QSA selection requires native candidate/serial eager/strict accelerator/receipt");
 #ifndef STRATA_PORTABLE_NATIVE_HC
             throw std::runtime_error("native QSA selection requires strict native-stage build");
 #endif
@@ -644,7 +644,7 @@ struct PortableQsaLayer::Impl {
         require(!options.native_indexer_t1||options.native_indexer_weights,"native QSA indexer requires matched resident role/candidate banks");
         if(options.native_indexer_weights){
             portable_detail::native_qsa_model_environment();
-            require(options.reuse_attention&&!options.production&&options.capacity<=256&&options.execution.accelerator&&options.execution.request_accelerator&&!options.execution.allow_cpu_fallback&&!options.execution.layer0_observer&&!options.native_indexer_receipt_prefix.empty(),"native QSA indexer requires serial eager/reuse/strict accelerator/receipt");
+            require(options.reuse_attention&&!options.production&&options.capacity<=4096&&options.execution.accelerator&&options.execution.request_accelerator&&!options.execution.allow_cpu_fallback&&!options.execution.layer0_observer&&!options.native_indexer_receipt_prefix.empty(),"native QSA indexer requires serial eager/reuse/strict accelerator/receipt");
 #ifndef STRATA_PORTABLE_NATIVE_HC
             throw std::runtime_error("native QSA indexer requires strict native-stage build");
 #else
@@ -654,7 +654,7 @@ struct PortableQsaLayer::Impl {
         require(!options.native_norm_rope_t1||options.native_norm_rope_weights,"native QSA norm/RoPE requires matched resident roles");
         if(options.native_norm_rope_weights){
             portable_detail::native_qsa_model_environment();
-            require(options.reuse_attention&&!options.production&&options.capacity<=256&&options.execution.accelerator&&options.execution.request_accelerator&&!options.execution.allow_cpu_fallback&&!options.execution.layer0_observer&&!options.native_norm_rope_receipt_prefix.empty(),"native QSA norm/RoPE requires serial eager/reuse/strict accelerator/receipt");
+            require(options.reuse_attention&&!options.production&&options.capacity<=4096&&options.execution.accelerator&&options.execution.request_accelerator&&!options.execution.allow_cpu_fallback&&!options.execution.layer0_observer&&!options.native_norm_rope_receipt_prefix.empty(),"native QSA norm/RoPE requires serial eager/reuse/strict accelerator/receipt");
 #ifndef STRATA_PORTABLE_NATIVE_HC
             throw std::runtime_error("native QSA norm/RoPE requires strict native-stage build");
 #else
@@ -698,7 +698,7 @@ struct PortableQsaLayer::Impl {
         if (options.production)
             states_size -= options.capacity * (4 * KV * sizeof(uint16_t) + 8 * sizeof(float)) +
                            (options.capacity / 4 + 2) * ID * 3 * sizeof(float);
-        require(states_size <= options.state_budget && ((options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0)+(options.native_wo_t1?PortableQsaOptions::native_wo_host_bound:0)+(options.native_qkv_t1?PortableQsaOptions::native_qkv_host_bound:0)+(options.native_indexer_projection_t1?PortableQsaOptions::native_indexer_projection_host_bound:0)<=options.state_budget-states_size), "portable QSA: host state budget exceeded");
+        require(states_size <= options.state_budget && ((options.native_indexer_weights?PortableQsaOptions::native_indexer_host_for(options.capacity):0)+(options.native_select_banks?PortableQsaOptions::native_select_host_for(options.capacity):0)+(options.native_attention_banks?PortableQsaOptions::native_attention_host_for(options.capacity):0)+(options.native_wo_t1?PortableQsaOptions::native_wo_host_bound:0)+(options.native_qkv_t1?PortableQsaOptions::native_qkv_host_bound:0)+(options.native_indexer_projection_t1?PortableQsaOptions::native_indexer_projection_host_bound:0)<=options.state_budget-states_size), "portable QSA: host state budget exceeded");
         std::vector<PortableTensorView> aw, fw;
         for (const auto &t : tensors) {
             require(t.name.rfind(prefix, 0) == 0, "portable QSA: tensor belongs to another layer");
@@ -979,7 +979,10 @@ struct PortableQsaLayer::Impl {
         }
         placement = fixed_placement;
         graphs_size = fixed_graphs;
-        if (options.reuse_attention) {
+        // The native attention path consumes its own Q/K/V and ID banks and
+        // never submits the generic dense attention graph. Priming that unused
+        // graph at full capacity would allocate a quadratic score matrix.
+        if (options.reuse_attention && !options.native_attention_t1) {
             PortableQsaAttention::Impl::Borrow borrow(shared());
             if (!shared()) attention = std::make_unique<Phase>();
             auto *phase = attention_phase();
@@ -1414,7 +1417,7 @@ size_t PortableQsaLayer::graph_bytes() const {
     return (impl_->attention_phase() ? impl_->fixed_graphs+impl_->retained_attention_bytes() : impl_->graphs_size)+impl_->chunk_graphs();
 }
 size_t PortableQsaLayer::state_bytes() const {
-    return impl_->states_size+impl_->chunk_host_bound+(impl_->options.native_indexer_weights?PortableQsaOptions::native_indexer_host_bound:0)+(impl_->options.native_indexer_projection_t1?PortableQsaOptions::native_indexer_projection_host_bound:0)+(impl_->options.native_select_banks?PortableQsaOptions::native_select_host_bound:0)+(impl_->options.native_attention_banks?PortableQsaOptions::native_attention_host_bound:0)+(impl_->options.native_wo_t1?PortableQsaOptions::native_wo_host_bound:0)+(impl_->options.native_qkv_t1?PortableQsaOptions::native_qkv_host_bound:0) + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
+    return impl_->states_size+impl_->chunk_host_bound+(impl_->options.native_indexer_weights?PortableQsaOptions::native_indexer_host_for(impl_->options.capacity):0)+(impl_->options.native_indexer_projection_t1?PortableQsaOptions::native_indexer_projection_host_bound:0)+(impl_->options.native_select_banks?PortableQsaOptions::native_select_host_for(impl_->options.capacity):0)+(impl_->options.native_attention_banks?PortableQsaOptions::native_attention_host_for(impl_->options.capacity):0)+(impl_->options.native_wo_t1?PortableQsaOptions::native_wo_host_bound:0)+(impl_->options.native_qkv_t1?PortableQsaOptions::native_qkv_host_bound:0) + (impl_->state_buffer ? ggml_backend_buffer_get_size(impl_->state_buffer.get()) : 0);
 }
 bool PortableQsaLayer::poisoned() const { return !impl_->healthy; }
 bool PortableQsaLayer::inspect_state(PortableQsaState &state, std::string &error) const {
@@ -1458,11 +1461,11 @@ PortableMemoryUsage PortableQsaLayer::memory_usage() const {
     }
 #ifdef STRATA_PORTABLE_NATIVE_HC
     if(s.native_norm_rope){m.device_graph+=s.native_norm_rope->bytes();m.host_extra_bound+=PortableQsaOptions::native_norm_rope_host_bound;}
-    if(s.native_attention){m.device_graph+=s.native_attention->bytes();m.host_extra_bound+=PortableQsaOptions::native_attention_host_bound;}
+    if(s.native_attention){m.device_graph+=s.native_attention->bytes();m.host_extra_bound+=PortableQsaOptions::native_attention_host_for(s.options.capacity);}
     if(s.native_wo){m.device_graph+=s.native_wo->bytes();m.host_extra_bound+=PortableQsaOptions::native_wo_host_bound;}
     if(s.native_qkv){m.device_graph+=s.native_qkv->bytes();m.host_extra_bound+=PortableQsaOptions::native_qkv_host_bound;}
-    if(s.native_select){m.device_graph+=s.native_select->bytes();m.host_extra_bound+=PortableQsaOptions::native_select_host_bound;}
-    if(s.native_indexer){m.device_graph+=s.native_indexer->bytes();m.host_extra_bound+=PortableQsaOptions::native_indexer_host_bound;}
+    if(s.native_select){m.device_graph+=s.native_select->bytes();m.host_extra_bound+=PortableQsaOptions::native_select_host_for(s.options.capacity);}
+    if(s.native_indexer){m.device_graph+=s.native_indexer->bytes();m.host_extra_bound+=PortableQsaOptions::native_indexer_host_for(s.options.capacity);}
     if(s.native_indexer_projection){m.device_graph+=s.native_indexer_projection->bytes();m.host_extra_bound+=PortableQsaOptions::native_indexer_projection_host_bound;}
     if(s.native_hc){m.device_graph+=s.native_hc->bytes();m.host_extra_bound+=PortableQsaOptions::native_hc_host_bound;}
 #endif

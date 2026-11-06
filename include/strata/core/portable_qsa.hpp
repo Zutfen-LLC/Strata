@@ -1,5 +1,6 @@
 #pragma once
 #include "strata/core/portable_ffn.hpp"
+#include <stdexcept>
 
 namespace strata::core {
 // Session-owned attention execution only. Backend handles are borrowed and must
@@ -36,6 +37,27 @@ struct PortableQsaOptions {
     std::string native_qkv_receipt_prefix;
     std::string native_attention_receipt_prefix;
     static constexpr size_t native_select_host_bound=1u<<20;
+    // Existing fixed allowances cover the <=256 path. For larger native
+    // histories add capacity-priced copies instead of assuming those fixed
+    // envelopes still cover the detached candidates and capture buffers.
+    static size_t native_indexer_host_for(size_t cells) {
+        if (cells > 4096) throw std::runtime_error("native QSA: indexer capacity exceeds 4096");
+        return native_indexer_host_bound + (cells > 256 ? 2 * (512 + (cells / 4 + 1) * 128 + 1) * sizeof(uint32_t) : 0);
+    }
+    static size_t native_select_host_for(size_t cells) {
+        if (cells > 4096) throw std::runtime_error("native QSA: selection capacity exceeds 4096");
+        return native_select_host_bound + (cells > 256 ? 2 * (cells / 4 + 2) * 128 * sizeof(uint32_t) + 2 * cells * sizeof(float) + 2051 * sizeof(int32_t) : 0);
+    }
+    static size_t native_attention_host_for(size_t cells) {
+        if (cells > 4096) throw std::runtime_error("native QSA: attention capacity exceeds 4096");
+        return native_attention_host_bound + (cells > 256 ? 2 * ((cells + 3) / 4) * 2048 * sizeof(uint16_t) : 0);
+    }
+    static size_t eager_state_growth(size_t cells) {
+        if (cells > 4096) throw std::runtime_error("native QSA: capacity exceeds 4096");
+        if (cells <= 256) return 0;
+        return (cells - 256) * (4 * 512 * sizeof(uint16_t) + 8 * sizeof(float)) +
+               (cells / 4 - 256 / 4) * 128 * 3 * sizeof(float);
+    }
     bool native_select_banks=false,native_select_t1=false,native_select_record_first=false;
     std::string native_select_receipt_prefix;
     bool native_norm_rope_weights=false; // matched explicit resident F32 roles/candidate reserve

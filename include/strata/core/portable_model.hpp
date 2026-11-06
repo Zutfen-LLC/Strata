@@ -68,7 +68,7 @@ struct PortableExpertDeviceReport {
 };
 enum class PortableDenseTopology { split, primary };
 struct PortableModelOptions {
-    size_t context = 16; // bounded initial proof, at most 256 text positions
+    size_t context = 16; // serial native QSA permits up to 4096; other modes at most 256
     int threads = 1, expert_workers = 1;
     // Borrowed accelerator lifetimes must cover the session. Empty = CPU.
     // Default: one owns all layers; two use [0,split) and [split,48).

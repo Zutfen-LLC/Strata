@@ -34,6 +34,11 @@ int main() {
         PortableModelOptions opts;
         opts.context = 3;
         std::string error;
+        for(size_t context : {size_t(257),size_t(4097)}) {
+            auto invalid=opts;invalid.context=context;
+            check(!PortableModelSession::open({"/absent/model.gguf"},"/absent/manifest",invalid,error) &&
+                  error.find("context")!=std::string::npos,"unsupported context must refuse before model access");
+        }
         {
             std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> cpu(ggml_backend_cpu_init(),ggml_backend_free);
             for(int refusal=0;refusal<3;++refusal) {

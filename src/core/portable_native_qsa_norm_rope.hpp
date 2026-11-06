@@ -42,7 +42,7 @@ public:
   std::ofstream o(file,std::ios::binary);o.write(raw.data(),raw.size());native_hc_need(bool(o),"native QSA accepted key receipt write");
  }
  size_t bytes()const{return bytes_;}uint64_t calls()const{return strata_vk_native_qsa_norm_rope_calls(component_.get());}
- void run(std::array<ggml_tensor*,3> raw,uint64_t position){native_hc_need(position<256,"native QSA norm/RoPE text context");
+ void run(std::array<ggml_tensor*,3> raw,uint64_t position){native_hc_need(position<4096,"native QSA norm/RoPE text context");
   for(size_t i=0;i<3;++i){std::vector<int32_t>p(rows[i],int32_t(position));ggml_backend_tensor_set(pos_[i],p.data(),0,p.size()*4);std::array<ggml_tensor*,6>t{{raw[i],gamma_[i],pos_[i],norm_[i],output[i],diag_[i]}};auto before=calls();uint32_t status=0;
    try{status=strata_vk_native_qsa_norm_rope_run(component_.get(),t.data(),widths[i],rows[i],strides[i],native_qsa_theta_scale());native_hc_need(status==0,"native QSA norm/RoPE actual domain refused");}
    catch(...){try{capture(i,raw[i],position,calls()!=before&&status==0,"failure-",status);}catch(const std::exception&e){std::fprintf(stderr,"native QSA receipt: %s\n",e.what());}throw;}

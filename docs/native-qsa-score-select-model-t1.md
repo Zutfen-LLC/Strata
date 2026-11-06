@@ -5,8 +5,9 @@ indexer scoring/selection. Both arms explicitly use
 `--qsa-score-select-banks PREFIX`, native indexer append/pooling and its matched
 resident role. The earlier HC/GDN/QSA norm methods remain fixed. Unsupported
 production/chunk/fallback/alternative native dispatch modes refuse. Existing
-indexer scope keeps model context at most 256; competitive selection above 2051
-cells is **not** exercised by this model diagnostic.
+serial eager native QSA admits model contexts up to 4096; host fixtures exercise
+competitive selection above 2051 cells. The retained model diagnostic below did
+not exercise that range and does not qualify it on hardware.
 
 At the actual completed projection/append boundary, the component reads the
 current native indexer candidate pooled rows and persistent dead/spare, actual

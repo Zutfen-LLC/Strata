@@ -20,6 +20,12 @@ void operator delete(void *p, std::size_t) noexcept { std::free(p); }
 using namespace qsa_fixture;
 int main(){
     try{
+        check(PortableQsaOptions::eager_state_growth(256)==0 && PortableQsaOptions::eager_state_growth(4096)>0,"capacity-dependent eager state bound");
+        check(PortableQsaOptions::native_indexer_host_for(4096)>PortableQsaOptions::native_indexer_host_for(256) &&
+              PortableQsaOptions::native_select_host_for(4096)>PortableQsaOptions::native_select_host_for(256) &&
+              PortableQsaOptions::native_attention_host_for(4096)>PortableQsaOptions::native_attention_host_for(256),"native host bounds grow with capacity");
+        bool overflow_refused=false;try{(void)PortableQsaOptions::native_attention_host_for(SIZE_MAX);}catch(const std::exception&){overflow_refused=true;}
+        check(overflow_refused,"native host bound rejects overflow before arithmetic");
         Fixture f;
         for (bool reuse : {false, true}) {
         std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_cpu_init(),ggml_backend_free);

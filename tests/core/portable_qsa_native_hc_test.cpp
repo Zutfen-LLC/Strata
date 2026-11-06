@@ -99,6 +99,23 @@ int main(){try{
  check(output_consumers==2,"actual WO consumer not inspected");auto ak=attn_on->keys();auto ai=attn_on->native_indexer_state();auto al=attn_on->last_residual();
  fail_qsa_attention=true;check(!attn_on->step(2,f.input(2),nr_dispatch,nr_route,error),"attention refusal accepted");fail_qsa_attention=false;check(attn_on->tokens()==2&&attn_on->keys()==ak&&attn_on->native_indexer_state()==ai&&attn_on->last_residual()==al,"attention failure committed candidate");check(attn_on->native_attention_calls(0)==3&&attn_on->native_attention_calls(1)==2,"attention failure hidden paid stages");check(!std::filesystem::exists(root/"attn-on/failure-2-attempt-3/gated.f32le"),"failed attention exported stale gated output");
  check(!attn_on->step(2,f.input(2),[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="FFN failure";return false;},nr_route,error),"post-attention FFN failure accepted");check(attn_on->keys()==ak&&attn_on->native_indexer_state()==ai&&attn_on->tokens()==2,"FFN failure committed attention candidate");check(attn_on->step(2,f.input(2),nr_dispatch,nr_route,error),error);check(attn_on->reset(error)&&attn_on->step(0,f.input(0),nr_dispatch,nr_route,error),error);check(attn_on->last_residual()==attn_first,"attention reset changed output/state");
+ {
+  auto long_context=at;long_context.capacity=4096;
+  long_context.state_budget+=PortableQsaOptions::eager_state_growth(4096)+
+   PortableQsaOptions::native_indexer_host_for(4096)-PortableQsaOptions::native_indexer_host_bound+
+   PortableQsaOptions::native_select_host_for(4096)-PortableQsaOptions::native_select_host_bound+
+   PortableQsaOptions::native_attention_host_for(4096)-PortableQsaOptions::native_attention_host_bound;
+  long_context.native_attention_record_first=long_context.native_select_record_first=long_context.native_indexer_record_first=false;
+  fresh(long_context,"attn-4096");auto layer=PortableQsaLayer::create(3,qf.views,long_context,error);check(bool(layer),error);
+  auto too_small=long_context;too_small.state_budget=layer->state_bytes()-1;fresh(too_small,"attn-4096-short");
+  check(!PortableQsaLayer::create(3,qf.views,too_small,error),"4K-capacity one-byte-short host state budget accepted");
+  check(layer->reset(error)&&layer->step(0,f.input(0),nr_dispatch,nr_route,error),error);
+  const auto before_keys=layer->keys(),before_values=layer->values();const auto before_pool=layer->pooled_keys(),before_tail=layer->indexer_tail();const auto before_index=layer->native_indexer_state();const auto before_output=layer->last_residual();
+  check(!layer->step(1,f.input(1),[](int64_t,const PortableRoute&,std::vector<float>&,std::string&e){e="FFN failure";return false;},nr_route,error),"4K-capacity FFN failure accepted");
+  check(layer->tokens()==1&&layer->keys()==before_keys&&layer->values()==before_values&&layer->pooled_keys()==before_pool&&layer->indexer_tail()==before_tail&&layer->native_indexer_state()==before_index&&layer->last_residual()==before_output,"4K-capacity failure published state");
+  check(layer->step(1,f.input(1),nr_dispatch,nr_route,error)&&layer->reset(error)&&layer->step(0,f.input(0),nr_dispatch,nr_route,error),error);
+  check(layer->last_residual()==before_output,"4K-capacity reset/replay changed output");
+ }
  auto ab=at;ab.execution.graph_budget=1;fresh(ab,"attn-budget");check(!PortableQsaLayer::create(3,qf.views,ab,error),"attention budget refusal missing");ab=at;ab.native_select_t1=false;fresh(ab,"attn-no-ids");check(!PortableQsaLayer::create(3,qf.views,ab,error),"attention accepted missing native IDs");
  auto composed=at;composed.native_hc_read=true;composed.native_hc_ffn_read=true;composed.defer_ffn_hc_write=true;composed.resident_ffn_weights=true;composed.native_hc_receipt_prefix=(root/"attn-composed-hc").string();fresh(composed,"attn-composed");auto actual_composed=PortableQsaLayer::create(3,qf.views,composed,error);check(bool(actual_composed),error);check(actual_composed->reset(error),error);
  check(actual_composed->graph_bytes()>0&&actual_composed->native_attention_calls(0)==0,"actual composed on-arm allocation dispatched work or omitted graph storage");
@@ -242,6 +259,19 @@ int main(){try{
  auto invalid=o;invalid.production=true;check(!PortableQsaLayer::create(3,qf.views,invalid,error),"production mode admitted");invalid=o;invalid.execution.allow_cpu_fallback=true;check(!PortableQsaLayer::create(3,qf.views,invalid,error),"fallback mode admitted");
  invalid=o;invalid.execution.weight_budget=active->weight_bytes()-1;check(!PortableQsaLayer::create(3,qf.views,invalid,error),"one-byte-short aligned HC weight budget admitted");
  PortableModelOptions model;model.native_hc_pending_layer2_3=true;model.gdn_resident_weights=true;model.native_hc_qsa_receipt_prefix=(root/"model").string();validate_model_modes(model,1);PortableGdnOptions g0,g2;PortableQsaOptions q3,q7;model_gdn_hc_options(model,0,g0);model_gdn_hc_options(model,2,g2);model_qsa_hc_options(model,3,q3);model_qsa_hc_options(model,7,q7);
+ {
+  PortableModelOptions large;large.context=4096;large.dense_topology=PortableDenseTopology::primary;
+  large.native_qsa_attention_t1=large.qsa_attention_banks=true;
+  large.native_qsa_score_select_t1=large.qsa_score_select_banks=true;
+  large.native_qsa_indexer_t1=large.qsa_indexer_resident_weights=true;
+  large.native_qsa_norm_rope_t1=large.qsa_norm_rope_resident_weights=true;
+  large.qsa_attention_receipt_prefix=(root/"attention").string();large.qsa_score_select_receipt_prefix=(root/"select").string();
+  large.qsa_indexer_receipt_prefix=(root/"indexer").string();large.qsa_norm_rope_receipt_prefix=(root/"rope").string();
+  validate_model_modes(large,1);PortableQsaOptions priced;priced.capacity=large.context;model_qsa_hc_options(large,3,priced);
+  check(priced.state_budget>PortableQsaOptions{}.state_budget && model_hc_host_bound(large,3)>model_hc_host_bound(model,3),"4K state and host admission must grow");
+  for(int n=0;n<5;++n){auto bad=large;if(n==0)bad.context=4097;if(n==1)bad.prompt_chunk_size=2;if(n==2)bad.gdn_production=true;if(n==3)bad.qsa_production=true;if(n==4)bad.native_qsa_attention_t1=false;
+   bool rejected=false;try{validate_model_modes(bad,1);}catch(const std::exception&){rejected=true;}check(rejected,"unsupported 4K model mode accepted");}
+ }
  check(!g0.defer_ffn_hc_write&&g2.defer_ffn_hc_write&&q3.native_hc_pending&&!q7.native_hc_read,"scope/PLE/other QSA changed");check(!model_resident_dense(model,3,false),"native HC silently enabled all QSA dense residency");
  check(model_hc_host_bound(model,2)==PortableFfnOptions::deferred_hc_host_bound&&model_hc_host_bound(model,3)==PortableQsaOptions::native_hc_host_bound,"new host envelope unpriced");model.native_hc_pending_layer1_2=true;model.native_hc_pending_receipt_prefix=(root/"both").string();model_gdn_hc_options(model,2,g2);check(g2.native_hc_pending&&g2.defer_ffn_hc_write,"adjacent native boundaries failed composition");
  check(qsa_consumers>=50,"actual QSA projection/indexer consumers not checked");cpu->iface.graph_compute=original_compute;std::filesystem::remove_all(root);puts("actual layer2 FFN to QSA3 pending read/shared scratch/independent FMA/KV-indexer rollback/reset/accounting pass; mocked HC only");return 0;

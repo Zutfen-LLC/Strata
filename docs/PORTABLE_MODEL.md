@@ -6,7 +6,10 @@ token IDs. The existing Python tokenizer can supply them. This path has no
 network listener and does not invoke another model engine.
 
 The initial implementation supports one serial text sequence, all 48 layers,
-and context limits from 1 to 256 tokens. Defaults remain off. The existing
+and context limits from 1 to 256 tokens by default, or up to 4096 with the
+serial eager native QSA indexer, selector, norm/RoPE and attention paths.
+The 4K path has host coverage only and remains unqualified on hardware.
+Defaults remain off. The existing
 CUDA production executable and allocations are separate.
 
 The [Strata method migration map](CUDA_VULKAN_PARITY.md) is the source of truth
@@ -844,7 +847,8 @@ This uses the native GEN/QUIT control words with the portable CLI's comma-separa
 IDs; native optional generation parameters are unsupported. Each request is
 independent. Unsigned decimals only, no spaces within the list, no CRLF, at most
 4096 bytes before LF, nonempty prompt, IDs below the loaded vocabulary, prompt
-length and max_new each at most context (1–256). Generation stops at context if
+length and max_new each at most the configured context (up to 4096 for serial
+eager native QSA; otherwise 256). Generation stops at context if
 the combined work would exceed it. The entire request is validated before reset
 or mutation. A malformed, oversized or incomplete-at-EOF request exits nonzero.
 

@@ -14,7 +14,7 @@ NAMES=['scratch','chunk','merge','attn','gate','gated']
 def words(p,n):
  b=Path(p).read_bytes();N.need(len(b)==4*n,'QSA attention exact span '+str(p));return list(struct.unpack('<'+str(n)+'I',b))
 def load(path):
- b=Path(path).read_bytes();N.need(len(b)>=12,'QSA attention fixture header');magic,version,cells=struct.unpack_from('<3I',b);N.need(magic==0x3141514e and version==1 and 1<=cells<=256,'QSA FP16 T1 fixture geometry');counts=COUNTS(cells);N.need(len(b)==12+4*sum(counts[:7]),'QSA attention fixture span');v=list(struct.unpack_from('<'+str(sum(counts[:7]))+'I',b,12));inputs=[]
+ b=Path(path).read_bytes();N.need(len(b)>=12,'QSA attention fixture header');magic,version,cells=struct.unpack_from('<3I',b);N.need(magic==0x3141514e and version==1 and 1<=cells<=4096,'QSA FP16 T1 fixture geometry');counts=COUNTS(cells);N.need(len(b)==12+4*sum(counts[:7]),'QSA attention fixture span');v=list(struct.unpack_from('<'+str(sum(counts[:7]))+'I',b,12));inputs=[]
  for n in counts[:7]:inputs.append(v[:n]);v=v[n:]
  pos,n,nb,width=inputs[5];N.need(pos<cells and n==pos+1 and nb==n//4 and width==min(n,2051),'native step');N.need(all(i<n and (j==0 or i>inputs[4][j-1]) for j,i in enumerate(inputs[4][:width])),'native selected IDs');N.need(all(p==0xffffffff or p<counts[3] for p in inputs[3]),'native page table bounds');return cells,inputs
 

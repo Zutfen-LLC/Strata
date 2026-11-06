@@ -9,6 +9,7 @@ int main(int argc,char**argv){try{
  auto masked=control(native_qsa_attn::synthetic(5));for(auto v:masked.out[3])native_hc_need(v==0,"all-masked native attention must be zero");for(auto v:masked.out[5])native_hc_need(v==0,"all-masked gated output must be zero");
  auto c=control(native_qsa_attn::synthetic(6));native_hc_need(c.out[1][0]==bits(.0625f),"independent eight-term FMA cancellation source vector");int sum=0;for(int cell=0;cell<64;++cell){int at=((cell/4)*2*4+cell%4)*256;sum+=(at*13)%37-18;}native_hc_need(c.out[5][0]==bits(float(sum)/2048.f),"independent uniform-softmax value/page/head chronology");
  auto tail=control(native_qsa_attn::synthetic(7));native_hc_need(tail.out[1][50688+1]==0&&tail.out[2][1]==0&&tail.out[3][0]==bits(-.5f),"independent chunk/merge natural exp underflow vector");
+ auto sparse=control(native_qsa_attn::synthetic(8));for(auto v:sparse.out[3])native_hc_need(v==bits(1.f),"4096-cell attention included excluded cells or lost a selected chunk");
  auto bad=native_qsa_attn::synthetic(0);bad.in[4][0]=1;bool refused=false;try{validate(bad);}catch(...){refused=true;}native_hc_need(refused,"out-of-range selected cell accepted");bad=native_qsa_attn::synthetic(0);bad.in[3][0]=64;refused=false;try{validate(bad);}catch(...){refused=true;}native_hc_need(refused,"out-of-range page accepted");
  puts("native QSA independent single-cell/chunk-edge/masked/FMA/value controls and invalid addressing refusals pass");return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}
