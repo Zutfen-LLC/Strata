@@ -5,6 +5,7 @@
 #include "strata/worker/gpu_group.hpp"
 #include "strata/core/portable_gdn.hpp"
 #include "strata/core/portable_qsa.hpp"
+#include "strata/core/host_sampler.hpp"
 
 namespace strata::core {
 struct PortableHeadGeometry {
@@ -270,6 +271,8 @@ class PortableModelSession {
     // earlier layers may have advanced, so any execution error poisons/reset.
     bool advance_chunk(const std::vector<int32_t>& tokens, std::string& error);
     bool generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result, std::string &error);
+    bool generate(const std::vector<int32_t> &prompt, size_t max_new, PortableGeneration &result, std::string &error,
+                  const kernels::SamplerParams &sampling, const std::vector<float> &bias = {});
     bool remote_expert_status(worker::GpuCounters& counters, std::string &error);
     worker::GpuWorkerTier::Stats remote_expert_stats() const;
     std::vector<worker::GpuPeerSnapshot> remote_expert_peer_stats() const;
@@ -291,5 +294,6 @@ class PortableModelSession {
     struct Impl;
     explicit PortableModelSession(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;
+    std::vector<int32_t> sampling_history_;
 };
 } // namespace strata::core

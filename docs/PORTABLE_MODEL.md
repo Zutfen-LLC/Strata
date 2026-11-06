@@ -604,6 +604,14 @@ with the same binary, placement and policy; diagnostic references are rejected
 for production resident timing. Keep same-backend output comparisons, cross-
 backend numerical screens and task accuracy separate.
 
+The one-shot CLI defaults to greedy selection. `--seed S` enables deterministic
+sampling, including for seed zero. Sampling options are one-shot only; resident
+`GEN` remains greedy. The host sampler rejects non-finite parameters, positive
+infinite logits or bias, and scaled-logit overflow. Negative infinite bias bans
+a token. The host-logit sampler follows the native ordinary sampling order. This
+contract is not proof of bitwise CUDA sampling parity: math library rounding,
+subnormal handling, and logits produced by different backends can differ.
+
 ## Build and run
 
 Use the pinned llama.cpp dependency

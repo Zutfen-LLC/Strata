@@ -13,6 +13,18 @@ def run(extra,ok,error=None,env=None):
   r=json.loads(p.stdout);assert r['validated_options'] is True and all(r[k] is False for k in ['backend_initialized','model_metadata_checked','memory_admission_checked'])
   return r
  assert p.returncode!=0 and (error is None or error in p.stderr),p.stderr
+# Sampling preflight runs before absent model, provider, backend or dump setup.
+oneshot=['--model','/absent/model.gguf','--manifest','/absent/manifest','--tokens','5','--validate-options']
+for flags in (['--seed','0'], ['--seed','18446744073709551615','--top-k','64','--top-p','1','--min-p','0','--temp','0']):
+ p=subprocess.run([binary,*oneshot,*flags],capture_output=True,text=True,timeout=5)
+ assert p.returncode==0,p.stderr
+for flags in (['--top-p','nan'],['--min-p','2'],['--temp','inf'],['--repeat-penalty','0'],['--min-keep','0'],
+              *(['--seed', value] for value in ('-1', ' -1', '\t-1', '', '+1', '1 ', '1x', '18446744073709551616'))):
+ p=subprocess.run([binary,*oneshot,*flags,'--dump-logits','/absent/dump'],capture_output=True,text=True,timeout=5)
+ assert p.returncode!=0 and ('sampling' in p.stderr or 'sampler' in p.stderr or 'seed' in p.stderr),p.stderr
+ assert 'backend' not in p.stderr and 'model.gguf' not in p.stderr,p.stderr
+run(['--seed','0'],False,'one-shot only')
+print('one-shot sampling option preflight passed')
 # Both nonresident controls remain valid. The historically attempted on config
 # is rejected by the actual same predicate used by session creation.
 assert run(["--head-shape-admission"],True)["head_shape_admission"]

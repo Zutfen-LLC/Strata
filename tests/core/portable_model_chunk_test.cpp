@@ -91,6 +91,25 @@ int main() {
             check(session->generate(prompt,1,got,error)&&got.tokens==generation.tokens&&got.stop==generation.stop&&
                   session->position()==10,"generate layer-major prompt and terminal feed parity");
             if(width==2) {
+                // Both paths consume the same manual history before the prompt.
+                // Bias makes token 0 win without history, but its presence penalty
+                // makes token 1 win when the manual token is recorded correctly.
+                strata::kernels::SamplerParams sample;
+                sample.greedy=true;sample.penalty_last_n=3;sample.penalty_present=10;
+                std::vector<float> bias(session->vocabulary(),-100);bias[0]=2;bias[1]=1;
+                PortableGeneration chunk_sample,serial_sample,baseline_sample;
+                check(session->reset(error)&&session->advance_chunk({0,5},error)&&
+                      session->generate({5},1,chunk_sample,error,sample,bias),error);
+                const auto chunk_position=session->position();
+                check(session->reset(error)&&session->advance(0,error)&&session->advance(5,error)&&
+                      session->generate({5},1,serial_sample,error,sample,bias),error);
+                check(chunk_sample.tokens==std::vector<int32_t>{1} &&
+                      serial_sample.tokens==chunk_sample.tokens && session->position()==chunk_position &&
+                      chunk_position==4,"chunk versus serial consumed sampling history");
+                check(session->reset(error)&&session->generate({5},1,baseline_sample,error,sample,bias),error);
+                check(baseline_sample.tokens==std::vector<int32_t>{0} &&
+                      baseline_sample.tokens!=chunk_sample.tokens && session->position()==2,
+                      "no-history baseline differs from chunk and serial selection");
                 for(const auto& tiny:std::vector<std::vector<int32_t>>{{5},{5,6},{5,6,7}}) {
                     check(session->reset(error)&&session->generate(tiny,0,got,error),error);
                     check(session->position()==tiny.size()&&got.tokens.empty(),"short prompt/T1-tail max-new zero");
