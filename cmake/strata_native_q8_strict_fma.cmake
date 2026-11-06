@@ -29,7 +29,12 @@ function(strata_native_q8_strict_fma_patch original output)
         strata_fma_features.shaderFmaFloat16 = VK_FALSE;
         strata_fma_features.shaderFmaFloat64 = VK_FALSE;
 ]=])
-  strata_native_q8_dot_replace(patched "${query}" "${fma_chain}${query}\n${fma_admit}")
+  set(fma_log [=[        strata::core::portable_detail::log_native_q8_fma_device(stderr, idx, dev_num,
+            device->properties.deviceName.data(), device->properties.vendorID, device->properties.deviceID,
+            device->properties.driverVersion, device->properties.apiVersion, vk11_props.deviceUUID.data(),
+            strata_fma_extension, strata_fma_features.shaderFmaFloat32 != VK_FALSE);
+]=])
+  strata_native_q8_dot_replace(patched "${query}" "${fma_chain}${query}\n${fma_log}${fma_admit}")
   set(create "        device->device = device->physical_device.createDevice(device_create_info);")
   strata_native_q8_dot_replace(patched "${create}" "${create}\n        strata_q8_device->strata_q8_fma.logical_device_created();")
   set(${output} "${patched}" PARENT_SCOPE)

@@ -79,11 +79,12 @@ class GuardBuild(unittest.TestCase):
             patch = (ROOT / 'cmake/strata_native_q8_strict_fma.cmake').read_text()
             chain = patch.split('set(fma_chain [=[', 1)[1].split(']=])', 1)[0]
             admit = patch.split('set(fma_admit [=[', 1)[1].split(']=])', 1)[0]
+            log = patch.split('set(fma_log [=[', 1)[1].split(']=])', 1)[0]
             query = b'        vkGetPhysicalDeviceFeatures2(device->physical_device, &device_features2);'
             create = b'        device->device = device->physical_device.createDevice(device_create_info);'
             self.assertEqual(original.count(query), 1)
             self.assertEqual(original.count(create), 1)
-            original = original.replace(query, chain.encode() + query + b'\n' + admit.encode())
+            original = original.replace(query, chain.encode() + query + b'\n' + log.encode() + admit.encode())
             original = original.replace(create, create + b'\n        strata_q8_device->strata_q8_fma.logical_device_created();')
             cache = b'        vk_instance.devices[idx] = device;'
             tail = b'        return device;\n    }\n\n    return vk_instance.devices[idx];\n}'
@@ -93,6 +94,9 @@ class GuardBuild(unittest.TestCase):
             original = original.replace(cache, cache + b'\n        try {')
             original = original.replace(tail, b'        } catch (...) {\n            vk_instance.devices[idx].reset();\n            throw;\n        }\n' + tail)
             original = original.replace(destructor, destructor + b'\n    if (!device) return; // strict diagnostic: no logical device, no Vulkan resources')
+        if NATIVE_STAGES:
+            create = b'        device->device = device->physical_device.createDevice(device_create_info);'
+            original = original.replace(create, create + b'\n        strata_q8_device->strata_float64_enabled = device_features2.features.shaderFloat64 != VK_FALSE;')
         self.assertEqual(copy, original + suffix)
 
     def test_native_dot_patch_rejects_wrong_pin_and_ambiguous_anchors(self):
