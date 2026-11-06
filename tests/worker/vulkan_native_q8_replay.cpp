@@ -10,6 +10,9 @@
 #include "strata/worker/cpu_capture.hpp"
 #include "strata/worker/gpu_client.hpp"
 #include "strata/worker/gpu_endpoint.hpp"
+#ifdef STRATA_Q8_REPLAY_PROVIDER
+#include "portable_remote_experts.hpp"
+#endif
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -22,6 +25,18 @@
 using namespace strata::worker;
 using namespace strata::worker::vulkan_detail;
 namespace fs=std::filesystem;
+// Preserve the complete original K-slot token; no ownership or mask is changed.
+InferRequest token_slice(const InferRequest& in,size_t token) {
+    require(!in.packed && in.T==2 && in.K==10 && token<2 && in.activations.size()==size_t(in.T)*H &&
+        in.ids.size()==20 && in.weights.size()==20 && in.mask.size()==20,"provider gate requires the original raw T2 K10 capture");
+    for(auto m:in.mask)require(m==1,"provider gate refuses a partially owned capture");
+    InferRequest out=in;out.T=1;
+    out.activations.assign(in.activations.begin()+token*H,in.activations.begin()+(token+1)*H);
+    out.ids.assign(in.ids.begin()+token*10,in.ids.begin()+(token+1)*10);
+    out.weights.assign(in.weights.begin()+token*10,in.weights.begin()+(token+1)*10);
+    out.mask.assign(in.mask.begin()+token*10,in.mask.begin()+(token+1)*10);
+    return out;
+}
 std::string hexid(uint64_t v,int width=16){std::ostringstream o;o<<std::hex<<std::setfill('0')<<std::setw(width)<<v;return o.str();}
 std::string key(const GpuPlan& p,const GpuAsset& a){return "sgpu1-"+hexid(p.model_id)+"-"+hexid(p.layout_id.a)+hexid(p.layout_id.b)+"-"+hexid(a.layer,4)+"-"+hexid(a.expert,4)+"-"+hexid(a.bytes)+"-"+hexid(a.digest.a)+hexid(a.digest.b)+".blob";}
 void write(const std::string& path,const void* data,size_t n){std::ofstream f(path,std::ios::binary);require(bool(f.write(static_cast<const char*>(data),n)),"replay boundary write failed");}
@@ -39,7 +54,11 @@ std::vector<uint8_t> file_bytes(const fs::path& path,size_t limit) {
     require(bool(in.read(reinterpret_cast<char*>(data.data()),data.size())),"reference read failed");return data;
 }
 int worker_replay(int argc,char** argv) {
-    require(argc==11 || argc==19,"usage: --worker HOST:PORT CAPTURE RECORD PLAN BLOB_DIR DIRECT_REPLY NEW_OUTPUT --deadline-ms N [--tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer DNS]");
+    const bool provider=std::string(argv[1])=="--provider";
+#ifndef STRATA_Q8_REPLAY_PROVIDER
+    require(!provider,"provider replay is not enabled in this build");
+#endif
+    require(provider?(argc==13 || argc==21):(argc==11 || argc==19),"usage: --worker|--provider HOST:PORT CAPTURE RECORD PLAN BLOB_DIR DIRECT_REPLY NEW_OUTPUT --deadline-ms N [--token-index 0|1] [--tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer DNS]");
     const fs::path output=argv[8];require(fs::create_directory(output),"output must be a new private directory");
     fs::permissions(output,fs::perms::owner_all,fs::perm_options::replace);
     try {
@@ -48,16 +67,29 @@ int worker_replay(int argc,char** argv) {
     std::string deadline_value=argv[10];require(!deadline_value.empty() && deadline_value.find_first_not_of("0123456789")==std::string::npos,"invalid deadline");
     const auto deadline=std::stoull(deadline_value);require(deadline && deadline<=600000,"deadline out of range");
     TlsConfig tls;
-    if(argc==19) {
-        require(std::string(argv[11])=="--tls-ca" && std::string(argv[13])=="--tls-cert" &&
-            std::string(argv[15])=="--tls-key" && std::string(argv[17])=="--tls-peer","invalid TLS arguments");
-        tls={argv[12],argv[14],argv[16],argv[18]};
+    const int tls_at=provider?13:11;
+    if(argc==tls_at+8) {
+        require(std::string(argv[tls_at])=="--tls-ca" && std::string(argv[tls_at+2])=="--tls-cert" &&
+            std::string(argv[tls_at+4])=="--tls-key" && std::string(argv[tls_at+6])=="--tls-peer","invalid TLS arguments");
+        tls={argv[tls_at+1],argv[tls_at+3],argv[tls_at+5],argv[tls_at+7]};
     }
     std::string err;require(tls.validate(err),err);
+#ifdef STRATA_Q8_REPLAY_PROVIDER
+    Digest128 capture_digest{},plan_digest{};
+    if(provider){capture_digest=blob_digest(file_bytes(argv[3],256u<<20));plan_digest=blob_digest(file_bytes(argv[5],kGpuFrameMax));}
+#endif
     CpuCaptureFile f;GpuPlan p;require(read_cpu_capture(argv[3],f,err),err);require(read_gpu_plan(argv[5],p,err),err);
+#ifdef STRATA_Q8_REPLAY_PROVIDER
+    if(provider)require(blob_digest(file_bytes(argv[3],256u<<20))==capture_digest && blob_digest(file_bytes(argv[5],kGpuFrameMax))==plan_digest,"capture or plan changed while loading");
+#endif
     const std::string record=argv[4];require(!record.empty() && record.find_first_not_of("0123456789")==std::string::npos,"invalid record");
     const auto ordinal=std::stoull(record);require(ordinal<f.records.size() && f.records[ordinal].sent,"record absent/not sent");
     auto q=f.records[ordinal].request;
+    if(provider) {
+        for(size_t i=0;i<q.mask.size();++i)require(q.mask[i]==1 && p.owns(q.layer,q.ids[i]),"original capture not fully owned; refusing to remask");
+        require(std::string(argv[11])=="--token-index" && (std::string(argv[12])=="0" || std::string(argv[12])=="1"),"token index must be 0 or 1");
+        q=token_slice(q,size_t(argv[12][0]-'0'));
+    }
     require(p.model_id==f.setup.model_id && p.n_embd==H && p.n_ff==F && p.gu_type==8 && p.d_type==8 &&
         p.n_layers==f.setup.n_layers && p.n_expert==f.setup.n_expert && !p.assets.empty(),"capture/plan identity or native geometry mismatch");
     for(size_t i=0;i<q.mask.size();++i)require(!q.mask[i] || p.owns(q.layer,q.ids[i]),"full request not covered by plan; refusing to remask");
@@ -83,10 +115,29 @@ int worker_replay(int argc,char** argv) {
             std::vector<uint8_t> blob(a.bytes);
             require(open.fetch(a.layer,a.expert,blob.data(),uint32_t(blob.size())),"staged blob missing or digest mismatch");
         }
-        GpuWorkerTier tier;require(tier.open(open,err),err);GpuCounters before,after;require(tier.status(before,err),err);
+        GpuCounters before,after;EntryRowsReply remote;GpuWorkerTier tier;
+#ifdef STRATA_Q8_REPLAY_PROVIDER
+        strata::core::portable_detail::RemoteExperts adapter;
+        if(provider) {
+            auto guard=[&](std::string& e) {try {
+                if(blob_digest(file_bytes(argv[3],256u<<20))!=capture_digest || blob_digest(file_bytes(argv[5],kGpuFrameMax))!=plan_digest) {e="capture or plan changed";return false;}
+                for(const auto& a:p.assets){std::vector<uint8_t> blob(a.bytes);if(!open.fetch(a.layer,a.expert,blob.data(),uint32_t(blob.size()))){e="blob changed";return false;}}
+                return true;
+            } catch(const std::exception& ex){e=ex.what();return false;}};
+            auto no_complement=[](int64_t,const std::vector<strata::core::PortableRoute>&,const std::vector<uint8_t>&,std::vector<float>&,std::string& e){e="unexpected CPU complement";return false;};
+            require(adapter.open(open,p,{},10,no_complement,guard,err),err);require(adapter.status(before,err),err);
+            strata::core::PortableRoute route;route.activation=q.activations;route.ids.assign(q.ids.begin(),q.ids.end());route.weights=q.weights;
+            require(adapter.run(q.layer,route,remote.rows,err),err);require(adapter.status(after,err),err);
+            for(uint16_t i=0;i<10;++i)remote.indices.push_back(i);
+            require(adapter.cpu_entries()==0 && adapter.stats().requests==1 && adapter.stats().entries==10 && adapter.stats().failures==0,"provider accounting mismatch");
+        } else
+#endif
+        {
+        require(tier.open(open,err),err);require(tier.status(before,err),err);
         std::vector<int32_t> ids(q.ids.begin(),q.ids.end());
         require(tier.post(q.layer,q.activations.data(),ids.data(),q.weights.data(),q.mask.data(),q.T,q.K,err) && tier.finish(err) && tier.served(),err);
-        const auto remote=tier.entry_rows();require(tier.status(after,err),err);
+        remote=tier.entry_rows();require(tier.status(after,err),err);
+        }
         write((output/"worker.indices").string(),remote.indices.data(),remote.indices.size()*sizeof(uint16_t));
         write((output/"worker.rows.f32").string(),remote.rows.data(),remote.rows.size()*sizeof(float));
         std::ofstream meta(output/"worker.status");
@@ -94,7 +145,9 @@ int worker_replay(int argc,char** argv) {
             <<" transferred="<<c.transferred_bytes<<" verified="<<c.verified_bytes<<" weights="<<c.gpu_weight_bytes
             <<" allocated="<<c.gpu_allocated_bytes<<" scratch="<<c.gpu_scratch_bytes<<" allocations="<<c.gpu_allocation_count
             <<" requests="<<c.requests<<" entries="<<c.entries<<" failures="<<c.failures<<"\n";};
-        meta<<"session="<<remote.session<<" sequence="<<remote.sequence<<"\n";status("before",before);status("after",after);
+        if(provider)meta<<"provider=true token_index="<<argv[12]<<" association=original_token_slots\n";
+        else meta<<"session="<<remote.session<<" sequence="<<remote.sequence<<"\n";
+        status("before",before);status("after",after);
         require(bool(meta),"worker status write failed");meta.close();
         const auto entries=std::count(q.mask.begin(),q.mask.end(),uint8_t(1));
         // Failures are cumulative for the worker, not reset per session. This
@@ -110,23 +163,29 @@ int worker_replay(int argc,char** argv) {
             after.entries>=before.entries && after.entries-before.entries==uint64_t(entries),"worker lifecycle counters changed unexpectedly");
         require(remote.indices==direct.indices && remote.rows.size()==direct.rows.size() &&
             !std::memcmp(remote.rows.data(),direct.rows.data(),direct.rows.size()*sizeof(float)),"worker/direct indexed rows differ");
+#ifdef STRATA_Q8_REPLAY_PROVIDER
+        if(provider)require(adapter.close_orderly(err),err);
+        else
+#endif
         require(tier.close_orderly(err),err);
-        const std::string pass="indexed rows and lifecycle counters match; same physical device/build/shaders require separate evidence\n";
+        const std::string pass=provider?"provider T1 indexed rows and lifecycle counters match; same physical device/build/shaders require separate evidence\n":
+            "indexed rows and lifecycle counters match; same physical device/build/shaders require separate evidence\n";
         write((output/"PASS").string(),pass.data(),pass.size());return 0;
     } catch(const std::exception& e) {std::ofstream failure(output/"FAILURE");failure<<e.what()<<"\n";throw; }
 }
 #endif
 int main(int argc,char** argv){try {
 #ifndef STRATA_Q8_REPLAY_CUDA
-    if(argc>1 && std::string(argv[1])=="--worker")return worker_replay(argc,argv);
+    if(argc>1 && (std::string(argv[1])=="--worker" || std::string(argv[1])=="--provider"))return worker_replay(argc,argv);
 #endif
 #ifdef STRATA_Q8_REPLAY_CLIENT_ONLY
     throw std::runtime_error("CPU-only replay supports --worker only");
 #else
-    bool timing=false;size_t budget=128u<<20;
+    bool timing=false;size_t budget=128u<<20;int token=-1;
     for(int arg=10;arg<argc;++arg) {
         const std::string option=argv[arg];
         if(option=="--timing") {require(!timing,"duplicate timing option");timing=true;}
+        else if(option=="--token-index") {require(token<0 && ++arg<argc && (std::string(argv[arg])=="0" || std::string(argv[arg])=="1"),"invalid token index");token=argv[arg][0]-'0';}
         else if(option=="--budget-bytes") {
             require(++arg<argc,"budget bytes required");const std::string value=argv[arg];
             require(!value.empty() && value.find_first_not_of("0123456789")==std::string::npos,"invalid budget bytes");
@@ -150,6 +209,9 @@ int main(int argc,char** argv){try {
     const std::string record=argv[6];require(!record.empty() && record.find_first_not_of("0123456789")==std::string::npos,"invalid record index");
     const size_t ordinal=std::stoull(record);require(ordinal<f.records.size() && f.records[ordinal].sent,"record absent/not sent");
     auto q=f.records[ordinal].request;
+    if(token>=0) {require(!timing,"token-slice timing is not supported");
+        for(size_t i=0;i<q.mask.size();++i)require(q.mask[i]==1 && p.owns(q.layer,q.ids[i]),"original capture not fully owned; refusing to remask");
+        q=token_slice(q,size_t(token));}
     require(p.model_id==f.setup.model_id && p.n_embd==2560 && p.n_ff==640 && p.gu_type==8 && p.d_type==8 &&
         p.n_layers==f.setup.n_layers && p.n_expert==f.setup.n_expert && !p.assets.empty(),"capture/plan identity or native geometry mismatch");
     for(size_t j=0;j<q.mask.size();++j)require(!q.mask[j] || p.owns(q.layer,q.ids[j]),"full request not covered by plan; refusing to remask");
@@ -231,6 +293,7 @@ int main(int argc,char** argv){try {
     std::cout<<"cache_release_observation=true owned_tensor_counters_zero=true backend_still_borrowed=true\n";
 #endif
     std::ofstream meta(prefix+".metadata");native_q8_metadata_header(meta,ordinal,p,q);
+    if(token>=0)meta<<"original_capture_T=2 token_index="<<token<<" original_slot_begin="<<token*10<<'\n';
     for(const auto& d:{blob_digest(q.activations.data(),q.activations.size()*4),blob_digest(q.ids.data(),q.ids.size()*sizeof(q.ids[0])),blob_digest(q.weights.data(),q.weights.size()*4),blob_digest(q.mask)}){meta<<hexid(d.a)<<hexid(d.b)<<' ';}meta<<'\n';
     for(const auto* a:{&t.experts,&t.asset_slots,&t.start,&t.dst,&t.tok,&t.original}){for(auto v:*a)meta<<v<<' ';meta<<'\n';}require(bool(meta),"metadata write failed");
 #ifndef STRATA_Q8_REPLAY_CUDA
