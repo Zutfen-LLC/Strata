@@ -15,6 +15,7 @@
 #include "portable_expert_timer.hpp"
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
 #include "portable_local_experts.hpp"
+#include "portable_remote_experts.hpp"
 #include "strata/worker/vulkan_executor.hpp"
 #endif
 #include "strata/artifact/dequant.hpp"
@@ -129,6 +130,7 @@ struct PortableModelSession::Impl {
     std::unique_ptr<portable_detail::CpuExperts> experts;
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
     std::unique_ptr<portable_detail::LocalExperts> local_experts;
+    std::unique_ptr<portable_detail::RemoteExperts> remote_experts;
 #endif
     PortableTensorView embedding;
     std::map<ggml_backend_t, std::shared_ptr<PortableQsaAttention>> qsa_attention;
@@ -242,6 +244,8 @@ struct PortableModelSession::Impl {
         }
         for (size_t s = 0; s < model.size(); ++s)
             report.mapped_bytes += model.shard(s).file_size();
+        std::vector<std::filesystem::file_time_type> remote_source_times;
+        if(opts.remote_experts)for(size_t i=0;i<model.size();++i)remote_source_times.push_back(std::filesystem::last_write_time(model.shard(i).path()));
         experts = std::make_unique<portable_detail::CpuExperts>(model, manifest, opts);
         report.expert_staging = experts->bytes();
         report.retained_manifest_identity_a = experts->identity().identity.a;
@@ -588,6 +592,51 @@ struct PortableModelSession::Impl {
             throw std::runtime_error("local resident experts unavailable in this build");
 #endif
         }
+        if(opts.remote_experts) {
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+            constexpr size_t remote_host_bound=64ull<<20;
+            require(report.host_weights<=opts.host_cap &&
+                report.host_state_bound<=opts.host_cap-report.host_weights &&
+                host_graph<=opts.host_cap-report.host_weights-report.host_state_bound &&
+                report.expert_staging<=opts.host_cap-report.host_weights-report.host_state_bound-host_graph &&
+                remote_host_bound<=opts.host_cap-report.host_weights-report.host_state_bound-host_graph-report.expert_staging,
+                "remote expert setup/row host bound exceeds cap");
+            report.host_state_bound+=remote_host_bound;
+            auto open=*opts.remote_experts;
+            std::vector<std::pair<uint16_t,uint16_t>> pairs;
+            for(const auto& asset:open.plan.assets)pairs.emplace_back(asset.layer,asset.expert);
+            worker::GpuPlan expected;
+            require(worker::make_gpu_plan(experts->identity(),pairs,expected,error),error);
+            open.fetch=[this](int64_t layer,int64_t expert,uint8_t* dst,uint32_t bytes) {
+                std::vector<uint8_t> blob;std::string err;
+                if(!experts->load_blob(layer,int32_t(expert),blob,err)||blob.size()!=bytes)return false;
+                std::copy(blob.begin(),blob.end(),dst);return true;
+            };
+            auto complement=[this](int64_t layer,const std::vector<PortableRoute>& routes,
+                                   const std::vector<uint8_t>& mask,std::vector<float>& rows,std::string& err) {
+                std::vector<std::array<bool,portable_detail::K>> active(routes.size());
+                if(mask.size()!=routes.size()*portable_detail::K){err="remote complement mask invalid";return false;}
+                for(size_t t=0;t<routes.size();++t)for(size_t k=0;k<portable_detail::K;++k)active[t][k]=mask[t*portable_detail::K+k]!=0;
+                return experts->run_batch(layer,routes,rows,err,&active);
+            };
+            auto source_guard=[this,remote_source_times](std::string& err) {
+                try {
+                    for(size_t i=0;i<model.size();++i) {
+                        const auto& shard=model.shard(i);
+                        if(std::filesystem::file_size(shard.path())!=shard.file_size() ||
+                           std::filesystem::last_write_time(shard.path())!=remote_source_times[i]) {
+                            err="remote expert source changed; reopen model";return false;
+                        }
+                    }
+                    return true;
+                } catch(const std::exception& e) {err=e.what();return false;}
+            };
+            remote_experts=std::make_unique<portable_detail::RemoteExperts>();
+            require(remote_experts->open(std::move(open),expected,{},portable_detail::K,std::move(complement),std::move(source_guard),error),error);
+#else
+            throw std::runtime_error("remote experts unavailable in this build");
+#endif
+        }
         require(reset(error), error);
     }
     void append_placements(const std::vector<PortablePlacement> &source, int64_t layer) {
@@ -640,6 +689,12 @@ struct PortableModelSession::Impl {
     size_t host_graph = 0;
     bool reset(std::string &error) {
         poison = true; // reset failure cannot make partly reset state usable
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+        if (remote_experts && !remote_experts->usable()) {
+            error = "portable model: remote expert provider is closed or terminal; reopen the session";
+            return false;
+        }
+#endif
         for (auto &l : layers)
             if (!l.reset(error))
                 return false;
@@ -650,7 +705,7 @@ struct PortableModelSession::Impl {
     }
     bool advance_chunk(const std::vector<int32_t>& tokens,std::string& error) {
         error.clear();
-        if(poison) { error="portable model: session poisoned; reset/replay required"; return false; }
+        if(poison) { error="portable model: session poisoned; reset/replay or reopen required"; return false; }
         portable_detail::ScopedExpertTimer<> step_timer(opts.expert_timings,model_work.step_ms,model_work.step_calls);
         try {
             const size_t T=tokens.size();
@@ -677,6 +732,7 @@ struct PortableModelSession::Impl {
                     trace<<'\n';
                 }
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+                if(remote_experts)return remote_experts->run_batch(layer,routes,rows,e);
                 if(local_experts)return local_experts->run_batch(layer,routes,rows,e);
 #endif
                 return experts->run_batch(layer,routes,rows,e);
@@ -716,7 +772,7 @@ struct PortableModelSession::Impl {
         error.clear();
         logits.clear();
         if (poison) {
-            error = "portable model: session poisoned; explicit reset and replay required";
+            error = "portable model: session poisoned; explicit reset and replay or reopen required";
             return false;
         }
         try {
@@ -752,6 +808,7 @@ struct PortableModelSession::Impl {
                     std::cerr << '\n';
                 }
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+                if (remote_experts) return remote_experts->run(l,r,rows,e);
                 if (local_experts) return local_experts->run(l,r,rows,e);
 #endif
                 return experts->run(l, r, rows, e);
@@ -849,6 +906,34 @@ bool PortableModelSession::advance(int32_t token, std::string &error) {
 bool PortableModelSession::advance_chunk(const std::vector<int32_t>& tokens,std::string& error) {
     return impl_->advance_chunk(tokens,error);
 }
+bool PortableModelSession::remote_expert_status(worker::GpuCounters& counters,std::string &error) {
+    error.clear();
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+    if(impl_->remote_experts) {
+        const bool ok=impl_->remote_experts->status(counters,error);
+        if (!impl_->remote_experts->usable()) impl_->poison=true;
+        return ok;
+    }
+#endif
+    error="remote experts are not configured";return false;
+}
+worker::GpuWorkerTier::Stats PortableModelSession::remote_expert_stats() const {
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+    if(impl_->remote_experts)return impl_->remote_experts->stats();
+#endif
+    return {};
+}
+bool PortableModelSession::close_remote_experts(std::string &error) {
+    error.clear();
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+    if(impl_->remote_experts) {
+        const bool ok=impl_->remote_experts->close_orderly(error);
+        impl_->poison=true;
+        return ok;
+    }
+#endif
+    error="remote experts are not configured";return false;
+}
 bool PortableModelSession::reset(std::string &error) {
     error.clear();
     try {
@@ -869,7 +954,10 @@ PortableExpertWork PortableModelSession::expert_work() const {
     work.provider_ms=impl_->provider_ms;
     work.provider_calls=impl_->provider_calls;
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
-    if (impl_->local_experts) {
+    if (impl_->remote_experts) {
+        work.gpu_entries=impl_->remote_experts->stats().entries;
+        work.cpu_entries=impl_->remote_experts->cpu_entries();
+    } else if (impl_->local_experts) {
         work.gpu_entries=impl_->local_experts->gpu_entries();
         work.cpu_entries=impl_->local_experts->cpu_entries();
     }
@@ -927,7 +1015,7 @@ bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t m
     result = {};
     error.clear();
     if (impl_->poison) {
-        error = "portable model: session poisoned; reset/replay required";
+        error = "portable model: session poisoned; reset/replay or reopen required";
         return false;
     }
     // Generation preflight is side-effect free. step errors always poison.
