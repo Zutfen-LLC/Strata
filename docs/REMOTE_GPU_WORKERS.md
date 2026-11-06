@@ -44,6 +44,15 @@ Configure worker and engine frame deadlines consistently; a keepalive cannot
 overcome an arbitrarily shorter server deadline or an unresponsive route.
 Keepalives do not extend setup/inference deadlines or CPU residency TTLs.
 
+The experimental `strata-vulkan-expert-worker` also accepts `--idle-ms N`.
+After READY, it waits up to N milliseconds for the first byte of each next
+request. Set N from 1 to 86400000 (24 hours) to opt in; 0 is the default and
+keeps the existing frame deadline for idle waits. After the first byte, the
+remaining header and body share the existing `--deadline-ms` budget. Setup
+before READY, the TLS handshake and sends keep their existing deadlines;
+`--setup-ms` separately bounds the whole setup. This applies to plaintext and
+TLS sessions and does not change client-side deadlines.
+
 The existing asynchronous CPU request is submitted first. The group copies
 inputs and queues every participating GPU before waiting for replies. Results
 are retained by configuration index, then merged after the existing helper sum

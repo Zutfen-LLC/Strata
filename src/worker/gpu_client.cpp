@@ -27,14 +27,14 @@ bool GpuWorkerTier::exchange(uint16_t msg,const std::vector<uint8_t>& p,uint16_t
         budget=(int)std::min<uint64_t>((uint64_t)budget,setup_end_-now);}
     if(fd_==~(uintptr_t)0 || !gpu_codec::send(fd_,msg,ST_OK,p,budget,cancel,err,use_tls_?&tls_:nullptr))
         return fail("CUDA exchange failed: "+err,err);
-    int response_wait=0;
+    int first_byte_wait=0;
     if(setup_end_){
         const auto now=now_ms();if(now>=setup_end_)return fail("CUDA setup exceeded total deadline",err);
         const auto remaining=setup_end_-now;
         budget=(int)std::min<uint64_t>((uint64_t)deadline_ms_,remaining);
-        if(msg==GPU_SETUP || msg==GPU_READY)response_wait=(int)std::min<uint64_t>(INT32_MAX,remaining);
+        if(msg==GPU_SETUP || msg==GPU_READY)first_byte_wait=(int)std::min<uint64_t>(INT32_MAX,remaining);
     }
-    if(!gpu_codec::receive(fd_,reply,kGpuFrameMax,budget,cancel,err,response_wait,use_tls_?&tls_:nullptr))
+    if(!gpu_codec::receive(fd_,reply,kGpuFrameMax,budget,cancel,err,first_byte_wait,use_tls_?&tls_:nullptr))
         return fail("CUDA exchange failed: "+err,err);
     if(reply.msg!=want || reply.status!=ST_OK)return fail("CUDA worker rejected operation or negotiation: "+std::string(status_name(reply.status)),err);
     return true;

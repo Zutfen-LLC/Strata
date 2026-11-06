@@ -130,6 +130,44 @@ void transport_diagnostics() {
         ::close(fd[0]);::close(fd[1]);
     }
     std::vector<uint8_t> malformed(16,0);run(malformed,false,false,100,"malformed_header",TransportOutcome::none,0);
+    {
+        // The opt-in first-byte (idle) budget is distinct from the frame deadline.
+        int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"idle socketpair");
+        WireFrame frame;std::string err;gpu_codec::ReceiveDiagnostic d;
+        const auto began=std::chrono::steady_clock::now();
+        check(!gpu_codec::receive(fd[1],frame,kGpuFrameMax,5000,{},err,30,nullptr,&d)&&
+              d.transport.outcome==TransportOutcome::timeout&&d.transport.bytes==0&&
+              std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-began).count()<1000,
+              "quiet idle wait ends by its own short budget, not the frame deadline");
+        ::close(fd[0]);::close(fd[1]);
+    }
+    {
+        int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"ready socketpair");
+        std::string err;std::vector<uint8_t> payload;
+        gpu_codec::put(payload,kGpuWireVersion,4);gpu_codec::put(payload,kGpuCapabilityCuda,4);
+        gpu_codec::put(payload,kGpuNumericsQ8_1,4);
+        require(gpu_codec::send(fd[0],GPU_HELLO,ST_OK,payload,1000,{},err),"preload one frame");
+        WireFrame frame;gpu_codec::ReceiveDiagnostic d;
+        check(gpu_codec::receive(fd[1],frame,kGpuFrameMax,1000,{},err,1,nullptr,&d)&&
+              frame.msg==GPU_HELLO&&frame.payload==payload,
+              "already available frame needs no idle wait");
+        ::close(fd[0]);::close(fd[1]);
+    }
+    {
+        int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"shared budget socketpair");
+        std::vector<uint8_t> wire;gpu_codec::put(wire,kGpuWireMagic,4);gpu_codec::put(wire,GPU_HELLO,2);
+        gpu_codec::put(wire,ST_OK,2);gpu_codec::put(wire,(uint64_t)4);
+        std::thread writer([&]{sock::sleep_ms(200);::send(fd[0],wire.data(),1,0);
+            sock::sleep_ms(90);::send(fd[0],wire.data()+1,wire.size()-1,0);});
+        WireFrame frame;std::string err;gpu_codec::ReceiveDiagnostic d;
+        const auto began=std::chrono::steady_clock::now();
+        const bool ok=gpu_codec::receive(fd[1],frame,kGpuFrameMax,150,{},err,300,nullptr,&d);
+        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-began).count();
+        writer.join();
+        check(!ok&&std::string(d.stage)=="payload"&&d.transport.outcome==TransportOutcome::timeout&&elapsed>=310&&elapsed<800,
+              "near-idle first byte starts a shared header and body deadline");
+        ::close(fd[0]);::close(fd[1]);
+    }
     int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"send socketpair");
     TransportRead send_detail;std::string err;
     check(!gpu_codec::send(fd[0],GPU_HELLO,ST_OK,{},100,[]{return true;},err,nullptr,&send_detail) &&
@@ -175,6 +213,12 @@ uint64_t raw_setup(sock_fd fd,const GpuPlan& p){
     require(gpu_codec::send(fd,GPU_SETUP,ST_OK,payload,2000,{},err)&&
             gpu_codec::receive(fd,out,kGpuFrameMax,2000,{},err)&&out.status==ST_OK,err);
     gpu_codec::Cursor c{out.payload};return c.get(8);
+}
+void raw_ready(sock_fd fd,const GpuPlan& p){
+    const auto session=raw_setup(fd,p);
+    std::string err; WireFrame reply;
+    require(gpu_codec::send(fd,GPU_READY,ST_OK,gpu_codec::binding(session,p),2000,{},err)&&
+            gpu_codec::receive(fd,reply,kGpuFrameMax,2000,{},err)&&reply.status==ST_OK,err);
 }
 // A deliberately dishonest peer sends invalid successful inference replies through the
 // real transport/client. Codec unit checks alone do not exercise failure latching.
@@ -287,6 +331,106 @@ void setup_budget_checks(const Fixture& f,const GpuPlan& plan){
         check(service.service.counters().gpu_allocated_bytes==0,"setup stop releases GPU allocations before counter read");
     }
 }
+// The opt-in idle budget lets a session wait for its next request frame past the
+// short per-frame deadline; started frames, expiry, stop and the default stay bounded.
+void idle_budget_checks(const Fixture& f,const GpuPlan& p){
+    const auto eof_within=[&](sock_fd fd,int least_ms,int most_ms,const char* label){
+        // connect_numeric_controlled returns a nonblocking socket; wait explicitly
+        // so EAGAIN cannot masquerade as an early close or hang the suite.
+        char byte=0;const auto began=std::chrono::steady_clock::now();
+        pollfd ready{fd,POLLIN,0};
+        const int polled=::poll(&ready,1,most_ms);
+        const auto n=polled>0?::recv(fd,&byte,1,0):-1;
+        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-began).count();
+        check(n==0&&elapsed>=least_ms&&elapsed<=most_ms,label);
+    };
+    {
+        auto options=options_for(f,p,"cache-idle-gap");populate_cache(f,options);
+        options.deadline_ms=250;options.idle_ms=3000;
+        GpuService service(options,std::make_unique<FakeExecutor>());
+        GpuWorkerTier tier;int fetches=0;std::string err;
+        require(tier.open(open_for(f,p,service.port,fetches),err),err);
+        std::this_thread::sleep_for(std::chrono::milliseconds(700)); // past deadline_ms, inside idle_ms
+        run_tier(tier,p);
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        run_tier(tier,p);
+        check(fetches==0&&service.service.counters().failures==0,
+            "valid request after an allowed idle gap serves verified cache without failure");
+        tier.close();service.stop();
+    }
+    {
+        auto options=options_for(f,p,"cache-idle-default");populate_cache(f,options);
+        options.deadline_ms=250; // idle_ms stays 0: unchanged default behavior
+        GpuService service(options,std::make_unique<FakeExecutor>());
+        GpuWorkerTier tier;int fetches=0;std::string err;
+        require(tier.open(open_for(f,p,service.port,fetches),err),err);
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        auto r=request_for(p);std::vector<int32_t> ids(r.ids.begin(),r.ids.end());
+        check(!tier.post(r.layer,r.activations.data(),ids.data(),r.weights.data(),r.mask.data(),r.T,r.K,err)&&tier.dead(),
+            "without the idle option the frame deadline still closes an idle session");
+        service.stop();
+        check(service.service.counters().failures==1,"default idle close counted once");
+    }
+    {
+        auto options=options_for(f,p,"cache-idle-pre-ready");
+        options.deadline_ms=250;options.idle_ms=3000;
+        GpuService service(options,std::make_unique<FakeExecutor>());
+        sock_fd fd=kBadFd;std::string err;
+        require(sock::connect_numeric_controlled("127.0.0.1",service.port,2000,{},fd,err),err);
+        eof_within(fd,120,1500,"pre-READY idle retains frame deadline");
+        sock::close_fd(fd);service.stop();
+    }
+    for(int mode=0;mode<2;++mode){ // stalled partial header, then stalled partial body
+        auto options=options_for(f,p,"cache-idle-stall-"+std::to_string(mode));populate_cache(f,options);
+        options.deadline_ms=300;options.idle_ms=20000;
+        GpuService service(options,std::make_unique<FakeExecutor>());
+        sock_fd fd=kBadFd;std::string err;
+        require(sock::connect_numeric_controlled("127.0.0.1",service.port,2000,{},fd,err),err);
+        raw_ready(fd,p);
+        std::vector<uint8_t> stalled;
+        gpu_codec::put(stalled,kGpuWireMagic,4);gpu_codec::put(stalled,GPU_STATUS,2);
+        gpu_codec::put(stalled,ST_OK,2);gpu_codec::put(stalled,(uint64_t)48);
+        stalled.resize(mode?kHeaderBytes+8:6);
+        require(::send(fd,stalled.data(),stalled.size(),0)==(ssize_t)stalled.size(),"stalled frame send");
+        eof_within(fd,150,2000,mode?"stalled partial body still fails under the active frame deadline":
+                                   "stalled partial header still fails under the active frame deadline");
+        sock::close_fd(fd);service.stop();
+        check(service.service.counters().failures==1,"stalled frame counted once");
+    }
+    {
+        auto options=options_for(f,p,"cache-idle-expiry");populate_cache(f,options);
+        options.deadline_ms=5000;options.idle_ms=500;
+        GpuService service(options,std::make_unique<FakeExecutor>());
+        sock_fd fd=kBadFd;std::string err;
+        require(sock::connect_numeric_controlled("127.0.0.1",service.port,2000,{},fd,err),err);
+        raw_ready(fd,p);
+        eof_within(fd,300,2000,"idle budget alone bounds a quiet session");
+        sock::close_fd(fd);service.stop();
+        check(service.service.counters().failures==1,"idle expiry counted once");
+    }
+    {
+        auto options=options_for(f,p,"cache-idle-stop");populate_cache(f,options);
+        options.deadline_ms=5000;options.idle_ms=3600000;
+        GpuService service(options,std::make_unique<FakeExecutor>());
+        sock_fd fd=kBadFd;std::string err;
+        require(sock::connect_numeric_controlled("127.0.0.1",service.port,2000,{},fd,err),err);
+        raw_ready(fd,p);
+        const auto began=std::chrono::steady_clock::now();
+        service.stop();
+        const auto stopped=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-began).count();
+        eof_within(fd,0,2000,"stopped idle wait closes the connection");
+        check(stopped<=3000,"stop stays responsive during a long idle wait");
+        sock::close_fd(fd);
+        check(service.service.counters().failures==1,"stopped idle wait counted once");
+    }
+    for(int idle:{-1,kGpuWorkerIdleMaxMs+1}){
+        auto options=options_for(f,p,"cache-idle-invalid");options.idle_ms=idle;
+        GpuWorkerService service(options,std::make_unique<FakeExecutor>());
+        uint16_t port=0;std::string err;
+        check(!service.listen(port,err)&&err.find("idle")!=std::string::npos&&port==0,
+            "idle budget bounded and validated before any listener");
+    }
+}
 // Exercise the real listener/session path with synthetic execution only.
 void listener_checks(const Fixture& f,const GpuPlan& p){
     auto probe=[&](const std::string& bind,const std::vector<std::string>& peers,bool valid){
@@ -343,7 +487,7 @@ void listener_checks(const Fixture& f,const GpuPlan& p){
     }
 }
 void lifecycle(const Fixture& f,const GpuPlan& p){
-    unsupported_peer_check(f,p);codec_checks(p);malformed_peer_checks(f,p);malformed_peer_checks(f,p,true);setup_budget_checks(f,p);std::string err;
+    unsupported_peer_check(f,p);codec_checks(p);malformed_peer_checks(f,p);malformed_peer_checks(f,p,true);setup_budget_checks(f,p);idle_budget_checks(f,p);std::string err;
     {
         auto executor=std::make_unique<FakeExecutor>();GpuService service(options_for(f,p,"cache-no-rows"),std::move(executor));
         int fetches=0;GpuWorkerTier tier;auto option=open_for(f,p,service.port,fetches);option.entry_rows=true;
@@ -420,6 +564,21 @@ void failure_log_checks(const Fixture& f,const GpuPlan& p) {
 }
 #endif
 #ifdef STRATA_TEST_TLS
+void tls_pending_frame() {
+    TlsFixture cert;int fd[2];require(::socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0,"TLS socketpair");
+    bool sent=false;std::thread sender([&]{TlsSession tls;std::string err;
+        if(!tls.handshake(fd[0],cert.config("coordinator","worker.test"),false,2000,{},err))return;
+        std::vector<uint8_t> bytes;
+        for(int i=0;i<2;++i){gpu_codec::put(bytes,kGpuWireMagic,4);gpu_codec::put(bytes,GPU_STATUS,2);
+            gpu_codec::put(bytes,ST_OK,2);gpu_codec::put(bytes,(uint64_t)0);}
+        sent=tls.send_all(bytes.data(),bytes.size(),2000,{});sock::sleep_ms(300);
+    });
+    TlsSession tls;std::string err;require(tls.handshake(fd[1],cert.config("worker","coordinator.test"),true,2000,{},err),err);
+    WireFrame frame;const bool first=gpu_codec::receive(fd[1],frame,kGpuFrameMax,500,{},err,500,&tls);
+    const bool second=gpu_codec::receive(fd[1],frame,kGpuFrameMax,500,{},err,50,&tls);
+    sender.join();check(sent&&first&&second&&frame.msg==GPU_STATUS,"TLS buffered second frame bypasses socket readiness wait");
+    ::close(fd[0]);::close(fd[1]);
+}
 void tls_lifecycle(const Fixture& f,const GpuPlan& p,bool nodelay) {
     TlsFixture certificates;
     auto options=options_for(f,p,"cache-tls-"+std::to_string(nodelay));options.accepted_tcp_nodelay=nodelay;options.tls=certificates.config("worker","coordinator.test");
@@ -522,7 +681,7 @@ int main(int argc,char** argv){
 #endif
         require(argc==1,"usage: gpu_worker_test [--emit-plan FILE [--addition] | --peer HOST PORT FILE | --cuda]");
 #ifdef STRATA_TEST_TLS
-        tls_lifecycle(fixture,plan,false);tls_lifecycle(fixture,plan,true);
+        tls_pending_frame();tls_lifecycle(fixture,plan,false);tls_lifecycle(fixture,plan,true);
 #endif
 #ifndef STRATA_TEST_TLS
         TlsConfig disabled;disabled.ca_file="unused-test-path";

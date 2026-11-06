@@ -45,7 +45,7 @@ struct Cursor {
 bool send(uintptr_t fd, uint16_t msg, uint16_t status, const std::vector<uint8_t>& p,
           int ms, const std::function<bool()>& cancel, std::string& err, TlsSession* tls = nullptr, TransportRead* diagnostic = nullptr);
 bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
-             const std::function<bool()>& cancel, std::string& err, int response_wait_ms = 0, TlsSession* tls = nullptr, ReceiveDiagnostic* diagnostic = nullptr);
+             const std::function<bool()>& cancel, std::string& err, int first_byte_ms = 0, TlsSession* tls = nullptr, ReceiveDiagnostic* diagnostic = nullptr);
 std::vector<uint8_t> binding(uint64_t session, const GpuPlan& plan);
 bool binding(Cursor& c, uint64_t session, const GpuPlan& plan);
 bool encode_request(const GpuPlan& plan, const InferRequest& r, std::vector<uint8_t>& p);

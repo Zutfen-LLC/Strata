@@ -41,9 +41,17 @@ struct GpuWorkerOptions {
     uint64_t cache_budget = 24ull << 30;
     uint64_t runtime_reserve = 1ull << 30;
     int deadline_ms = 10000, setup_ms = 600000;
+    // Opt-in idle-session budget; 0 keeps the deadline-only default. When set, it
+    // bounds only the wait for the first byte of the next request frame
+    // after READY. Once any byte of a frame arrives, deadline_ms alone
+    // bounds that frame's remaining header and payload, and sends and the TLS
+    // handshake keep deadline_ms. setup_ms still bounds whole setup separately.
+    int idle_ms = 0;
     bool vulkan = false; // reserve must be zero
     bool native_q8 = false; // explicit Vulkan native numerical contract
 };
+// Upper bound for the opt-in idle budget, matching the setup budget's bound.
+inline constexpr int kGpuWorkerIdleMaxMs = 86400000;
 class GpuWorkerService {
 public:
     GpuWorkerService(GpuWorkerOptions options, std::unique_ptr<GpuExecutor> executor);

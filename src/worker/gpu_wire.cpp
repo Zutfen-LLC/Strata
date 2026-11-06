@@ -37,7 +37,7 @@ bool send(uintptr_t fd, uint16_t msg, uint16_t status, const std::vector<uint8_t
     return true;
 }
 bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
-             const std::function<bool()>& cancel, std::string& err, int response_wait_ms, TlsSession* tls, ReceiveDiagnostic* diagnostic) {
+             const std::function<bool()>& cancel, std::string& err, int first_byte_ms, TlsSession* tls, ReceiveDiagnostic* diagnostic) {
     if (diagnostic) *diagnostic = {};
     auto read = [&](void* p, size_t n, int budget) {
         return tls ? tls->recv_all(p,n,budget,cancel,diagnostic ? &diagnostic->transport : nullptr) :
@@ -46,12 +46,14 @@ bool receive(uintptr_t fd, WireFrame& f, size_t cap, int ms,
     if(ms<=0){if(diagnostic)diagnostic->transport.outcome=TransportOutcome::timeout;err="CUDA frame requires a positive I/O deadline";return false;}
     std::vector<uint8_t> h(kHeaderBytes);
     size_t first = 0;
-    // SETUP/READY may hash or load the entire assigned set. Waiting for their first
-    // response byte uses the remaining whole-setup budget; once a frame begins,
-    // its remaining header and payload retain the short total frame-I/O budget.
-    if (response_wait_ms > 0) {
-        if (!read(h.data(),1,response_wait_ms)) {
-            err="CUDA setup response missing, disconnected or total setup deadline"; return false;
+    // A frame's first byte may wait under a separate explicit budget when one is
+    // given: the client's remaining whole-setup budget while awaiting the first
+    // SETUP/READY response byte, or the worker's opt-in idle-session budget while
+    // awaiting the next request frame. Once any byte arrives, the frame's
+    // remaining header and payload stay under the short total frame-I/O budget.
+    if (first_byte_ms > 0) {
+        if (!read(h.data(),1,first_byte_ms)) {
+            err="CUDA frame first byte missing: idle/setup budget ended, disconnect or cancel"; return false;
         }
         first=1;
     }

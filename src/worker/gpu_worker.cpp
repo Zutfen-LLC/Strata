@@ -45,6 +45,9 @@ bool GpuWorkerService::listen(uint16_t& port, std::string& err) {
         (executor_ && executor_->native_q8() != options_.native_q8)) {
         err="GPU worker executor and numerical method do not match"; return false;
     }
+    if (options_.idle_ms < 0 || options_.idle_ms > kGpuWorkerIdleMaxMs) {
+        err = "idle budget must be 0 (disabled) or at most 86400000 ms"; return false;
+    }
     if (options_.deadline_ms < 1 || options_.setup_ms < 1 ||
         (options_.vulkan ? options_.runtime_reserve != 0 : options_.runtime_reserve < (64ull << 20)) ||
         !validate_gpu_plan(options_.plan, err)) {
@@ -110,7 +113,9 @@ void GpuWorkerService::serve(uintptr_t fd) {
     while (!cancel()) {
         WireFrame in, out; std::string err;
         gpu_codec::ReceiveDiagnostic diagnostic;
-        if (!gpu_codec::receive(fd,in,kGpuFrameMax,options_.deadline_ms,cancel,err,0,tls,&diagnostic)) {
+        // The opt-in idle budget bounds only the wait for the next frame's first
+        // byte; handshake, sends and every started frame keep the frame deadline.
+        if (!gpu_codec::receive(fd,in,kGpuFrameMax,options_.deadline_ms,cancel,err,ready_ ? options_.idle_ms : 0,tls,&diagnostic)) {
             std::fprintf(stderr,"gpu-worker failure site=receive stage=%s outcome=%s bytes=%zu\n",diagnostic.stage,outcome_name(diagnostic.transport.outcome),diagnostic.transport.bytes);
             ++counters_.failures; return;
         }

@@ -13,7 +13,7 @@ void signal_stop(int) { interrupted.store(true); }
 void usage() {
     std::fprintf(stderr,"usage: strata-vulkan-expert-worker --plan FILE --cache-root DIR "
       "[--port 0] [--device 0] [--tensor-budget-mib 16] [--cache-budget-mib 64] "
-      "[--deadline-ms 10000] [--setup-ms 600000] [--tcp-nodelay] [--native-q8-receipt PREFIX]\n"
+      "[--deadline-ms 10000] [--setup-ms 600000] [--idle-ms 0..86400000] [--tcp-nodelay] [--native-q8-receipt PREFIX]\n"
       "[--bind-ip IPv4 --allow-peer-ip IPv4] [--tls-ca FILE --tls-cert FILE --tls-key FILE --tls-peer SAN_DNS]\n"
       "  Q8_0 H2560/FF640 T1..8 indexed rows; private LAN requires mTLS\n");
 }
@@ -46,6 +46,7 @@ int main(int argc,char** argv) {
             else if(arg == "--cache-budget-mib" && n && n <= (1ull<<30)) o.cache_budget=n<<20;
             else if(arg == "--deadline-ms" && n && n <= 600000) o.deadline_ms=int(n);
             else if(arg == "--setup-ms" && n && n <= 86400000) o.setup_ms=int(n);
+            else if(arg == "--idle-ms" && n <= (uint64_t)kGpuWorkerIdleMaxMs) o.idle_ms=int(n);
             else { usage(); return 2; }
         }
     }

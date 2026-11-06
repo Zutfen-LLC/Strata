@@ -61,6 +61,9 @@ set_tests_properties(amd_vulkan_adapter_host PROPERTIES TIMEOUT 120)
 add_executable(strata-vulkan-expert-worker ../../src/worker/vulkan_worker_main.cpp)
 target_include_directories(strata-vulkan-expert-worker PRIVATE ../../src/worker)
 target_link_libraries(strata-vulkan-expert-worker PRIVATE strata_vulkan_executor strata_gpu_protocol Threads::Threads)
+add_test(NAME amd_vulkan_idle_cli COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_vulkan_idle_cli.py $<TARGET_FILE:strata-vulkan-expert-worker>)
+set_tests_properties(amd_vulkan_idle_cli PROPERTIES TIMEOUT 30)
 
 add_test(NAME amd_vulkan_loopback_host COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/test_vulkan_loopback.py $<TARGET_FILE:strata-vulkan-q8-expert>)
