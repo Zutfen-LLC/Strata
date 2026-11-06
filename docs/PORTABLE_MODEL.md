@@ -846,7 +846,10 @@ Send ASCII `GEN <max_new> <id,id,...>\n`, for example `GEN 2 123,456\n`.
 This uses the native GEN/QUIT control words with the portable CLI's comma-separated
 IDs; native optional generation parameters are unsupported. Each request is
 independent. Unsigned decimals only, no spaces within the list, no CRLF, at most
-4096 bytes before LF, nonempty prompt, IDs below the loaded vocabulary, prompt
+4096 bytes before LF for contexts through 256; larger admitted contexts use a
+capacity-derived limit, at most 45,064 bytes at context 4096. The bound allows
+ten decimal digits per token, separators, and a context-sized `max_new`. The
+prompt must be nonempty with IDs below the loaded vocabulary; prompt
 length and max_new each at most the configured context (up to 4096 for serial
 eager native QSA; otherwise 256). Generation stops at context if
 the combined work would exceed it. The entire request is validated before reset

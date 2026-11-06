@@ -28,8 +28,9 @@ namespace {
 volatile std::sig_atomic_t interrupted = 0;
 void interrupt(int signal) { interrupted = signal; }
 // Polling only stdin keeps idle SIGTERM/SIGINT cleanup bounded. No listener.
-bool request_line(std::string& line) {
+bool request_line(std::string& line, size_t context) {
     line.clear();
+    strata::core::stdio_detail::LineFramer frame(context);
 #ifndef _WIN32
     for (;;) {
         if(interrupted) throw std::runtime_error("resident interrupted");
@@ -41,12 +42,9 @@ bool request_line(std::string& line) {
         const auto n=::read(STDIN_FILENO,&c,1);
         if(n<0) { if(errno==EINTR) continue; throw std::runtime_error("stdin read failed"); }
         if(!n) {
-            if(!line.empty()) throw std::runtime_error("incomplete request at EOF");
-            return false;
+            return frame.eof();
         }
-        if(c=='\n') return true;
-        if(line.size()==4096) throw std::runtime_error("request line exceeds 4096 bytes");
-        line.push_back(c);
+        if(frame.append(c)) { line=frame.take();return true; }
     }
 #else
     throw std::runtime_error("--stdio requires POSIX stdin polling");
@@ -647,7 +645,7 @@ int main(int argc, char **argv) {
         if(resident) {
             if(request_id==max_requests) break;
             std::string line;
-            if(!request_line(line) || line=="QUIT") break;
+            if(!request_line(line,opts.context) || line=="QUIT") break;
             // Parse completely before reset or other mutation.
             auto request=strata::core::stdio_detail::parse(line,opts.context,session->vocabulary());
             request_start=Clock::now();
