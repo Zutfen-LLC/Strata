@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Score fixed remote expert assignments on an existing local first-request trace.
 
-This counts observed CPU-owned entries and nonempty dispatch slices only; it does
-not predict decode, latency, traffic, or validate the complete frozen placement.
+Use the baseline with a CPU worker and no network GPU: owner 3 is CPU-worker
+execution; host-local CPU is -1. For one destination, nonempty slices count
+potential RPCs; score each peer independently. The retained trace covers prompt
+and possible speculative first-verification rows, not accepted decode history.
+Unobserved assignments require separate frozen-partition validation. It does not
+predict decode, latency, traffic, or validate the complete frozen placement.
 """
 import argparse
 from collections import Counter
