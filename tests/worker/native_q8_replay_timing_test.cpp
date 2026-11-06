@@ -1,5 +1,6 @@
 #include "native_q8_replay_timing.hpp"
 #include <iostream>
+#include <sstream>
 using namespace strata::worker;
 using namespace strata::worker::vulkan_detail;
 struct FakeClock {
@@ -9,6 +10,17 @@ struct FakeClock {
     static time_point now(){return time_point(duration(ms));}
 };
 int main(){try {
+    {
+        std::array<NativeQ8StageTiming,16> samples{};
+        for(size_t i=0;i<16;++i)for(size_t j=0;j<7;++j)samples[i].milliseconds[j]=double(i+j);
+        std::ostringstream out;print_native_q8_stage_timing(out,samples);
+        require(out.str().find("stage=input_upload samples_ms=0,1,2,3")!=std::string::npos &&
+                out.str().find("stage=row_restore samples_ms=6,7,8,9")!=std::string::npos &&
+                out.str().find("includes_waits=true gpu_kernel_only=false")!=std::string::npos,"stage timing format/accounting");
+        samples[2].milliseconds[3]=-1;bool rejected=false;
+        try{print_native_q8_stage_timing(out,samples);}catch(const std::exception&){rejected=true;}
+        require(rejected,"invalid stage duration accepted");
+    }
     GpuCounters baseline;baseline.gpu_allocated_bytes=1024;baseline.gpu_weight_bytes=512;
     baseline.gpu_scratch_bytes=512;baseline.gpu_allocation_count=4;
     std::string error;

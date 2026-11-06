@@ -140,7 +140,14 @@ int main(){try {
             const auto after=cache.allocation_snapshot();require(after.gpu_allocated_bytes==initial.gpu_allocated_bytes && after.gpu_scratch_bytes==initial.gpu_scratch_bytes && after.gpu_allocation_count==5,"run allocation growth");
         }
         const auto prior=cache.run(p,r);auto retained=prior;
-        fail_down=true;refuses([&]{retained=cache.run(p,r);});fail_down=false;
+        NativeQ8StageTiming observation;observation.milliseconds.fill(-1);
+        cache.stage_timing(&observation);const auto timed=cache.run(p,r);cache.stage_timing(nullptr);
+        require(timed.indices==prior.indices && timed.rows==prior.rows && timed.session==prior.session && timed.sequence==prior.sequence,
+                "stage timing changed rows or identity");
+        for(double value:observation.milliseconds)require(std::isfinite(value) && value>=0,"missing stage duration");
+        observation.milliseconds.fill(-1);cache.run(p,r);
+        for(double value:observation.milliseconds)require(value==-1,"disabled stage timing changed sample");
+        cache.stage_timing(&observation);fail_down=true;refuses([&]{retained=cache.run(p,r);});fail_down=false;cache.stage_timing(nullptr);
         require(retained.indices==prior.indices && retained.rows==prior.rows,"failed output published partial reply");
         auto single=r;single.T=1;single.ids.resize(10);single.mask.assign(10,1);single.activations.resize(H);
         require(cache.run(p,single).indices.size()==10,"existing T1 request refused");

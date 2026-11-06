@@ -4,6 +4,8 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <ostream>
+#include "strata/worker/vulkan_executor.hpp"
 namespace strata::worker::vulkan_detail {
 inline bool native_q8_same_allocations(const GpuCounters& a,const GpuCounters& b) {
     return a.gpu_allocated_bytes==b.gpu_allocated_bytes && a.gpu_weight_bytes==b.gpu_weight_bytes &&
@@ -21,6 +23,17 @@ inline void native_q8_check_restored_rows(const EntryRowsReply& reply,const GpuE
         const size_t restored=it-reply.indices.begin();
         require(!std::memcmp(packed.data()+row*H,reply.rows.data()+restored*H,H*sizeof(float)),
             "native Q8 restored row contents differ from captured down output");
+    }
+}
+inline void print_native_q8_stage_timing(std::ostream& out,const std::array<NativeQ8StageTiming,16>& samples) {
+    const char* names[]={"input_upload","input_quant","gate_up","hidden_quant","down","output_readback","row_restore"};
+    for(size_t stage=0;stage<7;++stage) {
+        out<<"stage_timing metric=host_call_ms includes_waits=true gpu_kernel_only=false stage="<<names[stage]<<" samples_ms=";
+        for(size_t i=0;i<samples.size();++i) {
+            const double v=samples[i].milliseconds[stage];require(std::isfinite(v) && v>=0,"invalid stage timing sample");
+            out<<(i?",":"")<<v;
+        }
+        out<<"\n";
     }
 }
 struct NativeQ8ReplayTiming {

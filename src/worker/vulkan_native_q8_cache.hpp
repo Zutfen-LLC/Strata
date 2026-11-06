@@ -6,6 +6,8 @@
 #include "../core/strata_vk_q8_down.hpp"
 #include <fstream>
 #include <cstdio>
+#include <chrono>
+#include "strata/worker/vulkan_executor.hpp"
 namespace strata::worker::vulkan_detail {
 // Explicit unqualified observation path. Frozen packed slots and one reusable
 // tensor workspace; no host intermediate reconstruction or alternate placement.
@@ -17,6 +19,7 @@ class NativeQ8Cache {
     std::vector<std::unique_ptr<Block>> blocks_;
     size_t per_block_=0;
     bool poisoned_=false;
+    NativeQ8StageTiming* timing_=nullptr;
     ggml_tensor *i_,*x_,*g_,*u_,*h_,*q_,*o_;
     size_t slots_,weights_,scratch_,bytes_;
     std::vector<bool> uploaded_;
@@ -72,6 +75,7 @@ public:
         c.gpu_weight_bytes=weights_;c.gpu_scratch_bytes=c.gpu_allocated_bytes-weights_;
         c.gpu_allocation_count=blocks_.size()+1+bool(activation_)+bool(gu_)+bool(down_);return c;
     }
+    void stage_timing(NativeQ8StageTiming* timing){timing_=timing;}
     size_t size() const{return slots_;}
     size_t buffer_bytes()const{return bytes_;}
     size_t scratch_bytes()const{return scratch_;}
@@ -94,23 +98,31 @@ public:
         auto* i=view(i_,size_t(r.T)*H);auto* x=view(x_,size_t(r.T)*(H/32)*9);
         auto* g=view(g_,size_t(n)*F);auto* u=view(u_,size_t(n)*F);auto* h=view(h_,size_t(n)*F);
         auto* q=view(q_,size_t(n)*(F/32)*9);auto* o=view(o_,size_t(n)*H);
-        ggml_backend_tensor_set(i,r.activations.data(),0,r.activations.size()*4);
+        auto measured=[&](size_t stage,auto&& operation) {
+            if(!timing_) { operation();return; }
+            const auto begin=std::chrono::steady_clock::now();operation();
+            timing_->milliseconds[stage]=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+        };
+        measured(0,[&]{ggml_backend_tensor_set(i,r.activations.data(),0,r.activations.size()*4);});
         const int32_t starts[]={0,r.T};
-        strata_vk_native_stages_run(activation_.get(),0,i,i,i,x,H,starts,2);
-        strata_vk_q8_gu_run_blocks(gu_.get(),owners,x,g,u,{H,F,n,r.T,uint32_t(t.experts.size()),go,t.start,t.tok});
-        strata_vk_native_stages_run(activation_.get(),2,g,u,h,q,F,t.start.data(),t.start.size());
-        strata_vk_q8_down_run_blocks(down_.get(),owners,q,o,{H,F,n,n,uint32_t(t.experts.size()),doo,t.start,t.dst});
-        std::vector<float> rows(size_t(n)*H);ggml_backend_tensor_get(o,rows.data(),0,rows.size()*4);finite(rows);
+        measured(1,[&]{strata_vk_native_stages_run(activation_.get(),0,i,i,i,x,H,starts,2);});
+        measured(2,[&]{strata_vk_q8_gu_run_blocks(gu_.get(),owners,x,g,u,{H,F,n,r.T,uint32_t(t.experts.size()),go,t.start,t.tok});});
+        measured(3,[&]{strata_vk_native_stages_run(activation_.get(),2,g,u,h,q,F,t.start.data(),t.start.size());});
+        measured(4,[&]{strata_vk_q8_down_run_blocks(down_.get(),owners,q,o,{H,F,n,n,uint32_t(t.experts.size()),doo,t.start,t.dst});});
+        std::vector<float> rows(size_t(n)*H);measured(5,[&]{ggml_backend_tensor_get(o,rows.data(),0,rows.size()*4);});finite(rows);
         dump(".input.q8_1",x);dump(".gate.f32",g);dump(".up.f32",u);dump(".hidden.q8_1",q);dump(".output.f32",o);
         dump(".gu.metadata.i32",strata_vk_q8_gu_metadata_tensor(gu_.get()));
         dump(".down.metadata.i32",strata_vk_q8_down_metadata_tensor(down_.get()));
         if(capture_first_only_)capture_.clear();
+        EntryRowsReply result;
+        measured(6,[&]{
         std::vector<int32_t> packed(r.mask.size(),-1);for(size_t j=0;j<t.original.size();++j)packed[t.original[j]]=int32_t(j);
-        EntryRowsReply result;result.session=r.session;result.sequence=r.sequence;
+        result.session=r.session;result.sequence=r.sequence;
         for(size_t j=0;j<r.mask.size();++j)if(r.mask[j]) {
             require(packed[j]>=0,"native Q8 missing packed row");result.indices.push_back(uint16_t(j));
             result.rows.insert(result.rows.end(),rows.begin()+size_t(packed[j])*H,rows.begin()+(size_t(packed[j])+1)*H);
         }
+        });
         if(trace)*trace=std::move(t);
         return result;
     }

@@ -155,18 +155,20 @@ int main(int argc,char** argv){try {
 #ifdef STRATA_Q8_REPLAY_CLIENT_ONLY
     throw std::runtime_error("CPU-only replay supports --worker or --setup-only");
 #else
-    bool timing=false;size_t budget=128u<<20;
+    bool timing=false,stage_timing=false;size_t budget=128u<<20;
     for(int arg=10;arg<argc;++arg) {
         const std::string option=argv[arg];
         if(option=="--timing") {require(!timing,"duplicate timing option");timing=true;}
+        else if(option=="--stage-timing") {require(!stage_timing,"duplicate stage timing option");stage_timing=true;}
         else if(option=="--budget-bytes") {
             require(++arg<argc,"budget bytes required");const std::string value=argv[arg];
             require(!value.empty() && value.find_first_not_of("0123456789")==std::string::npos,"invalid budget bytes");
             const auto parsed=std::stoull(value);require(parsed && parsed<=SIZE_MAX,"budget bytes out of range");budget=size_t(parsed);
         } else throw std::runtime_error("unknown replay option");
     }
+    require(!stage_timing || timing,"--stage-timing requires --timing");
     require(argc>=10 && std::string(argv[1])=="--device" && std::string(argv[3])=="--expect-device",
-        "usage: --device INDEX --expect-device NAME CAPTURE RECORD ONE_LAYER_PLAN BLOB_DIR NEW_OUTPUT [--timing] [--budget-bytes N]");
+        "usage: --device INDEX --expect-device NAME CAPTURE RECORD ONE_LAYER_PLAN BLOB_DIR NEW_OUTPUT [--timing [--stage-timing]] [--budget-bytes N]");
 #ifdef STRATA_Q8_REPLAY_CUDA
     require(!timing,"--timing is the Vulkan provider observation only");
 #endif
@@ -226,7 +228,11 @@ int main(int argc,char** argv){try {
     auto executor=create_vulkan_native_q8_observation(backend.get(),budget,prefix,prefix,timing);GpuCounters counters;EntryRowsReply reply;
     require(executor->prepare_source(p,reader,counters,error),error);
     if(timing) {
-        auto infer=[&](EntryRowsReply& rows){const bool ok=executor->infer_rows(p,q,rows,error);++q.sequence;return ok;};
+        std::array<NativeQ8StageTiming,16> stage_samples{};size_t call=0;
+        auto infer=[&](EntryRowsReply& rows){
+            if(stage_timing)require(vulkan_native_q8_stage_timing(executor.get(),call<2?nullptr:&stage_samples[call-2]),"stage timing unavailable");
+            const bool ok=executor->infer_rows(p,q,rows,error);++q.sequence;++call;return ok;
+        };
         auto snapshot=[&]{GpuCounters c;require(vulkan_native_q8_allocation_snapshot(executor.get(),c),"native Q8 allocation snapshot unavailable");return c;};
         require(native_q8_same_allocations(counters,snapshot()),"native Q8 prepared allocation snapshot differs");
         const auto result=native_q8_time_replay(infer,snapshot,deadline,error);reply=result.first_reply;
@@ -236,6 +242,10 @@ int main(int argc,char** argv){try {
             <<" scratch_bytes="<<result.allocations.gpu_scratch_bytes<<" allocation_count="<<result.allocations.gpu_allocation_count<<" samples_ms=";
         for(size_t i=0;i<result.samples_ms.size();++i)std::cout<<(i?",":"")<<result.samples_ms[i];
         std::cout<<"\n";
+        if(stage_timing) {
+            require(vulkan_native_q8_stage_timing(executor.get(),nullptr),"stage timing disable failed");
+            print_native_q8_stage_timing(std::cout,stage_samples);
+        }
     } else require(executor->infer_rows(p,q,reply,error),error);
     q.sequence=reply.sequence;
     std::vector<uint8_t> canonical,reference;

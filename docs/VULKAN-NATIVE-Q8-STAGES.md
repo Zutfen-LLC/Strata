@@ -1275,6 +1275,17 @@ measurements. The measurements include the existing executor's input/metadata
 uploads, dispatch fences, final output readback and row restoration. They are
 fenced host-call milliseconds, not GPU timestamps or tokens per second.
 
+Add `--stage-timing` alongside `--timing` to report seven per-call host samples:
+input upload, input quantization, gate/up, hidden quantization, down, output
+readback, and row restoration. The first two warmups are excluded. Each stage
+includes its host work and any existing synchronization waits, and is not a GPU
+kernel timestamp. Grouping, view construction, validation, and other executor
+bookkeeping are outside these stage samples; they need not sum to the overall
+fenced host call. The replay calls the same NativeQ8Cache execution as the
+worker but excludes network protocol and worker-service overhead. This option
+adds clock calls and can perturb timings; default and `--timing` without the
+extra flag do not take stage timestamps.
+
 The report retains all 16 samples plus min/median/max. Every repeated reply must
 preserve its expected sequence/index association and match the first reply's
 F32 bits exactly. Fresh snapshots query live executor-owned tensor/metadata
