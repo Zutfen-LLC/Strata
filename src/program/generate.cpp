@@ -3452,6 +3452,12 @@ int main(int argc, char** argv) {
                              "one legacy endpoint/plan or 1..8 --remote-gpu-worker pairs, and positive setup/deadline budgets\n");
         return 2;
     }
+    const char* route_counts_path=std::getenv("STRATA_REMOTE_ROUTE_COUNTS");
+    if (!strata::core::remote_route_counts_supported(route_counts_path && *route_counts_path,
+            o.serve,o.remote_cpu_experts,o.batch,o.vision,
+            strata::core::FirstRequestTrace::enabled(),cpu_capture_path!=nullptr)) {
+        std::fprintf(stderr,"remote route counts require serial remote CPU text serve without trace or capture\n");return 2;
+    }
     if (strata::core::FirstRequestTrace::enabled()) {
 #if defined(STRATA_USE_HIP) || defined(STRATA_GPU_METAL)
         std::fprintf(stderr, "first-request trace currently requires CUDA\n"); return 2;

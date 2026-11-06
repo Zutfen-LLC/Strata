@@ -14,6 +14,10 @@
 #endif
 
 namespace strata::core {
+inline bool remote_route_counts_supported(bool enabled,bool serve,bool remote_cpu,int batch,
+                                          bool vision,bool first_trace,bool cpu_capture) {
+    return !enabled || (serve && remote_cpu && batch==0 && !vision && !first_trace && !cpu_capture);
+}
 class RemoteRouteCounts {
     static constexpr size_t max_patterns_=65536;
     std::FILE* file_=nullptr;

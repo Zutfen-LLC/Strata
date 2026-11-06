@@ -1,8 +1,13 @@
 # Opt-in remote placement counts
 
-For one native `--serve` request, set `STRATA_REMOTE_ROUTE_COUNTS` to a new
-private output file. The normal request continues through prompt and decode;
-no activation, token or weight values are saved. Each output record aggregates
+For one serial native text `--serve` request using remote CPU experts, set
+`STRATA_REMOTE_ROUTE_COUNTS` to a new private output file. The normal request
+continues through prompt and decode. CPU-worker groups are supported; the
+existing remote-CPU admission rules also require the expert pool and windowed
+prefill and forbid batch slots, split, peer and pipeline modes. Vision, the
+first-request trace and CPU capture are excluded. Unsupported modes refuse
+before model startup. Do not use `BGEN` or other batch-slot commands. No
+activation, token or weight values are saved. Each output record aggregates
 identical `(layer, T, K, original expert IDs)` dispatches and their count. The
 collector is off by default, caps unique patterns at 65,536, and marks overflow
 or invalid input incomplete. It reports write failures without changing inference.

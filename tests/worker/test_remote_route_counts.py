@@ -10,6 +10,14 @@ spec=importlib.util.spec_from_file_location('counts',root/'tools/score_remote_ro
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 class Counts(unittest.TestCase):
+    def test_group_option_wires_into_early_serial_admission(self):
+        source=(root/'src/program/generate.cpp').read_text()
+        self.assertIn('o.remote_cpu_experts=true; o.remote_cpu_workers.push_back',source)
+        guard=source.index('remote_route_counts_supported(route_counts_path')
+        self.assertLess(guard,source.index('// **BEFORE ANYTHING ELSE.**'))
+        self.assertIn('o.serve,o.remote_cpu_experts,o.batch,o.vision',source[guard:guard+250])
+        for restriction in ('o.batch != 0','o.short_read <= 0','o.no_pool','o.pipeline_windows > 0'):
+            self.assertIn(restriction,source[guard:source.index('// the peer tier',guard)])
     def test_cpp_capture_and_score(self):
         with tempfile.TemporaryDirectory() as d:
             d=Path(d);exe=d/'test';out=d/'counts'

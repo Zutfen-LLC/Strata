@@ -8,6 +8,15 @@
 #include <vector>
 int main(int argc,char** argv) {
     if(argc!=2 && argc!=3)return 1;
+    using strata::core::remote_route_counts_supported;
+    if(!remote_route_counts_supported(false,false,false,5,true,true,true) ||
+       !remote_route_counts_supported(true,true,true,0,false,false,false) ||
+       remote_route_counts_supported(true,true,true,1,false,false,false) ||
+       remote_route_counts_supported(true,false,true,0,false,false,false) ||
+       remote_route_counts_supported(true,true,false,0,false,false,false) ||
+       remote_route_counts_supported(true,true,true,0,true,false,false) ||
+       remote_route_counts_supported(true,true,true,0,false,true,false) ||
+       remote_route_counts_supported(true,true,true,0,false,false,true))return 5;
     setenv("STRATA_REMOTE_ROUTE_COUNTS",argv[1],1);
     if(argc==3) {
         strata::core::RemoteRouteCounts counts;counts.begin(2,512);
