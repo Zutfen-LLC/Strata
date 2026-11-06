@@ -19,7 +19,7 @@ inline bool model_resident_dense(const PortableModelOptions& opts,size_t index,b
 inline bool model_cycle_ffn(size_t l) {return l>=2 && l<4;}
 inline bool model_serial_ffn(size_t l) {return l>=2 && l<48;}
 inline bool model_ffn_resident(const PortableModelOptions&o,size_t l) {
-    return (o.hc_serial_resident_weights && model_serial_ffn(l)) || (o.hc_cycle_resident_weights && model_cycle_ffn(l));
+    return (o.hc_serial_resident_weights && (model_serial_ffn(l) || (l==1 && o.native_ple_hc_read_t1))) || (o.hc_cycle_resident_weights && model_cycle_ffn(l));
 }
 inline bool model_pending_consumer(const PortableModelOptions&o,size_t l) {
     return (o.native_hc_serial && l>=2 && l<48 && native_hc_boundary(int(l)).pending_attention) || (o.native_hc_pending_layer1_2 && l==2)||(o.native_hc_pending_layer2_3 && l==3)||
@@ -33,6 +33,7 @@ inline size_t model_hc_host_bound(const PortableModelOptions& opts,size_t layer)
     if(opts.native_hc_serial && layer>=1) {
         size_t b=opts.native_ple_value_t1 && layer==1 ? PortableGdnOptions::native_ple_value_host_bound : 0;
         if(layer>=2) b+=(layer%4==3 ? PortableQsaOptions::native_hc_host_bound : PortableGdnOptions::native_hc_pending_host_bound)+PortableFfnOptions::native_hc_pending_host_bound;
+        if(layer==1 && opts.native_ple_hc_read_t1)b+=PortableFfnOptions::native_hc_pending_host_bound;
         b+=layer==47 ? PortableFfnOptions::native_hc_write_host_bound : PortableFfnOptions::deferred_hc_host_bound;
         if(opts.native_gdn_t1 && model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_recurrence_host_bound;
         if(opts.native_gdn_preparation_weights&&model_gdn_t1_layer(layer))b+=PortableGdnOptions::native_preparation_host_bound;
@@ -107,7 +108,7 @@ inline void model_gdn_hc_options(const PortableModelOptions& opts,size_t layer,P
     o.native_hc_norm_inject=opts.native_hc_norm_inject_layer0 && layer==0;
     o.native_hc_mix=opts.native_hc_mix_layer0 && layer==0;
     if(o.native_ple_hc_read_t1){o.native_hc_norm_inject=o.native_hc_mix=true;o.native_hc_receipt_prefix=opts.native_ple_hc_receipt_prefix+".ple-layer-1";}
-    o.native_hc_ffn_read=opts.native_hc_ffn_read_layer0 && layer==0;
+    o.native_hc_ffn_read=(opts.native_hc_ffn_read_layer0 && layer==0) || (opts.native_hc_serial && o.native_ple_hc_read_t1);
     o.native_hc_ffn_write=opts.native_hc_ffn_write_layer0 && layer==0;
     if(o.native_hc_norm_inject && !o.native_ple_hc_read_t1)o.native_hc_receipt_prefix=opts.native_hc_receipt_prefix;
     o.resident_ffn_weights=model_ffn_resident(opts,layer);
