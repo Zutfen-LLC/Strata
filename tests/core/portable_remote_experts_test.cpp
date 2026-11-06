@@ -72,6 +72,7 @@ void run(){
 #endif
     source_ok=false;RemoteExperts stale;check(!stale.open(open,plan,{},10,complement,guard,error)&&prepares==0,"changed source refused before setup");source_ok=true;
     RemoteExperts provider;require(provider.open(open,plan,{},10,complement,guard,error),error);
+    check(provider.usable(),"new remote provider is usable");
     PortableRoute route;route.activation.assign(plan.n_embd,0.125f);route.ids={9,0,1,2,3,4,5,6,7,8};route.weights={0.03f,0.17f,0.11f,0.09f,0.1f,0.1f,0.1f,0.1f,0.1f,0.1f};
     PortableExpertRows dispatch=[&](int64_t l,const PortableRoute& r,std::vector<float>& rows,std::string& e){return provider.run(l,r,rows,e);};
     std::vector<float> rows;require(dispatch(0,route,rows,error),error);
@@ -96,6 +97,7 @@ void run(){
     check(!dispatch(0,route,rows,error)&&rows.empty()&&!error.empty(),"complement failure does not publish partial rows");
     complement_fail=false;
     require(provider.close_orderly(error),error);
+    check(!provider.usable(),"explicitly closed provider is unusable");
     RemoteExperts next;require(next.open(open,plan,{},10,complement,guard,error),error);
     require(next.close_orderly(error),error);
     check(true,"orderly close leaves shared worker available");
@@ -106,6 +108,7 @@ void run(){
         RemoteExperts candidate;require(candidate.open(request,plan,{},10,complement,guard,error),error);
         route.ids={9,0,1,2,3,4,5,6,7,8};route.weights={0.03f,0.17f,0.11f,0.09f,0.1f,0.1f,0.1f,0.1f,0.1f,0.1f};rows.assign(1,99);const int before=complement_calls;
         check(!candidate.run(0,route,rows,error)&&rows.empty()&&complement_calls==before,"remote failure is atomic and never falls back");
+        check(!candidate.usable(),"failed remote provider is unusable");
         rows.assign(1,99);check(!candidate.run(0,route,rows,error)&&rows.empty(),"dead remote peer cannot silently recover");
     }
     strata::core::PortableModelOptions model;model.remote_experts=open;

@@ -689,6 +689,12 @@ struct PortableModelSession::Impl {
     size_t host_graph = 0;
     bool reset(std::string &error) {
         poison = true; // reset failure cannot make partly reset state usable
+#ifdef STRATA_PORTABLE_LOCAL_EXPERTS
+        if (remote_experts && !remote_experts->usable()) {
+            error = "portable model: remote expert provider is closed or terminal; reopen the session";
+            return false;
+        }
+#endif
         for (auto &l : layers)
             if (!l.reset(error))
                 return false;
@@ -699,7 +705,7 @@ struct PortableModelSession::Impl {
     }
     bool advance_chunk(const std::vector<int32_t>& tokens,std::string& error) {
         error.clear();
-        if(poison) { error="portable model: session poisoned; reset/replay required"; return false; }
+        if(poison) { error="portable model: session poisoned; reset/replay or reopen required"; return false; }
         portable_detail::ScopedExpertTimer<> step_timer(opts.expert_timings,model_work.step_ms,model_work.step_calls);
         try {
             const size_t T=tokens.size();
@@ -766,7 +772,7 @@ struct PortableModelSession::Impl {
         error.clear();
         logits.clear();
         if (poison) {
-            error = "portable model: session poisoned; explicit reset and replay required";
+            error = "portable model: session poisoned; explicit reset and replay or reopen required";
             return false;
         }
         try {
@@ -903,7 +909,11 @@ bool PortableModelSession::advance_chunk(const std::vector<int32_t>& tokens,std:
 bool PortableModelSession::remote_expert_status(worker::GpuCounters& counters,std::string &error) {
     error.clear();
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
-    if(impl_->remote_experts)return impl_->remote_experts->status(counters,error);
+    if(impl_->remote_experts) {
+        const bool ok=impl_->remote_experts->status(counters,error);
+        if (!impl_->remote_experts->usable()) impl_->poison=true;
+        return ok;
+    }
 #endif
     error="remote experts are not configured";return false;
 }
@@ -916,7 +926,11 @@ worker::GpuWorkerTier::Stats PortableModelSession::remote_expert_stats() const {
 bool PortableModelSession::close_remote_experts(std::string &error) {
     error.clear();
 #ifdef STRATA_PORTABLE_LOCAL_EXPERTS
-    if(impl_->remote_experts)return impl_->remote_experts->close_orderly(error);
+    if(impl_->remote_experts) {
+        const bool ok=impl_->remote_experts->close_orderly(error);
+        impl_->poison=true;
+        return ok;
+    }
 #endif
     error="remote experts are not configured";return false;
 }
@@ -1001,7 +1015,7 @@ bool PortableModelSession::generate(const std::vector<int32_t> &prompt, size_t m
     result = {};
     error.clear();
     if (impl_->poison) {
-        error = "portable model: session poisoned; reset/replay required";
+        error = "portable model: session poisoned; reset/replay or reopen required";
         return false;
     }
     // Generation preflight is side-effect free. step errors always poison.
