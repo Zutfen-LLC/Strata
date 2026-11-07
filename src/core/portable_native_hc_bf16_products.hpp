@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -48,6 +49,20 @@ class PortableNativeHcBf16Products {
    float y=ggml_bf16_to_fp32(ggml_fp32_to_bf16(x));need(std::isfinite(y)&&(y==0.f||std::isnormal(y)),"HC BF16 products: rounded domain");rounded[i]=y;}
   ggml_backend_tensor_set(dst,rounded.data(),0,n*sizeof(float));
  }
+ // The scalar shaders may supply an already-rounded, widened BF16 image.
+ // Scan the actual device span before copying it; no host rounding or scalar
+ // activation is performed here. Images must not alias this owner's scratch.
+ // Their full borrowed buffers are not in device_bytes(); the enclosing owner
+ // must charge them, with deduplication, for the duration of each call.
+ void upload_image(const ggml_tensor* src,size_t n,ggml_tensor* dst){
+  need(src&&src->buffer&&src->data&&src->type==GGML_TYPE_F32&&ggml_is_contiguous(src)&&ggml_nbytes(src)==n*sizeof(float)&&
+       ggml_backend_buffer_get_type(src->buffer)==ggml_backend_get_default_buffer_type(backend_)&&src->buffer!=buffer_.get(),"HC BF16 products: image descriptor");
+  auto base=reinterpret_cast<uintptr_t>(ggml_backend_buffer_get_base(src->buffer)),data=reinterpret_cast<uintptr_t>(src->data);size_t cap=ggml_backend_buffer_get_size(src->buffer);
+  need(data>=base&&data-base<=cap&&n*sizeof(float)<=cap-(data-base),"HC BF16 products: image span");
+  std::vector<float> scan(n);ggml_backend_tensor_get(src,scan.data(),0,n*sizeof(float));
+  for(float x:scan){uint32_t bits;std::memcpy(&bits,&x,sizeof(bits));need(std::isfinite(x)&&(x==0.f||std::isnormal(x))&&(bits&0xffffu)==0,"HC BF16 products: image domain");}
+  ggml_backend_tensor_copy(src,dst);
+ }
  void compute(size_t role,size_t rows){
   ++attempts_;auto status=ggml_backend_graph_compute(backend_,graphs_[role][rows-1]);ggml_backend_synchronize(backend_);
   need(status==GGML_STATUS_SUCCESS,"HC BF16 products: graph failure");
@@ -86,6 +101,8 @@ public:
  ggml_tensor* output(size_t role)const{need(role<3&&stage_==role+1,"HC BF16 products: stale output");return outputs_[role][rows_-1];}
  void down(const std::vector<float>& normalized,size_t rows){invalidate();try{need(rows==1||rows==2,"HC BF16 products: rows");upload(normalized,rows*10240,inputs_[0][rows-1]);compute(0,rows);rows_=rows;stage_=1;}catch(...){invalidate();throw;}}
  void up(const std::vector<float>& low){try{need(stage_==1,"HC BF16 products: up order");upload(low,rows_*320,inputs_[1][rows_-1]);compute(1,rows_);stage_=2;}catch(...){invalidate();throw;}}
+ void down_image(const ggml_tensor* normalized_image,size_t rows){invalidate();try{need(rows==1||rows==2,"HC BF16 products: rows");upload_image(normalized_image,rows*10240,inputs_[0][rows-1]);compute(0,rows);rows_=rows;stage_=1;}catch(...){invalidate();throw;}}
+ void up_image(const ggml_tensor* low_image){try{need(stage_==1,"HC BF16 products: up order");upload_image(low_image,rows_*320,inputs_[1][rows_-1]);compute(1,rows_);stage_=2;}catch(...){invalidate();throw;}}
  void inject(){try{need(stage_==2,"HC BF16 products: injection order");compute(2,rows_);stage_=3;}catch(...){invalidate();throw;}}
 };
 }
