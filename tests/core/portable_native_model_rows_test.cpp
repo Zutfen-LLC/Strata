@@ -2,6 +2,9 @@
 // numerical or hardware oracle. All stateful owners below are per-layer.
 #define STRATA_MODEL_ROWS_FIXTURE 1
 #define STRATA_TERMINAL_FIXTURE 1
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 #include "../kernels/native_q8_wo_fixture.hpp"
 #include "portable_native_ple_gdn_composition_test.cpp"
 #include "portable_native_model_rows.hpp"
@@ -10,15 +13,18 @@
 #include "portable_native_ple1_owner.hpp"
 #include "portable_native_qsa_layer_owner.hpp"
 #include "portable_native_terminal_owner.hpp"
+#include "portable_native_model_owner.hpp"
 namespace {
 std::vector<uint8_t> expected_head_vocab;const ggml_tensor* head_packed_bank=nullptr;size_t head_quant_calls=0,head_dot_calls=0;
-void write_family_gguf(const std::filesystem::path& path,const std::vector<PortableTensorView>& roles){
+void write_family_gguf(const std::filesystem::path& path,const std::vector<PortableTensorView>& roles,bool architecture=false,bool sparse=false){
  std::vector<uint8_t> h;auto put=[&](const void* p,size_t n){auto* b=static_cast<const uint8_t*>(p);h.insert(h.end(),b,b+n);};
  auto u32=[&](uint32_t x){put(&x,4);};auto u64=[&](uint64_t x){put(&x,8);};auto str=[&](const std::string& s){u64(s.size());put(s.data(),s.size());};
- u32(0x46554747);u32(3);u64(roles.size());u64(0);size_t off=0;
+ u32(0x46554747);u32(3);u64(roles.size());u64(architecture?7:0);
+ if(architecture){str("general.architecture");u32(8);str("qwen4exp");for(auto kv:{std::pair{"block_count",48u},std::pair{"embedding_length",2560u},std::pair{"expert_count",512u},std::pair{"expert_used_count",10u},std::pair{"attention.head_count",24u},std::pair{"attention.head_count_kv",2u}}){str(std::string("qwen4exp.")+kv.first);u32(4);u32(kv.second);}}
+ size_t off=0;
  for(const auto& r:roles){str(r.name);u32(uint32_t(r.shape.size()));for(auto d:r.shape)u64(uint64_t(d));u32(r.type);u64(off);off=(off+r.bytes+31)/32*32;}
  h.resize((h.size()+31)/32*32);std::ofstream f(path,std::ios::binary);f.write(reinterpret_cast<const char*>(h.data()),h.size());off=0;
- for(const auto& r:roles){f.seekp(h.size()+off);f.write(static_cast<const char*>(r.data),r.bytes);off=(off+r.bytes+31)/32*32;}check(bool(f),"family GGUF fixture write");
+ for(const auto& r:roles){if(!sparse){f.seekp(h.size()+off);f.write(static_cast<const char*>(r.data),r.bytes);}off=(off+r.bytes+31)/32*32;}if(sparse&&off){f.seekp(h.size()+off-1);f.put(0);}check(bool(f),"family GGUF fixture write");
 }
 }
 namespace strata::core::portable_detail {
@@ -36,7 +42,7 @@ void strata_vk_q8_wo_run(StrataVkQ8Wo*,const ggml_tensor* weight,const ggml_tens
 }
 
 int main(int argc, char** argv) { try {
- check(argc==2,"scratch root"); std::string error;
+ check(argc==2||argc==3,"scratch root"); const bool full_owner=argc==3&&std::string(argv[2])=="full-owner";check(argc==2||full_owner,"fixture mode");std::string error;
  auto root=std::filesystem::path(argv[1])/("model-rows-fixture-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
  check(std::filesystem::create_directory(root),"fixture root");
  auto b=std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>(ggml_backend_cpu_init(),ggml_backend_free);
@@ -154,6 +160,7 @@ int main(int argc, char** argv) { try {
  {auto mapped=strata::GgufModel::open(tpath.string());auto low=tb;low.device=1;bool refused=false;try{PortableNativeTerminalOwner bad(8,16,b.get(),mapped,(root/"terminal-low").string(),low);}catch(const std::exception&){refused=true;}check(refused,"terminal aggregate budget");low=tb;low.host=SIZE_MAX;low.qsa.host=SIZE_MAX;refused=false;try{PortableNativeTerminalOwner bad(8,16,b.get(),mapped,(root/"terminal-overflow").string(),low);}catch(const std::exception&){refused=true;}check(refused,"terminal budget overflow");low=tb;low.head_weight=1;refused=false;try{PortableNativeTerminalOwner bad(8,16,b.get(),mapped,(root/"terminal-weight-low").string(),low);}catch(const std::exception&){refused=true;}check(refused,"terminal head weight cap");low=tb;low.head_graph=1;refused=false;try{PortableNativeTerminalOwner bad(8,16,b.get(),mapped,(root/"terminal-graph-low").string(),low);}catch(const std::exception&){refused=true;}check(refused,"terminal head graph cap");refused=false;try{PortableNativeTerminalOwner bad(0,16,b.get(),mapped,(root/"terminal-cells-low").string(),tb);}catch(const std::exception&){refused=true;}check(refused,"terminal QSA capacity");
  auto before_norm=owned_norm_live;auto before_router=ffn_router_live,before_shared=ffn_shared_live,before_combine=ffn_combine_live;owned_fail_indexer_create=true;bool partial=false;try{PortableNativeTerminalOwner bad(8,16,b.get(),mapped,(root/"terminal-partial").string(),tb);}catch(const std::exception&e){partial=std::string(e.what())=="injected QSA indexer factory";}owned_fail_indexer_create=false;check(partial&&owned_norm_live==before_norm&&ffn_router_live==before_router&&ffn_shared_live==before_shared&&ffn_combine_live==before_combine,"terminal partial cleanup");
  factory_probe=true;factory_fail=SIZE_MAX;factory_calls.clear();factory_destroyed.clear();terminal_fail_head_create=true;partial=false;try{PortableNativeTerminalOwner bad(8,16,b.get(),mapped,(root/"terminal-head-fail").string(),tb);}catch(const std::exception&e){partial=std::string(e.what()).find("injected head mix factory")!=std::string::npos;}terminal_fail_head_create=false;factory_probe=false;check(partial&&factory_owners.empty()&&owned_norm_live==before_norm&&ffn_router_live==before_router&&ffn_shared_live==before_shared&&ffn_combine_live==before_combine,"terminal head partial cleanup");
+ factory_probe=true;factory_fail=SIZE_MAX;factory_calls.clear();factory_destroyed.clear();terminal_probe_head_vocab=true;terminal_fail_write_create=true;auto head_before=terminal_head_vocab_created,write_before=layer0_write_owners;partial=false;try{PortableNativeTerminalOwner bad(8,16,b.get(),mapped,(root/"terminal-write-fail").string(),tb);}catch(const std::exception&e){partial=std::string(e.what())=="injected terminal write factory";}terminal_fail_write_create=false;terminal_probe_head_vocab=false;factory_probe=false;check(partial&&terminal_head_vocab_created==head_before+1&&layer0_write_owners==write_before&&factory_owners.empty()&&owned_norm_live==before_norm&&ffn_router_live==before_router&&ffn_shared_live==before_shared&&ffn_combine_live==before_combine,"terminal post-head write cleanup");for(auto count:factory_destroyed)check(count==1,"terminal post-head native owner not destroyed");
  owned_terminal=std::make_unique<PortableNativeTerminalOwner>(8,16,b.get(),mapped,(root/"terminal-owner").string(),tb);}
  vocab[2]=0;qsas[47]=&owned_terminal->attention();auto& terminal=owned_terminal->terminal();auto& head=owned_terminal->head();
  // Exact owner snapshots used around rejected requests and assembly attempts.
@@ -197,5 +204,32 @@ int main(int argc, char** argv) { try {
  check(owned_ple_key_seen&&owned_ple_value_seen&&owned_ple_conv_seen&&owned_ple_gamma_seen[0]&&owned_ple_gamma_seen[1]&&owned_ple_gamma_seen[2],"PLE role markers not used");
  check(owned_qnorm_seen>0&&owned_knorm_seen>0&&owned_attn_q_seen>0&&owned_attn_k_seen>0&&owned_qproj_seen>0&&owned_kproj_seen>0&&owned_qkv_seen>0&&owned_wo_seen>0,"owned QSA role markers not used");
  check(!model_gdn_saturated&&!model_qsa_saturated,"sampled mock signals saturated");
+ if(full_owner){
+  // Stream repeated source roles into one synthetic GGUF; every owner still
+  // receives its own mapped role and uploads its own backend storage.
+  pk[2]=31;pv[2]=1;gam[0][0]=.5f;gam[1][0]=1.f;gam[2][0]=1.5f;cw[0]=0x3c00;std::copy(expected_head_vocab.begin(),expected_head_vocab.end(),vocab.begin());
+  std::vector<PortableTensorView> all=entry_file;all.insert(all.end(),ple_file.begin(),ple_file.end());
+  for(int layer=2;layer<=47;++layer){const auto& src=layer%4==3?qfile:file_roles;for(auto r:src){r.name.replace(0,6,"blk."+std::to_string(layer)+".");all.push_back(r);}}all.insert(all.end(),hv.begin(),hv.end());
+  auto full_path=root/"all-owning.gguf";write_family_gguf(full_path,all,true);
+  auto source=std::make_shared<strata::GgufModel>(strata::GgufModel::open(full_path.string()));auto small=ple_fixture::small_table(error);check(bool(small),"aggregate small PLE table");
+  PortableNativeModelOwner::Budgets mb{12ull<<30,10ull<<30,24ull<<30,4u<<20,eb,pb,layer_budget,qlayer_budget,tb};mb.gdn.gdn.host=64u<<20;
+  auto rejected_owner=[&](const auto& src,const auto& cap,uint32_t cells,const char* prefix,const char* reason){auto before=executor_creates;std::string message;try{PortableNativeModelOwner bad(src,small,b.get(),cells,(root/prefix).string(),cap);}catch(const std::exception&e){message=e.what();}if(message.find(reason)==std::string::npos||executor_creates!=before)throw std::runtime_error(std::string("aggregate preflight: expected ")+reason+", got "+message);};
+  auto low=mb;low.host=1;rejected_owner(source,low,8,"aggregate-low","aggregate budget");low=mb;low.host=SIZE_MAX;low.gdn.host=SIZE_MAX;rejected_owner(source,low,8,"aggregate-overflow","PLE host bound addition");rejected_owner(source,mb,0,"aggregate-capacity","capacity");low=mb;low.mapped=1;rejected_owner(source,low,8,"aggregate-mapped-low","mapped budget");
+  auto bad_arch=std::make_shared<strata::GgufModel>(strata::GgufModel::open(qpath.string()));rejected_owner(bad_arch,mb,8,"aggregate-arch","architecture");bad_arch.reset();
+  auto incomplete=all;auto missing=std::find_if(incomplete.begin(),incomplete.end(),[](const auto& r){return r.name=="blk.46.ssm_out.weight";});check(missing!=incomplete.end(),"missing role fixture");incomplete.erase(missing);auto sparse_path=root/"aggregate-missing.gguf";write_family_gguf(sparse_path,incomplete,true,true);auto missing_model=std::make_shared<strata::GgufModel>(strata::GgufModel::open(sparse_path.string()));rejected_owner(missing_model,mb,8,"aggregate-missing","missing/out-of-bounds GGUF role");missing_model.reset();
+  auto bad_vocab=all;auto output=std::find_if(bad_vocab.begin(),bad_vocab.end(),[](const auto& r){return r.name=="output.weight";});check(output!=bad_vocab.end(),"aggregate head role");output->shape[1]=15;output->bytes=15*80*34;auto vocab_path=root/"aggregate-vocab.gguf";write_family_gguf(vocab_path,bad_vocab,true,true);auto vocab_model=std::make_shared<strata::GgufModel>(strata::GgufModel::open(vocab_path.string()));rejected_owner(vocab_model,mb,8,"aggregate-vocabulary","head role descriptor");vocab_model.reset();
+  auto before_norm=owned_norm_live;auto before_router=ffn_router_live,before_shared=ffn_shared_live,before_combine=ffn_combine_live;owned_fail_indexer_create=true;bool fail_construct=false;std::string aggregate_error;try{PortableNativeModelOwner bad(source,small,b.get(),8,(root/"aggregate-middle-fail").string(),mb);}catch(const std::exception&e){aggregate_error=e.what();fail_construct=aggregate_error=="injected QSA indexer factory";}owned_fail_indexer_create=false;if(!fail_construct||owned_norm_live!=before_norm||ffn_router_live!=before_router||ffn_shared_live!=before_shared||ffn_combine_live!=before_combine)throw std::runtime_error("aggregate middle cleanup: "+aggregate_error);
+  factory_probe=true;factory_fail=SIZE_MAX;factory_calls.clear();factory_destroyed.clear();terminal_arm_write_after_vocab=true;fail_construct=false;try{PortableNativeModelOwner bad(source,small,b.get(),8,(root/"aggregate-late-fail").string(),mb);}catch(const std::exception&e){fail_construct=std::string(e.what())=="injected terminal write factory";}terminal_arm_write_after_vocab=false;terminal_fail_write_create=false;factory_probe=false;check(fail_construct&&factory_owners.empty()&&owned_norm_live==before_norm&&ffn_router_live==before_router&&ffn_shared_live==before_shared&&ffn_combine_live==before_combine,"aggregate terminal cleanup");
+  std::weak_ptr<const strata::GgufModel> source_weak=source;std::weak_ptr<PortablePleTable> table_weak2=small;
+  {PortableNativeModelOwner full(source,small,b.get(),8,(root/"aggregate").string(),mb);auto accounting=full.accounting();check(accounting.source_files>4000000000ull&&accounting.table_mapping==0&&accounting.table_owned>0&&accounting.explicit_role_device>0&&accounting.other_device_including_scratch>0&&accounting.result_allowance==16*2*sizeof(float),"aggregate accounting");source.reset();small.reset();check(!source_weak.expired()&&!table_weak2.expired(),"aggregate source/table lifetime");auto lookup=table_weak2.lock();
+   auto run=[&](std::vector<int32_t> ts){auto prev=std::array<int32_t,2>{-1,-1};if(full.position()==1)prev={-1,7};else if(full.position()==2)prev={7,9};std::vector<std::array<int32_t,2>> pred;for(auto t:ts){pred.push_back(prev);prev={prev[1],t};}std::vector<std::array<uint32_t,16>> idx;check(lookup->gather_batch(ts,pred,idx,expected_embedding,error),"aggregate gather");norm_call=0;return full.run(full.position(),ts,provider);};
+   auto replay_full=[&](int mode){full.reset();clean();std::vector<std::vector<float>> logits;auto append=[&](std::vector<int32_t> ts){auto out=run(ts);logits.insert(logits.end(),out->logits.begin(),out->logits.end());};if(mode==0){append({7});append({9});append({11});}else if(mode==1){append({7,9});append({11});}else{append({7});append({9,11});}check(full.position()==3&&calls.size()==48u*(mode?2:3),"aggregate position/call count");for(size_t i=0;i<calls.size();++i){size_t n=mode==0?1:mode==1?(i<48?2:1):(i<48?1:2);check(calls[i]==std::make_pair(int64_t(i%48),n),"aggregate provider order");}return logits;};
+   auto reference=replay_full(0);check(reference==replay_full(1)&&reference==replay_full(2),"aggregate replay");full.reset();clean();auto prior=run({7});auto saved=prior->logits;fail_layer=24;bool failed=false;try{(void)run({9,11});}catch(const std::exception&e){failed=std::string(e.what()).find("injected model provider failure")!=std::string::npos;}fail_layer=-1;check(failed&&full.poisoned()&&full.position()==1&&prior->logits==saved,"aggregate failure publication");check(reference==replay_full(2),"aggregate failure replay");lookup.reset();
+  }
+  check(source_weak.expired()&&table_weak2.expired()&&owned_norm_live==before_norm&&ffn_router_live==before_router&&ffn_shared_live==before_shared&&ffn_combine_live==before_combine,"aggregate teardown lifetime");
+#ifndef _WIN32
+  rusage usage{};if(getrusage(RUSAGE_SELF,&usage)==0)std::printf("aggregate maxrss platform-units=%ld\n",usage.ru_maxrss);
+#endif
+ }
  std::puts("full 0-47 CPU plumbing equivalence, preflight and failures passed");return 0;
  }catch(const std::exception& e){std::fprintf(stderr,"model rows fixture: %s\n",e.what());return 1;}}

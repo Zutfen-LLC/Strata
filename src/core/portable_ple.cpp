@@ -183,5 +183,7 @@ bool PortablePleTable::gather_batch(const std::vector<int32_t> &tokens,
     return true;
 }
 uint64_t PortablePleTable::rows() const { return impl_->count; }
+size_t PortablePleTable::owned_bytes() const { return impl_->owned.capacity(); }
+uint64_t PortablePleTable::mapped_file_bytes() const { return impl_->mapping ? impl_->mapping->file_size() : 0; }
 const PortablePleConfig &PortablePleTable::config() const { return impl_->config; }
 } // namespace strata::core

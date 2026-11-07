@@ -8,7 +8,8 @@ static ggml_status gated_test_compute(ggml_backend_t backend, ggml_cgraph* graph
 #ifdef STRATA_MODEL_ROWS_FIXTURE
 static size_t owned_qnorm_seen=0,owned_knorm_seen=0,owned_qproj_seen=0,owned_kproj_seen=0,owned_qkv_seen=0,owned_wo_seen=0;
 static size_t owned_ple_key_seen=0,owned_ple_value_seen=0,owned_ple_conv_seen=0,owned_ple_gamma_seen[3]{};
-static bool terminal_fail_head_create=false;
+static bool terminal_fail_head_create=false,terminal_fail_write_create=false,terminal_probe_head_vocab=false,terminal_arm_write_after_vocab=false;
+static size_t terminal_head_vocab_created=0;
 #endif
 #define STRATA_PLE_GATED_VALUE_TEST_COMPUTE gated_test_compute
 #include "portable_native_ple_executor.hpp"
@@ -72,7 +73,11 @@ namespace strata::core::portable_detail {
 struct StrataVkNativeHcPending{bool final_write=false;}; struct StrataVkNativeHc{}; struct StrataVkNativeHcMix{};
 #ifdef STRATA_CONNECTED_LAYER0_TEST
 static size_t layer0_write_owners=0,layer0_write_calls=0;
-StrataVkNativeHcPending* strata_vk_native_hc_write_create(ggml_backend_t,const char*,size_t budget){check(budget>=113,"write budget");++layer0_write_owners;return new StrataVkNativeHcPending{true};}
+StrataVkNativeHcPending* strata_vk_native_hc_write_create(ggml_backend_t,const char*,size_t budget){check(budget>=113,"write budget");
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(terminal_fail_write_create)throw std::runtime_error("injected terminal write factory");
+#endif
+ ++layer0_write_owners;return new StrataVkNativeHcPending{true};}
 #endif
 StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t,const char*,size_t b){++hc_creates[0];hc_budgets[0]=b;auto i=factory_enter("hc pending");return factory_return(new StrataVkNativeHcPending,i);}
 size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*){return 113;}
@@ -126,7 +131,12 @@ static int ffn_shared_live=0;
 StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char* p,size_t){++executor_creates;auto i=factory_enter("key quant");std::ofstream(p)<<"mock";return factory_return(new StrataVkNativeStages,i);}
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages*){return 512;}
 void strata_vk_native_stages_destroy(StrataVkNativeStages*p)noexcept{factory_destroy(p);delete p;}
-StrataVkQ8Wo* strata_vk_head_vocab_create(ggml_backend_t,const char*p,size_t){++executor_creates;auto i=factory_enter("key dot");std::ofstream(p)<<"mock";return factory_return(new StrataVkQ8Wo,i);}
+StrataVkQ8Wo* strata_vk_head_vocab_create(ggml_backend_t,const char*p,size_t){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(terminal_probe_head_vocab)++terminal_head_vocab_created;
+ if(terminal_arm_write_after_vocab&&std::string(p).find(".terminal.head/vocabulary/")!=std::string::npos)terminal_fail_write_create=true;
+#endif
+ ++executor_creates;auto i=factory_enter("key dot");std::ofstream(p)<<"mock";return factory_return(new StrataVkQ8Wo,i);}
 size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo*){return 512;}
 void strata_vk_q8_wo_destroy(StrataVkQ8Wo*p)noexcept{factory_destroy(p);delete p;}
 void strata_vk_ple_key_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t t){inject("quant");check(t==1||t==2,"quant rows");std::vector<float>a(t*2560);ggml_backend_tensor_get(x,a.data(),0,a.size()*4);check(a==expected_embedding,"gather embedding");std::vector<uint8_t> z(t*2880);ggml_backend_tensor_set(q,z.data(),0,z.size());++quant;}
