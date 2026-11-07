@@ -61,9 +61,13 @@ chunk admission; existing model chunk refusals are unchanged.
 A CPU fixture with synthetic, bounded component mocks compares three T1 calls,
 T2 plus T1, and T1 plus T2 for three tokens. It compares logits, routes, PLE
 history and all GDN/QSA states, checks batch dispatch and preflight, and tests
-provider and terminal failures followed by reset/replay. Its F32 vocabulary
-has 16 entries. These are orchestration checks, not physical GPU or native
-numerical parity, production resource admission, quality or performance proof.
+provider and terminal failures followed by reset/replay. A changed prefix and a
+synthetic GDN output perturbation also change downstream state and logits; the
+bounded mock arithmetic is not a numerical oracle. Its F32 vocabulary has 16
+entries. Failed-reset injection and isolated terminal-capacity rejection are
+not covered by this fixture. These are orchestration checks, not physical GPU
+or native numerical parity, production resource admission, quality or
+performance proof.
 
 ## Bounded terminal composition
 
