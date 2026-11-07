@@ -1,5 +1,10 @@
 #include "portable_native_ple_grouped_norm.hpp"
+#include "ggml-backend.h"
+static int copy_computes = 0;
+static ggml_status copy_test_compute(ggml_backend_t b, ggml_cgraph* g) { ++copy_computes; return ggml_backend_graph_compute(b,g); }
+#define STRATA_PLE_COPY_TEST_COMPUTE copy_test_compute
 #include "portable_native_ple_copy_graph.hpp"
+#undef STRATA_PLE_COPY_TEST_COMPUTE
 #include "portable_native_ple_gate.hpp"
 #include "ggml-backend.h"
 static bool fail_gated_compute = false;
@@ -126,12 +131,26 @@ int main(int argc,char**argv){
         rejected=false;try{PortableNativePleCopyGraph bad(backend.get(),sources,roles,"mock",amount-1,rows);}catch(...){rejected=true;}check(rejected);
         PortableNativePleCopyGraph cg(backend.get(),sources,roles,"mock",amount,rows);
         check(cg.bytes()==amount);
-        rejected=false;try{cg.run_gated_value(sources);}catch(...){rejected=true;}check(rejected&&!cg.ready()&&cg.calls()==0);
-        cg.run_key_query(sources);check(!cg.ready()&&cg.calls()==2);
+        if(rows==2){
+            auto* saved_data=sources[0]->data;
+            auto base=reinterpret_cast<uintptr_t>(ggml_backend_buffer_get_base(sources[0]->buffer));
+            auto capacity=ggml_backend_buffer_get_size(sources[0]->buffer);
+            for(auto address : {uintptr_t(0),base+capacity+4,base+capacity-81916}){
+                sources[0]->data=reinterpret_cast<void*>(address); auto calls=cg.calls(); auto computes=copy_computes; rejected=false;
+                try{cg.run_key_query(sources);}catch(...){rejected=true;}
+                check(rejected&&!cg.ready()&&cg.calls()==calls&&copy_computes==computes);
+            }
+            sources[0]->data=reinterpret_cast<void*>(base+4);
+            cg.run_key_query(sources); check(cg.calls()==2);
+            sources[0]->data=saved_data; cg.reset();
+        }
+        const auto initial_calls=cg.calls();
+        rejected=false;try{cg.run_gated_value(sources);}catch(...){rejected=true;}check(rejected&&!cg.ready()&&cg.calls()==initial_calls);
+        cg.run_key_query(sources);check(!cg.ready()&&cg.calls()==initial_calls+2);
         rejected=false;try{cg.output(2);}catch(...){rejected=true;}check(rejected);
         std::vector<float> later(10240*rows,7);later.back()=19;
         ggml_backend_tensor_set(sources[2],later.data(),0,later.size()*4);
-        cg.run_gated_value(sources);check(cg.ready()&&cg.calls()==3);
+        cg.run_gated_value(sources);check(cg.ready()&&cg.calls()==initial_calls+3);
         for(size_t i=0;i<3;++i){std::vector<float> v(10240*rows);ggml_backend_tensor_get(cg.output(i),v.data(),0,v.size()*4);check(v[0]==(i==2?21.0f:float((i+1)*(i+1)))&&v.back()==(i==2?57.0f:float((10+i)*(i+1))));}
         rejected=false;try{cg.run_gated_value(sources);}catch(...){rejected=true;}check(rejected&&!cg.ready());
         auto wrong=sources;wrong[0]=sources[1];rejected=false;try{cg.run_key_query(wrong);}catch(...){rejected=true;}check(rejected&&!cg.ready());

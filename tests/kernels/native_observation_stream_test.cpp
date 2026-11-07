@@ -1,5 +1,5 @@
 #include "../../src/core/native_q8_observation.hpp"
-#include <cassert>
+#include <stdexcept>
 using namespace strata::core::portable_detail;
 int main() {
     std::vector<uint32_t> in={0x07230203,0x10000,0,10,0,
@@ -8,7 +8,7 @@ int main() {
         (4u<<16)|spv::OpExecutionMode,1,spv::ExecutionModeRoundingModeRTE,32};
     auto check=[&](const std::vector<uint32_t>& e,bool r,bool d,bool ok) {
         bool success=true; try { native_q8_validate_observation_effective(in.data(),in.size(),e.data(),e.size(),r,d,nullptr); } catch (...) { success=false; }
-        assert(success==ok);
+        if (success != ok) throw std::runtime_error("observation validation expectation failed");
     };
     for(int flags=0;flags<4;++flags) {
         auto e=in;

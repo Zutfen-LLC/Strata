@@ -1,4 +1,9 @@
+#include "ggml-backend.h"
+static int copy_computes = 0;
+static ggml_status copy_test_compute(ggml_backend_t b, ggml_cgraph* g) { ++copy_computes; return ggml_backend_graph_compute(b,g); }
+#define STRATA_PLE_CONV_COPY_TEST_COMPUTE copy_test_compute
 #include "portable_native_ple_conv_copy_graph.hpp"
+#undef STRATA_PLE_CONV_COPY_TEST_COMPUTE
 #include "ggml-cpu.h"
 #include <cassert>
 #include <cstring>
@@ -159,12 +164,28 @@ int main() {
         try{PortableNativePleConvCopyGraph short_graph(backend.get(),src,weights.data(),weights.size()*2,1,"",budget-1,rows);}catch(...){bad=true;}assert(bad);
         PortableNativePleConvCopyGraph graph(backend.get(),src,weights.data(),weights.size()*2,1,"",budget,rows);
         assert(graph.bytes()<=budget&&graph.copy(1)->src[0]==src[1]);
-        graph.run(src,x);assert(graph.ready()&&graph.calls()==1&&dispatch_rows==rows);
+        if(rows==2){
+            auto* saved=src[1]->data;
+            auto base=reinterpret_cast<uintptr_t>(ggml_backend_buffer_get_base(src[1]->buffer));
+            auto capacity=ggml_backend_buffer_get_size(src[1]->buffer);
+            for(auto address : {uintptr_t(0),base+capacity+4,base+capacity-81916}){
+                src[1]->data=reinterpret_cast<void*>(address); auto calls=graph.calls(); auto computes=copy_computes; dispatch_rows=0; bool caught=false;
+                try{graph.run(src,x);}catch(...){caught=true;}
+                if(!caught||graph.ready()||graph.calls()!=calls||dispatch_rows!=0||copy_computes!=computes) throw std::runtime_error("conv copy span refusal");
+            }
+            src[1]->data=reinterpret_cast<void*>(base+4);
+            auto calls=graph.calls(); auto computes=copy_computes;
+            graph.run(src,x);
+            if(!graph.ready()||graph.calls()!=calls+1||copy_computes!=computes+1||dispatch_rows!=rows) throw std::runtime_error("conv copy valid offset");
+            src[1]->data=saved;
+        }
+        auto initial_calls=graph.calls();
+        graph.run(src,x);assert(graph.ready()&&graph.calls()==initial_calls+1&&dispatch_rows==rows);
         std::vector<float> next(92160),original(92160);ggml_backend_tensor_get(graph.history(),next.data(),0,next.size()*4);ggml_backend_tensor_get(src[0],original.data(),0,original.size()*4);
         assert(original==h);for(size_t r=0;r<rows;++r)assert(next[9-rows+r]==n[r*10240]);
-        auto wrong=src;wrong[1]=src[2];bad=false;try{graph.run(wrong,x);}catch(...){bad=true;}assert(bad&&!graph.ready()&&graph.calls()==1);
-        fail_conv=true;bad=false;try{graph.run(src,x);}catch(...){bad=true;}fail_conv=false;assert(bad&&!graph.ready()&&graph.calls()==1);
-        graph.run(src,x);assert(graph.ready()&&graph.calls()==2);graph.abort();assert(!graph.ready());
+        auto wrong=src;wrong[1]=src[2];bad=false;try{graph.run(wrong,x);}catch(...){bad=true;}assert(bad&&!graph.ready()&&graph.calls()==initial_calls+1);
+        fail_conv=true;bad=false;try{graph.run(src,x);}catch(...){bad=true;}fail_conv=false;assert(bad&&!graph.ready()&&graph.calls()==initial_calls+1);
+        graph.run(src,x);assert(graph.ready()&&graph.calls()==initial_calls+2);graph.abort();assert(!graph.ready());
         bad=false;try{(void)graph.history();}catch(...){bad=true;}assert(bad);
     }
     std::cout << "PLE convolution candidate ownership, refusal and retry passed with host provider\n";

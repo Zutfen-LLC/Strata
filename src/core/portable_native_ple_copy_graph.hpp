@@ -1,4 +1,7 @@
 #pragma once
+#ifndef STRATA_PLE_COPY_TEST_COMPUTE
+#define STRATA_PLE_COPY_TEST_COMPUTE ggml_backend_graph_compute
+#endif
 #include "portable_native_ple_grouped_norm.hpp"
 
 namespace strata::core::portable_detail {
@@ -22,7 +25,11 @@ class PortableNativePleCopyGraph {
         for(size_t i=0;i<3;++i){
             auto* p=producers_[i]; auto* c=copies_[i];
             need(p&&p->type==GGML_TYPE_F32&&ggml_is_contiguous(p)&&p->buffer&&
-                 ggml_nbytes(p)==40960*rows_,"PLE copy graph: producer span");
+                 p->data&&ggml_nbytes(p)==40960*rows_,"PLE copy graph: producer span");
+            auto base=reinterpret_cast<uintptr_t>(ggml_backend_buffer_get_base(p->buffer));
+            auto data=reinterpret_cast<uintptr_t>(p->data);
+            auto size=ggml_backend_buffer_get_size(p->buffer), span=ggml_nbytes(p);
+            need(base&&data>=base&&data-base<=size&&span<=size-(data-base),"PLE copy graph: out of buffer");
             auto type=ggml_backend_buffer_get_type(p->buffer);
             auto dev=ggml_backend_buft_get_device(type), owner=ggml_backend_get_device(backend_);
             need(type==ggml_backend_get_default_buffer_type(backend_)&&owner&&
@@ -79,7 +86,7 @@ public:
         try {
             need(producers==producers_,"PLE copy graph: producer identity changed");
             validate();
-            const auto status=ggml_backend_graph_compute(backend_,graphs_[0]);
+            const auto status=STRATA_PLE_COPY_TEST_COMPUTE(backend_,graphs_[0]);
             ggml_backend_synchronize(backend_);
             need(status==GGML_STATUS_SUCCESS,"PLE copy graph: execution failed");
             for(size_t i=0;i<2;++i)norm_.run(i,copies_[i],producers_[i]);
@@ -92,7 +99,7 @@ public:
             need(first_ready_&&!ready_,"PLE copy graph: key/query phase required");
             need(producers==producers_,"PLE copy graph: producer identity changed");
             validate();
-            const auto status=ggml_backend_graph_compute(backend_,graphs_[1]);
+            const auto status=STRATA_PLE_COPY_TEST_COMPUTE(backend_,graphs_[1]);
             ggml_backend_synchronize(backend_);
             need(status==GGML_STATUS_SUCCESS,"PLE copy graph: execution failed");
             norm_.run(2,copies_[2],producers_[2]);

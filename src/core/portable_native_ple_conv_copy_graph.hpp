@@ -1,4 +1,7 @@
 #pragma once
+#ifndef STRATA_PLE_CONV_COPY_TEST_COMPUTE
+#define STRATA_PLE_CONV_COPY_TEST_COMPUTE ggml_backend_graph_compute
+#endif
 #include "portable_native_ple_conv.hpp"
 
 namespace strata::core::portable_detail {
@@ -18,7 +21,11 @@ class PortableNativePleConvCopyGraph {
     void validate() const {
         for(size_t i=0;i<4;++i){
             auto* p=producers_[i]; auto* c=copies_[i];
-            need(p&&p->type==GGML_TYPE_F32&&ggml_is_contiguous(p)&&p->buffer&&ggml_nbytes(p)==(i?10240*rows_:92160)*sizeof(float),"PLE conv copy graph: producer span");
+            need(p&&p->type==GGML_TYPE_F32&&ggml_is_contiguous(p)&&p->buffer&&p->data&&ggml_nbytes(p)==(i?10240*rows_:92160)*sizeof(float),"PLE conv copy graph: producer span");
+            auto base=reinterpret_cast<uintptr_t>(ggml_backend_buffer_get_base(p->buffer));
+            auto data=reinterpret_cast<uintptr_t>(p->data);
+            auto size=ggml_backend_buffer_get_size(p->buffer), span=ggml_nbytes(p);
+            need(base&&data>=base&&data-base<=size&&span<=size-(data-base),"PLE conv copy graph: out of buffer");
             auto type=ggml_backend_buffer_get_type(p->buffer); auto dev=ggml_backend_buft_get_device(type); auto owner=ggml_backend_get_device(backend_);
             need(type==ggml_backend_get_default_buffer_type(backend_)&&owner&&(dev?dev==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE conv copy graph: producer device");
             need(c&&c->op==GGML_OP_CPY&&c->src[0]==p&&c->src[1]==conv_.input(i)&&c->view_src==conv_.input(i),"PLE conv copy graph: binding changed");
@@ -59,7 +66,7 @@ public:
     void abort(){ready_=false;}
     void run(const std::array<ggml_tensor*,4>& producers,const std::vector<float>& residual){
         ready_=false;need(producers==producers_,"PLE conv copy graph: producer identity changed");validate();
-        auto status=ggml_backend_graph_compute(backend_,graph_);ggml_backend_synchronize(backend_);
+        auto status=STRATA_PLE_CONV_COPY_TEST_COMPUTE(backend_,graph_);ggml_backend_synchronize(backend_);
         need(status==GGML_STATUS_SUCCESS,"PLE conv copy graph: execution failed");
         conv_.run(copies_.data(),producers_.data(),residual);ready_=true;
     }

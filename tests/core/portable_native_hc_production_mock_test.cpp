@@ -12,6 +12,8 @@ constexpr size_t pb=113, nb=227, mb=331, budget=20*1024*1024;
 std::array<size_t,3> budgets{};
 std::array<std::string,3> paths;
 std::array<int,3> creates{}, destroys{}, runs{};
+int fail_factory=-1;
+void factory_call(int i) { ++creates[i]; if (i==fail_factory) throw std::runtime_error("injected factory failure"); }
 std::array<std::vector<unsigned char>,4> expected;
 const ggml_tensor* norm_output=nullptr;
 void verify(const ggml_tensor* t, size_t role) {
@@ -26,11 +28,11 @@ namespace strata::core::portable_detail {
 struct StrataVkNativeHcPending {};
 struct StrataVkNativeHc {};
 struct StrataVkNativeHcMix {};
-StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t, const char* p,size_t b){++creates[0]; budgets[0]=b; paths[0]=p; return new StrataVkNativeHcPending;}
+StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t, const char* p,size_t b){factory_call(0); budgets[0]=b; paths[0]=p; return new StrataVkNativeHcPending;}
 size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*){return pb;}
 void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending* p) noexcept {if(p)++destroys[0]; delete p;}
 void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*,const ggml_tensor*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*){++runs[0]; throw std::runtime_error("unexpected pending");}
-StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t,const char* p,size_t b){++creates[1]; budgets[1]=b; paths[1]=p; return new StrataVkNativeHc;}
+StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t,const char* p,size_t b){factory_call(1); budgets[1]=b; paths[1]=p; return new StrataVkNativeHc;}
 size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*){return nb;}
 void strata_vk_native_hc_destroy(StrataVkNativeHc* p) noexcept {if(p)++destroys[1]; delete p;}
 void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor* x,const ggml_tensor* w,const ggml_tensor* iw,ggml_tensor* out,ggml_tensor* rs,ggml_tensor* inject,uint32_t n){
@@ -39,7 +41,7 @@ void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor* x,const ggml_t
  for (uint32_t r=0;r<n;++r) for(size_t i=0;i<10240;++i) check(v[r*10240+i]==float(n==2?r+1:3),"materialized residual rows");
  for(auto& a:v) a+=10; ggml_backend_tensor_set(out,v.data(),0,v.size()*sizeof(float)); fill(rs,2); fill(inject,3); norm_output=out;
 }
-StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char* p,size_t b){++creates[2]; budgets[2]=b; paths[2]=p; return new StrataVkNativeHcMix;}
+StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char* p,size_t b){factory_call(2); budgets[2]=b; paths[2]=p; return new StrataVkNativeHcMix;}
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*){return mb;}
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix* p) noexcept {if(p)++destroys[2]; delete p;}
 void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor* x,const ggml_tensor* down,const ggml_tensor* up,ggml_tensor* lp,ggml_tensor* low,ggml_tensor* le,ggml_tensor* u,ggml_tensor* gates,ggml_tensor* ue,ggml_tensor* mixed){
@@ -65,6 +67,18 @@ int main(){try {
   auto construct=[&](size_t b, Owner::ComponentCaps c) {
    Owner owner(cpu.get(),source[0],source[1],source[2],source[3],b,"mock-receipt",{},SIZE_MAX,c);
   };
+  // Throw at each actual empty-Dispatch factory, before it returns an owner.
+  for (int i=0;i<3;++i) {
+   creates={}; destroys={}; fail_factory=i;
+   bool injected=false;
+   try { construct(exact,caps); } catch(const std::runtime_error& e) { injected=std::string(e.what())=="injected factory failure"; }
+   fail_factory=-1;
+   std::array<int,3> calls{}, released{};
+   for(int j=0;j<=i;++j) calls[j]=1;
+   for(int j=0;j<i;++j) released[j]=1;
+   check(injected && creates==calls && destroys==released,"factory failure did not unwind exactly or ran a later factory");
+  }
+  creates={}; destroys={};
   bool rejected=false; try { construct(exact-1,caps); } catch(const std::runtime_error&) { rejected=true; }
   check(rejected && creates==std::array<int,3>{0,0,0},"short caps budget called factory");
   construct(exact,caps);
