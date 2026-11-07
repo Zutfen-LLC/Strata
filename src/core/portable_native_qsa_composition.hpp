@@ -6,6 +6,9 @@
 // during synchronous run. Do not retain mutable aliases to transferred owners.
 // Callbacks may have external side effects; those cannot be rolled back.
 #include "portable_native_hc_composed.hpp"
+#include "portable_native_ffn_snapshot.hpp"
+#include <variant>
+#include <type_traits>
 #include "portable_native_qsa_qkv_rows.hpp"
 #include "portable_native_qsa_indexer_rows.hpp"
 #include "portable_native_qsa_norm_rope.hpp"
@@ -21,6 +24,12 @@
 #include <vector>
 namespace strata::core::portable_detail {
 class PortableNativeQsaComposition {
+ using Anchor=std::variant<std::monostate,std::shared_ptr<const PortableGdnSnapshot>,std::shared_ptr<const PortableNativeFfnSnapshot>>;
+ static bool anchor_live(const Anchor& a,int layer,uint64_t position){
+  return std::visit([&](const auto& p)->bool {using T=std::decay_t<decltype(p)>;if constexpr(std::is_same_v<T,std::monostate>)return false;else return p&&p->live()&&p->layer()+1==layer&&p->position()==position;},a);
+ }
+ template<class Producer,class Snapshot> static bool anchor_matches(const Anchor& a,const Producer& p,int layer,uint64_t pos){auto v=std::get_if<std::shared_ptr<const Snapshot>>(&a);return v&&*v&&(*v)->valid_for(p,layer,pos);}
+ static bool anchored(const Anchor& a){return a.index()!=0;}
  struct Access {bool valid=true;uint64_t first=0,generation=0;size_t rows=0;std::vector<float>output,residual,injection;std::vector<int32_t>ids;};
 public:
  class View {
@@ -38,7 +47,7 @@ public:
  private:
   // Only state() can issue a nonempty provenance anchor. A caller restoring
   // edited payloads is responsible for their correspondence to that prefix.
-  std::shared_ptr<const PortableGdnSnapshot> anchor_;
+  Anchor anchor_;
   friend class PortableNativeQsaComposition;
  };
 private:
@@ -50,7 +59,7 @@ private:
  std::vector<uint16_t>keys_,values_;std::vector<uint32_t>indexer_state_;std::shared_ptr<Access> published_;
  // Holds the last genuine predecessor snapshot, including its shared lifetime
  // guard. This prevents pointer reuse from impersonating a prefix generation.
- std::shared_ptr<const PortableGdnSnapshot> anchor_;
+ Anchor anchor_;
  static void need(bool b,const char*m){if(!b)throw std::runtime_error(m);}
  static ggml_tensor* row(ggml_context*c,ggml_tensor*t,size_t offset,size_t count){
   need(t&&t->type==GGML_TYPE_F32&&offset<=size_t(ggml_nelements(t))&&count<=size_t(ggml_nelements(t))-offset,"QSA composition: row span");
@@ -62,7 +71,7 @@ private:
   for(auto*v:{&s.keys,&s.values})for(auto h:*v)need(std::isfinite(ggml_fp16_to_fp32(h)),"QSA composition: nonfinite seed KV");
   for(size_t i=0;i+1<s.indexer.size();++i){float x;std::memcpy(&x,&s.indexer[i],4);need(qsa_wo_normal_or_zero(x),"QSA composition: invalid seed indexer float");if(i<384){float y=ggml_fp16_to_fp32(ggml_fp32_to_fp16(x));need(std::isfinite(y)&&std::memcmp(&x,&y,4)==0,"QSA composition: unrounded seed tail");}}
   need(s.indexer.back()==(s.position>=4?4*((s.position-1)/4):0),"QSA composition: seed block position");
-  need(s.position ? (s.anchor_ && s.anchor_->live() && s.anchor_->layer()+1==layer_ && s.anchor_->position()==s.position-1) : !s.anchor_,"QSA composition: seed provenance");
+  need(s.position ? anchor_live(s.anchor_,layer_,s.position-1) : !anchored(s.anchor_),"QSA composition: seed provenance");
   if(!s.position){for(auto h:s.keys)need(h==0,"QSA composition: nonzero initial key");for(auto h:s.values)need(h==0,"QSA composition: nonzero initial value");for(auto x:s.indexer)need(x==0,"QSA composition: nonzero initial indexer");}
  }
 public:
@@ -86,22 +95,24 @@ public:
  PortableNativeQsaComposition(const PortableNativeQsaComposition&)=delete;PortableNativeQsaComposition&operator=(const PortableNativeQsaComposition&)=delete;
  ~PortableNativeQsaComposition(){if(published_)published_->valid=false;}
  int layer()const{return layer_;}uint64_t position()const{return position_;}uint64_t generation()const{return generation_;}bool poisoned()const{return poisoned_;}
- bool provenance_live()const{return !anchor_ || (anchor_->live()&&anchor_->layer()+1==layer_&&position_&&anchor_->position()==position_-1);}
+ bool provenance_live()const{return !anchored(anchor_) || (position_&&anchor_live(anchor_,layer_,position_-1));}
  Seed state()const{Seed s;s.position=position_;s.keys=keys_;s.values=values_;s.indexer=indexer_state_;s.anchor_=anchor_;return s;}
  void reset(){need(!running_&&generation_!=UINT64_MAX,"QSA composition: reset active/generation");Seed s;s.keys.resize(size_t(cells_)*512);s.values.resize(size_t(cells_)*512);s.indexer.resize(qsa_idx_words(cells_));reset(s);}
  // Nonzero seeds must come from state() and retain its live producer-generation
  // anchor; the caller must preserve the captured payload and matching prefix.
  // Mutated payloads cannot be authenticated. reset() starts an unbound sequence.
  void reset(const Seed&s){need(!running_&&generation_!=UINT64_MAX,"QSA composition: reset active/generation");validate_seed(s);auto k=s.keys,v=s.values;auto idx=s.indexer;auto provenance=s.anchor_;hc_->reset();if(published_)published_->valid=false;published_.reset();keys_.swap(k);values_.swap(v);indexer_state_.swap(idx);anchor_.swap(provenance);position_=s.position;++generation_;poisoned_=false;}
- void run(uint64_t first,const PortableGdnLayer&producer,const std::vector<std::shared_ptr<const PortableGdnSnapshot>>&snapshots,const Consumer&consumer,const Consumer&prepare={}){
+private:
+ template<class Producer,class Snapshot>
+ void run_impl(uint64_t first,const Producer&producer,const std::vector<std::shared_ptr<const Snapshot>>&snapshots,const Consumer&consumer,const Consumer&prepare){
   need(!running_&&!poisoned_&&bool(consumer)&&first==position_&&generation_!=UINT64_MAX&&(snapshots.size()==1||snapshots.size()==2)&&first<=cells_&&snapshots.size()<=cells_-first,"QSA composition: unavailable/position/rows");
   const size_t count=snapshots.size();
   // Refuse mixed histories before any HC or component dispatch. Hold exact
   // handles independently of a caller-mutated snapshot vector.
-  std::vector<std::shared_ptr<const PortableGdnSnapshot>> held=snapshots;
+  std::vector<std::shared_ptr<const Snapshot>> held=snapshots;
   for(size_t i=0;i<count;++i)need(held[i]&&held[i]->valid_for(producer,layer_,first+i),"QSA composition: snapshot identity");
-  need(!anchor_||anchor_->valid_for(producer,layer_,first-1),"QSA composition: predecessor generation differs from committed history");
-  auto next_anchor=held.back();running_=true;struct Guard{bool&b;~Guard(){b=false;}}guard{running_};
+  need(!anchored(anchor_)||anchor_matches<Producer,Snapshot>(anchor_,producer,layer_,first-1),"QSA composition: predecessor generation differs from committed history");
+  Anchor next_anchor=held.back();running_=true;struct Guard{bool&b;~Guard(){b=false;}}guard{running_};
   std::shared_ptr<Access> candidate;std::vector<uint16_t>next_keys,next_values;std::vector<uint32_t>next_indexer;
   try{
    hc_->run(layer_,first,producer,held,[&](const PortableNativeHcComposed::View&h,uint32_t n){
@@ -122,11 +133,14 @@ public:
     consumer(View(candidate));
    },[&](const PortableNativeHcComposed::View&,uint32_t n){need(candidate&&candidate->valid&&n==count&&next_keys.size()==keys_.size()&&next_values.size()==values_.size()&&next_indexer.size()==indexer_state_.size(),"QSA composition: candidate incomplete");if(prepare)prepare(View(candidate));
     for(size_t i=0;i<count;++i)need(held[i]&&held[i]->valid_for(producer,layer_,first+i),"QSA composition: snapshot invalidated during consumption");
-    need(!anchor_||anchor_->valid_for(producer,layer_,first-1),"QSA composition: predecessor generation invalidated");});
+    need(!anchored(anchor_)||anchor_matches<Producer,Snapshot>(anchor_,producer,layer_,first-1),"QSA composition: predecessor generation invalidated");});
   }catch(...){if(candidate)candidate->valid=false;poisoned_=true;throw;}
   // HC has finished snapshot revalidation and published. All subsequent state
   // changes are no-throw swaps/assignments, with no user code in between.
   keys_.swap(next_keys);values_.swap(next_values);indexer_state_.swap(next_indexer);anchor_.swap(next_anchor);if(published_)published_->valid=false;published_=std::move(candidate);position_+=count;++generation_;
  }
+public:
+ void run(uint64_t first,const PortableGdnLayer& producer,const std::vector<std::shared_ptr<const PortableGdnSnapshot>>& snapshots,const Consumer& consumer,const Consumer& prepare={}){run_impl(first,producer,snapshots,consumer,prepare);}
+ void run(uint64_t first,const PortableNativeFfnComposition& producer,const std::vector<std::shared_ptr<const PortableNativeFfnSnapshot>>& snapshots,const Consumer& consumer,const Consumer& prepare={}){run_impl(first,producer,snapshots,consumer,prepare);}
 };
 }

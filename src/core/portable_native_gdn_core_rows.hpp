@@ -85,6 +85,7 @@ public:
  std::vector<float> output()const{need(candidate_&&!poisoned_,"GDN core rows: no candidate");std::vector<float>v(rows_*6144);ggml_backend_tensor_get(bank_[rows_-1].y,v.data(),0,v.size()*4);return v;}
 private:
  friend class PortableNativePleGdnComposition;
+ friend class PortableNativeOrdinaryGdnComposition;
  // Only the composition may swap after PLE has committed. All throwing work
  // and candidate validation must already have completed.
  void publish_prepared()noexcept{committed_=1-committed_;candidate_=false;rows_=0;}
