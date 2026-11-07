@@ -104,6 +104,8 @@ public:
     ~PortableNativeLayer0Composition(){epoch_->valid=false;}
     uint64_t position()const{return position_;} bool poisoned()const{return poisoned_;}
     uint64_t reset_generation()const{return reset_generation_;}
+    PortableHcReadMethod attention_hc_read_method()const{return attention_->read_method();}
+    PortableHcReadMethod ffn_hc_read_method()const{return ffn_hc_->read_method();}
     size_t vocabulary_size()const{return size_t(embedding_.shape[1]);}
     const void* rows_identity()const{return &ffn_;}
     uint64_t rows_generation()const{return ffn_.generation();}

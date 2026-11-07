@@ -22,7 +22,7 @@ public:
         PortableNativeHcComposed::ComponentCaps ffn_caps;
     };
     PortableNativeLayer0Owner(std::shared_ptr<const GgufModel> model,ggml_backend_t backend,
-                              const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused):model_(std::move(model)) {
+                              const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused,PortableHcReadSelection selection={}):model_(std::move(model)) {
         need(model_&&backend&&!prefix.empty(),"layer0 owner: model/backend/prefix");
         auto g=PortableNativeGdnComponents::from_gguf(*model_,0);PortableNativeGdnComponents::validate(0,g,gdn_method);
         auto r=PortableNativeFfnOwner::from_gguf(*model_,0);PortableNativeFfnOwner::validate(0,r,method);
@@ -33,16 +33,16 @@ public:
         for(auto d:t->shape){need(d<=INT64_MAX,"layer0 owner: embedding dimension");embedding.shape.push_back(int64_t(d));}
         (void)native_layer0_embedding(embedding,{0});
         auto path=prefix+".ffn-hc";
-        auto fh=NativeFfnHcFactory::host_bound(path.size());
+        auto fh=NativeFfnHcFactory::selected_host_bound(path.size(),selection);
         size_t h=ple_host_add(ple_host_add(b.gdn.host,b.rows.host),ple_host_add(fh,PortableNativeLayer0Composition::host_bound()));
         size_t d=ple_host_add(ple_host_add(b.gdn.device,b.rows.device),ple_host_add(b.ffn_hc,b.write));
-        need(h<=b.host&&d<=b.device&&NativeFfnHcFactory::device_bound(backend,b.ffn_caps)<=b.ffn_hc,"layer0 owner: aggregate budget");
-        PortableNativeGdnComponents::preflight(backend,(prefix+".gdn").size()+3,b.gdn,gdn_method,ab_method);
+        need(h<=b.host&&d<=b.device&&NativeFfnHcFactory::selected_device_bound(backend,b.ffn_caps,selection)<=b.ffn_hc,"layer0 owner: aggregate budget");
+        PortableNativeGdnComponents::preflight(backend,(prefix+".gdn").size()+3,b.gdn,gdn_method,ab_method,selection);
         rows_=std::make_unique<PortableNativeFfnOwner>(0,backend,r,prefix+".rows",b.rows,method);
-        gdn_=std::make_unique<PortableNativeGdnComponents>(0,backend,g,prefix+".gdn",b.gdn,gdn_method,ab_method);
+        gdn_=std::make_unique<PortableNativeGdnComponents>(0,backend,g,prefix+".gdn",b.gdn,gdn_method,ab_method,selection);
         std::vector<PortableTensorView> ah{g[9],g[10],g[11],g[12]};
-        auto attention=NativeFfnHcFactory::create(0,backend,ah,b.gdn.hc,NativeFfnHcFactory::host_bound(prefix.size()+7),(prefix+".attn").c_str(),{},b.gdn.hc_caps,true);
-        auto ffn=NativeFfnHcFactory::create(0,backend,f,b.ffn_hc,fh,path.c_str(),{},b.ffn_caps);
+        auto attention=NativeFfnHcFactory::create_selected(0,backend,ah,b.gdn.hc,NativeFfnHcFactory::selected_host_bound(prefix.size()+7,selection),(prefix+".attn").c_str(),b.gdn.hc_caps,selection,true);
+        auto ffn=NativeFfnHcFactory::create_selected(0,backend,f,b.ffn_hc,fh,path.c_str(),b.ffn_caps,selection);
         composition_=std::make_unique<PortableNativeLayer0Composition>(embedding,std::move(attention),gdn_->input(),gdn_->take_core(),gdn_->output(),std::move(ffn),rows_->rows(),backend,b.write,PortableNativeLayer0Composition::host_bound(),(prefix+".write").c_str());
     }
     PortableNativeLayer0Owner(const PortableNativeLayer0Owner&)=delete;

@@ -36,7 +36,10 @@ public:
  // private cost is bounded. Caller-owned consumers remain outside this envelope.
  static size_t host_bound(size_t prefix){return ple_host_add(ple_host_add(HC::host_bound(2,prefix),PortableNativeHcBf16Products::host_bound()),ple_host_add(2u<<20,ple_host_mul(prefix,4)));}
  static size_t device_bound_with_source(ggml_backend_t backend,const std::array<const ggml_tensor*,4>& roles,Caps caps,size_t source){
-  need(backend,"HC prefill: backend");const size_t hc_tensors=HC::tensor_bound(backend,roles);
+  need(backend,"HC prefill: backend");
+  Context status_ctx(ggml_init({4096,nullptr,true}),ggml_free);need(bool(status_ctx),"HC prefill: status metadata");need(ggml_new_tensor_1d(status_ctx.get(),GGML_TYPE_I32,128),"HC prefill: status tensor");
+  const auto status_bytes=ggml_backend_alloc_ctx_tensors_from_buft_size(status_ctx.get(),ggml_backend_get_default_buffer_type(backend));need(caps.pending>=status_bytes&&caps.scalar>=status_bytes,"HC prefill: component caps");
+  const size_t hc_tensors=HC::tensor_bound(backend,roles);
   Context rc(ggml_init({8192,nullptr,true}),ggml_free);need(bool(rc),"HC prefill: role metadata");for(auto*t:roles)need(ggml_dup_tensor(rc.get(),t),"HC prefill: role metadata");auto type=ggml_backend_get_default_buffer_type(backend);size_t retained=ggml_backend_alloc_ctx_tensors_from_buft_size(rc.get(),type);
   auto ic=metadata();std::array<Images,4> tmp{};make_images(ic.get(),tmp);size_t image_bytes=ggml_backend_alloc_ctx_tensors_from_buft_size(ic.get(),type);
   size_t total=ple_host_add(source,hc_tensors);total=ple_host_add(total,PortableNativeHcBf16Products::device_bound(backend,retained));total=ple_host_add(total,image_bytes);return ple_host_add(total,ple_host_add(caps.pending,caps.scalar));
@@ -58,6 +61,7 @@ public:
   state->products=std::make_unique<PortableNativeHcBf16Products>(backend,std::array<const ggml_tensor*,3>{bank->role(2),bank->role(3),bank->role(1)},PortableNativeHcBf16Products::host_bound(),product_bound);
   owner->selected_bytes_=ple_host_add(ple_host_add(state->products->device_bytes(),ggml_backend_buffer_get_size(state->buffer.get())),ple_host_add(strata_vk_native_hc_pending_bytes(state->pending.get()),strata_vk_native_hc_prefill_bytes(state->scalar.get())));
   need(ple_host_add(owner->bytes(),source_bytes(roles))<=device_budget,"HC prefill: actual device budget");
+  owner->read_method_=PortableHcReadMethod::baseline_prefill_bf16;
   return owner;
  }
 };

@@ -89,9 +89,19 @@ layouts; scalar Vulkan spans reject tensor views and nonzero view offsets.
 Separate mocked Vulkan transport tests and shader compilation do not execute
 the arithmetic on a GPU. Float-control and effective
 shader checks do not establish vendor GEMM, exp, rsqrt or reduction equality.
-The HC role factory can select it for named attention or FFN roles; higher
-layer and model owners do not yet propagate the selector. It does not enable
-public native chunking or establish full-model parity.
+The internal selector now reaches the entry, PLE, ordinary GDN and QSA,
+FFN, terminal FFN and all-48 model-owner construction paths. It defaults to
+the legacy read. Selected attention and FFN owners have method-aware requested
+host and device admission, including their source and retained role images;
+the model preflights their envelopes before allocating its layers. The separate
+final-head HC is unchanged.
+
+A bounded CPU fixture constructs selected PLE and FFN owners and runs a T2
+layer-zero composition with real product graphs and mocked scalar and pending
+stages. A source-wiring check and constructor type checks cover the all-48
+factory; they do not allocate or run a selected full model. These controls do
+not establish device arithmetic. The selector does not enable public native
+chunking or establish full-model parity.
 
 ## Bounded 48-layer row executor
 

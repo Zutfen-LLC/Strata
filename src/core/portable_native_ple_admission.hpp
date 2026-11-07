@@ -3,6 +3,7 @@
 // Standalone composition calculator, not model admission.
 #include "portable_native_ple_executor.hpp"
 #include "portable_native_hc_composed.hpp"
+#include "portable_native_hc_prefill_selection.hpp"
 #include "native_component_host_bound.hpp"
 #include <cstddef>
 #include <functional>
@@ -107,7 +108,8 @@ public:
     }
     static Breakdown calculate(ggml_backend_t backend, const std::array<const ggml_tensor*,4>& hc_roles,
                                const std::string& directory, size_t hc_prefix_bytes,
-                               PortableNativeHcComposed::ComponentCaps caps) {
+                               PortableNativeHcComposed::ComponentCaps caps,PortableHcReadSelection selection={},size_t borrowed_source=0) {
+        selection.validate();
         const size_t executor_path_bytes = directory.size();
         if (executor_path_bytes > PortableNativePleExecutor::max_path_bytes ||
             hc_prefix_bytes > PortableNativePleExecutor::max_path_bytes)
@@ -117,8 +119,8 @@ public:
         const auto e = PortableNativePleExecutor::estimate_breakdown(backend);
         return Breakdown(e.owner_estimates, ple_host_add(e.total-e.owner_estimates, executor_paths),
                          PortableNativePleTransaction::host_bound(2,10240,10240),
-                         ple_host_add(PortableNativeHcComposed::tensor_bound(backend, hc_roles), component_total),
-                         PortableNativeHcComposed::host_bound(2,hc_prefix_bytes),
+                         selection.method==PortableHcReadMethod::legacy_decode ? ple_host_add(PortableNativeHcComposed::tensor_bound(backend, hc_roles), component_total) : PortableNativeHcPrefillSelection::device_bound_with_source(backend,hc_roles,{selection.pending,selection.scalar},borrowed_source),
+                         selection.method==PortableHcReadMethod::legacy_decode ? PortableNativeHcComposed::host_bound(2,hc_prefix_bytes) : PortableNativeHcPrefillSelection::host_bound(hc_prefix_bytes),
                          component_host_bound(directory, hc_prefix_bytes), estimate_host_bound());
     }
     static void require_budget(const Breakdown& bounds, size_t budget) {

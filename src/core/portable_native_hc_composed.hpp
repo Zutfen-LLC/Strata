@@ -19,6 +19,17 @@
 #include <vector>
 
 namespace strata::core::portable_detail {
+enum class PortableHcReadMethod { legacy_decode, baseline_prefill_bf16 };
+struct PortableHcReadSelection {
+    PortableHcReadMethod method=PortableHcReadMethod::legacy_decode;
+    size_t pending=0,scalar=0;
+    void validate() const {
+        if (method!=PortableHcReadMethod::legacy_decode && method!=PortableHcReadMethod::baseline_prefill_bf16)
+            throw std::invalid_argument("HC read: invalid method");
+        if (method==PortableHcReadMethod::baseline_prefill_bf16 && (!pending || !scalar))
+            throw std::invalid_argument("HC read: incomplete prefill caps");
+    }
+};
 class PortableNativeFfnComposition;
 class PortableNativeFfnSnapshot;
 // Immutable snapshot of the already-packed roles. The backend remains borrowed.
@@ -70,6 +81,7 @@ class PortableNativeHcComposed {
     friend class PortableNativeLayer0Composition;
     friend class NativeFfnHcFactory;
     friend class PortableNativeHcPrefillSelection;
+    PortableHcReadMethod read_method_=PortableHcReadMethod::legacy_decode;
     int checked_layer_=-1;
     bool checked_attention_=false;
     using Context = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
@@ -254,6 +266,7 @@ public:
     PortableNativeHcComposed& operator=(const PortableNativeHcComposed&)=delete;
     ~PortableNativeHcComposed() { if (publication_) publication_->valid=false; }
     size_t bytes() const {return ple_host_add(bytes_,selected_bytes_);}
+    PortableHcReadMethod read_method() const {return read_method_;}
     std::shared_ptr<const NativeHcRoleBank> role_bank() const { return roles_; }
     uint32_t rows() const {return rows_;}
     // Publication exposes metadata only, never a pointer into reusable banks.

@@ -94,6 +94,18 @@ public:
         auto result=PortableNativeHcComposed::create_prefill(backend,source,host_budget,device_budget,prefix,caps);
         result->checked_layer_=layer;result->checked_attention_=attention;return result;
     }
+    static size_t selected_host_bound(size_t prefix,PortableHcReadSelection sel){sel.validate();return sel.method==PortableHcReadMethod::legacy_decode?host_bound(prefix):prefill_host_bound(prefix);}
+    static size_t selected_device_bound(ggml_backend_t backend,PortableNativeHcComposed::ComponentCaps caps,PortableHcReadSelection sel){
+        sel.validate();if(sel.method==PortableHcReadMethod::legacy_decode)return device_bound(backend,caps);
+        need(backend,"FFN HC prefill: backend");Context ctx(ggml_init({16384,nullptr,true}),ggml_free);need(bool(ctx),"FFN HC prefill: estimate metadata");
+        std::array<const ggml_tensor*,4> r{ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,10240),ggml_new_tensor_1d(ctx.get(),GGML_TYPE_I32,20480),ggml_new_tensor_1d(ctx.get(),GGML_TYPE_I32,1638400),ggml_new_tensor_1d(ctx.get(),GGML_TYPE_I32,1638400)};
+        for(auto*t:r)need(t,"FFN HC prefill: estimate roles");auto upload=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(),ggml_backend_get_default_buffer_type(backend));
+        return PortableNativeHcPrefillSelection::device_bound_with_source(backend,r,{sel.pending,sel.scalar},upload);
+    }
+    static std::unique_ptr<PortableNativeHcComposed> create_selected(int layer,ggml_backend_t backend,const std::vector<PortableTensorView>& views,size_t device,size_t host,const char* prefix,PortableNativeHcComposed::ComponentCaps caps,PortableHcReadSelection sel,bool attention=false,bool terminal=false){
+        sel.validate();if(sel.method==PortableHcReadMethod::baseline_prefill_bf16)return create_prefill(layer,backend,views,device,host,prefix,{sel.pending,sel.scalar},attention);
+        return create(layer,backend,views,device,host,prefix,{},caps,attention&&layer==0,terminal,attention&&layer>=2);
+    }
     static std::vector<PortableTensorView> from_gguf(const GgufModel& model,int layer,bool attention=false){
         std::vector<PortableTensorView> views;views.reserve(4);
         for(const char* suffix:{"norm.weight","inject.weight","down.weight","up.weight"}){

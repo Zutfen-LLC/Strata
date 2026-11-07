@@ -36,7 +36,7 @@ int main(){try{
  std::vector<uint16_t> big(3276800),inj(40960);big[0]=0x4000;ggml_backend_tensor_set(w[2],big.data(),0,big.size()*2);big[0]=0x4040;ggml_backend_tensor_set(w[3],big.data(),0,big.size()*2);inj[0]=0x4080;ggml_backend_tensor_set(w[1],inj.data(),0,inj.size()*2);
  std::array<const ggml_tensor*,4> roles{w[0],w[1],w[2],w[3]};S::Caps caps{512,512};size_t hb=S::host_bound(4),db=S::device_bound(b.get(),roles,caps);
  need(fails([&]{S::create(b.get(),roles,hb-1,db,"mock",caps);}),"short host");need(fails([&]{S::create(b.get(),roles,hb,db-1,"mock",caps);}),"short device");
- auto hc=HC::create_prefill(b.get(),roles,hb,db,"mock",caps);buf.reset();c.reset(); // Immutable copied roles outlive the source.
+ auto hc=HC::create_prefill(b.get(),roles,hb,db,"mock",caps);need(hc->read_method()==PortableHcReadMethod::baseline_prefill_bf16,"selected method accessor");buf.reset();c.reset(); // Immutable copied roles outlive the source.
  auto exec=[](const Tx::Request&r,const Tx::OutputView&o){size_t n=r.tokens.size();for(size_t i=0;i<n;++i){o.normalized[i]=float(r.tokens[i]);std::fill(o.residual.begin()+i*10240,o.residual.begin()+(i+1)*10240,float(r.tokens[i]));}std::copy(r.history.begin()+n,r.history.end(),o.history.begin());std::copy(o.normalized.begin(),o.normalized.end(),o.history.begin()+9-n);};
  Tx tx(1,10240,200000,exec);auto h=tx.stage(0,{1,2},std::vector<float>(20480));std::shared_ptr<HC::View> view;
  auto consume=[&](const HC::View&v,uint32_t n){need(n==2,"rows");auto x=v.read(HC::View::Field::inject);need(x[0]==4&&x[4]==8,"inject graph");need(v.read(HC::View::Field::mixed)[0]==7,"mixed");view=std::make_shared<HC::View>(v);};
@@ -54,6 +54,10 @@ int main(){try{
  for(bool attention:{false,true}){std::string pre=std::string("blk.3.hc_")+(attention?"attn_":"ffn_");using strata::core::PortableTensorView;
   std::vector<PortableTensorView> views{{pre+"norm.weight",{10240},0,norm.data(),norm.size()*4},{pre+"inject.weight",{10240,4},8,qi.data(),qi.size()},{pre+"down.weight",{10240,320},8,qd.data(),qd.size()},{pre+"up.weight",{320,10240},8,qu.data(),qu.size()}};
   auto hbound=NativeFfnHcFactory::prefill_host_bound(4);need(fails([&]{NativeFfnHcFactory::create_prefill(3,b.get(),views,100u<<20,hbound-1,"mock",caps,attention);}),"factory host refusal");
-  auto selected=NativeFfnHcFactory::create_prefill(3,b.get(),views,100u<<20,hbound,"mock",caps,attention);uint16_t word=0;ggml_backend_tensor_get(selected->role_bank()->role(2),&word,0,2);need(word==0x4000,"factory down conversion");ggml_backend_tensor_get(selected->role_bank()->role(3),&word,0,2);need(word==0x4040,"factory up conversion");ggml_backend_tensor_get(selected->role_bank()->role(1),&word,0,2);need(word==0x4080,"factory injection conversion");}
+  PortableHcReadSelection sel{PortableHcReadMethod::baseline_prefill_bf16,512,512};auto exact=NativeFfnHcFactory::selected_device_bound(b.get(),{},sel);
+  need(fails([&]{NativeFfnHcFactory::create_selected(3,b.get(),views,exact-1,hbound,"mock",{},sel,attention);}),"factory device refusal");
+  need(fails([&]{NativeFfnHcFactory::selected_device_bound(b.get(),{},PortableHcReadSelection{PortableHcReadMethod::baseline_prefill_bf16,1,512});}),"short component cap");
+  need(fails([&]{NativeFfnHcFactory::selected_host_bound(4,PortableHcReadSelection{static_cast<PortableHcReadMethod>(99),0,0});}),"invalid method");
+  auto selected=NativeFfnHcFactory::create_selected(3,b.get(),views,exact,hbound,"mock",{},sel,attention);need(selected->read_method()==PortableHcReadMethod::baseline_prefill_bf16,"factory selected method");uint16_t word=0;ggml_backend_tensor_get(selected->role_bank()->role(2),&word,0,2);need(word==0x4000,"factory down conversion");ggml_backend_tensor_get(selected->role_bank()->role(3),&word,0,2);need(word==0x4040,"factory up conversion");ggml_backend_tensor_get(selected->role_bank()->role(1),&word,0,2);need(word==0x4080,"factory injection conversion");}
  puts("HC selected composition: real CPU product graphs, mocked scalar stages; no device arithmetic");return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}

@@ -29,6 +29,15 @@ bool family_f16_capture=false;std::vector<float> family_f16_mixed,family_f16_qkv
 bool family_ab_capture=false;size_t family_ab_calls=0;std::vector<float> family_ab_mixed,family_ab_alpha,family_ab_beta,family_ab_recurrence_beta;
 #endif
 }
+#ifndef STRATA_MODEL_ROWS_FIXTURE
+namespace strata::core::portable_detail {
+struct StrataVkNativeHcPrefill {};
+StrataVkNativeHcPrefill* strata_vk_native_hc_prefill_create(ggml_backend_t,const char*,size_t cap){if(cap<512)throw std::runtime_error("prefill scalar cap");return new StrataVkNativeHcPrefill;}
+size_t strata_vk_native_hc_prefill_bytes(const StrataVkNativeHcPrefill*){return 512;}
+void strata_vk_native_hc_prefill_destroy(StrataVkNativeHcPrefill*p) noexcept{delete p;}
+void strata_vk_native_hc_prefill_run(StrataVkNativeHcPrefill*,uint32_t mode,uint32_t rows,const std::array<ggml_tensor*,6>&t){if(mode==0){put(t[2],std::vector<float>(rows*10240));put(t[3],std::vector<float>(rows*10240));}else if(mode==1){put(t[2],std::vector<float>(rows*320));put(t[3],std::vector<float>(rows*320));}else put(t[2],std::vector<float>(rows*2560));}
+}
+#endif
 namespace strata::core::portable_detail {
 StrataVkQ8Wo* strata_vk_qsa_qkv_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";return new StrataVkQ8Wo;}
 StrataVkQ8Wo* strata_vk_qsa_wo_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";return new StrataVkQ8Wo;}
@@ -160,6 +169,11 @@ int main(){try{
  auto hcctx=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({8192,nullptr,true}),ggml_free);std::array<const ggml_tensor*,4>hc{ggml_new_tensor_1d(hcctx.get(),GGML_TYPE_F32,10240),ggml_new_tensor_1d(hcctx.get(),GGML_TYPE_I32,20480),ggml_new_tensor_1d(hcctx.get(),GGML_TYPE_I32,1638400),ggml_new_tensor_1d(hcctx.get(),GGML_TYPE_I32,1638400)};auto hcbuf=std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>(ggml_backend_alloc_ctx_tensors(hcctx.get(),b.get()),ggml_backend_buffer_free);
  for(size_t i=0;i<4;++i){hc_roles[i].assign(ggml_nbytes(hc[i]),0x31+i);ggml_backend_tensor_set(const_cast<ggml_tensor*>(hc[i]),hc_roles[i].data(),0,hc_roles[i].size());}
  PortableNativeHcComposed::ComponentCaps hc_caps{113,227,331};auto prefix=(root/"hc").string();auto bounds=PortableNativePleAdmission::calculate(b.get(),hc,roles.directory,prefix.size(),hc_caps);
+#ifndef STRATA_MODEL_ROWS_FIXTURE
+ {PortableHcReadSelection selection{PortableHcReadMethod::baseline_prefill_bf16,512,512};auto selected_roles=roles;selected_roles.directory=root.string()+"-selected-ple";auto sb=PortableNativePleAdmission::calculate(b.get(),hc,selected_roles.directory,prefix.size(),hc_caps,selection,ggml_backend_buffer_get_size(hcbuf.get()));
+  bool refused=false;try{PortableNativePleComposition x(selected_roles,hc,b.get(),hc_caps,sb.total-1,prefix,selection);}catch(...){refused=true;}check(refused,"selected PLE short mixed budget");
+  PortableNativePleComposition x(selected_roles,hc,b.get(),hc_caps,sb.total,prefix,selection);check(x.hc_read_method()==PortableHcReadMethod::baseline_prefill_bf16,"selected PLE owner method");}
+#endif
  PortableNativePleComposition ple(roles,hc,b.get(),hc_caps,bounds.total,prefix);
  for(int which=0;which<4;++which){bool caught=false;fail_at=which==1?"gdn input factory":which==3?"gdn output factory":"";factory_probe=which==0||which==2;factory_fail=0;factory_calls.clear();factory_destroyed.clear();
   try{if(which<2){PortableNativeGdnInputRows bad(b.get(),{qi,zi},{qr.data(),zr.data()},{qr.size(),zr.size()},(root/("bad-input-"+std::to_string(which))).string(),PortableNativeGdnInputRows::estimate(b.get()));}else{PortableNativeGdnOutputRows bad(b.get(),wo,wr.data(),wr.size(),(root/("bad-output-"+std::to_string(which))).string(),PortableNativeGdnOutputRows::estimate(b.get()));}}catch(const std::exception&){caught=true;}
@@ -177,6 +191,15 @@ int main(){try{
   std::vector<float> zero(2560*512);ggml_backend_tensor_set(rw,zero.data(),0,zero.size()*4);PortableNativeFfnProjection projection(b.get(),rw,16u<<20);
   bool connected_combine=false;PortableNativeFfnRows::Dispatch d;d.router=[&](size_t,const ggml_tensor*,std::vector<PortableRoute>&r){for(auto&v:r){v.native_router=true;int base=connected_combine?int(std::fabs(v.activation[0])*64)%400:0;for(int k=0;k<10;++k){v.ids.push_back(base+k);v.weights.push_back(connected_combine?float((k+1)*(1+base%3))/128.f:.1f);}}};
   d.shared=[](size_t n,const ggml_tensor*){return std::vector<float>(n*2560,1.f);};d.combine=[&](size_t n,const auto& parts,const auto& weights,const auto&s){auto result=s;if(connected_combine)for(size_t r=0;r<n;++r)for(size_t k=0;k<10;++k)for(size_t h=0;h<2560;++h)result[r*2560+h]+=parts[(r*10+k)*2560+h]*weights[r*10+k];return result;};PortableNativeFfnRows row_owner(1,projection,d);
+#ifndef STRATA_MODEL_ROWS_FIXTURE
+  // Construct the actual selected FFN owner against a real PLE/GDN source;
+  // low-level scalar mocks do not execute and no device arithmetic is claimed.
+  {std::vector<float> n(10240,1.f);std::vector<uint8_t> i(40960/32*34),dn(3276800/32*34),up(dn.size());
+   std::vector<PortableTensorView> named{{"blk.1.hc_ffn_norm.weight",{10240},0,n.data(),n.size()*4},{"blk.1.hc_ffn_inject.weight",{10240,4},8,i.data(),i.size()},{"blk.1.hc_ffn_down.weight",{10240,320},8,dn.data(),dn.size()},{"blk.1.hc_ffn_up.weight",{320,10240},8,up.data(),up.size()}};
+   PortableHcReadSelection method{PortableHcReadMethod::baseline_prefill_bf16,512,512};auto path=(root/"selected-ffn").string();auto host=ple_host_add(PortableNativeFfnComposition::host_bound(),NativeFfnHcFactory::selected_host_bound(path.size(),method));auto device=NativeFfnHcFactory::selected_device_bound(b.get(),{},method);
+   bool refused=false;try{PortableNativeFfnComposition x(owner,b.get(),named,row_owner,device-1,host,path.c_str(),HC::ComponentCaps{},method);}catch(...){refused=true;}check(refused,"selected FFN short device cap");
+   PortableNativeFfnComposition selected(owner,b.get(),named,row_owner,device,host,path.c_str(),HC::ComponentCaps{},method);check(selected.hc_read_method()==PortableHcReadMethod::baseline_prefill_bf16,"selected FFN owner method");}
+#endif
   HC::Dispatch dispatch;dispatch.pending=[](const HC::Bank&bank){auto r=get(bank.input),o=get(bank.block);for(size_t t=0;t<o.size()/2560;++t)for(size_t s=0;s<4;++s)for(size_t h=0;h<2560;++h)r[t*10240+s*2560+h]+=o[t*2560+h];put(bank.residual,r);};
   dispatch.norm=[](const HC::Bank&bank,uint32_t n){put(bank.inject,std::vector<float>(n*4,.25f));};dispatch.mix=[](const HC::Bank&bank){auto r=get(bank.residual);std::vector<float>m(r.size()/4);for(size_t t=0;t<m.size()/2560;++t)std::copy_n(r.begin()+t*10240,2560,m.begin()+t*2560);put(bank.mixed,m);};
   auto ff=std::make_unique<HC>(b.get(),hc[0],hc[1],hc[2],hc[3],20*1024*1024,nullptr,dispatch);auto chain=PortableNativeFfnCompositionTestAccess::make(owner,std::move(ff),row_owner,PortableNativeFfnComposition::host_bound());HC next(b.get(),hc[0],hc[1],hc[2],hc[3],20*1024*1024,nullptr,dispatch);
@@ -216,6 +239,17 @@ int main(){try{
    auto f0=NativeFfnHcFactory::create(0,b.get(),named_hc(false),64u<<20,SIZE_MAX,nullptr,dispatch);
    std::vector<uint8_t> embeddings(16*80*34);for(size_t t=0;t<16;++t)for(size_t block=0;block<80;++block){auto* p=embeddings.data()+(t*80+block)*34;p[0]=0;p[1]=0x3c;std::fill_n(p+2,32,uint8_t(t+1));}
    PortableTensorView embedding{"token_embd.weight",{2560,16},8,embeddings.data(),embeddings.size()};
+#ifndef STRATA_MODEL_ROWS_FIXTURE
+   // Selected layer-zero materialized entry with real product graphs and
+   // mocked scalar/pending device components; this is not device arithmetic.
+   {PortableHcReadSelection method{PortableHcReadMethod::baseline_prefill_bf16,512,512};auto path=(root/"selected-entry").string();auto h=NativeFfnHcFactory::selected_host_bound(path.size(),method);auto dcap=NativeFfnHcFactory::selected_device_bound(b.get(),{},method);
+    auto ah=NativeFfnHcFactory::create_selected(0,b.get(),named_hc(true),dcap,h,path.c_str(),{},method,true);auto fh=NativeFfnHcFactory::create_selected(0,b.get(),named_hc(false),dcap,h,path.c_str(),{},method);
+    PortableNativeGdnInputRows si(b.get(),{qi,zi},{qr.data(),zr.data()},{qr.size(),zr.size()},(root/"selected-entry-in").string(),PortableNativeGdnInputRows::estimate(b.get()));
+    auto sc=std::make_unique<PortableNativeGdnCoreRows>(b.get(),gr,caps,PortableNativeGdnCoreRows::estimate(b.get(),caps),(root/"selected-entry-core").string());PortableNativeGdnOutputRows so(b.get(),wo,wr.data(),wr.size(),(root/"selected-entry-out").string(),PortableNativeGdnOutputRows::estimate(b.get()));PortableNativeFfnRows sr(0,projection,d);
+    PortableNativeLayer0Composition layer(embedding,std::move(ah),si,std::move(sc),so,std::move(fh),sr,b.get(),8u<<20,PortableNativeLayer0Composition::host_bound(),(root/"selected-entry-write").string().c_str());
+    check(layer.attention_hc_read_method()==method.method&&layer.ffn_hc_read_method()==method.method,"selected entry methods");PortableExpertRowsBatch provider=[](int64_t,const auto&r,auto&v,auto&){v.assign(r.size()*10*2560,0.f);return true;};
+    selected_layer0_pending=true;auto issued=layer.run(0,{1,2},provider);selected_layer0_pending=false;check(issued->live()&&issued->tokens()==std::vector<int32_t>({1,2}),"selected entry T2 publication");layer.reset();check(!issued->live(),"selected entry reset");}
+#endif
    PortableNativeGdnInputRows in0(b.get(),{qi,zi},{qr.data(),zr.data()},{qr.size(),zr.size()},(root/"layer0-in").string(),PortableNativeGdnInputRows::estimate(b.get()));
    auto core0=std::make_unique<PortableNativeGdnCoreRows>(b.get(),gr,caps,PortableNativeGdnCoreRows::estimate(b.get(),caps),(root/"layer0-core").string());
    PortableNativeGdnOutputRows out0(b.get(),wo,wr.data(),wr.size(),(root/"layer0-out").string(),PortableNativeGdnOutputRows::estimate(b.get()));

@@ -19,8 +19,14 @@ static_assert(std::is_constructible_v<PortableNativeLayer0Owner,std::shared_ptr<
 static_assert(std::is_constructible_v<PortableNativePle1Owner,std::shared_ptr<const strata::GgufModel>,std::shared_ptr<PortablePleTable>,ggml_backend_t,const std::string&,const PortableNativePle1Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod>);
 static_assert(std::is_constructible_v<PortableNativeOrdinaryLayerOwner,int,ggml_backend_t,const strata::GgufModel&,const std::string&,const PortableNativeOrdinaryLayerOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod>);
 static_assert(std::is_constructible_v<PortableNativeModelOwner,std::shared_ptr<const strata::GgufModel>,std::shared_ptr<PortablePleTable>,ggml_backend_t,uint32_t,const std::string&,const PortableNativeModelOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod>);
-using ModelFrom=std::unique_ptr<PortableNativeModelOwner>(*)(std::shared_ptr<const strata::GgufModel>,ggml_backend_t,uint32_t,const std::string&,const PortableNativeModelOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod);
-using PleFrom=std::unique_ptr<PortableNativePle1Owner>(*)(std::shared_ptr<const strata::GgufModel>,ggml_backend_t,const std::string&,const PortableNativePle1Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod);
+// Constructibility only: no selected 48-owner allocation is performed here.
+static_assert(std::is_constructible_v<PortableNativeLayer0Owner,std::shared_ptr<const strata::GgufModel>,ggml_backend_t,const std::string&,const PortableNativeLayer0Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod,PortableHcReadSelection>);
+static_assert(std::is_constructible_v<PortableNativePle1Owner,std::shared_ptr<const strata::GgufModel>,std::shared_ptr<PortablePleTable>,ggml_backend_t,const std::string&,const PortableNativePle1Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod,PortableHcReadSelection>);
+static_assert(std::is_constructible_v<PortableNativeOrdinaryLayerOwner,int,ggml_backend_t,const strata::GgufModel&,const std::string&,const PortableNativeOrdinaryLayerOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod,PortableHcReadSelection>);
+static_assert(std::is_constructible_v<PortableNativeQsaLayerOwner,int,uint32_t,ggml_backend_t,const strata::GgufModel&,const std::string&,const PortableNativeQsaLayerOwner::Budgets&,PortableRouterMethod,PortableHcReadSelection>);
+static_assert(std::is_constructible_v<PortableNativeModelOwner,std::shared_ptr<const strata::GgufModel>,std::shared_ptr<PortablePleTable>,ggml_backend_t,uint32_t,const std::string&,const PortableNativeModelOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod,PortableHcReadSelection>);
+using ModelFrom=std::unique_ptr<PortableNativeModelOwner>(*)(std::shared_ptr<const strata::GgufModel>,ggml_backend_t,uint32_t,const std::string&,const PortableNativeModelOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod,PortableHcReadSelection);
+using PleFrom=std::unique_ptr<PortableNativePle1Owner>(*)(std::shared_ptr<const strata::GgufModel>,ggml_backend_t,const std::string&,const PortableNativePle1Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod,PortableHcReadSelection);
 static_assert(std::is_same_v<decltype(&PortableNativeModelOwner::from_model),ModelFrom>);
 static_assert(std::is_same_v<decltype(&PortableNativePle1Owner::from_model),PleFrom>);
 namespace {
@@ -37,6 +43,11 @@ void write_family_gguf(const std::filesystem::path& path,const std::vector<Porta
 }
 }
 namespace strata::core::portable_detail {
+struct StrataVkNativeHcPrefill {};
+StrataVkNativeHcPrefill* strata_vk_native_hc_prefill_create(ggml_backend_t,const char*,size_t){throw std::runtime_error("prefill scalar not provided by model fixture");}
+size_t strata_vk_native_hc_prefill_bytes(const StrataVkNativeHcPrefill*){return 0;}
+void strata_vk_native_hc_prefill_destroy(StrataVkNativeHcPrefill*p) noexcept{delete p;}
+void strata_vk_native_hc_prefill_run(StrataVkNativeHcPrefill*,uint32_t,uint32_t,const std::array<ggml_tensor*,6>&){throw std::runtime_error("prefill scalar not provided by model fixture");}
 struct StrataVkNativeRouter{};struct StrataVkNativeMoeCombine{};static int ffn_router_live=0,ffn_combine_live=0,ffn_fail_combine=0;
 static std::vector<float> expected_bf_logits,expected_bf_inputs;static size_t bf_router_calls=0,bf_shared_calls=0;
 StrataVkNativeRouter* strata_vk_native_router_create(ggml_backend_t,const char*p){std::ofstream(p)<<"mock";++ffn_router_live;return new StrataVkNativeRouter;}
