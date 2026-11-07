@@ -1,16 +1,31 @@
 // QSA low-level CPU component mocks adapted from portable_native_hc_test_backend.hpp.
 #include "../kernels/native_qsa_norm_rope_fixture.hpp"
 #include "strata_vk_native_qsa_norm_rope.hpp"
-namespace { bool fail_qsa_norm=false;size_t qsa_norm_calls=0;std::vector<float>qsa_last_raw; }
+namespace { bool fail_qsa_norm=false;size_t qsa_norm_calls=0;std::vector<float>qsa_last_raw;
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+bool owned_fail_indexer_create=false;size_t owned_norm_live=0;
+#endif
+}
 namespace strata::core::portable_detail {
 struct StrataVkNativeQsaNormRope{uint64_t calls=0;};
-StrataVkNativeQsaNormRope* strata_vk_native_qsa_norm_rope_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"QSA component metadata budget");std::ofstream(path)<<"mock, not shader evidence\n";return new StrataVkNativeQsaNormRope;}
-void strata_vk_native_qsa_norm_rope_destroy(StrataVkNativeQsaNormRope*p)noexcept{delete p;}
+StrataVkNativeQsaNormRope* strata_vk_native_qsa_norm_rope_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"QSA component metadata budget");std::ofstream(path)<<"mock, not shader evidence\n";
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ ++owned_norm_live;
+#endif
+ return new StrataVkNativeQsaNormRope;}
+void strata_vk_native_qsa_norm_rope_destroy(StrataVkNativeQsaNormRope*p)noexcept{
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(p)--owned_norm_live;
+#endif
+ delete p;}
 size_t strata_vk_native_qsa_norm_rope_bytes(const StrataVkNativeQsaNormRope*){return 512;}
 uint64_t strata_vk_native_qsa_norm_rope_calls(const StrataVkNativeQsaNormRope*p)noexcept{return p?p->calls:0;}
 uint32_t strata_vk_native_qsa_norm_rope_run(StrataVkNativeQsaNormRope*p,ggml_tensor*const t[6],uint32_t cols,uint32_t rows,uint32_t stride,uint32_t theta){
  check(t[0]->flags&GGML_TENSOR_FLAG_OUTPUT,"actual QSA projection lifetime missing OUTPUT");
  native_qsa_nr::Fixture f;f.cols=cols;f.rows=rows;f.stride=stride;f.theta=theta;f.x=get(t[0]);f.gamma=get(t[1]);f.pos.resize(rows);ggml_backend_tensor_get(t[2],f.pos.data(),0,rows*4);native_qsa_nr::validate(f);qsa_last_raw=f.x;
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(f.gamma[0]==1.25f){check(cols==128&&rows==4,"owned QSA query norm binding");++owned_qnorm_seen;}
+#endif
  ++p->calls;++qsa_norm_calls;if(fail_qsa_norm)return 1;
  // Independent host primitive provider, not Vulkan/CUDA numerical evidence.
  std::vector<float>d(rows*130);
@@ -24,13 +39,21 @@ uint32_t strata_vk_native_qsa_norm_rope_run(StrataVkNativeQsaNormRope*p,ggml_ten
 namespace {bool fail_qsa_indexer=false;std::vector<uint32_t>last_indexer_candidate;bool observe_qsa_rows=false;size_t qsa_row_bf_calls=0,qsa_row_idx_calls=0,qsa_row_score_calls=0,qsa_row_select_calls=0,qsa_row_attn_calls=0;std::string qsa_rows_fail;int64_t qsa_rows_fail_position=-1;std::vector<uint32_t>qsa_row_candidate_3,qsa_row_before_4;}
 namespace strata::core::portable_detail {
 struct StrataVkNativeQsaIndexer{uint64_t calls=0;};
-StrataVkNativeQsaIndexer* strata_vk_native_qsa_indexer_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"QSA indexer metadata budget");std::ofstream(path)<<"mock, not GPU proof\n";return new StrataVkNativeQsaIndexer;}
+StrataVkNativeQsaIndexer* strata_vk_native_qsa_indexer_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"QSA indexer metadata budget");std::ofstream(path)<<"mock, not GPU proof\n";
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(owned_fail_indexer_create)throw std::runtime_error("injected QSA indexer factory");
+#endif
+ return new StrataVkNativeQsaIndexer;}
 void strata_vk_native_qsa_indexer_destroy(StrataVkNativeQsaIndexer*p)noexcept{delete p;}
 size_t strata_vk_native_qsa_indexer_bytes(const StrataVkNativeQsaIndexer*){return 512;}
 uint64_t strata_vk_native_qsa_indexer_calls(const StrataVkNativeQsaIndexer*p)noexcept{return p?p->calls:0;}
 uint32_t strata_vk_native_qsa_indexer_run(StrataVkNativeQsaIndexer*p,ggml_tensor*const t[5],uint32_t cells,int32_t pos,int32_t base,uint32_t theta){
  if(observe_qsa_rows)++qsa_row_idx_calls;check(t[0]->flags&GGML_TENSOR_FLAG_OUTPUT,"actual raw indexer projection lifetime missing OUTPUT");
- native_qsa_idx::Fixture f;f.cells=cells;f.base=base;f.first=pos;f.steps=1;f.theta=theta;f.raw=get(t[0]);f.gamma=get(t[1]);f.before.resize(qsa_idx_words(cells));ggml_backend_tensor_get(t[2],f.before.data(),0,f.before.size()*4);native_qsa_idx::validate(f);++p->calls;if(fail_qsa_indexer)return 1;
+ native_qsa_idx::Fixture f;f.cells=cells;f.base=base;f.first=pos;f.steps=1;f.theta=theta;f.raw=get(t[0]);f.gamma=get(t[1]);f.before.resize(qsa_idx_words(cells));ggml_backend_tensor_get(t[2],f.before.data(),0,f.before.size()*4);native_qsa_idx::validate(f);
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(f.gamma[0]==.75f)++owned_knorm_seen;
+#endif
+ ++p->calls;if(fail_qsa_indexer)return 1;
 
  std::vector<float>d(386);native_qsa_nr::Fixture n;n.cols=128;n.rows=1;n.stride=128;n.gamma=f.gamma;n.x.resize(128);n.pos={pos==0?0:base+4*(pos/4)};
  for(size_t i=0;i<128;++i){d[i]=native_qsa_idx::rounded(f.raw[i]);float sum=pos==0?d[i]:native_qsa_idx::value(f.before[i]);for(int j=1;j<4;++j)sum=sum+(pos==0||j==3?d[i]:native_qsa_idx::value(f.before[j*128+i]));n.x[i]=std::fma(.25f,sum,0.f);if(pos==0||pos%4==3)d[128+i]=n.x[i];}

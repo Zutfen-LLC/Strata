@@ -36,11 +36,15 @@ void strata_vk_qsa_input_quantize_bounded(StrataVkNativeStages*,const ggml_tenso
  for(size_t r=0;r<rows;++r)model_qsa_saturated|=std::fabs(std::tanh(chain_qsa_input[r*2560]/1024.f))==1.f;
 #endif
  std::vector<uint8_t> packed(rows*2880);ggml_backend_tensor_set(q,packed.data(),0,packed.size());}
-void strata_vk_qsa_qkv_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t n,size_t rows){
+void strata_vk_qsa_qkv_run_bounded(StrataVkQ8Wo*,const ggml_tensor*weight,const ggml_tensor*,ggml_tensor*y,size_t n,size_t rows){
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  if(rows==2)++model_qsa_t2;
 #endif
- size_t role=chain_qsa_qkv++%3;std::vector<float> v(rows*n);for(size_t r=0;r<rows;++r)for(size_t i=0;i<n;++i)v[r*n+i]=
+ size_t role=chain_qsa_qkv++%3;
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ uint8_t marker[3]{};ggml_backend_tensor_get(weight,marker,0,3);if(marker[1]){check(marker[1]==0x3c&&marker[2]==41+role,"owned QSA QKV role");++owned_qkv_seen;}
+#endif
+ std::vector<float> v(rows*n);for(size_t r=0;r<rows;++r)for(size_t i=0;i<n;++i)v[r*n+i]=
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  std::tanh(chain_qsa_input[r*2560]/1024.f)*.125f
 #else
@@ -48,7 +52,11 @@ void strata_vk_qsa_qkv_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_t
 #endif
  +float(int((i+role*3)%17)-8)/32.f;put(y,v);}
 void strata_vk_qsa_wo_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t rows){chain_qsa_gated=get(x);std::vector<uint8_t> packed(rows*6912);ggml_backend_tensor_set(q,packed.data(),0,packed.size());}
-void strata_vk_qsa_wo_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t rows){std::vector<float> v(rows*2560);for(size_t r=0;r<rows;++r)std::copy_n(chain_qsa_gated.begin()+r*6144,2560,v.begin()+r*2560);put(y,v);}
+void strata_vk_qsa_wo_run_bounded(StrataVkQ8Wo*,const ggml_tensor*weight,const ggml_tensor*,ggml_tensor*y,size_t rows){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ uint8_t marker[3]{};ggml_backend_tensor_get(weight,marker,0,3);if(marker[1]){check(marker[1]==0x3c&&marker[2]==44,"owned QSA output role");++owned_wo_seen;}
+#endif
+ std::vector<float> v(rows*2560);for(size_t r=0;r<rows;++r)std::copy_n(chain_qsa_gated.begin()+r*6144,2560,v.begin()+r*2560);put(y,v);}
 struct StrataVkNativeGdnConvRows{};struct StrataVkNativeGdnAbRows{};struct StrataVkNativeGdnRows{};
 StrataVkNativeGdnConvRows* strata_vk_native_gdn_conv_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";if(fail==1)throw std::runtime_error("conv factory");
 #ifdef STRATA_MODEL_ROWS_FIXTURE

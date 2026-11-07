@@ -5,6 +5,9 @@ static ggml_status gated_test_compute(ggml_backend_t backend, ggml_cgraph* graph
     if (fail_gated_compute) { ++gated_failures; return GGML_STATUS_FAILED; }
     return ggml_backend_graph_compute(backend, graph);
 }
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+static size_t owned_qnorm_seen=0,owned_knorm_seen=0,owned_qproj_seen=0,owned_kproj_seen=0,owned_qkv_seen=0,owned_wo_seen=0;
+#endif
 #define STRATA_PLE_GATED_VALUE_TEST_COMPUTE gated_test_compute
 #include "portable_native_ple_executor.hpp"
 #undef STRATA_PLE_GATED_VALUE_TEST_COMPUTE
@@ -140,7 +143,11 @@ void strata_vk_native_shared_run(StrataVkNativeShared*,uint32_t mode,const ggml_
  if(mode==2){fill_hc(out,.001f);return;}
 #endif
 #ifdef STRATA_CHAIN_QSA_MOCKS
- if(no==128||no==512){check(mode==1&&ni==2560&&(t==1||t==2),"QSA indexer rows");std::vector<float> input(t*ni);ggml_backend_tensor_get(x,input.data(),0,input.size()*4);std::vector<uint16_t> weights(size_t(no)*ni);ggml_backend_tensor_get(weight_for_value,weights.data(),0,weights.size()*2);std::vector<float> result;for(size_t r=0;r<t;++r){auto row=qsa_indexer_bf16_control(input.data()+r*ni,weights.data(),no);result.insert(result.end(),row.begin(),row.end());}ggml_backend_tensor_set(out,result.data(),0,result.size()*4);return;}
+ if(no==128||no==512){check(mode==1&&ni==2560&&(t==1||t==2),"QSA indexer rows");std::vector<float> input(t*ni);ggml_backend_tensor_get(x,input.data(),0,input.size()*4);std::vector<uint16_t> weights(size_t(no)*ni);ggml_backend_tensor_get(weight_for_value,weights.data(),0,weights.size()*2);
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(weights[0]==0x3c00){check(no==128,"owned QSA K projection");++owned_kproj_seen;}if(weights[0]==0x3c80){check(no==512,"owned QSA Q projection");++owned_qproj_seen;}
+#endif
+ std::vector<float> result;for(size_t r=0;r<t;++r){auto row=qsa_indexer_bf16_control(input.data()+r*ni,weights.data(),no);result.insert(result.end(),row.begin(),row.end());}ggml_backend_tensor_set(out,result.data(),0,result.size()*4);return;}
 #endif
  inject("value");check(mode==1&&ni==2560&&no==2560&&(t==1||t==2),"value rows");std::vector<float>a(t*ni);ggml_backend_tensor_get(x,a.data(),0,a.size()*4);check(a==expected_embedding,"value gather");std::vector<uint16_t>w(size_t(ni)*no);ggml_backend_tensor_get(weight_for_value,w.data(),0,w.size()*2);std::vector<float>v;for(size_t r=0;r<t;++r){auto row=native_bf16_matrix_control(a.data()+r*ni,w.data(),ni);v.insert(v.end(),row.begin(),row.end());}ggml_backend_tensor_set(out,v.data(),0,v.size()*4);++value;}
 struct StrataVkNativePleGroupedNorm{size_t bytes;uint64_t calls=0;};

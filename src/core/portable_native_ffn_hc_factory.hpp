@@ -32,7 +32,8 @@ public:
         need(views.size()==4,"FFN HC factory: role count");std::array<const PortableTensorView*,4> selected{};
         for(const auto& view:views){auto it=std::find(names.begin(),names.end(),view.name);need(it!=names.end(),"FFN HC factory: unexpected name/layer");size_t i=size_t(it-names.begin());
             need(!selected[i]&&view.data&&view.shape==shapes[i]&&view.type==(i?8u:0u)&&view.bytes==(i?elements[i]/32*34:elements[i]*4),"FFN HC factory: role descriptor");selected[i]=&view;}
-        for(auto* v:selected)need(v,"FFN HC factory: missing role");return selected;
+        for(auto* v:selected)need(v,"FFN HC factory: missing role");
+        return selected;
     }
     static std::unique_ptr<PortableNativeHcComposed> create(int layer,ggml_backend_t backend,
         const std::vector<PortableTensorView>& views,size_t device_budget,size_t host_budget,
@@ -41,9 +42,9 @@ public:
         bool terminal_ffn=false, bool ordinary_attention=false){
         // Terminal materialization is a distinct role, not an ordinary
         // deferred-FFN boundary. Callers must opt in explicitly for layer 47.
-        need(layer>=0&&((layer<47&&!terminal_ffn)||(layer==47&&terminal_ffn))&&
+        need(layer>=0&&((layer<47&&!terminal_ffn)||(layer==47&&(terminal_ffn||ordinary_attention)))&&
              (!layer0_attention||(layer==0&&!terminal_ffn))&&
-             (!ordinary_attention||(layer>=2&&layer<47&&!terminal_ffn&&!layer0_attention))&&backend&&views.size()==4,"FFN HC factory: layer/backend/role count");
+             (!ordinary_attention||(layer>=2&&layer<48&&!terminal_ffn&&!layer0_attention))&&backend&&views.size()==4,"FFN HC factory: layer/backend/role count");
         const bool injected=bool(test_dispatch.pending)||bool(test_dispatch.norm)||bool(test_dispatch.mix);
         if(!injected)native_hc_environment();
         need(injected||(prefix&&*prefix),"FFN HC factory: receipt prefix");
