@@ -54,6 +54,7 @@ static size_t terminal_fail_head_at=SIZE_MAX,terminal_head_attempts=0;
 #endif
 #ifdef STRATA_MODEL_ROWS_FIXTURE
 static std::array<std::vector<unsigned char>,4> model_ple_hc_roles;
+static bool model_capture_hc=false;static std::vector<float> model_captured_hc;
 #endif
 static void verify_hc_role(const ggml_tensor* t,size_t i){std::vector<unsigned char> v(ggml_nbytes(t));ggml_backend_tensor_get(t,v.data(),0,v.size());
 #ifdef STRATA_MODEL_ROWS_FIXTURE
@@ -112,6 +113,9 @@ StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char*,s
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*){return 331;}
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix*p)noexcept{factory_destroy(p);delete p;}
 void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*x,const ggml_tensor*d,const ggml_tensor*u,ggml_tensor*lp,ggml_tensor*low,ggml_tensor*le,ggml_tensor*up,ggml_tensor*g,ggml_tensor*ue,ggml_tensor*mixed){++hc_runs[2];write_then_throw("hc mix written",{lp,low,le,up,g,ue,mixed},201.f);inject("hc mix");verify_hc_role(d,2);verify_hc_role(u,3);size_t n=ggml_nelements(mixed)/2560;check(n==1||n==2,"HC mix rows supported");std::vector<float> v(n*10240,-1234.f),o(n*2560,-1234.f);ggml_backend_tensor_get(x,v.data(),0,v.size()*4);for(size_t r=0;r<n;++r)for(size_t i=0;i<2560;++i)o[r*2560+i]=v[r*10240+i]+20;for(auto*t:{lp,low,le,up,g,ue})fill_hc(t,4);ggml_backend_tensor_set(mixed,o.data(),0,o.size()*4);
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(model_capture_hc)model_captured_hc=o;
+#endif
 #ifdef STRATA_TERMINAL_FIXTURE
  terminal_mixed_bank=mixed;
 #endif

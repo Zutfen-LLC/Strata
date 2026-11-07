@@ -21,10 +21,10 @@ public:
         PortableNativeFfnOwner::Budgets rows;
     };
     PortableNativeOrdinaryLayerOwner(int layer,ggml_backend_t backend,const GgufModel& model,
-        const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32) {
+        const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1) {
         if(!backend||prefix.empty())throw std::runtime_error("ordinary layer owner: layer/backend");
         auto roles=PortableNativeOrdinaryGdnOwner::from_gguf(model,layer);
-        PortableNativeOrdinaryGdnOwner::validate(layer,roles);
+        PortableNativeOrdinaryGdnOwner::validate(layer,roles,gdn_method);
         auto row_roles=PortableNativeFfnOwner::from_gguf(model,layer);PortableNativeFfnOwner::validate(layer,row_roles,method);
         auto hc=NativeFfnHcFactory::from_gguf(model,layer);
         NativeFfnHcFactory::select(layer,hc,false);
@@ -34,12 +34,14 @@ public:
            NativeFfnHcFactory::device_bound(backend,b.ffn_caps)>b.ffn_device)
             throw std::runtime_error("ordinary layer owner: aggregate budget");
         rows_=std::make_unique<PortableNativeFfnOwner>(layer,backend,row_roles,prefix+".rows",b.rows,method);
-        gdn_=std::make_unique<PortableNativeOrdinaryGdnOwner>(layer,backend,roles,prefix+".gdn",b.gdn);
+        gdn_=std::make_unique<PortableNativeOrdinaryGdnOwner>(layer,backend,roles,prefix+".gdn",b.gdn,gdn_method);
         ffn_=std::make_unique<PortableNativeFfnComposition>(gdn_->composition(),backend,hc,rows_->rows(),b.ffn_device,ffn_host,path.c_str(),b.ffn_caps);
     }
     PortableNativeOrdinaryLayerOwner(const PortableNativeOrdinaryLayerOwner&)=delete;
     PortableNativeOrdinaryLayerOwner& operator=(const PortableNativeOrdinaryLayerOwner&)=delete;
     PortableRouterMethod router_method()const{return rows_->router_method();}
+    PortableGdnProjectionMethod gdn_input_method()const{return gdn_->input_method();}
+    PortableGdnProjectionMethod gdn_output_method()const{return gdn_->output_method();}
     PortableNativeOrdinaryGdnComposition& attention(){return gdn_->composition();}
     PortableNativeFfnComposition& ffn(){return *ffn_;}
 };

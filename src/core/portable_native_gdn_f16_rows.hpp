@@ -43,6 +43,12 @@ class PortableNativeGdnF16Rows {
   }
  }
 public:
+ static constexpr size_t host_bound(){return metadata+scratch;}
+ // Validate the native conversion domain before uploading large source roles.
+ static void validate_role(const void* role,size_t bytes){
+  need(role&&bytes%34==0,"GDN F16: role span");std::array<uint16_t,32*256> out{};auto*p=static_cast<const uint8_t*>(role);size_t blocks=bytes/34;
+  for(size_t at=0;at<blocks;at+=256){size_t count=std::min(size_t(256),blocks-at);decode(p+at*34,count,out.data());}
+ }
  // Includes logical source-role bytes, resident raw backend buffers, decoded
  // tensors, graph metadata and bounded host scratch. Backend-private workspace,
  // driver/allocator overhead and caller-owned activation storage are excluded.

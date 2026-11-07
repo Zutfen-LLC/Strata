@@ -88,6 +88,30 @@ backend validation remain open. The Q8_1/F32 row convention does not establish
 native-prefill FP16/BF16 GEMM equivalence, router or expert-reduction parity,
 full-model numerical parity, quality or throughput.
 
+## Internal GDN FP16 projection method
+
+The internal GDN owners can select an FP16-operand method for QKV, gate and
+output projections. It decodes Q8_0 signed codes and half scales to RN-FP16
+weights, and separately rounds the projection activation to FP16 before
+widening it to the F32 right-hand operand. Each T2 projection uses a two-column
+GGML operation; T1 has a separate output. The original HC F32 mixed input still
+feeds the GDN core, and the output projection reads the recurrence result.
+The Q8_1 method remains the default. This selection does not admit public native
+prompt chunks.
+
+CPU tests execute the selected graphs at the native shapes and exercise one
+mapped, named layer through its owning composition, with mocked HC, convolution,
+alpha/beta and recurrence stages. The mixed input reaching the core and the
+projection consumers are checked separately. The selected method has not been
+run on a physical GPU or compared against native vendor reductions. Its
+conservative requested budgets count source and uploaded raw roles, decoded
+weights, graph tensors, metadata and bounded conversion/readback envelopes;
+shared buffers and host allowances can be counted more than once. They are not
+physical residency limits and exclude backend-private workspace, driver and
+allocator overhead. Alpha/beta still needs the native separate BF16 products and
+gate epilogue; HC producer, recurrence and gating methods also remain to be
+qualified. No full-model numerical parity or performance claim follows.
+
 ## Bounded BF16 router operand method
 
 An internal FFN owner can opt into a K2560, N512, T1/T2 router projection
