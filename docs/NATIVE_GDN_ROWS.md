@@ -1,6 +1,6 @@
 # Standalone native GDN rows
 
-The standalone `PortableNativePleGdnComposition` connects materialized PLE rows to HC and native GDN for one or two consecutive tokens. It does not enable model-level native chunks. Experts and QSA are outside this path.
+The standalone `PortableNativePleGdnComposition` connects materialized PLE rows to HC and native GDN for one or two consecutive tokens. Separate FFN, ordinary GDN and QSA owners can pass issued post-FFN snapshots between layers. This does not enable model-level native chunks.
 
 The caller constructs the existing PLE composition and the bounded GDN input, core and output owners. The composition borrows the PLE and projection owners and takes ownership of the core owner. The backend, role tensors and their storage must outlive all of them. Do not use the borrowed owners independently while they are attached. The path is single-threaded and does not permit reentrant state changes during consumption.
 
@@ -8,4 +8,6 @@ GDN stages candidate history and state in separate banks. The synchronous consum
 
 The component budgets and `host_bound` functions describe the listed owned tensor and host payloads. They are not process-memory limits. The caller must also account for borrowed role buffers, caller-held copies, allocator overhead and opaque backend and driver allocations. The existing PLE factory, paths and diagnostic proof limits still apply.
 
-This uses the established serial native Q8_1/F32 projection and recurrence method with causal rows. It is not a claim of numerical equivalence to native prefill's FP16/BF16 GEMM input conventions. CPU mocks and shader validation do not establish GPU correctness. No throughput or model-level prefill claim follows from this standalone path.
+A CPU component-mock test connects layer 1 PLE/GDN/FFN, layer 2 ordinary GDN/FFN, layer 3 QSA/FFN and layer 4 ordinary GDN. It compares two rows plus a tail against three serial rows, including routes and recurrent and indexer state. It also checks selected FFN-anchored QSA seed, lifetime and failure cases. A downstream failure can leave earlier layers committed, so recovery requires a coordinated reset and replay. Layer 0, the output head and model integration are not covered by this chain test.
+
+This uses the established serial native Q8_1/F32 projection and recurrence method with causal rows. It is not a claim of numerical equivalence to native prefill's FP16/BF16 GEMM input conventions. Router and expert reduction order can also differ, including native remote-helper partial reductions versus portable K10 combination. CPU mocks and shader validation do not establish GPU correctness or full-model parity. No throughput or model-level prefill claim follows from this standalone path.
