@@ -170,6 +170,13 @@ function(strata_enable_native_stages)
       DEPENDS src/kernels/vulkan/native_q8_wo.comp cmake/strata_native_stages_embed.cmake VERBATIM)
     add_custom_target(strata_q8_wo_shader DEPENDS "${out}/strata_q8_wo_spv.hpp")
     add_dependencies(ggml-vulkan strata_q8_wo_shader)
+    add_custom_command(OUTPUT "${out}/strata_gdn_output_rows_spv.hpp"
+      COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_gdn_output_rows.comp" -o "${out}/native_gdn_output_rows.spv"
+      COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_gdn_output_rows.spv"
+      COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_gdn_output_rows.spv" "-DOUTPUT=${out}/strata_gdn_output_rows_spv.hpp" "-DARRAY_NAME=strata_gdn_output_rows_spv" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+      DEPENDS src/kernels/vulkan/native_gdn_output_rows.comp cmake/strata_native_stages_embed.cmake VERBATIM)
+    add_custom_target(strata_gdn_output_rows_shader DEPENDS "${out}/strata_gdn_output_rows_spv.hpp")
+    add_dependencies(ggml-vulkan strata_gdn_output_rows_shader)
     add_custom_command(OUTPUT "${out}/strata_qsa_qkv_spv.hpp"
       COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_qsa_qkv_t1.comp" -o "${out}/native_qsa_qkv_t1.spv"
       COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_qsa_qkv_t1.spv"

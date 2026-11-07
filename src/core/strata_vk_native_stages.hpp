@@ -21,6 +21,12 @@ StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_
 // Quantize one or two complete H2560 rows in one dispatch, packed row-major.
 void strata_vk_ple_key_quantize_bounded(StrataVkNativeStages*, const ggml_tensor* input,
                                          ggml_tensor* packed, size_t tokens);
+// GDN QKV/z share this one packed H2560 row bank.
+void strata_vk_gdn_input_quantize_bounded(StrataVkNativeStages*, const ggml_tensor* input,
+                                         ggml_tensor* packed, size_t tokens);
+// GDN output consumes complete H6144 rows and emits 192 Q8_1 blocks per row.
+void strata_vk_gdn_output_quantize_bounded(StrataVkNativeStages*, const ggml_tensor* input,
+                                          ggml_tensor* packed, size_t tokens);
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages*);
 uint64_t strata_vk_native_stages_quant_submitted(const StrataVkNativeStages*) noexcept;
 uint64_t strata_vk_native_stages_quant_completed(const StrataVkNativeStages*) noexcept;

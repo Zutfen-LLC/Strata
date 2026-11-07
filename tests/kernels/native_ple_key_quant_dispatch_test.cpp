@@ -43,6 +43,16 @@ int main() { try {
  auto* old=y->data; y->data=x->data; rejects([&]{run(2);}); y->data=reinterpret_cast<void*>(0x100ffc); rejects([&]{run(2);}); y->data=old;
  vk.device->properties.limits.maxComputeWorkGroupCount[1]=1; rejects([&]{run(2);}); vk.device->properties.limits.maxComputeWorkGroupCount[1]=65535;
  ggml_backend_vk_buffer_context foreign; foreign.device=std::make_shared<MockDevice>(); ggml_backend_buffer fb{}; fb.context=&foreign; fb.size=buffer.size; y->buffer=&fb; rejects([&]{run(2);}); y->buffer=&buffer;
- x->ne[0]/=2; y->ne[0]/=2; run(1); need(grid_seen==std::array<uint32_t,3>{80,1,1} && s.quant_submitted==2 && s.quant_completed==2);
- puts("PLE key quant wrapper mock dispatch passed"); return 0;
+ auto gdn=[&](size_t t){strata_vk_gdn_input_quantize_bounded(&s,x,y,t);};
+ gdn(2); need(grid_seen==std::array<uint32_t,3>{80,2,1});
+ rejects([&]{gdn(0);}); rejects([&]{gdn(3);});
+ old=y->data; y->data=x->data; rejects([&]{gdn(2);}); y->data=old;
+ x->ne[0]/=2; y->ne[0]/=2; run(1); need(grid_seen==std::array<uint32_t,3>{80,1,1} && s.quant_submitted==3 && s.quant_completed==3);
+ gdn(1); need(grid_seen==std::array<uint32_t,3>{80,1,1} && s.quant_completed==4);
+ auto* ox=tensor(GGML_TYPE_F32,2*6144,0x2010); auto* oq=tensor(GGML_TYPE_I32,2*6912/4,0x10018);
+ auto out=[&](size_t n){strata_vk_gdn_output_quantize_bounded(&s,ox,oq,n);};out(2);
+ need(grid_seen==std::array<uint32_t,3>{192,2,1} && params_seen[1]==6144 && params_seen[2]==6144);
+ rejects([&]{out(1);});rejects([&]{out(3);});auto saved=oq->data;oq->data=ox->data;rejects([&]{out(2);});oq->data=saved;
+ ox->ne[0]/=2;oq->ne[0]/=2;out(1);need(grid_seen==std::array<uint32_t,3>{192,1,1});
+ puts("PLE, GDN input and output quant wrapper mock dispatch passed"); return 0;
 } catch(const std::exception& e) { std::fprintf(stderr,"%s\n",e.what()); return 1; } }

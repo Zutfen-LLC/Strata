@@ -5,11 +5,12 @@
 #include "native_head_vocab_layout.hpp"
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
 #include "strata_q8_wo_spv.hpp"
+#include "strata_gdn_output_rows_spv.hpp"
 #include "strata_qsa_qkv_spv.hpp"
 #endif
 #include <limits>
 namespace strata::core::portable_detail {
-struct StrataVkQ8Wo {std::unique_ptr<StrataVkLogitsGuard> owner;size_t budget;bool qkv=false,gdn=false,vocab=false;uint64_t submitted=0,completed=0,submission_uncertain=0;};
+struct StrataVkQ8Wo {std::unique_ptr<StrataVkLogitsGuard> owner;size_t budget;bool qkv=false,gdn=false,vocab=false,gdn_output=false;uint64_t submitted=0,completed=0,submission_uncertain=0;};
 StrataVkQ8Wo* strata_vk_q8_wo_create(ggml_backend_t backend,const char* path,size_t budget) {
 #ifndef STRATA_NATIVE_Q8_STRICT_FMA
     (void)backend;(void)path;(void)budget;
@@ -40,19 +41,39 @@ StrataVkQ8Wo* strata_vk_head_vocab_create(ggml_backend_t backend,const char* pat
     auto* result=strata_vk_qsa_qkv_create(backend,path,budget);
     result->qkv=false;result->vocab=true;return result;
 }
+StrataVkQ8Wo* strata_vk_gdn_output_rows_create(ggml_backend_t backend,const char* path,size_t budget) {
+#ifndef STRATA_NATIVE_Q8_STRICT_FMA
+    (void)backend;(void)path;(void)budget;throw std::runtime_error("GDN output rows: strict FMA required");
+#else
+    auto result=std::make_unique<StrataVkQ8Wo>();result->budget=budget;result->gdn_output=true;
+    result->owner=strata_vk_q8_component_owner(backend,strata_gdn_output_rows_spv,sizeof(strata_gdn_output_rows_spv)/4,
+        NativeComponentAddressing::descriptor,"strata_native_gdn_output_rows",3,4,path,budget,1);
+    return result.release();
+#endif
+}
 size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo* p){return p?p->owner->bytes:0;}
 uint64_t strata_vk_q8_wo_submitted(const StrataVkQ8Wo* p) noexcept{return p?p->submitted:0;}
 uint64_t strata_vk_q8_wo_completed(const StrataVkQ8Wo* p) noexcept{return p?p->completed:0;}
 uint64_t strata_vk_q8_wo_submission_uncertain(const StrataVkQ8Wo* p) noexcept{return p?p->submission_uncertain:0;}
 void strata_vk_q8_wo_destroy(StrataVkQ8Wo* p) noexcept {delete p;}
+enum class Q8WoRows { serial, ple_key, gdn_input, gdn_output };
 static void q8_wo_run_impl(StrataVkQ8Wo* s,const ggml_tensor* weights,const ggml_tensor* packed,
-                           ggml_tensor* output,size_t rows,size_t tokens,bool ple) {
+                           ggml_tensor* output,size_t rows,size_t tokens,Q8WoRows mode) {
     logits_guard_need(s && weights && packed && output && s->owner,"Q8 WO: invalid call");
-    if(ple) {
+    if(mode==Q8WoRows::ple_key) {
         logits_guard_need(s->vocab && tokens>=1 && tokens<=2 && rows && rows<=head_vocab_slice_rows &&
             ggml_nbytes(weights)==rows*head_vocab_row_bytes &&
             ggml_nbytes(packed)==tokens*head_vocab_packed_bytes &&
             ggml_nbytes(output)==tokens*rows*sizeof(float),"native PLE key: unsupported Q8 span");
+    } else if(mode==Q8WoRows::gdn_input) {
+        logits_guard_need(s->gdn && tokens>=1 && tokens<=2 && (rows==10240 || rows==6144) &&
+            ggml_nbytes(weights)==rows*gdn_input_row_bytes &&
+            ggml_nbytes(packed)==tokens*gdn_input_packed_bytes &&
+            ggml_nbytes(output)==tokens*rows*sizeof(float),"native GDN input rows: unsupported Q8 span");
+    } else if(mode==Q8WoRows::gdn_output) {
+        logits_guard_need(s->gdn_output && tokens>=1 && tokens<=2 && rows==2560 &&
+            ggml_nbytes(weights)==size_t(2560)*6528 && ggml_nbytes(packed)==tokens*6912 &&
+            ggml_nbytes(output)==tokens*2560*sizeof(float),"native GDN output rows: unsupported Q8 span");
     } else if(s->vocab)head_vocab_require_layout(rows,ggml_nbytes(weights),ggml_nbytes(packed),ggml_nbytes(output));
     else if(s->gdn)gdn_input_require_layout(rows,ggml_nbytes(weights),ggml_nbytes(packed),ggml_nbytes(output));
     else if(s->qkv)qsa_qkv_require_layout(rows,ggml_nbytes(weights),ggml_nbytes(packed),ggml_nbytes(output));
@@ -68,12 +89,12 @@ static void q8_wo_run_impl(StrataVkQ8Wo* s,const ggml_tensor* weights,const ggml
         logits_guard_need(t->buffer && ggml_is_contiguous(t) && ggml_backend_buffer_is_vk(t->buffer),"Q8 WO: contiguous Vulkan tensors required");
         auto* buffer=static_cast<ggml_backend_vk_buffer_context*>(t->buffer->context);
         logits_guard_need(buffer->device.lock()==ctx->device,"Q8 WO: different device");
-        if(ple) {
+        if(mode!=Q8WoRows::serial) {
             const size_t offset=ggml_vk_tensor_buffer_offset(ctx,t), size=ggml_backend_buffer_get_size(t->buffer);
             logits_guard_need(offset<=size && ggml_nbytes(t)<=size-offset,"native PLE key: tensor outside buffer");
         }
         const uint32_t bias=get_misalign_bytes(ctx,t);logits_guard_need(bias%4==0,"Q8 WO: word alignment required");params[i+1]=bias/4;
-        if(s->vocab)logits_guard_need(uint64_t(ggml_nbytes(t))+bias<=ctx->device->properties.limits.maxStorageBufferRange,"native head vocabulary: descriptor range exceeds device limit");
+        if(s->vocab || mode==Q8WoRows::gdn_input || mode==Q8WoRows::gdn_output)logits_guard_need(uint64_t(ggml_nbytes(t))+bias<=ctx->device->properties.limits.maxStorageBufferRange,"native bounded Q8: descriptor range exceeds device limit");
         logits_guard_need(reinterpret_cast<uintptr_t>(t->data)<=std::numeric_limits<uintptr_t>::max()-ggml_nbytes(t),"Q8 WO: span overflow");
         bool duplicate=false;for(size_t j=0;j<nseen;++j)duplicate|=seen[j]==t->buffer;
         if(!duplicate){seen[nseen++]=t->buffer;const size_t n=ggml_backend_buffer_get_size(t->buffer);
@@ -92,9 +113,15 @@ static void q8_wo_run_impl(StrataVkQ8Wo* s,const ggml_tensor* weights,const ggml
     ++s->submitted;++s->completed;
 }
 void strata_vk_q8_wo_run(StrataVkQ8Wo* s,const ggml_tensor* w,const ggml_tensor* x,ggml_tensor* y,size_t rows) {
-    q8_wo_run_impl(s,w,x,y,rows,1,false);
+    q8_wo_run_impl(s,w,x,y,rows,1,Q8WoRows::serial);
 }
 void strata_vk_ple_key_run_bounded(StrataVkQ8Wo* s,const ggml_tensor* w,const ggml_tensor* x,ggml_tensor* y,size_t rows,size_t tokens) {
-    q8_wo_run_impl(s,w,x,y,rows,tokens,true);
+    q8_wo_run_impl(s,w,x,y,rows,tokens,Q8WoRows::ple_key);
+}
+void strata_vk_gdn_input_run_bounded(StrataVkQ8Wo* s,const ggml_tensor* w,const ggml_tensor* x,ggml_tensor* y,size_t rows,size_t tokens) {
+    q8_wo_run_impl(s,w,x,y,rows,tokens,Q8WoRows::gdn_input);
+}
+void strata_vk_gdn_output_run_bounded(StrataVkQ8Wo* s,const ggml_tensor* w,const ggml_tensor* x,ggml_tensor* y,size_t tokens) {
+    q8_wo_run_impl(s,w,x,y,2560,tokens,Q8WoRows::gdn_output);
 }
 }
