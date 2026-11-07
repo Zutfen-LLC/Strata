@@ -2,6 +2,7 @@
 #include "portable_native_hc_test_backend.hpp"
 #include "portable_qsa_fixture.hpp"
 #include "portable_native_qsa_indexer_bf16.hpp"
+#include "portable_native_qsa_indexer.hpp"
 namespace {
 bool inspect_qsa=false,inspect_native_selection=false;size_t qsa_consumers=0,selection_consumers=0;bool inspect_native_attention=false;size_t output_consumers=0;
 ggml_status qsa_compute(ggml_backend_t b,ggml_cgraph*g){
@@ -18,6 +19,26 @@ int main(){try{
  for(auto&v:qf.views){if(v.name=="blk.3.hc_attn_inject.weight")expected_weights=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,40960);if(v.name=="blk.3.hc_attn_down.weight")expected_down=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);if(v.name=="blk.3.hc_attn_up.weight")expected_up=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);}
  for(auto&v:qf.views){if(v.name=="blk.3.hc_ffn_inject.weight")expected_ffn_inject=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,40960);if(v.name=="blk.3.hc_ffn_down.weight")expected_ffn_down=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);if(v.name=="blk.3.hc_ffn_up.weight")expected_ffn_up=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,3276800);}
  std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>cpu(ggml_backend_cpu_init(),ggml_backend_free);original_compute=cpu->iface.graph_compute;cpu->iface.graph_compute=qsa_compute;
+ // Actual indexer owner, mocked low-level component: private row 1 must see
+ // row 0's candidate without changing the committed image.
+ {
+  using Indexer=strata::core::portable_detail::PortableNativeQsaIndexer;
+  std::unique_ptr<ggml_context,decltype(&ggml_free)> c(ggml_init({8192,nullptr,true}),ggml_free);
+  auto* raw=ggml_new_tensor_1d(c.get(),GGML_TYPE_F32,128);ggml_set_output(raw);
+  auto* gamma=ggml_new_tensor_1d(c.get(),GGML_TYPE_F32,128);
+  std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)> b(ggml_backend_alloc_ctx_tensors(c.get(),cpu.get()),ggml_backend_buffer_free);check(bool(b),"indexer test buffer");
+  std::vector<float> ones(128,1.f), x(128);ggml_backend_tensor_set(gamma,ones.data(),0,512);
+  Indexer detached(cpu.get(),gamma,8,(root/"detached").string(),1024*1024,false);
+  Indexer serial(cpu.get(),gamma,8,(root/"serial").string(),1024*1024,false);
+  auto before=detached.state();auto candidate=before;
+  for(uint32_t p=0;p<8;++p){for(size_t i=0;i<x.size();++i)x[i]=float((p+1)*3+i%7)/32.f;ggml_backend_tensor_set(raw,x.data(),0,512);
+   candidate=detached.run_before(raw,p,candidate);auto next=serial.run(raw,p);serial.commit(next,p);
+   check(candidate==serial.state() && detached.state()==before,"detached indexer chaining or committed isolation");}
+  auto calls=detached.calls();bool rejected=false;try{auto short_image=before;short_image.pop_back();(void)detached.run_before(raw,0,short_image);}catch(...){rejected=true;}
+  check(rejected && detached.calls()==calls && detached.state()==before,"short detached before image dispatched");
+  fail_qsa_indexer=true;rejected=false;try{(void)detached.run_before(raw,0,before);}catch(...){rejected=true;}fail_qsa_indexer=false;
+  check(rejected && detached.state()==before && candidate==serial.state(),"detached failure changed committed or caller candidate");
+ }
  PortableFfnOptions exec;exec.threads=1;exec.accelerator=cpu.get();exec.request_accelerator=true;
  PortableGdnOptions p;p.execution=exec;p.defer_ffn_hc_write=true;p.scratch=PortableGdnScratch::create(exec,error);check(bool(p.scratch),error);
  auto gv=f.views;for(auto&v:gv)v.name.replace(0,6,"blk.2.");auto producer=PortableGdnLayer::create(2,gv,p,error);check(bool(producer),error);check(producer->reset(error),error);

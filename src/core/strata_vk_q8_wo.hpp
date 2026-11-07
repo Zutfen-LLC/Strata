@@ -11,6 +11,8 @@ StrataVkQ8Wo* strata_vk_qsa_qkv_create(ggml_backend_t,const char* effective_spv_
 // Same 80-block native ordering for ordinary GDN QKV and gate-input projections.
 StrataVkQ8Wo* strata_vk_gdn_input_create(ggml_backend_t,const char* effective_spv_path,size_t budget);
 StrataVkQ8Wo* strata_vk_gdn_output_rows_create(ggml_backend_t,const char* effective_spv_path,size_t budget);
+StrataVkQ8Wo* strata_vk_qsa_qkv_rows_create(ggml_backend_t,const char*,size_t);
+StrataVkQ8Wo* strata_vk_qsa_wo_rows_create(ggml_backend_t,const char*,size_t);
 // The vocabulary uses the same 80-block arithmetic in bounded row slices.
 StrataVkQ8Wo* strata_vk_head_vocab_create(ggml_backend_t,const char* effective_spv_path,size_t budget);
 size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo*);
@@ -26,6 +28,8 @@ void strata_vk_ple_key_run_bounded(StrataVkQ8Wo*,const ggml_tensor* weights,cons
 // GDN QKV or z: one dispatch, T=1 or 2, shared Q8_1 input rows.
 void strata_vk_gdn_input_run_bounded(StrataVkQ8Wo*,const ggml_tensor* weights,const ggml_tensor* packed,
                                     ggml_tensor* output,size_t rows,size_t tokens);
+void strata_vk_qsa_qkv_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*,size_t rows,size_t tokens);
+void strata_vk_qsa_wo_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*,size_t tokens);
 void strata_vk_gdn_output_run_bounded(StrataVkQ8Wo*,const ggml_tensor* weights,const ggml_tensor* packed,
                                       ggml_tensor* output,size_t tokens);
 }

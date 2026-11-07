@@ -9,6 +9,7 @@ struct StrataVkNativeShared;
 StrataVkNativeShared* strata_vk_native_shared_create(ggml_backend_t,const char* effective_spv_path,size_t metadata_budget=65536);
 // Separate matrix variant: exactly one 2560-wide input and 128 or 512 BF16 rows.
 StrataVkNativeShared* strata_vk_qsa_indexer_bf16_create(ggml_backend_t,const char* effective_spv_path,size_t budget);
+StrataVkNativeShared* strata_vk_qsa_indexer_bf16_rows_create(ggml_backend_t,const char*,size_t);
 // Separate PLE value geometry; same existing matrix shader.
 StrataVkNativeShared* strata_vk_ple_value_bf16_create(ggml_backend_t,const char* effective_spv_path,size_t budget);
 uint64_t strata_vk_native_shared_submitted(const StrataVkNativeShared*) noexcept;

@@ -55,6 +55,12 @@ static void strata_vk_quantize_rows(StrataVkNativeStages* s,const ggml_tensor* i
 void strata_vk_ple_key_quantize_bounded(StrataVkNativeStages* s,const ggml_tensor* input,ggml_tensor* packed,size_t tokens) {
     strata_vk_quantize_rows(s,input,packed,tokens,2560);
 }
+void strata_vk_qsa_input_quantize_bounded(StrataVkNativeStages* s,const ggml_tensor* input,ggml_tensor* packed,size_t tokens) {
+    strata_vk_quantize_rows(s,input,packed,tokens,2560);
+}
+void strata_vk_qsa_wo_quantize_bounded(StrataVkNativeStages* s,const ggml_tensor* input,ggml_tensor* packed,size_t tokens) {
+    strata_vk_quantize_rows(s,input,packed,tokens,6144);
+}
 void strata_vk_gdn_input_quantize_bounded(StrataVkNativeStages* s,const ggml_tensor* input,ggml_tensor* packed,size_t tokens) {
     strata_vk_quantize_rows(s,input,packed,tokens,2560);
 }

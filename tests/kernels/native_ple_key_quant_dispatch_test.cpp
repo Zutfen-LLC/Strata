@@ -54,5 +54,9 @@ int main() { try {
  need(grid_seen==std::array<uint32_t,3>{192,2,1} && params_seen[1]==6144 && params_seen[2]==6144);
  rejects([&]{out(1);});rejects([&]{out(3);});auto saved=oq->data;oq->data=ox->data;rejects([&]{out(2);});oq->data=saved;
  ox->ne[0]/=2;oq->ne[0]/=2;out(1);need(grid_seen==std::array<uint32_t,3>{192,1,1});
- puts("PLE, GDN input and output quant wrapper mock dispatch passed"); return 0;
+ x->ne[0]*=2;y->ne[0]*=2;strata_vk_qsa_input_quantize_bounded(&s,x,y,2);need(grid_seen==std::array<uint32_t,3>{80,2,1});
+ rejects([&]{strata_vk_qsa_input_quantize_bounded(&s,x,y,1);});
+ ox->ne[0]*=2;oq->ne[0]*=2;strata_vk_qsa_wo_quantize_bounded(&s,ox,oq,2);need(grid_seen==std::array<uint32_t,3>{192,2,1});
+ rejects([&]{strata_vk_qsa_wo_quantize_bounded(&s,ox,oq,3);});
+ puts("PLE, GDN and QSA quant wrapper mock dispatch passed"); return 0;
 } catch(const std::exception& e) { std::fprintf(stderr,"%s\n",e.what()); return 1; } }

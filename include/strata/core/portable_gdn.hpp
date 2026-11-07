@@ -110,6 +110,9 @@ class PortableGdnSnapshot {
     uint64_t position() const { return position_; }
     uint64_t generation() const { return generation_; }
     const PortableHcPendingWrite& tuple() const { return tuple_; }
+    // Remains false after producer reset, poisoning or destruction. No producer
+    // pointer is retained; this checks the shared lifetime/generation guard.
+    bool live() const noexcept;
     bool valid_for(const PortableGdnLayer& expected_owner, int64_t consumer_layer, uint64_t position) const;
   private:
     struct Owner;

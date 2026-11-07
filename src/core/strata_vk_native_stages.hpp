@@ -21,6 +21,9 @@ StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_
 // Quantize one or two complete H2560 rows in one dispatch, packed row-major.
 void strata_vk_ple_key_quantize_bounded(StrataVkNativeStages*, const ggml_tensor* input,
                                          ggml_tensor* packed, size_t tokens);
+// QSA independent projections share an H2560 packed row bank; WO uses H6144.
+void strata_vk_qsa_input_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*,ggml_tensor*,size_t tokens);
+void strata_vk_qsa_wo_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*,ggml_tensor*,size_t tokens);
 // GDN QKV/z share this one packed H2560 row bank.
 void strata_vk_gdn_input_quantize_bounded(StrataVkNativeStages*, const ggml_tensor* input,
                                          ggml_tensor* packed, size_t tokens);

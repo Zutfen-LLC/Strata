@@ -299,25 +299,37 @@ private:
         require(!running_ && !poisoned_ && native_hc_boundary(layer).pending_attention && snapshots.size()>=1 && snapshots.size()<=2 &&
                 first<=UINT64_MAX-snapshots.size() && first_consumer && second_consumer,"composed HC: boundary/rows/consumers");
         require(host_bound(snapshots.size())<=host_budget_, "composed HC: host budget");
+        // Hold the exact issued handles independently of the caller's vector.
+        // A synchronous consumer can otherwise reorder or clear that vector.
+        const size_t held_count=snapshots.size();
+        std::array<std::shared_ptr<const Snapshot>,2> held{};
+        for(size_t i=0;i<held_count;++i) held[i]=snapshots[i];
         running_=true;
         struct Guard {bool& b; ~Guard(){b=false;}} guard{running_};
-        int slot=published_==0?1:0; auto& b=banks_[slot][snapshots.size()-1];
-        for(size_t i=0;i<snapshots.size();++i) {
-            auto& s=snapshots[i]; require(s && s->valid_for(producer,layer,first+i),"composed HC: snapshot identity");
+        int slot=published_==0?1:0; auto& b=banks_[slot][held_count-1];
+        for(size_t i=0;i<held_count;++i) {
+            auto& s=held[i]; require(s && s->valid_for(producer,layer,first+i),"composed HC: snapshot identity");
             auto& t=s->tuple(); require(t.residual.size()==10240 && t.block.size()==2560 && t.injection.size()==4,"composed HC: tuple span");
         }
         // Validate the entire batch before writing even the unpublished bank.
-        for(size_t i=0;i<snapshots.size();++i) {
-            const auto& t=snapshots[i]->tuple();
+        for(size_t i=0;i<held_count;++i) {
+            const auto& t=held[i]->tuple();
             ggml_backend_tensor_set(b.input,t.residual.data(),i*40960,40960);
             ggml_backend_tensor_set(b.block,t.block.data(),i*10240,10240);
             ggml_backend_tensor_set(b.previous,t.injection.data(),i*16,16);
         }
-        const uint32_t count=uint32_t(snapshots.size());
+        const uint32_t count=uint32_t(held_count);
         dispatch_.pending(b); dispatch_.norm(b,count); dispatch_.mix(b);
         auto candidate=std::allocate_shared<Access>(PleOwnerAllocator<Access>{}); candidate->bank=&b; candidate->rows=count;
         View view(candidate);
-        try { first_consumer(view,count); second_consumer(view,count); }
+        try {
+            first_consumer(view,count); second_consumer(view,count);
+            // Consumers are synchronous but may mutate the producer. Do not
+            // publish a view derived from snapshots invalidated during use.
+            for(size_t i=0;i<held_count;++i)
+                require(held[i] && held[i]->valid_for(producer,layer,first+i),
+                        "composed HC: snapshot invalidated during consumption");
+        }
         catch (...) { candidate->valid=false; poisoned_=true; throw; }
         if (publication_) publication_->valid=false;
         publication_=std::move(candidate); published_=slot; rows_=count;
