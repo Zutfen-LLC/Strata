@@ -4,7 +4,7 @@
 #include "strata_qsa_indexer_bf16_spv.hpp"
 #include <limits>
 namespace strata::core::portable_detail {
-struct StrataVkNativeShared {std::unique_ptr<StrataVkLogitsGuard> owner;bool matrix=false, ple_value=false;size_t budget=0;uint64_t submitted=0,completed=0,uncertain=0;};
+struct StrataVkNativeShared {std::unique_ptr<StrataVkLogitsGuard> owner;bool matrix=false, ple_value=false, qsa_rows=false;size_t budget=0;uint64_t submitted=0,completed=0,uncertain=0;};
 StrataVkNativeShared* strata_vk_native_shared_create(ggml_backend_t backend,const char* path,size_t budget) {
     auto result=std::make_unique<StrataVkNativeShared>();
     result->owner=strata_vk_q8_component_owner(backend,strata_native_shared_spv,sizeof(strata_native_shared_spv)/4,
@@ -16,6 +16,9 @@ StrataVkNativeShared* strata_vk_qsa_indexer_bf16_create(ggml_backend_t backend,c
     result->owner=strata_vk_q8_component_owner(backend,strata_qsa_indexer_bf16_spv,sizeof(strata_qsa_indexer_bf16_spv)/4,
         NativeComponentAddressing::descriptor,"strata_native_qsa_indexer_bf16_mmvf_candidate",4,9,path,budget);
     return result.release();
+}
+StrataVkNativeShared* strata_vk_qsa_indexer_bf16_rows_create(ggml_backend_t backend,const char* path,size_t budget) {
+    auto* result=strata_vk_qsa_indexer_bf16_create(backend,path,budget);result->qsa_rows=true;return result;
 }
 StrataVkNativeShared* strata_vk_ple_value_bf16_create(ggml_backend_t backend,const char* path,size_t budget) {
     auto result=std::make_unique<StrataVkNativeShared>();result->matrix=true;result->ple_value=true;result->budget=budget;
@@ -32,7 +35,8 @@ void strata_vk_native_shared_run(StrataVkNativeShared* s,uint32_t mode,const ggm
     const ggml_tensor* input,ggml_tensor* output,ggml_tensor* aux,uint32_t ni,uint32_t no,uint32_t tokens) {
     native_shared_need(s && mode<=2 && weights && input && output && aux,"native shared: invalid call");
     native_shared_shape(ni,mode==0?no:32,tokens);
-    if(s->matrix)native_shared_matrix_shape(s->ple_value,mode,ni,no,tokens);
+    if(s->qsa_rows)native_shared_need(mode==1 && ni==2560 && (no==128 || no==512) && tokens>=1 && tokens<=2,"QSA indexer BF16 rows: unsupported geometry");
+    else if(s->matrix)native_shared_matrix_shape(s->ple_value,mode,ni,no,tokens);
     else native_shared_need(mode==0 || no==1,"native shared: scalar/scale require no=1");
     native_shared_need(weights->type==(mode==2?GGML_TYPE_F32:GGML_TYPE_I32) &&
         input->type==(mode==0?GGML_TYPE_I32:GGML_TYPE_F32) && output->type==GGML_TYPE_F32 && aux->type==GGML_TYPE_F32,
@@ -56,6 +60,9 @@ void strata_vk_native_shared_run(StrataVkNativeShared* s,uint32_t mode,const ggm
         auto* buffer=static_cast<ggml_backend_vk_buffer_context*>(t->buffer->context);
         native_shared_need(buffer->device.lock()==ctx->device,"native shared: different device");
         const uint32_t bias=get_misalign_bytes(ctx,t);native_shared_need(bias%4==0,"native shared: word alignment required");params[4+i]=bias/4;
+        if(s->qsa_rows){const size_t offset=ggml_vk_tensor_buffer_offset(ctx,t), size=ggml_backend_buffer_get_size(t->buffer);
+            native_shared_need(offset<=size && ggml_nbytes(t)<=size-offset && uint64_t(ggml_nbytes(t))+bias<=limits.maxStorageBufferRange &&
+                reinterpret_cast<uintptr_t>(t->data)<=UINTPTR_MAX-ggml_nbytes(t),"QSA indexer BF16 rows: buffer span or descriptor range");}
         if(s->matrix){bool duplicate=false;for(size_t j=0;j<nseen;++j)duplicate|=seen[j]==t->buffer;
             if(!duplicate){seen[nseen++]=t->buffer;size_t n=ggml_backend_buffer_get_size(t->buffer);native_shared_need(n<=std::numeric_limits<size_t>::max()-used,"QSA indexer BF16: budget overflow");used+=n;}}
         for(size_t j=0;j<i;++j)if(t->buffer==tensors[j]->buffer) {

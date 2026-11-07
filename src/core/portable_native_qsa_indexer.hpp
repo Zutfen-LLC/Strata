@@ -28,15 +28,20 @@ public:
  PortableNativeQsaIndexer(ggml_backend_t backend,ggml_tensor*gamma,uint32_t cells,const std::string&directory,size_t budget,bool record):gamma_(gamma),cells_(cells),state_(qsa_idx_words(cells),0),directory_(directory),record_(record){
   native_hc_need(backend&&gamma&&!directory.empty()&&estimate(backend,cells)<=budget,"native QSA indexer complete aligned admission");native_hc_need(std::filesystem::create_directory(directory_),"native QSA indexer fresh namespace");ctx_=context();leaves(ctx_.get(),cells,before_,candidate_,diag_);size_t b=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),ggml_backend_get_default_buffer_type(backend));native_hc_need(b<budget,"native QSA indexer metadata room");component_.reset(strata_vk_native_qsa_indexer_create(backend,(directory_/"effective.spv").c_str(),budget-b));buffer_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),backend));native_hc_need(bool(buffer_),"native QSA indexer banks");bytes_=ggml_backend_buffer_get_size(buffer_.get())+strata_vk_native_qsa_indexer_bytes(component_.get());native_hc_need(bytes_<=estimate(backend,cells)&&bytes_<=budget,"native QSA indexer actual allocation exceeds bound");
  }
+ uint32_t capacity()const{return cells_;}
  size_t bytes()const{return bytes_;}uint64_t calls()const{return strata_vk_native_qsa_indexer_calls(component_.get());}
  const std::vector<uint32_t>& state()const{return state_;}
  void reset(){std::fill(state_.begin(),state_.end(),0);}
- std::vector<uint32_t> run(ggml_tensor*raw,uint64_t position){++attempts_;native_hc_need(position<cells_,"native QSA indexer position exceeds capacity");native_qsa_indexer_geometry(cells_,int32_t(position),0,native_qsa_theta_scale());ggml_backend_tensor_set(before_,state_.data(),0,state_.size()*4);std::array<ggml_tensor*,5>t{{raw,gamma_,before_,candidate_,diag_}};const auto paid=calls();uint32_t status=UINT32_MAX;
+ // Detached append: the caller owns the before image and may chain private
+ // candidates without publishing intermediate rows. This object and its scratch
+ // tensors are not reentrant; the returned vector owns its contents.
+ std::vector<uint32_t> run_before(ggml_tensor*raw,uint64_t position,const std::vector<uint32_t>&before){++attempts_;native_hc_need(position<cells_,"native QSA indexer position exceeds capacity");native_hc_need(before.size()==state_.size(),"native QSA indexer complete before image");native_qsa_indexer_geometry(cells_,int32_t(position),0,native_qsa_theta_scale());ggml_backend_tensor_set(before_,before.data(),0,before.size()*4);std::array<ggml_tensor*,5>t{{raw,gamma_,before_,candidate_,diag_}};const auto paid=calls();uint32_t status=UINT32_MAX;
   try{status=strata_vk_native_qsa_indexer_run(component_.get(),t.data(),cells_,position,0,native_qsa_theta_scale());native_hc_need(status==0,"native QSA indexer actual numerical domain refused");}
   catch(...){try{capture(raw,position,"failure-",calls()!=paid&&status==0,status);}catch(const std::exception&e){std::fprintf(stderr,"native QSA indexer receipt: %s\n",e.what());}throw;}
   if(record_&&position<8&&!recorded_[position]){capture(raw,position,"first-",true,0);recorded_[position]=true;}
   std::vector<uint32_t>out(state_.size());ggml_backend_tensor_get(candidate_,out.data(),0,out.size()*4);return out;
  }
+ std::vector<uint32_t> run(ggml_tensor*raw,uint64_t position){return run_before(raw,position,state_);}
  void commit(std::vector<uint32_t>&candidate,uint64_t position){native_hc_need(candidate.size()==state_.size(),"native QSA indexer complete commit candidate");if(record_&&position<8){std::string bytes(candidate.size()*4,'\0');for(size_t i=0;i<candidate.size();++i)for(unsigned j=0;j<4;++j)bytes[i*4+j]=char(candidate[i]>>(8*j));auto file=directory_/("first-"+std::to_string(position))/"accepted-state.u32le";
    if(std::filesystem::exists(file)){std::ifstream f(file,std::ios::binary);std::string old((std::istreambuf_iterator<char>(f)),{});native_hc_need(old==bytes,"native QSA indexer reset committed state differs");}else{std::ofstream f(file,std::ios::binary);f.write(bytes.data(),bytes.size());native_hc_need(bool(f),"native QSA indexer accepted state receipt");}}
   state_.swap(candidate);

@@ -111,6 +111,16 @@ int main(){try {
  auto capture_g=[&](const Owner::View& v,uint32_t n){consume_g(v,n); good_g=std::make_shared<Owner::View>(v);};
  gowner.run(2,0,*gp,{g0,g1},capture_g,consume_g); check(calls==1&&gnorm==1&&gmix==1&&gc==2&&gowner.rows()==2,"GDN composed run");
  const auto good_values=good_g->read(Owner::View::Field::mixed);
+ std::shared_ptr<Owner::View> invalidated;
+ auto mutate_producer=[&](const Owner::View& v,uint32_t){invalidated=std::make_shared<Owner::View>(v); check(gp->reset(error),error);};
+ bool mutation_rejected=false;try{gowner.run(2,0,*gp,{g0,g1},mutate_producer,consume_g);}catch(...){mutation_rejected=true;}
+ check(mutation_rejected && stale(invalidated) && good_g->rows()==2 && good_g->read(Owner::View::Field::mixed)==good_values,"producer mutation published stale candidate");
+ bool mutation_poisoned=false;try{gowner.run(2,0,*gp,{g0,g1},consume_g,consume_g);}catch(...){mutation_poisoned=true;}
+ check(mutation_poisoned,"producer mutation did not poison owner");
+ // Recreate genuine snapshots after reset for the remaining checks.
+ gowner.reset(); check(gp->step(gf.input(0),gexperts,route,error),error);g0=gp->pending_snapshot(error);
+ check(gp->step(gf.input(1),gexperts,route,error),error);g1=gp->pending_snapshot(error);
+ calls=gnorm=gmix=gc=0;gowner.run(2,0,*gp,{g0,g1},capture_g,consume_g);
  std::vector<float> expected_values(5120,1.25f); std::fill(expected_values.begin()+2560,expected_values.end(),-2.5f);
  check(good_values==expected_values,"GDN mixed canaries");
  check(g1->valid_for(*gp,2,1),"committed GDN snapshot invalid");
