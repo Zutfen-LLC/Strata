@@ -200,7 +200,7 @@ struct PortableModelSession::Impl {
             }
         }
         if(opts.native_gdn_output_projection_t1){
-            for(size_t l=0;l<48;++l)if(portable_detail::model_gdn_t1_layer(l)){
+            for(size_t l=0;l<48;++l)if(portable_detail::model_gdn_t1_layer(opts,l)){
                 auto role=view(model,"blk."+std::to_string(l)+".ssm_out.weight");
                 require(role.type==8&&role.shape==std::vector<int64_t>({6144,2560}),"GDN output projection: unsupported role type or shape: "+role.name);
                 portable_detail::qsa_wo_weight_domain(role.data,role.bytes,role.name);
@@ -301,8 +301,9 @@ struct PortableModelSession::Impl {
             const auto execution_options=execution(l,false);
             auto& owner=gdn_scratch[execution_options.accelerator];
             if(!owner) {
-                preflight(device(l),l,"gdn-shared-scratch",0,opts.layer_graph_cap,PortableGdnScratch::host_metadata_bound());
-                owner=PortableGdnScratch::create(execution_options,error);
+                const bool extra_scheduler=opts.native_ple_hc_read_t1 && opts.native_gdn_t1;
+                preflight(device(l),l,"gdn-shared-scratch",0,opts.layer_graph_cap,PortableGdnScratch::host_metadata_bound(extra_scheduler));
+                owner=PortableGdnScratch::create(execution_options,error,extra_scheduler);
                 require(bool(owner),error);
                 account(owner->memory_usage(),device(l));
             }

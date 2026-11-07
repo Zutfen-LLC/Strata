@@ -213,6 +213,89 @@ int main(int argc,char** argv){try{
     check(composed->reset(error),error);check(composed->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
     check(composed->ple_convolution_history()==composed_history && composed->last_residual()==composed_residual,
           "composed reset changed result");
-    observe_ple_hc=false;
+    composed.reset();
+    // Full native GDN chain consumes the actual materialized PLE HC mix.
+    hc_model.native_gdn_t1=hc_model.native_gdn_preparation_weights=hc_model.native_gdn_preparation_t1=true;
+    hc_model.native_gdn_input_projection_t1=hc_model.native_gdn_output_projection_t1=true;
+    hc_model.native_gdn_receipt_prefix=(root/"chain-gdn").string();
+    hc_model.native_gdn_preparation_receipt_prefix=(root/"chain-prep").string();
+    hc_model.native_gdn_input_projection_receipt_prefix=(root/"chain-input").string();
+    hc_model.native_gdn_output_projection_receipt_prefix=(root/"chain-output").string();
+    hc_model.native_ple_hc_receipt_prefix=(root/"chain-hc").string();
+    hc_model.native_ple_conv_receipt_prefix=(root/"chain-conv").string();
+    hc_model.native_ple_gate_receipt_prefix=(root/"chain-gate").string();
+    hc_model.native_ple_norm_receipt_prefix=(root/"chain-norm").string();
+    auto no_chain=hc_model;no_chain.native_ple_hc_read_t1=false;
+    PortableGdnOptions no_layer;model_gdn_hc_options(no_chain,1,no_layer);
+    check(!no_layer.native_recurrence_t1&&!no_layer.native_preparation_t1&&!no_layer.native_input_projection_t1&&!no_layer.native_output_projection_t1,"native GDN escaped PLE HC prerequisite");
+    const auto expected_extra=PortableGdnOptions::native_recurrence_host_bound+PortableGdnOptions::native_preparation_host_bound+
+        PortableGdnOptions::native_input_projection_host_bound+PortableGdnOptions::native_output_projection_host_bound;
+    auto no_gdn=hc_model;no_gdn.native_gdn_t1=no_gdn.native_gdn_preparation_weights=no_gdn.native_gdn_preparation_t1=false;
+    no_gdn.native_gdn_input_projection_t1=no_gdn.native_gdn_output_projection_t1=false;
+    check(model_hc_host_bound(hc_model,1)-model_hc_host_bound(no_gdn,1)==expected_extra,"native PLE GDN host allowance missing");
+    auto chain=options;chain.resident_state=true;model_gdn_hc_options(hc_model,1,chain);
+    check(chain.native_recurrence_t1 && chain.native_preparation_t1 && chain.native_input_projection_t1 && chain.native_output_projection_t1,"native PLE GDN policy missing");
+    {auto bad=chain;bad.native_ple_hc_read_t1=false;check(!PortableGdnLayer::create(1,fixture.views,bad,error),"native PLE GDN accepted missing materialized HC");}
+    auto chain_layer=PortableGdnLayer::create(1,fixture.views,chain,error);check(bool(chain_layer),error);
+    check(chain_layer->reset(error),error);
+    const auto initial_ple=chain_layer->ple_convolution_history(), initial_gdn=chain_layer->recurrent_state(), initial_conv=chain_layer->convolution_history();
+    fail_gdn_input=1;check(!chain_layer->step(19,fixture.input(0),ple_fixture::experts(),route,error),"native input failure accepted");fail_gdn_input=0;
+    check(chain_layer->tokens()==0 && chain_layer->ple_convolution_history()==initial_ple && chain_layer->recurrent_state()==initial_gdn && chain_layer->convolution_history()==initial_conv,"native input failure committed state");
+    fail_gdn=true;check(!chain_layer->step(19,fixture.input(0),ple_fixture::experts(),route,error),"native recurrence failure accepted");fail_gdn=false;
+    check(chain_layer->tokens()==0 && chain_layer->ple_convolution_history()==initial_ple && chain_layer->recurrent_state()==initial_gdn && chain_layer->convolution_history()==initial_conv,"native recurrence failure committed state");
+    observe_gdn_input=true;gdn_input_links=0;observe_gdn_output=true;gdn_output_quant_links=0;gdn_output_pending_links=0;
+    check(chain_layer->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
+    check(gdn_input_links==2 && gdn_output_quant_links==1 && gdn_output_pending_links==1,"native GDN producer/consumer links differ");
+    auto first_chain=chain_layer->last_residual(), first_state=chain_layer->recurrent_state(), first_ple=chain_layer->ple_convolution_history();
+    check(!chain_layer->step(20,fixture.input(1),refuse,route,error),"native chain FFN refusal accepted");
+    check(chain_layer->tokens()==1 && chain_layer->recurrent_state()==first_state && chain_layer->ple_convolution_history()==first_ple,"native chain FFN failure committed state");
+    check(chain_layer->reset(error),error);check(chain_layer->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
+    check(chain_layer->last_residual()==first_chain && chain_layer->recurrent_state()==first_state && chain_layer->ple_convolution_history()==first_ple,"native chain reset differs");
+    chain_layer.reset();
+    auto constrained=chain;constrained.execution.graph_budget=1;
+    check(!PortableGdnLayer::create(1,fixture.views,constrained,error),"native chain graph cap ignored");
+    hc_model.native_gdn_receipt_prefix=(root/"shared-chain-gdn").string();
+    hc_model.native_gdn_preparation_receipt_prefix=(root/"shared-chain-prep").string();
+    hc_model.native_gdn_input_projection_receipt_prefix=(root/"shared-chain-input").string();
+    hc_model.native_gdn_output_projection_receipt_prefix=(root/"shared-chain-output").string();
+    hc_model.native_ple_hc_receipt_prefix=(root/"shared-chain-hc").string();
+    hc_model.native_ple_conv_receipt_prefix=(root/"shared-chain-conv").string();
+    hc_model.native_ple_gate_receipt_prefix=(root/"shared-chain-gate").string();
+    hc_model.native_ple_norm_receipt_prefix=(root/"shared-chain-norm").string();
+    auto shared_chain=options;shared_chain.resident_state=true;model_gdn_hc_options(hc_model,1,shared_chain);
+    check(PortableGdnScratch::host_metadata_bound(true)>PortableGdnScratch::host_metadata_bound(),"additional metadata not priced");
+    auto unreserved_model=hc_model;
+    unreserved_model.native_ple_hc_receipt_prefix=(root/"unreserved-hc").string();
+    unreserved_model.native_ple_conv_receipt_prefix=(root/"unreserved-conv").string();
+    unreserved_model.native_ple_gate_receipt_prefix=(root/"unreserved-gate").string();
+    unreserved_model.native_ple_norm_receipt_prefix=(root/"unreserved-norm").string();
+    unreserved_model.native_gdn_receipt_prefix=(root/"unreserved-gdn").string();
+    unreserved_model.native_gdn_preparation_receipt_prefix=(root/"unreserved-prep").string();
+    unreserved_model.native_gdn_input_projection_receipt_prefix=(root/"unreserved-input").string();
+    unreserved_model.native_gdn_output_projection_receipt_prefix=(root/"unreserved-output").string();
+    auto unreserved=options;unreserved.resident_state=true;model_gdn_hc_options(unreserved_model,1,unreserved);
+    unreserved.scratch=PortableGdnScratch::create(unreserved.execution,error);check(bool(unreserved.scratch),error);
+    check(!PortableGdnLayer::create(1,fixture.views,unreserved,error) && error.find("additional scheduler not reserved")!=std::string::npos,
+          "unreserved fourth scheduler accepted");
+    shared_chain.scratch=PortableGdnScratch::create(shared_chain.execution,error,true);check(bool(shared_chain.scratch),error);
+    auto leased=PortableGdnLayer::create(1,fixture.views,shared_chain,error);check(bool(leased),error);
+    check(leased->reset(error),error);PortableGdnTrace leased_trace;
+    check(leased->step(19,fixture.input(0),ple_fixture::experts(),route,error,&leased_trace),error);
+    check(leased_trace.ffn_hc.original==leased_trace.ple_residual &&
+          leased_trace.ffn_hc.previous_injection==leased_trace.hc_inject &&
+          leased_trace.ffn_hc.previous_output==actual_native_wo,"shared chain FFN did not consume actual attention tuple");
+    const auto published=leased->pending_write();check(!published.empty(),"shared chain omitted FFN pending tuple");
+    check(leased->last_residual()==first_chain && leased->recurrent_state()==first_state && leased->ple_convolution_history()==first_ple,"shared chain differs");
+    const auto owned_bytes=shared_chain.scratch->graph_bytes();check(owned_bytes>0 && owned_bytes<=shared_chain.execution.graph_budget,"shared scheduler ledger invalid");
+    check(!leased->step(20,fixture.input(1),refuse,route,error),"shared chain FFN refusal accepted");
+    check(leased->tokens()==1 && leased->recurrent_state()==first_state && leased->ple_convolution_history()==first_ple &&
+          leased->pending_write().residual==published.residual && leased->pending_write().block==published.block &&
+          leased->pending_write().injection==published.injection,"shared chain failure committed state or tuple");
+    check(leased->reset(error),error);check(leased->pending_write().empty(),"shared chain reset kept pending tuple");
+    check(leased->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
+    check(leased->last_residual()==first_chain && leased->recurrent_state()==first_state &&
+          leased->pending_write().residual==published.residual && leased->pending_write().block==published.block &&
+          leased->pending_write().injection==published.injection,"shared chain reset/rebind differs");
+    observe_gdn_input=observe_gdn_output=false;observe_ple_hc=false;
     std::puts("PLE conv producer, candidate history, refusal, retry and reset passed with host provider");return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

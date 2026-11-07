@@ -102,34 +102,36 @@ void write(ggml_tensor *t, const std::vector<float> &x) {
 } // namespace
 
 struct PortableGdnScratch::Impl {
-    static constexpr size_t metadata_bound = 3 * (size_t(GGML_DEFAULT_GRAPH_SIZE) * 30 * 2 * sizeof(ggml_tensor) + (20u << 20));
+    static constexpr size_t scheduler_metadata_bound = size_t(GGML_DEFAULT_GRAPH_SIZE) * 30 * 2 * sizeof(ggml_tensor) + (20u << 20);
+    size_t metadata_bound() const { return (additional_scheduler ? 4 : 3) * scheduler_metadata_bound; }
+    bool additional_scheduler;
     PortableFfnOptions options;
     portable_detail::Backend cpu{ggml_backend_cpu_init(), ggml_backend_free};
-    std::array<portable_detail::Scheduler, 3> schedulers{{
-        {nullptr, ggml_backend_sched_free}, {nullptr, ggml_backend_sched_free}, {nullptr, ggml_backend_sched_free}}};
-    std::array<size_t, 3> workspace{};
-    std::array<ggml_backend_sched_t, 3> active{};
+    std::array<portable_detail::Scheduler, 4> schedulers{{
+        {nullptr, ggml_backend_sched_free}, {nullptr, ggml_backend_sched_free}, {nullptr, ggml_backend_sched_free}, {nullptr, ggml_backend_sched_free}}};
+    std::array<size_t, 4> workspace{};
+    std::array<ggml_backend_sched_t, 4> active{};
     std::atomic_flag borrowed = ATOMIC_FLAG_INIT;
-    explicit Impl(PortableFfnOptions o) : options(o) {
+    explicit Impl(PortableFfnOptions o, bool extra) : additional_scheduler(extra), options(o) {
         require(bool(cpu), "portable GDN: shared CPU unavailable");
-        require(o.graph_budget > 0 && o.graph_budget <= SIZE_MAX - metadata_bound,
+        require(o.graph_budget > 0 && o.graph_budget <= SIZE_MAX - metadata_bound(),
                 "portable GDN: invalid/overflowing shared graph budget");
         ggml_backend_cpu_set_n_threads(cpu.get(), o.threads);
     }
 };
 PortableGdnScratch::PortableGdnScratch(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 PortableGdnScratch::~PortableGdnScratch() = default;
-std::shared_ptr<PortableGdnScratch> PortableGdnScratch::create(PortableFfnOptions options, std::string &error) {
+std::shared_ptr<PortableGdnScratch> PortableGdnScratch::create(PortableFfnOptions options, std::string &error, bool additional_scheduler) {
     error.clear();
-    try { return std::shared_ptr<PortableGdnScratch>(new PortableGdnScratch(std::make_unique<Impl>(options))); }
+    try { return std::shared_ptr<PortableGdnScratch>(new PortableGdnScratch(std::make_unique<Impl>(options,additional_scheduler))); }
     catch (const std::exception &e) { error=e.what(); return nullptr; }
 }
-size_t PortableGdnScratch::host_metadata_bound() { return Impl::metadata_bound; }
+size_t PortableGdnScratch::host_metadata_bound(bool extra) { return (extra ? 4 : 3) * Impl::scheduler_metadata_bound; }
 PortableMemoryUsage PortableGdnScratch::memory_usage() const {
     const auto& s=*impl_;
     PortableMemoryUsage m;
     size_t workspace=0;
-    for(size_t i=0;i<3;++i) {
+    for(size_t i=0;i<4;++i) {
         workspace+=s.workspace[i];
         auto* sched=s.active[i]?s.active[i]:s.schedulers[i].get();
         if(!sched) continue;
@@ -140,7 +142,7 @@ PortableMemoryUsage PortableGdnScratch::memory_usage() const {
     require(m.host_graph <= s.options.graph_budget && m.device_graph <= s.options.graph_budget-m.host_graph &&
             workspace <= s.options.graph_budget-m.host_graph-m.device_graph,
             "portable GDN: shared retained scratch exceeds cap");
-    m.host_extra_bound=s.options.graph_budget-m.host_graph+Impl::metadata_bound;
+    m.host_extra_bound=s.options.graph_budget-m.host_graph+s.metadata_bound();
     if(s.options.request_accelerator) m.device_extra_bound=s.options.graph_budget-m.device_graph;
     return m;
 }
@@ -217,6 +219,7 @@ struct PortableGdnLayer::Impl {
     Context projection_ctx{nullptr, ggml_free};
     portable_detail::Scheduler projection_scheduler{nullptr, ggml_backend_sched_free};
     portable_detail::Scheduler tail_scheduler{nullptr, ggml_backend_sched_free};
+    portable_detail::Scheduler native_scheduler{nullptr, ggml_backend_sched_free};
     ggml_cgraph *projection_graph = nullptr, *tail_graph = nullptr;
     ggml_tensor *projection_input = nullptr;
     std::array<ggml_tensor*,5> projection_outputs{}, projection_inputs{};
@@ -507,7 +510,7 @@ struct PortableGdnLayer::Impl {
                 if(s.native_gdn) {
                     portable_detail::PortableNativeGdnInput::Candidate candidate;
                     if(s.native_input_projection)candidate=s.native_input_projection->run(s.native_hc->mixed);
-                    require(ggml_backend_sched_graph_compute(s.projection_scheduler.get(),s.native_prefix_graph)==GGML_STATUS_SUCCESS,"native GDN: prefix graph failed");
+                    require(ggml_backend_sched_graph_compute((s.native_ple_gate ? s.native_scheduler.get() : s.projection_scheduler.get()),s.native_prefix_graph)==GGML_STATUS_SUCCESS,"native GDN: prefix graph failed");
                     if(s.native_preparation)s.native_preparation->run(s.history_input,s.qkv,s.preparation_mixed,s.weights.at("ssm_conv1d.weight"),s.count);
                     s.native_gdn->run(s.state_input,s.weights.at("ssm_norm.weight"),s.count);
                     if(s.native_input_projection)s.native_input_projection->consumed(s.count,s.native_hc->mixed,{s.qkv,s.native_gdn->t[4]},candidate);
@@ -634,10 +637,11 @@ struct PortableGdnLayer::Impl {
                         portable_detail::Scheduler& sched, bool credit=false) {
         if(!shared()) { auto execution=options.execution;require(preparation_credit()<=execution.graph_budget,"native preparation graph reserve");execution.graph_budget-=preparation_credit();sched=portable_detail::schedule(g,phase,execution,cpu,placement,bytes,credit); return; }
         auto& o=*shared();
+        require(index<3 || o.additional_scheduler,"portable GDN: additional scheduler not reserved");
         const size_t workspace=std::max(o.workspace[index],ggml_graph_plan(g,options.execution.threads,nullptr).work_size);
         size_t used=preparation_credit()+ffn->graph_bytes()+native_hc_bytes()+native_gdn_bytes()+(chunk_ffn?chunk_ffn->graph_bytes():0);
-        const std::array<ggml_backend_sched_t,3> all{{scheduler.get(),projection_scheduler.get(),tail_scheduler.get()}};
-        for(size_t i=0;i<3;++i) {
+        const std::array<ggml_backend_sched_t,4> all{{scheduler.get(),projection_scheduler.get(),tail_scheduler.get(),native_scheduler.get()}};
+        for(size_t i=0;i<4;++i) {
             const size_t work=i==index?workspace:o.workspace[i];
             require(used<=options.execution.graph_budget && work<=options.execution.graph_budget-used,
                     "portable GDN: shared workspace budget exceeded");
@@ -885,7 +889,8 @@ struct PortableGdnLayer::Impl {
             }
             if(options.native_recurrence_t1) {
                 require(!external,"native GDN: external/chunk graph unsupported");
-                schedule_graph(native_prefix_graph,"native-gdn-prefix",1,graphs_size,projection_scheduler);
+                if(options.native_ple_gate_t1)schedule_graph(native_prefix_graph,"native-gdn-prefix",3,graphs_size,native_scheduler);
+                else schedule_graph(native_prefix_graph,"native-gdn-prefix",1,graphs_size,projection_scheduler);
             }
 #ifdef STRATA_PORTABLE_NATIVE_HC
             if(native_ple_conv) {
@@ -917,13 +922,14 @@ struct PortableGdnLayer::Impl {
             s.scheduler=std::move(o->schedulers[0]);
             s.projection_scheduler=std::move(o->schedulers[1]);
             s.tail_scheduler=std::move(o->schedulers[2]);
-            o->active={s.scheduler.get(),s.projection_scheduler.get(),s.tail_scheduler.get()};
+            s.native_scheduler=std::move(o->schedulers[3]);
+            o->active={s.scheduler.get(),s.projection_scheduler.get(),s.tail_scheduler.get(),s.native_scheduler.get()};
             try { if(rebuild) s.build_graphs(); } catch(...) { release(); throw; }
         }
         void release() {
             if(!held) return;
             auto& o=*s.shared();
-            for(auto* sched:{s.scheduler.get(),s.projection_scheduler.get(),s.tail_scheduler.get()}) if(sched) {
+            for(auto* sched:{s.scheduler.get(),s.projection_scheduler.get(),s.tail_scheduler.get(),s.native_scheduler.get()}) if(sched) {
                 if(s.ctx || s.projection_ctx) ggml_backend_sched_synchronize(sched);
                 ggml_backend_sched_reset(sched);
             }
@@ -936,6 +942,7 @@ struct PortableGdnLayer::Impl {
             o.schedulers[0]=std::move(s.scheduler);
             o.schedulers[1]=std::move(s.projection_scheduler);
             o.schedulers[2]=std::move(s.tail_scheduler);
+            o.schedulers[3]=std::move(s.native_scheduler);
             o.active={};
             s.ctx.reset(); s.projection_ctx.reset();
             s.graph=nullptr; s.tail_graph=nullptr; s.projection_graph=nullptr; s.native_prefix_graph=nullptr; s.ple_prefix_graph=nullptr; s.ple_gate_prefix_graph=nullptr; s.ple_gate_broadcast=nullptr; s.ple_gate_key_copy=nullptr; s.ple_gate_query_copy=nullptr; s.ple_norm_gated_copy=nullptr;
@@ -960,11 +967,11 @@ struct PortableGdnLayer::Impl {
 #ifndef STRATA_PORTABLE_NATIVE_HC
         require(!options.native_ple_value_t1, "native PLE value: native stage build required");
 #endif
-        require(!options.native_preparation_weights || (layer!=1 && options.native_recurrence_t1),"native GDN preparation weights: ordinary native recurrence required; PLE unsupported");
+        require(!options.native_preparation_weights || ((!options.ple_table || options.native_ple_hc_read_t1) && options.native_recurrence_t1),"native GDN preparation weights: native recurrence and materialized PLE HC required");
         require(!options.native_preparation_t1 || (options.native_preparation_weights&&!options.native_preparation_receipt.empty()),"native GDN preparation: explicit matched BF16 residency and receipt required");
-        require(!options.native_input_projection_t1 || (layer!=1 && options.native_hc_mix && options.native_preparation_t1 && options.native_recurrence_t1 && !options.native_input_projection_receipt.empty()),"native GDN input projection: ordinary native HC, preparation, recurrence and receipt required");
-        require(!options.native_output_projection_t1 || (layer!=1 && options.native_hc_ffn_read && options.native_preparation_t1 && options.native_recurrence_t1 && !options.native_output_projection_receipt.empty()),"native GDN output projection: ordinary native recurrence, FFN read and receipt required");
-        require(!options.native_ple_gate_t1 || (layer==1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && !options.native_recurrence_t1 && (!options.native_hc_norm_inject || options.native_ple_hc_read_t1) && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_gate_receipt.empty()), "native PLE gate: layer 1 serial eager strict accelerator, resident weights and receipt required");
+        require(!options.native_input_projection_t1 || ((!options.ple_table || options.native_ple_hc_read_t1) && options.native_hc_mix && options.native_preparation_t1 && options.native_recurrence_t1 && !options.native_input_projection_receipt.empty()),"native GDN input projection: native HC, preparation, recurrence and receipt required");
+        require(!options.native_output_projection_t1 || ((!options.ple_table || options.native_ple_hc_read_t1) && options.native_hc_ffn_read && options.native_preparation_t1 && options.native_recurrence_t1 && !options.native_output_projection_receipt.empty()),"native GDN output projection: native recurrence, FFN read and receipt required");
+        require(!options.native_ple_gate_t1 || (layer==1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && (!options.native_recurrence_t1 || options.native_ple_hc_read_t1) && (!options.native_hc_norm_inject || options.native_ple_hc_read_t1) && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_gate_receipt.empty()), "native PLE gate: layer 1 serial eager strict accelerator, resident weights and receipt required");
         require(!options.native_ple_norm_t1 || (options.native_ple_gate_t1 && options.native_ple_conv_t1 && !options.native_ple_norm_receipt.empty()), "native PLE norm: native gate, convolution and receipt required");
         require(!options.native_ple_key_t1 || (layer == 1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_key_receipt.empty()), "native PLE key: layer 1 serial eager strict accelerator, resident role and receipt required");
         require(!options.native_ple_conv_t1 || (layer == 1 && options.ple_table && !production() && !options.batch_input_projections && !options.causal_chunk && (!options.native_hc_norm_inject || options.native_ple_hc_read_t1) && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback && (options.resident_attention_weights || options.execution.resident_dense_weights) && !options.native_ple_conv_receipt.empty()), "native PLE conv: layer 1 serial eager strict accelerator, resident role and receipt required");
@@ -976,7 +983,7 @@ struct PortableGdnLayer::Impl {
 #endif
         if(options.native_output_projection_t1){const char* fused=std::getenv("STRATA_QFUSE");require(!fused||std::atoi(fused)==0,"native GDN output projection: fused quantization unsupported");}
         if(options.native_recurrence_t1) {
-            require(!options.ple_table&&!options.batch_input_projections&&!options.causal_chunk&&!production(),"native GDN T1: eager ordinary graph only");
+            require((!options.ple_table || options.native_ple_hc_read_t1)&&!options.batch_input_projections&&!options.causal_chunk&&!production(),"native GDN T1: eager graph and materialized PLE HC required");
             require(options.resident_state && options.execution.request_accelerator && options.execution.accelerator && !options.execution.allow_cpu_fallback &&
                     (options.resident_attention_weights||options.execution.resident_dense_weights)&&!options.native_recurrence_receipt.empty(),"native GDN T1: strict accelerator, resident state/attention and receipt required");
 #ifndef STRATA_PORTABLE_NATIVE_HC
@@ -1646,7 +1653,7 @@ PortableMemoryUsage PortableGdnLayer::memory_usage() const {
         m.host_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.cpu.get());
         if (s.options.execution.accelerator && s.options.execution.request_accelerator)
             m.device_graph += ggml_backend_sched_get_buffer_size(s.scheduler.get(), s.options.execution.accelerator);
-        for(auto* sched:{s.tail_scheduler.get(),s.projection_scheduler.get()}) if(sched) {
+        for(auto* sched:{s.tail_scheduler.get(),s.projection_scheduler.get(),s.native_scheduler.get()}) if(sched) {
             m.host_graph+=ggml_backend_sched_get_buffer_size(sched,s.cpu.get());
             if(s.options.execution.accelerator && s.options.execution.request_accelerator)
                 m.device_graph+=ggml_backend_sched_get_buffer_size(sched,s.options.execution.accelerator);

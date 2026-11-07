@@ -5,11 +5,11 @@ namespace strata::core {
 // Native SessionState::gdn transient family. Borrowed backends must outlive all layers.
 class PortableGdnScratch {
   public:
-    static std::shared_ptr<PortableGdnScratch> create(PortableFfnOptions options, std::string &error);
+    static std::shared_ptr<PortableGdnScratch> create(PortableFfnOptions options, std::string &error, bool additional_scheduler = false);
     ~PortableGdnScratch();
     size_t graph_bytes() const;
     PortableMemoryUsage memory_usage() const;
-    static size_t host_metadata_bound();
+    static size_t host_metadata_bound(bool additional_scheduler = false);
   private:
     struct Impl;
     explicit PortableGdnScratch(std::unique_ptr<Impl> impl);
