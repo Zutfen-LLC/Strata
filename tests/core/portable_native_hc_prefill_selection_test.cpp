@@ -7,19 +7,19 @@ using namespace strata::core::portable_detail;
 static void need(bool x,const char*m){if(!x)throw std::runtime_error(m);}
 static std::vector<float> get(const ggml_tensor*t){std::vector<float>v(ggml_nbytes(t)/4);ggml_backend_tensor_get(t,v.data(),0,v.size()*4);return v;}
 static void put(ggml_tensor*t,const std::vector<float>&v){ggml_backend_tensor_set(t,v.data(),0,v.size()*4);}
-static int fail_stage=-1;static std::vector<int> order;
+static int fail_stage=-1;static std::vector<int> order;static size_t component_creates=0;
 namespace strata::core::portable_detail {
 struct StrataVkNativeHc{};struct StrataVkNativeHcMix{};struct StrataVkNativeHcPending{};struct StrataVkNativeHcPrefill{};
-StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t,const char*,size_t){throw std::runtime_error("legacy called");}
+StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t,const char*,size_t){++component_creates;throw std::runtime_error("legacy called");}
 size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*){return 0;}void strata_vk_native_hc_destroy(StrataVkNativeHc*) noexcept{}
 void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*,uint32_t){throw std::runtime_error("legacy norm called");}
 StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char*,size_t){throw std::runtime_error("legacy mix called");}
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*){return 0;}void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix*) noexcept{}
 void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*){throw std::runtime_error("legacy mix called");}
-StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t,const char*,size_t cap){need(cap>=512,"pending cap");return new StrataVkNativeHcPending;}
+StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t,const char*,size_t cap){++component_creates;need(cap>=512,"pending cap");return new StrataVkNativeHcPending;}
 size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*){return 512;}void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p) noexcept{delete p;}
 void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*,const ggml_tensor*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*){throw std::runtime_error("unexpected pending");}
-StrataVkNativeHcPrefill* strata_vk_native_hc_prefill_create(ggml_backend_t,const char*,size_t cap){need(cap>=512,"scalar cap");return new StrataVkNativeHcPrefill;}
+StrataVkNativeHcPrefill* strata_vk_native_hc_prefill_create(ggml_backend_t,const char*,size_t cap){++component_creates;need(cap>=512,"scalar cap");return new StrataVkNativeHcPrefill;}
 size_t strata_vk_native_hc_prefill_bytes(const StrataVkNativeHcPrefill*){return 512;}void strata_vk_native_hc_prefill_destroy(StrataVkNativeHcPrefill*p) noexcept{delete p;}
 void strata_vk_native_hc_prefill_run(StrataVkNativeHcPrefill*,uint32_t mode,uint32_t rows,const std::array<ggml_tensor*,6>&t){order.push_back(int(mode));if(fail_stage==int(mode))throw std::runtime_error("scalar fail");
  if(mode==0){auto v=get(t[0]);put(t[2],v);put(t[3],v);}else if(mode==1){auto v=get(t[0]);need(v[0]==2&&((rows==1)||v[320]==4),"down not copied before SiLU");std::vector<float>x(rows*320);x[0]=1;if(rows==2)x[320]=2;put(t[2],x);put(t[3],x);}else {auto v=get(t[1]);need(v[0]==3&&((rows==1)||v[10240]==6),"up not copied before inject/mix");std::vector<float>x(rows*2560,7);put(t[2],x);}}
@@ -48,6 +48,14 @@ int main(){try{
  hc->reset();need(fails([&]{old->rows();}),"reset stale");hc->run(1,2,tx,h2,consume,consume);need(tx.position()==4,"reset recovery");hc->reset();need(fails([&]{view->rows();}),"second reset stale");
  auto tail=tx.stage(4,{1},std::vector<float>(10240));auto one=[](const HC::View&v,uint32_t n){need(n==1&&v.read(HC::View::Field::inject)[0]==4,"T1 products");};hc->run(1,4,tx,tail,one,one);need(hc->rows()==1&&tx.position()==5,"T1 transition");
  auto again=tx.stage(5,{1,2},std::vector<float>(20480));hc->run(1,5,tx,again,consume,consume);need(hc->rows()==2&&tx.position()==7,"T2 reuse");
+ // Invalid roles fail before backend/budget/role inspection, allocation or dispatch,
+ // for both arithmetic methods and the direct prefill factory overload.
+ {struct Role{int layer;bool attention,terminal;};const Role invalid[]={{-1,false,false},{48,false,false},{47,false,false},{3,false,true},{0,false,true},{1,true,false},{3,true,true},{47,true,true}};
+  auto boundary=[](auto f){try{f();return false;}catch(const std::runtime_error&e){return std::string(e.what())=="FFN HC factory: invalid layer/role";}};
+  auto before=component_creates;auto dispatches=order.size();for(auto r:invalid){for(auto method:{PortableHcReadMethod::legacy_decode,PortableHcReadMethod::baseline_prefill_bf16}){
+   PortableHcReadSelection sel{method,512,512};need(boundary([&]{NativeFfnHcFactory::create_selected(r.layer,nullptr,{},0,0,nullptr,{},sel,r.attention,r.terminal);}),"selected role boundary");}
+   need(boundary([&]{NativeFfnHcFactory::create_prefill(r.layer,nullptr,{},0,0,nullptr,caps,r.attention,r.terminal);}),"direct prefill role boundary");}
+  need(component_creates==before&&order.size()==dispatches,"invalid role created/dispatched component");}
  // Exact named Q8 roles go through the real factory conversion for both halves.
  hc.reset();std::vector<float> norm(10240,1);std::vector<uint8_t> qi(40960/32*34),qd(3276800/32*34),qu(qd.size());
  for(auto* q:{&qi,&qd,&qu}){(*q)[0]=0;(*q)[1]=0x3c;}qi[2]=4;qd[2]=2;qu[2]=3;
@@ -59,5 +67,11 @@ int main(){try{
   need(fails([&]{NativeFfnHcFactory::selected_device_bound(b.get(),{},PortableHcReadSelection{PortableHcReadMethod::baseline_prefill_bf16,1,512});}),"short component cap");
   need(fails([&]{NativeFfnHcFactory::selected_host_bound(4,PortableHcReadSelection{static_cast<PortableHcReadMethod>(99),0,0});}),"invalid method");
   auto selected=NativeFfnHcFactory::create_selected(3,b.get(),views,exact,hbound,"mock",{},sel,attention);need(selected->read_method()==PortableHcReadMethod::baseline_prefill_bf16,"factory selected method");uint16_t word=0;ggml_backend_tensor_get(selected->role_bank()->role(2),&word,0,2);need(word==0x4000,"factory down conversion");ggml_backend_tensor_get(selected->role_bank()->role(3),&word,0,2);need(word==0x4040,"factory up conversion");ggml_backend_tensor_get(selected->role_bank()->role(1),&word,0,2);need(word==0x4080,"factory injection conversion");}
+ // Layer 47 attention is ordinary; layer 47 FFN requires terminal opt-in.
+ for(bool attention:{false,true}){std::string pre=std::string("blk.47.hc_")+(attention?"attn_":"ffn_");using strata::core::PortableTensorView;
+  std::vector<PortableTensorView> views{{pre+"norm.weight",{10240},0,norm.data(),norm.size()*4},{pre+"inject.weight",{10240,4},8,qi.data(),qi.size()},{pre+"down.weight",{10240,320},8,qd.data(),qd.size()},{pre+"up.weight",{320,10240},8,qu.data(),qu.size()}};
+  PortableHcReadSelection sel{PortableHcReadMethod::baseline_prefill_bf16,512,512};auto h=NativeFfnHcFactory::prefill_host_bound(4);auto d=NativeFfnHcFactory::selected_device_bound(b.get(),{},sel);
+  auto selected=NativeFfnHcFactory::create_selected(47,b.get(),views,d,h,"mock",{},sel,attention,!attention);need(selected->read_method()==sel.method,"terminal/attention selected control");selected.reset();
+  auto direct=NativeFfnHcFactory::create_prefill(47,b.get(),views,d,h,"mock",caps,attention,!attention);need(direct->read_method()==sel.method,"terminal/attention direct control");}
  puts("HC selected composition: real CPU product graphs, mocked scalar stages; no device arithmetic");return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}

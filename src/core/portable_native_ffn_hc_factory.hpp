@@ -11,6 +11,13 @@ class NativeFfnHcFactory {
     using Context=std::unique_ptr<ggml_context,decltype(&ggml_free)>;
     using Buffer=std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>;
     static void need(bool b,const char* m){if(!b)throw std::runtime_error(m);}
+    // PLE attention is materialized separately; this factory covers layer-zero
+    // attention, ordinary attention, ordinary FFN, and explicit terminal FFN.
+    static void require_selected_role(int layer,bool attention,bool terminal){
+        need(layer>=0&&layer<48&&!(attention&&terminal)&&
+             (attention?(layer==0||layer>=2):((layer<47&&!terminal)||(layer==47&&terminal))),
+             "FFN HC factory: invalid layer/role");
+    }
 public:
     // Conservative requested host payload. Includes one largest Q8->BF16
     // conversion while upload is resident, temporary metadata and the HC
@@ -76,8 +83,9 @@ public:
     static size_t prefill_host_bound(size_t prefix_bytes){return ple_host_add(6553600+16384,PortableNativeHcPrefillSelection::host_bound(prefix_bytes));}
     static std::unique_ptr<PortableNativeHcComposed> create_prefill(int layer,ggml_backend_t backend,
         const std::vector<PortableTensorView>& views,size_t device_budget,size_t host_budget,
-        const char* prefix,PortableNativeHcComposed::PrefillCaps caps,bool attention=false){
-        need(layer>=0&&layer<48&&backend&&prefix&&*prefix,"FFN HC prefill: layer/backend/prefix");
+        const char* prefix,PortableNativeHcComposed::PrefillCaps caps,bool attention=false,bool terminal=false){
+        require_selected_role(layer,attention,terminal);
+        need(backend&&prefix&&*prefix,"FFN HC prefill: layer/backend/prefix");
         native_hc_environment();size_t plen=std::strlen(prefix);need(prefill_host_bound(plen)<=host_budget,"FFN HC prefill: host budget");
         const auto selected=select(layer,views,attention);const std::array<size_t,4> elements{{10240,40960,3276800,3276800}};
         Context ctx(ggml_init({16384,nullptr,true}),ggml_free);need(bool(ctx),"FFN HC prefill: metadata");
@@ -103,7 +111,7 @@ public:
         return PortableNativeHcPrefillSelection::device_bound_with_source(backend,r,{sel.pending,sel.scalar},upload);
     }
     static std::unique_ptr<PortableNativeHcComposed> create_selected(int layer,ggml_backend_t backend,const std::vector<PortableTensorView>& views,size_t device,size_t host,const char* prefix,PortableNativeHcComposed::ComponentCaps caps,PortableHcReadSelection sel,bool attention=false,bool terminal=false){
-        sel.validate();if(sel.method==PortableHcReadMethod::baseline_prefill_bf16)return create_prefill(layer,backend,views,device,host,prefix,{sel.pending,sel.scalar},attention);
+        require_selected_role(layer,attention,terminal);sel.validate();if(sel.method==PortableHcReadMethod::baseline_prefill_bf16)return create_prefill(layer,backend,views,device,host,prefix,{sel.pending,sel.scalar},attention,terminal);
         return create(layer,backend,views,device,host,prefix,{},caps,attention&&layer==0,terminal,attention&&layer>=2);
     }
     static std::vector<PortableTensorView> from_gguf(const GgufModel& model,int layer,bool attention=false){
