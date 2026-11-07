@@ -12,6 +12,7 @@ int main(int argc,char**argv){try{
  auto code=native_component_float_controls(strata_native_ple_conv_t1_spv,sizeof(strata_native_ple_conv_t1_spv)/4,NativeComponentAddressing::descriptor);
  size_t dots=0,fmas=0,modes=0,mul=0,add=0,div=0;std::set<uint32_t> precise;
  for(size_t p=5;p<code.size();p+=code[p]>>16){const auto n=code[p]>>16,op=code[p]&65535;need(n&&p+n<=code.size(),"PLE convolution malformed module");
+  if(op==spv::OpCapability&&n==2)need(code[p+1]!=spv::CapabilityDenormPreserve,"PLE convolution unexpected denorm capability");
   if(op==spv::OpDecorate&&code[p+2]==spv::DecorationNoContraction)precise.insert(code[p+1]);
   dots+=op==spv::OpSDot;fmas+=op==4427;mul+=op==spv::OpFMul;add+=op==spv::OpFAdd;div+=op==spv::OpFDiv;
   if(op==spv::OpFAdd||op==spv::OpFMul||op==spv::OpFDiv)need(precise.count(code[p+2]),"PLE convolution arithmetic can contract");

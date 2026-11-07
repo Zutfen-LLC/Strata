@@ -19,6 +19,11 @@ class PortablePleTable {
     static std::shared_ptr<PortablePleTable> from_gguf(const GgufModel &model, std::string &error);
     bool gather(int32_t token, const std::array<int32_t, 2> &previous, std::array<uint32_t, 16> &rows,
                 std::vector<float> &embedding, std::string &error) const;
+    // Gather T1/T2 in token order. Outputs are replaced only on success.
+    bool gather_batch(const std::vector<int32_t> &tokens,
+                      const std::vector<std::array<int32_t, 2>> &predecessors,
+                      std::vector<std::array<uint32_t, 16>> &rows,
+                      std::vector<float> &embedding, std::string &error) const;
     uint64_t rows() const;
     const PortablePleConfig &config() const;
 

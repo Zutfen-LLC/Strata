@@ -39,13 +39,13 @@ float checked(float v) {
     return v;
 }
 void main() {
-    uint tid=gl_LocalInvocationID.x, row=gl_WorkGroupID.x, lane=tid&31u;
+    uint tid=gl_LocalInvocationID.x, row=gl_WorkGroupID.x, lane=tid&31u, token=gl_WorkGroupID.y;
     if(row>=4u) return;
     float products[8];
     for(uint j=0u;j<8u;++j) {
         uint d=tid+j*512u;
         precise float product=0.0;
-        if(d<2560u) product=checked(checked(key[p.off[0]+row*2560u+d])*checked(query[p.off[1]+row*2560u+d]));
+        if(d<2560u) product=checked(checked(key[p.off[0]+(token*4u+row)*2560u+d])*checked(query[p.off[1]+(token*4u+row)*2560u+d]));
         precise float accumulated=checked(0.0+product);
         products[j]=accumulated;
     }
@@ -69,10 +69,10 @@ void main() {
         float exponent=checked(exp(-signed_magnitude));
         precise float denominator=checked(1.0+exponent);
         precise float result=checked(1.0/denominator);
-        diagnostic[p.off[3]+4u*row]=partial[0];
-        diagnostic[p.off[3]+4u*row+1u]=score;
-        diagnostic[p.off[3]+4u*row+2u]=exponent;
-        diagnostic[p.off[3]+4u*row+3u]=denominator;
-        gate[p.off[2]+row]=result;
+        diagnostic[p.off[3]+4u*(token*4u+row)]=partial[0];
+        diagnostic[p.off[3]+4u*(token*4u+row)+1u]=score;
+        diagnostic[p.off[3]+4u*(token*4u+row)+2u]=exponent;
+        diagnostic[p.off[3]+4u*(token*4u+row)+3u]=denominator;
+        gate[p.off[2]+token*4u+row]=result;
     }
 }

@@ -19,4 +19,7 @@ uint64_t strata_vk_q8_wo_submission_uncertain(const StrataVkQ8Wo*) noexcept;
 void strata_vk_q8_wo_destroy(StrataVkQ8Wo*) noexcept;
 void strata_vk_q8_wo_run(StrataVkQ8Wo*,const ggml_tensor* weights,const ggml_tensor* packed,
                          ggml_tensor* output,size_t rows);
+// PLE key: vocabulary component, shared weights, contiguous token-major banks, T=1 or 2.
+void strata_vk_ple_key_run_bounded(StrataVkQ8Wo*,const ggml_tensor* weights,const ggml_tensor* packed,
+                                   ggml_tensor* output,size_t rows,size_t tokens);
 }

@@ -32,7 +32,7 @@ void strata_vk_native_shared_run(StrataVkNativeShared* s,uint32_t mode,const ggm
     const ggml_tensor* input,ggml_tensor* output,ggml_tensor* aux,uint32_t ni,uint32_t no,uint32_t tokens) {
     native_shared_need(s && mode<=2 && weights && input && output && aux,"native shared: invalid call");
     native_shared_shape(ni,mode==0?no:32,tokens);
-    if(s->matrix)native_shared_need(mode==1 && ni==2560 && (s->ple_value ? no==2560 : (no==128 || no==512)) && tokens==1,"native BF16 matrix: unsupported geometry");
+    if(s->matrix)native_shared_matrix_shape(s->ple_value,mode,ni,no,tokens);
     else native_shared_need(mode==0 || no==1,"native shared: scalar/scale require no=1");
     native_shared_need(weights->type==(mode==2?GGML_TYPE_F32:GGML_TYPE_I32) &&
         input->type==(mode==0?GGML_TYPE_I32:GGML_TYPE_F32) && output->type==GGML_TYPE_F32 && aux->type==GGML_TYPE_F32,

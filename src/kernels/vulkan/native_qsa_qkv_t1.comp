@@ -20,7 +20,7 @@ void main() {
     precise float sum=0.0;
     for(uint kbx=tid/4u;kbx<80u;kbx+=32u) {
         uint kqs=2u*(tid%4u),base=p.wb*4u+row*2720u+kbx*34u;
-        uint xi=p.xb+kbx*9u;
+        uint xi=p.xb+gl_WorkGroupID.y*720u+kbx*9u;
         int dot=dotPacked4x8EXT(int(load_word(base+2u+kqs*4u)),int(input_q8[xi+1u+kqs]));
         dot+=dotPacked4x8EXT(int(load_word(base+6u+kqs*4u)),int(input_q8[xi+2u+kqs]));
         precise float scale=unpackHalf2x16(load_word(base)).x*unpackHalf2x16(input_q8[xi]).x;
@@ -36,5 +36,5 @@ void main() {
         float next=0.0;if(tid<32u){precise float value=partial[tid]+partial[tid^offset];next=value;}
         barrier();if(tid<32u)partial[tid]=next;barrier();
     }
-    if(tid==0u && row<p.rows)output_values[p.yb+row]=partial[0];
+    if(tid==0u && row<p.rows)output_values[p.yb+gl_WorkGroupID.y*p.rows+row]=partial[0];
 }

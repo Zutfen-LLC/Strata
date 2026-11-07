@@ -177,6 +177,25 @@ int main() {
             check(tokenizer_eos == oracle(7, {{11,248046}}, config) && tokenizer_eos != fresh,
                   "tokenizer EOS is an ordinary PLE predecessor and must not cut history");
         }
+        {
+            std::vector<std::array<uint32_t, 16>> rows;
+            std::vector<float> embedding;
+            check(table->gather_batch({7, 9}, {{{3, 5}}, {{5, 7}}}, rows, embedding, error), error);
+            check(rows.size() == 2 && rows[0] == oracle(7, {{3, 5}}, config) &&
+                  rows[1] == oracle(9, {{5, 7}}, config), "batch predecessor mapping");
+            std::array<uint32_t, 16> single_rows{};
+            std::vector<float> single;
+            check(table->gather(9, {{5, 7}}, single_rows, single, error), error);
+            check(std::equal(single.begin(), single.end(), embedding.begin() + 2560), "batch row order");
+            const auto saved_rows = rows;
+            const auto saved_embedding = embedding;
+            check(!table->gather_batch({7, -1}, {{{3, 5}}, {{5, 7}}}, rows, embedding, error), "batch invalid token");
+            check(rows == saved_rows && embedding == saved_embedding, "batch failure preserves outputs");
+            check(!table->gather_batch({7, 9}, {{{3, 5}}, {{3, 7}}}, rows, embedding, error), "batch broken chain");
+            check(rows == saved_rows && embedding == saved_embedding, "batch chain failure preserves outputs");
+            check(table->gather_batch({9}, {{{5, 7}}}, rows, embedding, error), error);
+            check(rows.size() == 1 && rows[0] == single_rows && embedding == single, "batch T1 tail");
+        }
         PortableTensorView tv{"per_layer_token_embd.weight", {160, 272}, 8, bytes.data(), bytes.size()};
         check(!PortablePleTable::copy(tv, config, 1, error), "copy budget");
         auto bad = config;

@@ -37,6 +37,10 @@ function(strata_native_shared_enable out)
     add_dependencies(native_shared_dispatch_test strata_native_shared_shader)
     add_dependencies(native_shared_dispatch_test strata_qsa_indexer_bf16_shader)
     add_test(NAME native_shared_dispatch_test COMMAND native_shared_dispatch_test)
+    add_executable(native_ple_key_dispatch_test tests/kernels/native_ple_key_dispatch_test.cpp)
+    target_include_directories(native_ple_key_dispatch_test PRIVATE src/core "${vk_source}/..")
+    target_link_libraries(native_ple_key_dispatch_test PRIVATE ggml-base)
+    add_test(NAME native_ple_key_dispatch_test COMMAND native_ple_key_dispatch_test)
     add_test(NAME native_qsa_indexer_bf16_contract_test COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_native_qsa_indexer_bf16_contract.py"
       "$<TARGET_FILE:native_qsa_indexer_bf16_input_test>" "$<TARGET_FILE:native_qsa_indexer_bf16_component>")

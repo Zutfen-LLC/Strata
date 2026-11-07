@@ -9,7 +9,10 @@ inline void native_spirv_need(bool ok,const char* message) {if(!ok)throw std::ru
 // Add mandatory FP32 execution modes. The pinned helper may additionally enable
 // supported FP16 modes; this shader has no FP16 arithmetic or storage types.
 inline std::vector<uint32_t> native_stage_float_controls(const uint32_t* code,size_t count) {
-    std::vector<uint32_t> words(code,code+count);
+    if (count > std::vector<uint32_t>().max_size() - 18) throw std::overflow_error("native shader word count");
+    std::vector<uint32_t> words;
+    words.reserve(count+18); // three four-word modes and three two-word capabilities
+    words.insert(words.end(),code,code+count);
     size_t caps=5,exec=0;uint32_t entry=0;
     for(size_t pos=5;pos<words.size();) {
         const uint32_t op=words[pos]&spv::OpCodeMask,len=words[pos]>>spv::WordCountShift;

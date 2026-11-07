@@ -3,6 +3,9 @@
 // separate ple_history_advance. History is channel-major, nine rows per channel.
 // The next history is a distinct candidate; the caller must not commit it until
 // the entire token succeeds. This module alone does not establish CUDA parity.
+// The shared native float-control contract does not require FP32 DenormPreserve.
+// Status catches observable nonfinite/subnormal values, but cannot guarantee
+// detection of an underflow already flushed to zero by the implementation.
 layout(local_size_x=256) in;
 layout(binding=0,std430) readonly buffer History { float history[]; };
 layout(binding=1,std430) readonly buffer Normalized { float normalized[]; };
@@ -14,29 +17,40 @@ layout(binding=6,std430) writeonly buffer Convolution { float convolution[]; };
 layout(binding=7,std430) writeonly buffer Result { float result[]; };
 layout(binding=8,std430) writeonly buffer Preactivation { float preactivation[]; };
 layout(binding=9,std430) writeonly buffer Exponent { float exponent_out[]; };
-layout(push_constant) uniform P { uint off[10]; } p;
+layout(binding=10,std430) buffer Status { uint status[]; };
+layout(push_constant) uniform P { uint off[11]; } p;
+float checked(float v) {
+    uint bits=floatBitsToUint(v)&0x7fffffffu;
+    if(bits>=0x7f800000u || (bits!=0u && bits<0x00800000u)) atomicOr(status[p.off[10]],1u);
+    return v;
+}
 void main() {
     uint c=gl_GlobalInvocationID.x;
+    uint row=gl_GlobalInvocationID.y;
+    uint rows=gl_NumWorkGroups.y;
+    uint index=row*10240u+c;
     if(c>=10240u)return;
     // Packed native F16 weights are [4, 10240], with the tap index fastest.
     vec2 w01=unpackHalf2x16(weights[p.off[2]+c*2u]);
     vec2 w23=unpackHalf2x16(weights[p.off[2]+c*2u+1u]);
-    precise float t0=history[p.off[0]+c*9u]*w01.x;
-    precise float t1=history[p.off[0]+c*9u+3u]*w01.y;
-    precise float t2=history[p.off[0]+c*9u+6u]*w23.x;
-    precise float t3=normalized[p.off[1]+c]*w23.y;
-    precise float s01=t0+t1;
-    precise float s012=s01+t2;
-    precise float sum=s012+t3;
-    float exponent=exp(-sum);
-    precise float denominator=1.0+exponent;
-    precise float activation=sum/denominator;
-    precise float gated_conv=gated[p.off[4]+c]+activation;
-    precise float output_value=hidden[p.off[3]+c]+gated_conv;
-    preactivation[p.off[8]+c]=sum;
-    exponent_out[p.off[9]+c]=exponent;
-    convolution[p.off[6]+c]=activation;
-    result[p.off[7]+c]=output_value;
-    for(uint i=0u;i<8u;++i)next_history[p.off[5]+c*9u+i]=history[p.off[0]+c*9u+i+1u];
-    next_history[p.off[5]+c*9u+8u]=normalized[p.off[1]+c];
+    precise float t0=checked(checked(history[p.off[0]+c*9u+row])*checked(w01.x));
+    precise float t1=checked(checked(history[p.off[0]+c*9u+row+3u])*checked(w01.y));
+    precise float t2=checked(checked(history[p.off[0]+c*9u+row+6u])*checked(w23.x));
+    precise float t3=checked(checked(normalized[p.off[1]+index])*checked(w23.y));
+    precise float s01=checked(t0+t1);
+    precise float s012=checked(s01+t2);
+    precise float sum=checked(s012+t3);
+    float exponent=checked(exp(-sum));
+    precise float denominator=checked(1.0+exponent);
+    precise float activation=checked(sum/denominator);
+    precise float gated_conv=checked(checked(gated[p.off[4]+index])+activation);
+    precise float output_value=checked(checked(hidden[p.off[3]+index])+gated_conv);
+    preactivation[p.off[8]+index]=sum;
+    exponent_out[p.off[9]+index]=exponent;
+    convolution[p.off[6]+index]=activation;
+    result[p.off[7]+index]=output_value;
+    if(row==0u) {
+        for(uint i=0u;i<9u-rows;++i)next_history[p.off[5]+c*9u+i]=checked(history[p.off[0]+c*9u+i+rows]);
+        for(uint r=0u;r<rows;++r)next_history[p.off[5]+c*9u+9u-rows+r]=checked(normalized[p.off[1]+r*10240u+c]);
+    }
 }

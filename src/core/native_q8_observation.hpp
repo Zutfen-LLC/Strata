@@ -53,28 +53,37 @@ inline void native_q8_validate_observation_effective(const uint32_t* input,size_
             rte32+=input[p+2]==spv::ExecutionModeRoundingModeRTE;
         }p+=n;}
     native_spirv_need(entry && signed32==1 && rte32==1,"observation: required FP32 modes missing");
-    std::vector<std::vector<uint32_t>> additions;
-    if(rte16)additions.push_back({(4u<<16)|spv::OpExecutionMode,entry,spv::ExecutionModeRoundingModeRTE,16});
-    if(preserve16)additions.push_back({(4u<<16)|spv::OpExecutionMode,entry,spv::ExecutionModeDenormPreserve,16});
-    if(rte16 || preserve16){
-        const char ext[]="SPV_KHR_float_controls";
-        std::vector<uint32_t> e(1+(sizeof(ext)+3)/4,0);e[0]=(uint32_t(e.size())<<16)|spv::OpExtension;
-        std::memcpy(e.data()+1,ext,sizeof(ext));additions.push_back(e);
-    }
-    if(rte16)additions.push_back({(2u<<16)|spv::OpCapability,spv::CapabilityRoundingModeRTE});
-    if(preserve16)additions.push_back({(2u<<16)|spv::OpCapability,spv::CapabilityDenormPreserve});
+    // Fixed-size candidate storage: validation owns no dynamic instruction payload.
+    // Matching remains greedy, input first, then the first unconsumed addition.
+    const char ext[]="SPV_KHR_float_controls";
+    struct Candidate { uint32_t words[1+(sizeof(ext)+3)/4]{}; size_t size=0; bool pending=false; };
+    Candidate additions[5];
+    auto set = [&](size_t i, std::initializer_list<uint32_t> words, bool enabled) {
+        additions[i].size=words.size(); additions[i].pending=enabled;
+        std::copy(words.begin(),words.end(),additions[i].words);
+    };
+    set(0,{(4u<<16)|spv::OpExecutionMode,entry,spv::ExecutionModeRoundingModeRTE,16},rte16);
+    set(1,{(4u<<16)|spv::OpExecutionMode,entry,spv::ExecutionModeDenormPreserve,16},preserve16);
+    additions[2].size=1+(sizeof(ext)+3)/4; additions[2].pending=rte16 || preserve16;
+    additions[2].words[0]=(uint32_t(additions[2].size)<<16)|spv::OpExtension;
+    std::memcpy(additions[2].words+1,ext,sizeof(ext));
+    set(3,{(2u<<16)|spv::OpCapability,spv::CapabilityRoundingModeRTE},rte16);
+    set(4,{(2u<<16)|spv::OpCapability,spv::CapabilityDenormPreserve},preserve16);
     size_t at=5;
     for(size_t p=5;p<effective_count;){uint32_t n=effective[p]>>16;
         native_spirv_need(n && p+n<=effective_count,"observation: malformed effective module");
         if(at+n<=input_count && std::equal(effective+p,effective+p+n,input+at))at+=n;
         else {
-            auto extra=std::find(additions.begin(),additions.end(),std::vector<uint32_t>(effective+p,effective+p+n));
-            native_spirv_need(extra!=additions.end(),"observation: helper changed an instruction outside allowed FP16 metadata");
-            additions.erase(extra);
+            auto extra=std::find_if(std::begin(additions),std::end(additions),[&](const Candidate& c) {
+                return c.pending && c.size==n && std::equal(effective+p,effective+p+n,c.words);
+            });
+            native_spirv_need(extra!=std::end(additions),"observation: helper changed an instruction outside allowed FP16 metadata");
+            extra->pending=false;
         }
         p+=n;
     }
-    native_spirv_need(at==input_count && additions.empty(),"observation: effective module lost instructions or metadata");
+    native_spirv_need(at==input_count && std::none_of(std::begin(additions),std::end(additions),
+        [](const Candidate& c){return c.pending;}),"observation: effective module lost instructions or metadata");
     if(path){std::ofstream out(path,std::ios::binary);native_spirv_need(bool(out),"observation: cannot create effective SPIR-V receipt");
         out.write(reinterpret_cast<const char*>(effective),effective_count*4);native_spirv_need(bool(out),"observation: effective SPIR-V write failed");}
 }

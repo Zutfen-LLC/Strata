@@ -1,5 +1,6 @@
 // Standalone consumer of already packed inputs; included in the pin-checked TU.
 #include "strata_vk_q8_gu.hpp"
+#include "native_component_host_bound.hpp"
 #include "native_q8_address.hpp"
 #include "strata_q8_gu_spv.hpp"
 #ifdef STRATA_NATIVE_Q8_STRICT_FMA
@@ -51,7 +52,7 @@ static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_ba
     logits_guard_need(effective_spv_path && *effective_spv_path,"Q8 component: effective shader receipt required");
     logits_guard_need(bool(fp.shaderDenormPreserveFloat16)==ctx->device->float_controls_denorm_preserve_fp16 &&
         bool(fp.shaderRoundingModeRTEFloat16)==ctx->device->float_controls_rte_fp16,"Q8 component: cached controls differ from query");
-    g.metadata.reset(ggml_init({4096,nullptr,true}));logits_guard_need(bool(g.metadata),"Q8 component: metadata allocation failed");
+    g.metadata.reset(ggml_init({native_component_metadata_arena_bytes,nullptr,true}));logits_guard_need(bool(g.metadata),"Q8 component: metadata allocation failed");
     g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,metadata_words);
     const size_t bound=ggml_backend_alloc_ctx_tensors_from_buft_size(g.metadata.get(),ggml_backend_get_default_buffer_type(backend));
     logits_guard_need(bound<=budget,"Q8 component: aligned metadata budget exceeded");

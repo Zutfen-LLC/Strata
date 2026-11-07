@@ -1,5 +1,6 @@
 #pragma once
 #include "strata_vk_native_ple_conv.hpp"
+#include "portable_native_ple_host_bound.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "native_hc_layout.hpp"
 #include "ggml-alloc.h"
@@ -23,17 +24,21 @@ class PortableNativePleConv {
     ggml_backend_t backend_;
     std::array<ggml_tensor*,10> tensors_{};
     std::array<const ggml_tensor*,4> copies_{},originals_{};
-    size_t bytes_=0;
+    size_t bytes_=0, rows_=1;
+    std::array<size_t,10> sizes_;
     uint64_t calls_=0;
     bool ready_=false,recorded_=false;
     std::filesystem::path directory_;
     std::array<std::vector<float>,4> before_;
     std::vector<float> next_,result_;
-    static constexpr std::array<size_t,10> sizes_{92160,10240,20480,10240,10240,92160,10240,10240,10240,10240};
+    static std::array<size_t,10> sizes(size_t rows){
+        need(rows==1||rows==2,"PLE conv: rows must be 1 or 2");
+        return {92160,10240*rows,20480,10240*rows,10240*rows,92160,10240*rows,10240*rows,10240*rows,10240*rows};
+    }
     static constexpr std::array<size_t,4> slots_{0,1,3,4};
     static void need(bool b,const char* message){if(!b)throw std::runtime_error(message);}
     static Context context(){Context c(ggml_init({16384,nullptr,true}),ggml_free);need(bool(c),"PLE conv: metadata");return c;}
-    static void leaves(ggml_context* c,std::array<ggml_tensor*,10>& t){
+    static void leaves(ggml_context* c,std::array<ggml_tensor*,10>& t,const std::array<size_t,10>& sizes_){
         for(size_t i=0;i<t.size();++i){t[i]=ggml_new_tensor_1d(c,i==2?GGML_TYPE_I32:GGML_TYPE_F32,sizes_[i]);ggml_set_input(t[i]);}
     }
     void span(const ggml_tensor* t,size_t bytes) const {
@@ -42,6 +47,13 @@ class PortableNativePleConv {
         need(type==ggml_backend_get_default_buffer_type(backend_)&&owner&&(dev?dev==owner:(ggml_backend_buft_is_host(type)&&ggml_backend_dev_type(owner)==GGML_BACKEND_DEVICE_TYPE_CPU)),"PLE conv: producer device");
     }
 public:
+    // Conservative payload envelope: old retained snapshots coexist with new
+    // snapshots and comparison/receipt buffers on repeated runs. Includes the
+    // context and the constructor's temporary packed role, not borrowed inputs.
+    static constexpr size_t host_bound(size_t rows) {
+        return ple_host_add(16384, ple_host_add(40960*sizeof(uint16_t),
+            ple_host_mul(ple_host_add(5*92160, ple_host_mul(20*10240, rows)), sizeof(float))));
+    }
     // Native pack kind F16InF32 narrows the original F32 role with this exact
     // converter; raw F16 roles are copied. The packer refuses nonfinite and
     // F16-overflowing values instead of silently changing them.
@@ -59,9 +71,9 @@ public:
         }
         return out;
     }
-    static size_t estimate(ggml_backend_t backend){
+    static size_t estimate(ggml_backend_t backend,size_t rows=1){
         need(backend,"PLE conv: backend");
-        auto c=context();std::array<ggml_tensor*,10> t{};leaves(c.get(),t);
+        auto c=context();std::array<ggml_tensor*,10> t{};leaves(c.get(),t,sizes(rows));
         auto type=ggml_backend_get_default_buffer_type(backend);
         const auto bank=ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),type);
         auto metadata=context();ggml_new_tensor_1d(metadata.get(),GGML_TYPE_I32,1);
@@ -69,12 +81,12 @@ public:
         need(bank<=SIZE_MAX-status,"PLE conv: budget overflow");
         return bank+status;
     }
-    PortableNativePleConv(ggml_backend_t backend,const void* weights,size_t weight_bytes,uint32_t role_type,const char* module,size_t budget):backend_(backend),directory_(std::filesystem::path(module).parent_path()){
+    PortableNativePleConv(ggml_backend_t backend,const void* weights,size_t weight_bytes,uint32_t role_type,const char* module,size_t budget,size_t rows=1):backend_(backend),rows_(rows),sizes_(sizes(rows)),directory_(std::filesystem::path(module).parent_path()){
         need(backend,"PLE conv: backend required");
         const auto packed=native_weights(weights,weight_bytes,role_type);
-        const auto admitted=estimate(backend);
+        const auto admitted=estimate(backend,rows_);
         need(admitted<=budget,"PLE conv: allocation budget");
-        ctx_=context();leaves(ctx_.get(),tensors_);
+        ctx_=context();leaves(ctx_.get(),tensors_,sizes_);
         const auto bound=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),ggml_backend_get_default_buffer_type(backend));
         need(bound<=budget,"PLE conv: allocation budget");
         component_.reset(strata_vk_native_ple_conv_create(backend,module,budget));need(bool(component_),"PLE conv: component");
@@ -133,7 +145,7 @@ public:
         strata_vk_native_ple_conv_run(component_.get(),tensors_.data());
         for(size_t i=0;i<4;++i){std::vector<float> after(before[i].size());ggml_backend_tensor_get(input(i),after.data(),0,after.size()*4);need(std::memcmp(before[i].data(),after.data(),after.size()*4)==0,"PLE conv: input changed");}
         std::vector<float> next(sizes_[5]);ggml_backend_tensor_get(history(),next.data(),0,next.size()*4);
-        for(size_t c=0;c<10240;++c){for(size_t j=0;j<8;++j)need(std::memcmp(&next[9*c+j],&before[0][9*c+j+1],4)==0,"PLE conv: candidate history differs");need(std::memcmp(&next[9*c+8],&before[1][c],4)==0,"PLE conv: appended history differs");}
+        for(size_t c=0;c<10240;++c){for(size_t j=0;j<9-rows_;++j)need(std::memcmp(&next[9*c+j],&before[0][9*c+j+rows_],4)==0,"PLE conv: candidate history differs");for(size_t r=0;r<rows_;++r)need(std::memcmp(&next[9*c+9-rows_+r],&before[1][r*10240+c],4)==0,"PLE conv: appended history differs");}
         for(size_t i=6;i<10;++i){std::vector<float> out(sizes_[i]);ggml_backend_tensor_get(tensors_[i],out.data(),0,out.size()*4);for(float x:out)native_hc_normal(x);}
         before_=std::move(before);next_=std::move(next);result_.resize(sizes_[7]);
         ggml_backend_tensor_get(result(),result_.data(),0,result_.size()*4);
@@ -145,7 +157,7 @@ public:
                            uint64_t position,int32_t token,const std::array<int32_t,2>& previous){
         need(ready_&&result_view&&history_view&&result_view->view_src==result()&&history_view->view_src==history(),
              "PLE conv: downstream producer identity");
-        span(result_view,10240*4);span(history_view,92160*4);
+        span(result_view,10240*rows_*4);span(history_view,92160*4);
         auto unchanged=[&](ggml_tensor* t,const std::vector<float>& expected){
             std::vector<float> got(expected.size());ggml_backend_tensor_get(t,got.data(),0,got.size()*4);
             need(std::memcmp(got.data(),expected.data(),got.size()*4)==0,"PLE conv: candidate changed");

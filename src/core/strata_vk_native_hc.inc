@@ -62,4 +62,43 @@ void strata_vk_native_hc_run(StrataVkNativeHc* p,const ggml_tensor* residual,con
 #include "strata_vk_native_qsa_select.inc"
 
 #include "strata_vk_native_qsa_attention.inc"
+
+#include "native_component_host_bound.hpp"
+namespace strata::core::portable_detail {
+size_t native_component_factory_host_bound(NativeComponentHostKind kind, size_t path_bytes) {
+    size_t words=0, wrapper=0, name=0;
+#define COMPONENT_BOUND(k, shader, type, label) \
+    case NativeComponentHostKind::k: words=sizeof(shader)/sizeof(uint32_t); wrapper=sizeof(type); name=sizeof(label); break
+    switch(kind) {
+    COMPONENT_BOUND(hc, strata_native_hc_spv, StrataVkNativeHc, "strata_native_hc_norm_inject_observation");
+    COMPONENT_BOUND(hc_pending, strata_native_hc_pending_spv, StrataVkNativeHcPending, "strata_native_hc_pending_observation");
+    COMPONENT_BOUND(hc_write, strata_native_hc_write_spv, StrataVkNativeHcPending, "strata_native_hc_write_observation");
+    COMPONENT_BOUND(hc_mix, strata_native_hc_mix_spv, StrataVkNativeHcMix, "strata_native_hc_mix_observation");
+    COMPONENT_BOUND(hc_head_mix, strata_native_head_hc_mix_rn_spv, StrataVkNativeHcMix, "strata_native_head_hc_mix_rn_observation");
+    COMPONENT_BOUND(ple_conv, strata_native_ple_conv_t1_spv, StrataVkNativePleConv, "strata_native_ple_conv_t1_observation");
+    COMPONENT_BOUND(ple_gate, strata_native_ple_gate_t1_spv, StrataVkNativePleGate, "strata_native_ple_gate_t1_observation");
+    COMPONENT_BOUND(ple_norm, strata_native_ple_grouped_norm_t1_spv, StrataVkNativePleGroupedNorm, "strata_native_ple_grouped_norm_t1_observation");
+    COMPONENT_BOUND(ple_key_quant, strata_native_quant_rcp_spv, StrataVkNativeStages, "strata_native_q8_quant_rcp_observation");
+#ifdef STRATA_NATIVE_Q8_STRICT_FMA
+    COMPONENT_BOUND(ple_key_mmvq, strata_qsa_qkv_spv, StrataVkQ8Wo, "strata_native_qsa_qkv_q8_0_candidate");
+#else
+    case NativeComponentHostKind::ple_key_mmvq: throw std::runtime_error("PLE key MMVQ requires strict FMA build");
+#endif
+    COMPONENT_BOUND(ple_value, strata_qsa_indexer_bf16_spv, StrataVkNativeShared, "strata_native_ple_value_bf16_mmvf_candidate");
+    default: throw std::invalid_argument("unknown native component");
+    }
+#undef COMPONENT_BOUND
+    // Observation validation compares using fixed-size stack candidates and
+    // contributes no dynamic instruction payload alongside these rewrites.
+    // Helper/backend allocations and stream internals remain outside this sum.
+    size_t total=native_component_rewrite_host_bound(words);
+    // ggml_init's no-alloc metadata arena, shared with both factory paths.
+    total=ple_host_add(total,native_component_metadata_arena_bytes);
+    total=ple_host_add(total,wrapper);
+    total=ple_host_add(total,sizeof(StrataVkLogitsGuard));
+    total=ple_host_add(total,sizeof(vk_pipeline_struct));
+    total=ple_host_add(total,name);
+    return ple_host_add(total,ple_host_add(path_bytes,1));
+}
+}
 #endif

@@ -13,7 +13,7 @@ struct ggml_backend_vk_buffer_context{std::weak_ptr<MockDevice> device;};
 namespace strata::core::portable_detail {
 enum class NativeComponentAddressing {descriptor,physical64};
 struct StrataVkLogitsGuard{ggml_backend_t backend;ggml_tensor* status=nullptr;size_t bytes=512;int pipeline=1;};
-static bool is_vk=true,bad_input=false,input_alias=false;static size_t submissions=0;static uint32_t fake_status=0;static const ggml_tensor* status_tensor=nullptr;
+static bool is_vk=true,bad_input=false,input_alias=false,bad_second=false; static uint32_t expected_rows=1;static size_t submissions=0;static uint32_t fake_status=0;static const ggml_tensor* status_tensor=nullptr;
 static bool ggml_backend_is_vk(ggml_backend_t){return is_vk;}
 static bool ggml_backend_buffer_is_vk(ggml_backend_buffer_t){return is_vk;}
 static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_backend_t b,const uint32_t*,size_t,NativeComponentAddressing,const char*,uint32_t n,uint32_t words,const char*,size_t,size_t){if(n!=5||words!=6)throw std::runtime_error("norm pipeline layout");return std::make_unique<StrataVkLogitsGuard>(StrataVkLogitsGuard{b});}
@@ -23,8 +23,8 @@ static void ggml_pipeline_request_descriptor_sets(ggml_backend_vk_context*,int,i
 static std::shared_ptr<int> ggml_vk_get_compute_ctx(ggml_backend_vk_context*){return std::make_shared<int>(1);}
 static void ggml_vk_sync_buffers(ggml_backend_vk_context*,const std::shared_ptr<int>&){}
 static int ggml_vk_tensor_subbuffer(ggml_backend_vk_context*,const ggml_tensor*,bool){return 0;}
-static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context*,const std::shared_ptr<int>&,int,std::initializer_list<int>,const std::array<uint32_t,6>& off,const std::array<uint32_t,3>& grid){if(off!=std::array<uint32_t,6>{2,input_alias?2u:3u,4,5,6,2560}||grid!=std::array<uint32_t,3>{4,1,1})throw std::runtime_error("norm bias/grid");++submissions;}
-static void mock_get(const ggml_tensor* t,void* out,size_t,size_t n){std::memset(out,0,n);if(t==status_tensor)std::memcpy(out,&fake_status,4);else if(bad_input){uint32_t v=0x7f800000;std::memcpy(out,&v,4);}}
+static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context*,const std::shared_ptr<int>&,int,std::initializer_list<int>,const std::array<uint32_t,6>& off,const std::array<uint32_t,3>& grid){if(off!=std::array<uint32_t,6>{2,input_alias?2u:3u,4,5,6,2560}||grid!=std::array<uint32_t,3>{4,expected_rows,1})throw std::runtime_error("norm bias/grid");++submissions;}
+static void mock_get(const ggml_tensor* t,void* out,size_t,size_t n){std::memset(out,0,n);if(t==status_tensor)std::memcpy(out,&fake_status,4);else if(bad_input || (bad_second && n>40960)){uint32_t v=0x7f800000;std::memcpy(static_cast<char*>(out)+(bad_second?40960:0),&v,4);}}
 static void mock_set(ggml_tensor*,const void*,size_t,size_t){}
 }
 #include "native_hc_layout.hpp"
@@ -52,6 +52,11 @@ int main(){try{
  ggml_backend_vk_buffer_context other;other.device=std::make_shared<MockDevice>();ggml_backend_buffer foreign{};foreign.context=&other;foreign.size=100;auto* saved=q->buffer;q->buffer=&foreign;reject(run);q->buffer=saved;
  p->budget=200511;reject(run);p->budget=200512;native_hc_need(run()==0,"exact budget refused");p->budget=300000;fake_status=1;native_hc_need(run()==1&&submissions==4&&strata_vk_native_ple_grouped_norm_calls(p.get())==3,"norm device refusal accepted");
  fake_status=0;native_hc_need(run()==0&&strata_vk_native_ple_grouped_norm_calls(p.get())==4,"norm retry differs");
+ k->ne[0]=g->ne[0]=20480; d->ne[0]=24; expected_rows=2;
+ native_hc_need(run()==0,"norm T2 dispatch");
+ bad_second=true;reject(run);bad_second=false;
+ vk.device->properties.limits.maxComputeWorkGroupCount[1]=1;reject(run);vk.device->properties.limits.maxComputeWorkGroupCount[1]=65535;
+ fake_status=1;auto calls=strata_vk_native_ple_grouped_norm_calls(p.get());native_hc_need(run()==1&&calls==strata_vk_native_ple_grouped_norm_calls(p.get()),"norm T2 status accepted");fake_status=0;
  vk.device->properties.limits.maxComputeWorkGroupInvocations=256;reject([&]{strata_vk_native_ple_grouped_norm_create(&backend,"mock.spv",300000);});
  std::puts("PLE norm actual dispatch mapping, domain, device, budget, status and retry passed with mock backend");return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}

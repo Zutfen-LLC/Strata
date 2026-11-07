@@ -1,5 +1,6 @@
 // Included in the existing pin-checked build-tree Vulkan translation unit.
 #include "strata_vk_native_stages.hpp"
+#include "native_component_host_bound.hpp"
 #include "strata_native_stages_spv.hpp"
 #include "strata_native_quant_trace_spv.hpp"
 #include "strata_native_quant_rn_spv.hpp"
@@ -96,7 +97,7 @@ static StrataVkNativeStages* strata_vk_native_stages_create_variant_observation(
     logits_guard_need(effective_spv_path && *effective_spv_path,"observation: final shader receipt path required");
     logits_guard_need(bool(fp.shaderDenormPreserveFloat16)==ctx->device->float_controls_denorm_preserve_fp16 &&
         bool(fp.shaderRoundingModeRTEFloat16)==ctx->device->float_controls_rte_fp16,"observation: helper cached controls disagree with query");
-    g.metadata.reset(ggml_init({4096,nullptr,true}));
+    g.metadata.reset(ggml_init({native_component_metadata_arena_bytes,nullptr,true}));
     logits_guard_need(bool(g.metadata),"native stages: metadata allocation failed");
     g.status=ggml_new_tensor_1d(g.metadata.get(),GGML_TYPE_I32,STRATA_Q8_STAGE_WORDS);
     const auto bound=ggml_backend_alloc_ctx_tensors_from_buft_size(g.metadata.get(),ggml_backend_get_default_buffer_type(backend));
@@ -127,6 +128,7 @@ StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_
         "strata_native_q8_quant_rcp_observation",false,budget);
     stage->quant_rcp=true;return stage;
 }
+#include "strata_vk_ple_key_quant.inc"
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages* p) {return p?ggml_backend_buffer_get_size(p->owner->buffer.get()):0;}
 void strata_vk_native_stages_destroy(StrataVkNativeStages* s) noexcept {delete s;}
 void strata_vk_native_stages_run(StrataVkNativeStages* s,uint32_t mode,const ggml_tensor* gate,
