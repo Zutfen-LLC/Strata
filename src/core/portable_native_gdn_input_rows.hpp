@@ -2,6 +2,7 @@
 // Standalone row input projections; no model chunk admission. Backend, weights
 // and weight storage are borrowed and must outlive this owner and its runs.
 #include "native_gdn_input_layout.hpp"
+#include "portable_native_gdn_f16_rows.hpp"
 #include "native_qsa_wo_domain.hpp"
 #include "portable_native_ple_host_bound.hpp"
 #include "strata_vk_native_stages.hpp"
@@ -23,9 +24,12 @@ class PortableNativeGdnInputRows {
  std::unique_ptr<StrataVkQ8Wo,decltype(&strata_vk_q8_wo_destroy)> dot_{nullptr,strata_vk_q8_wo_destroy};
  ggml_tensor *input_[2]{},*packed_[2]{},*weight_[2]{},*out_[2][2]{};
  size_t bytes_=0; bool valid_=false;
+ PortableGdnProjectionMethod method_=PortableGdnProjectionMethod::legacy_q8_1;
+ std::unique_ptr<PortableNativeGdnF16Rows> f16_;
  static Context context(){Context c(ggml_init({32768,nullptr,true}),ggml_free);if(!c)throw std::runtime_error("GDN input rows: metadata");return c;}
  static void need(bool x,const char*message){if(!x)throw std::runtime_error(message);}
 public:
+ // Legacy Q8_1 method only. The F16 estimate includes its host allowance.
  // Requested owner scratch payload: metadata plus packed T2 and the largest
  // simultaneous projection readback. Excludes caller input, role bytes and
  // backend/allocator internals; not a process-memory limit.
@@ -36,9 +40,17 @@ public:
   for(auto n:outputs)ggml_new_tensor_1d(c.get(),GGML_TYPE_F32,2*n);
   return ple_host_add(ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(backend)),3u<<20);
  }
+ static size_t estimate(ggml_backend_t backend,PortableGdnProjectionMethod method){
+  need(method==PortableGdnProjectionMethod::legacy_q8_1||method==PortableGdnProjectionMethod::native_f16,"GDN input rows: method");
+  return method==PortableGdnProjectionMethod::native_f16?PortableNativeGdnF16Rows::estimate(backend,width,{10240,6144}):estimate(backend);
+ }
  PortableNativeGdnInputRows(ggml_backend_t backend,const std::array<ggml_tensor*,2>& weights,
-  const std::array<const void*,2>& roles,const std::array<size_t,2>& sizes,const std::string& directory,size_t budget){
-  need(backend&&estimate(backend)<=budget,"GDN input rows: admission");
+  const std::array<const void*,2>& roles,const std::array<size_t,2>& sizes,const std::string& directory,size_t budget,
+  PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1):method_(method){
+  if(method==PortableGdnProjectionMethod::native_f16){
+   f16_=std::make_unique<PortableNativeGdnF16Rows>(backend,width,std::vector<size_t>{10240,6144},std::vector<ggml_tensor*>{weights[0],weights[1]},std::vector<const void*>{roles[0],roles[1]},std::vector<size_t>{sizes[0],sizes[1]},directory,budget);bytes_=f16_->bytes();return;
+  }
+  need(method==PortableGdnProjectionMethod::legacy_q8_1&&backend&&estimate(backend)<=budget,"GDN input rows: admission");
   size_t borrowed=0;ggml_backend_buffer_t seen[2]{};
   for(size_t i=0;i<2;++i){auto*w=weights[i];const size_t n=outputs[i]*gdn_input_row_bytes;
    need(w&&w->type==GGML_TYPE_Q8_0&&w->ne[0]==2560&&w->ne[1]==int64_t(outputs[i])&&w->buffer&&ggml_is_contiguous(w)&&ggml_nbytes(w)==n&&roles[i]&&sizes[i]==n,"GDN input rows: role");
@@ -61,10 +73,14 @@ public:
  }
  PortableNativeGdnInputRows(const PortableNativeGdnInputRows&)=delete;
  PortableNativeGdnInputRows& operator=(const PortableNativeGdnInputRows&)=delete;
- size_t bytes()const{return bytes_;} bool valid()const{return valid_;}
+ // F16 bytes include borrowed raw roles and host envelopes; legacy bytes do not.
+ size_t bytes()const{return bytes_;} bool valid()const{return f16_?f16_->valid():valid_;}
+ PortableGdnProjectionMethod method()const{return method_;}
+ size_t graph_attempts()const{return f16_?f16_->graph_attempts():0;}
  // Output bank is only usable after a successful run; the next run invalidates it.
- ggml_tensor* output(size_t role,size_t rows)const{need(valid_&&role<2&&(rows==1||rows==2)&&rows==rows_,"GDN input rows: invalid output");return out_[role][rows-1];}
+ ggml_tensor* output(size_t role,size_t rows)const{if(f16_)return f16_->output(role,rows);need(valid_&&role<2&&(rows==1||rows==2)&&rows==rows_,"GDN input rows: invalid output");return out_[role][rows-1];}
  void run(const std::vector<float>& input,size_t rows){
+  if(f16_){f16_->run(input,rows);return;}
   valid_=false;need((rows==1||rows==2)&&input.size()==rows*width,"GDN input rows: shape");qsa_q8_input_domain(input,rows*80,"GDN input rows");
   ggml_backend_tensor_set(input_[rows-1],input.data(),0,input.size()*4);
   strata_vk_gdn_input_quantize_bounded(quant_.get(),input_[rows-1],packed_[rows-1],rows);

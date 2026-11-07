@@ -14,6 +14,11 @@
 #include "portable_native_qsa_layer_owner.hpp"
 #include "portable_native_terminal_owner.hpp"
 #include "portable_native_model_owner.hpp"
+#include <type_traits>
+static_assert(std::is_constructible_v<PortableNativeLayer0Owner,std::shared_ptr<const strata::GgufModel>,ggml_backend_t,const std::string&,const PortableNativeLayer0Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod>);
+static_assert(std::is_constructible_v<PortableNativePle1Owner,std::shared_ptr<const strata::GgufModel>,std::shared_ptr<PortablePleTable>,ggml_backend_t,const std::string&,const PortableNativePle1Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod>);
+static_assert(std::is_constructible_v<PortableNativeOrdinaryLayerOwner,int,ggml_backend_t,const strata::GgufModel&,const std::string&,const PortableNativeOrdinaryLayerOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod>);
+static_assert(std::is_constructible_v<PortableNativeModelOwner,std::shared_ptr<const strata::GgufModel>,std::shared_ptr<PortablePleTable>,ggml_backend_t,uint32_t,const std::string&,const PortableNativeModelOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod>);
 namespace {
 std::vector<uint8_t> expected_head_vocab;const ggml_tensor* head_packed_bank=nullptr;size_t head_quant_calls=0,head_dot_calls=0;
 void write_family_gguf(const std::filesystem::path& path,const std::vector<PortableTensorView>& roles,bool architecture=false,bool sparse=false){
@@ -95,6 +100,30 @@ int main(int argc, char** argv) { try {
  auto family_path=root/"family.gguf";std::vector<PortableTensorView> file_roles(family_roles.begin(),family_roles.end());auto ffn_hc=named(2,false);file_roles.insert(file_roles.end(),ffn_hc.begin(),ffn_hc.end());
  std::vector<float> router_weight(2560*512),scalar(2560,1.f);router_weight[0]=1.f;std::array<std::vector<uint8_t>,3> shared_role;for(size_t i=0;i<3;++i){shared_role[i].resize(2560*640/32*34);shared_role[i][1]=0x3c;shared_role[i][2]=uint8_t(21+i);}
  file_roles.insert(file_roles.end(),{{"blk.2.ffn_gate_inp.weight",{2560,512},0,router_weight.data(),router_weight.size()*4},{"blk.2.ffn_gate_shexp.weight",{2560,640},8,shared_role[0].data(),shared_role[0].size()},{"blk.2.ffn_up_shexp.weight",{2560,640},8,shared_role[1].data(),shared_role[1].size()},{"blk.2.ffn_down_shexp.weight",{640,2560},8,shared_role[2].data(),shared_role[2].size()},{"blk.2.ffn_gate_inp_shexp.weight",{2560},0,scalar.data(),scalar.size()*4}});write_family_gguf(family_path,file_roles);
+ // One mapped layer at a time: actual selected input and output graph owners
+ // around the mocked conv/AB/recurrence stages. The GGUF mapping closes after
+ // construction; original F32 mixed is independently observed by the AB mock.
+ {
+  auto method=PortableGdnProjectionMethod::native_f16;auto path=(root/"family-f16").string();
+  auto fb=budgets;fb.host=PortableNativeGdnComponents::host_bound(path.size()+3,method);fb.input=PortableNativeGdnInputOwner::device_bound(b.get(),method);
+  fb.output=ple_host_add(PortableNativeGdnOutputRows::estimate(b.get(),method),fb.roles);
+  fb.device=0;for(size_t n:{fb.input,fb.roles,fb.core,fb.output,fb.hc})fb.device=ple_host_add(fb.device,n);
+  std::unique_ptr<PortableNativeGdnComponents> comp;
+  {auto mapped=strata::GgufModel::open(family_path.string());auto roles=PortableNativeGdnComponents::from_gguf(mapped,2);
+   auto low=fb;low.host--;bool denied=false;try{PortableNativeGdnComponents bad(2,b.get(),roles,path,low,method);}catch(...){denied=true;}check(denied&&!std::filesystem::exists(path+".input"),"F16 family host preflight");
+   low=fb;low.output--;denied=false;try{PortableNativeGdnComponents bad(2,b.get(),roles,path,low,method);}catch(...){denied=true;}check(denied&&!std::filesystem::exists(path+".input"),"F16 family output preflight");
+   comp=std::make_unique<PortableNativeGdnComponents>(2,b.get(),roles,path,fb,method);}
+  check(comp->input_method()==method&&comp->output_method()==method,"F16 family actual methods");auto core=comp->take_core();family_f16_capture=true;
+  for(int phase=0;phase<3;++phase){size_t n=phase==1?1:2;std::vector<float> mixed(n*2560);mixed[0]=1.f+0x1p-11f+float(phase);if(n==2)mixed[2560]=-2.f-float(phase);auto original=mixed;
+   comp->input().run(mixed,n);auto qv=get(comp->input().output(0,n)),zv=get(comp->input().output(1,n));
+   for(size_t r=0;r<n;++r){float rounded=ggml_fp16_to_fp32(ggml_fp32_to_fp16(mixed[r*2560]));check(qv[r*10240]==11.f*rounded&&zv[r*6144]==12.f*rounded,"F16 family input consumers");}
+   core->stage(mixed,comp->input().output(0,n),comp->input().output(1,n),uint32_t(n));check(family_f16_mixed==original&&mixed==original,"F16 family original core mixed");auto y=core->output();auto state=core->committed_state();comp->output().run(y,n);auto result=get(comp->output().output(n));
+   for(size_t r=0;r<n;++r)check(result[r*2560]==13.f*ggml_fp16_to_fp32(ggml_fp32_to_fp16(y[r*6144])),"F16 family recurrence output consumer");
+   check(core->committed_state()==state,"F16 projection mutated state");core->reset();
+  }
+  auto bad=std::vector<float>(2560,0.f);bad[0]=std::numeric_limits<float>::infinity();bool denied=false;try{comp->input().run(bad,1);}catch(...){denied=true;}check(denied&&!comp->input().valid(),"F16 family invalidation");
+  bad[0]=2;comp->input().run(bad,1);check(comp->input().valid(),"F16 family recovery");family_f16_capture=false;
+ }
  budgets.host=GdnOwner::host_bound(family_prefix.size()+7);using LayerOwner=PortableNativeOrdinaryLayerOwner;
  PortableNativeFfnOwner::Budgets row_budget{4u<<20,80u<<20,16u<<20,16u<<20,{4u<<20,4u<<20},{8u<<20,8u<<20},{4u<<20,4u<<20}};
  PortableNativeFfnOwner::Roles row_roles{file_roles[file_roles.size()-5],file_roles[file_roles.size()-4],file_roles[file_roles.size()-3],file_roles[file_roles.size()-2],file_roles[file_roles.size()-1]};
@@ -148,6 +177,39 @@ int main(int argc, char** argv) { try {
   try{LayerOwner bad(2,b.get(),mapped,family_prefix+"-late",failure_budget);}catch(const std::exception& e){late=std::string(e.what())=="injected factory failure";}
   factory_probe=false;check(late&&factory_calls.size()==7&&factory_owners.empty()&&family_conv_live==live,"late FFN construction cleanup");
   family=std::make_unique<LayerOwner>(2,b.get(),mapped,family_prefix,layer_budget);}
+ // Exercise one selected mapped owning composition with the existing mocked
+ // PLE/HC/core stages. Only the three dense projections use real CPU graphs.
+ {
+  hc_roles[0].resize(hn.size()*4);std::memcpy(hc_roles[0].data(),hn.data(),hc_roles[0].size());
+  for(size_t i=1;i<4;++i){auto& src=i==1?hi:hw;auto converted=native_hc_q8_bf16(src.data(),src.size(),i==1?40960:3276800);hc_roles[i].resize(converted.size()*2);std::memcpy(hc_roles[i].data(),converted.data(),hc_roles[i].size());}
+  auto method=PortableGdnProjectionMethod::native_f16;auto path=(root/"family-f16-composition").string();auto fb=budgets;
+  fb.host=GdnOwner::host_bound(path.size()+3,method);fb.input=PortableNativeGdnInputOwner::device_bound(b.get(),method);
+  fb.output=ple_host_add(PortableNativeGdnOutputRows::estimate(b.get(),method),fb.roles);fb.device=0;for(size_t v:{fb.input,fb.roles,fb.core,fb.output,fb.hc})fb.device=ple_host_add(fb.device,v);
+  std::unique_ptr<GdnOwner> selected;{auto mapped=strata::GgufModel::open(family_path.string());selected=std::make_unique<GdnOwner>(2,b.get(),mapped,path,fb,method);}
+  check(selected->input_method()==method&&selected->output_method()==method,"F16 composition methods");
+  PortableExpertRowsBatch fake=[](int64_t,const auto& routes,auto& result,auto&){result.assign(routes.size()*10*2560,0.f);return true;};
+  for(auto tokens:{std::vector<int32_t>{7,9},std::vector<int32_t>{11},std::vector<int32_t>{12,13}}){
+   auto prev=ple.previous();std::vector<std::array<int32_t,2>> pred;for(int32_t t:tokens){pred.push_back(prev);prev={prev[1],t};}std::vector<std::array<uint32_t,16>> indices;
+   check(owned_ple->table().gather_batch(tokens,pred,indices,expected_embedding,error),"F16 composition PLE gather");norm_call=0;
+   std::vector<float> source(tokens.size()*10240);for(size_t r=0;r<tokens.size();++r)std::fill_n(source.begin()+r*10240,10240,float(tokens[r])/32.f);
+   auto handle=ple.stage(ple.position(),tokens,source);PortableNativeFfnComposition::Batch snapshots;ff1.run(handle,fake,[&](const auto& x){snapshots=x;});
+   family_f16_capture=true;model_capture_hc=true;selected->composition().run(selected->composition().position(),ff1,snapshots,[&](const auto& view){auto result=view.output();
+    check(family_f16_mixed==model_captured_hc,"F16 composition original HC mixed to AB");
+    for(size_t r=0;r<tokens.size();++r){float original=family_f16_mixed[r*2560],rounded=ggml_fp16_to_fp32(ggml_fp32_to_fp16(original));
+     check(family_f16_qkv[r*10240]==11.f*rounded&&family_f16_z[r*6144]==12.f*rounded,"F16 composition input consumer");
+     check(result[r*2560]==13.f*ggml_fp16_to_fp32(ggml_fp32_to_fp16(family_f16_y[r*6144])),"F16 composition output consumer");}
+   });family_f16_capture=false;model_capture_hc=false;
+  }
+  {
+   std::vector<int32_t> tokens{14};auto prev=ple.previous();std::vector<std::array<int32_t,2>> pred{prev};std::vector<std::array<uint32_t,16>> indices;
+   check(owned_ple->table().gather_batch(tokens,pred,indices,expected_embedding,error),"F16 failure gather");norm_call=0;auto h=ple.stage(ple.position(),tokens,std::vector<float>(10240,.25f));
+   PortableNativeFfnComposition::Batch snapshots;ff1.run(h,fake,[&](const auto& x){snapshots=x;});auto before=selected->composition().committed_state();fail=6;bool failed=false;
+   try{selected->composition().run(selected->composition().position(),ff1,snapshots,[](const auto&){});}catch(const std::exception&){failed=true;}fail=0;
+   check(failed&&selected->composition().poisoned()&&selected->composition().committed_state()==before,"F16 composition failure rollback");
+   selected->composition().reset();check(!selected->composition().poisoned()&&selected->composition().position()==0,"F16 composition reset");
+  }
+  selected.reset();pg.reset();ff1.reset();
+ }
  // Layer 3 independently pins Q/K projection and norm roles in a mapped GGUF.
  auto q0=qb[0],q1=qb[1],q2=qb[2],qout=wb;std::array<std::vector<uint8_t>*,4> qm{&q0,&q1,&q2,&qout};for(size_t i=0;i<4;++i){(*qm[i])[1]=0x3c;(*qm[i])[2]=uint8_t(41+i);}
  auto ik=ib[0],iq=ib[1];ik[0]=0;ik[1]=0x3c;iq[0]=0x80;iq[1]=0x3c;std::vector<float> qn(256,1.5f),kn(256,.5f),iqn(128,1.25f),ikn(128,.75f);auto qhc=named(3,true);

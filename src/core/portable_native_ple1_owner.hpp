@@ -58,19 +58,19 @@ public:
     }
     // Production entry: the table factory validates fleet metadata, hashes and
     // geometry and reopens the source shard. Failure is propagated verbatim.
-    static std::unique_ptr<PortableNativePle1Owner> from_model(std::shared_ptr<const GgufModel> model,ggml_backend_t backend,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32){
+    static std::unique_ptr<PortableNativePle1Owner> from_model(std::shared_ptr<const GgufModel> model,ggml_backend_t backend,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1){
         need(bool(model),"PLE1 owner: missing model");std::string error;auto table=PortablePleTable::from_gguf(*model,error);
         if(!table)throw std::runtime_error("PLE1 owner: "+error);
-        return std::make_unique<PortableNativePle1Owner>(std::move(model),std::move(table),backend,prefix,b,method);
+        return std::make_unique<PortableNativePle1Owner>(std::move(model),std::move(table),backend,prefix,b,method,gdn_method);
     }
     // Supplying an already checked table also permits the bounded copy() test
     // seam; it is not evidence for fleet table metadata or loading.
     PortableNativePle1Owner(std::shared_ptr<const GgufModel> model,std::shared_ptr<PortablePleTable> table,
-                            ggml_backend_t backend,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32)
+                            ggml_backend_t backend,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1)
       :model_(std::move(model)),table_(std::move(table)) {
         need(model_&&table_&&backend&&!prefix.empty(),"PLE1 owner: model/table/backend/prefix");
         auto p=from_gguf(*model_);validate(p);
-        auto g=PortableNativeGdnComponents::from_gguf(*model_,1);PortableNativeGdnComponents::validate(1,g);
+        auto g=PortableNativeGdnComponents::from_gguf(*model_,1);PortableNativeGdnComponents::validate(1,g,gdn_method);
         auto r=PortableNativeFfnOwner::from_gguf(*model_,1);PortableNativeFfnOwner::validate(1,r,method);
         auto f=NativeFfnHcFactory::from_gguf(*model_,1);NativeFfnHcFactory::select(1,f,false);
         std::vector<PortableTensorView> ah{g[9],g[10],g[11],g[12]};auto hc=NativeFfnHcFactory::select(1,ah,true);
@@ -95,7 +95,7 @@ public:
         const size_t count[]={0,40960,3276800,3276800};
         for(size_t i=1;i<4;++i){auto x=native_hc_q8_bf16(static_cast<const uint8_t*>(hc[i]->data),hc[i]->bytes,count[i]);ggml_backend_tensor_set(const_cast<ggml_tensor*>(ht[i]),x.data(),0,x.size()*2);}
         rows_=std::make_unique<PortableNativeFfnOwner>(1,backend,r,prefix+".rows",b.rows,method);
-        gdn_=std::make_unique<PortableNativeGdnComponents>(1,backend,g,prefix+".gdn",b.gdn);
+        gdn_=std::make_unique<PortableNativeGdnComponents>(1,backend,g,prefix+".gdn",b.gdn,gdn_method);
         PortableNativePleExecutor::Roles roles{backend,table_.get(),key,p[0].data,p[0].bytes,value,value_.data(),value_.size(),
             {static_cast<const float*>(p[2].data),static_cast<const float*>(p[3].data),static_cast<const float*>(p[4].data)},p[5].data,p[5].bytes,p[5].type,directory};
         ple_=std::make_unique<PortableNativePleComposition>(roles,ht,backend,b.ple_caps,b.ple,pp);
@@ -105,6 +105,8 @@ public:
     PortableNativePle1Owner(const PortableNativePle1Owner&)=delete;
     PortableNativePle1Owner& operator=(const PortableNativePle1Owner&)=delete;
     PortableRouterMethod router_method()const{return rows_->router_method();}
+    PortableGdnProjectionMethod gdn_input_method()const{return gdn_->input_method();}
+    PortableGdnProjectionMethod gdn_output_method()const{return gdn_->output_method();}
     PortableNativePleComposition& ple(){return *ple_;}
     PortableNativePleGdnComposition& attention(){return *attention_;}
     PortableNativeFfnComposition& ffn(){return *ffn_;}

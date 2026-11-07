@@ -25,6 +25,7 @@ size_t model_qsa_t2=0,model_gdn_t2=0;
 // Synthetic perturbation for model plumbing sensitivity, not a numerical oracle.
 float model_gdn_signal=1.f; bool model_gdn_saturated=false,model_qsa_saturated=false;
 size_t family_alpha_seen=0,family_input_seen=0,family_output_seen=0,family_conv_live=0;
+bool family_f16_capture=false;std::vector<float> family_f16_mixed,family_f16_qkv,family_f16_z,family_f16_y;
 #endif
 }
 namespace strata::core::portable_detail {
@@ -76,17 +77,29 @@ void strata_vk_native_gdn_conv_rows_run(StrataVkNativeGdnConvRows*,ggml_tensor*c
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  float role=0;ggml_backend_tensor_get(t[2],&role,0,4);if(role)check(role==3.f,"family convolution role");
 #endif
- auto h=get(t[0]),q=get(t[1]);std::vector<float>out(n*10240);for(size_t r=0;r<n;++r)for(size_t c=0;c<10240;++c){out[r*10240+c]=q[r*10240+c]+h[c*3];h[c*3]=h[c*3+1];h[c*3+1]=h[c*3+2];h[c*3+2]=q[r*10240+c];}put(t[3],h);put(t[4],out);if(fail==4)throw std::runtime_error("conv wrote then threw");}
+ auto h=get(t[0]),q=get(t[1]);
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(family_f16_capture)family_f16_qkv=q;
+#endif
+ std::vector<float>out(n*10240);for(size_t r=0;r<n;++r)for(size_t c=0;c<10240;++c){out[r*10240+c]=q[r*10240+c]+h[c*3];h[c*3]=h[c*3+1];h[c*3+1]=h[c*3+2];h[c*3+2]=q[r*10240+c];}put(t[3],h);put(t[4],out);if(fail==4)throw std::runtime_error("conv wrote then threw");}
 uint32_t strata_vk_native_gdn_ab_rows_run(StrataVkNativeGdnAbRows*,ggml_tensor*const t[8],uint32_t n){++ab_calls;
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  uint16_t alpha_bits=0,beta_bits=0;ggml_backend_tensor_get(t[1],&alpha_bits,0,2);ggml_backend_tensor_get(t[2],&beta_bits,0,2);if(alpha_bits){float dt=0,a=0;ggml_backend_tensor_get(t[3],&dt,0,4);ggml_backend_tensor_get(t[4],&a,0,4);check(alpha_bits==0x3f80&&beta_bits==0x4000&&dt==4.f&&a==5.f,"family alpha/beta/dt/A roles");++family_alpha_seen;}
 #endif
- auto mixed=get(t[0]);std::vector<float>gate(n*48),beta(n*48);for(size_t r=0;r<n;++r)for(size_t i=0;i<48;++i){gate[r*48+i]=mixed[r*2560];beta[r*48+i]=1;}put(t[5],gate);put(t[6],beta);return fail==5?1:0;}
+ auto mixed=get(t[0]);
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(family_f16_capture)family_f16_mixed=mixed;
+#endif
+ std::vector<float>gate(n*48),beta(n*48);for(size_t r=0;r<n;++r)for(size_t i=0;i<48;++i){gate[r*48+i]=mixed[r*2560];beta[r*48+i]=1;}put(t[5],gate);put(t[6],beta);return fail==5?1:0;}
 void strata_vk_native_gdn_rows_run(StrataVkNativeGdnRows*,ggml_tensor*const t[13],ggml_tensor*,uint32_t n){++recur_calls;
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  float gamma=0;ggml_backend_tensor_get(t[5],&gamma,0,4);if(gamma)check(gamma==6.f,"family gamma role");
 #endif
- auto state=get(t[0]),h=get(t[1]),gate=get(t[2]),z=get(t[4]);std::vector<float>y(n*6144);for(size_t r=0;r<n;++r)for(size_t i=0;i<6144;++i){state[i]+=h[r*10240+i]+gate[r*48]+z[r*6144+i];y[r*6144+i]=state[i];}put(t[6],state);put(t[7],y);if(fail==6)throw std::runtime_error("recurrence wrote then threw");}
+ auto state=get(t[0]),h=get(t[1]),gate=get(t[2]),z=get(t[4]);std::vector<float>y(n*6144);for(size_t r=0;r<n;++r)for(size_t i=0;i<6144;++i){state[i]+=h[r*10240+i]+gate[r*48]+z[r*6144+i];y[r*6144+i]=state[i];}
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(family_f16_capture){family_f16_z=z;family_f16_y=y;}
+#endif
+ put(t[6],state);put(t[7],y);if(fail==6)throw std::runtime_error("recurrence wrote then threw");}
 }
 
 namespace { std::vector<float> gdn_quant_input; bool gdn_bad_second_scale=false; size_t in_quant=0,in_qkv=0,in_z=0,out_quant=0,out_dot=0; }
