@@ -1,5 +1,6 @@
 #include "portable_native_gdn_input_factory.hpp"
 #include "ggml-cpu.h"
+#include "gdn_f16_test_support.hpp"
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -72,5 +73,13 @@ int main(int argc,char**argv){try{
  bad_second=true;bool rejected=false;try{owner.run(input,2);}catch(const std::exception&){rejected=true;}need(rejected&&!owner.valid()&&quant_calls==2&&dot_calls==2,"second-row subnormal must reject before either dot");
  bad_second=false;fail_dot=true;rejected=false;try{owner.run(input,2);}catch(const std::exception&){rejected=true;}need(rejected&&!owner.valid()&&dot_calls==3,"write then throw invalidates output");
  fail_dot=false;input.resize(2560);owner.run(input,1);need(owner.valid()&&dot_calls==5&&ggml_nbytes(owner.output(0,1))==10240*4,"T1 tail");
- std::puts("GDN input row owner and second-row scale refusal passed");return 0;
+ // Production opt-in F16 projections, with the actual two role shapes.
+ for(size_t i=0;i<2;++i){gdn_f16_test::fill(role[i],2560);ggml_backend_tensor_set(weights[i],role[i].data(),0,role[i].size());}
+ auto method=PortableGdnProjectionMethod::native_f16;size_t cap=PortableNativeGdnInputRows::estimate(backend.get(),method);
+ auto fdir=dir.string()+"-f16";
+ bool denied=false;try{PortableNativeGdnInputRows small(backend.get(),weights,{role[0].data(),role[1].data()},{role[0].size(),role[1].size()},fdir,cap-1,method);}catch(const std::exception&){denied=true;}
+ need(denied&&!std::filesystem::exists(fdir),"F16 input budget preflight");
+ {PortableNativeGdnInputRows dense(backend.get(),weights,{role[0].data(),role[1].data()},{role[0].size(),role[1].size()},fdir,cap,method);
+  need(dense.bytes()<=cap,"F16 input admitted bytes");gdn_f16_test::exercise(dense,2560,{10240,6144},[&](size_t i,size_t r){return dense.output(i,r);});}
+ std::puts("GDN input row owner and F16 graph passed");return 0;
 }catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
