@@ -1,4 +1,4 @@
-#include "portable_native_gdn_input_rows.hpp"
+#include "portable_native_gdn_input_factory.hpp"
 #include "ggml-cpu.h"
 #include <chrono>
 #include <cstdio>
@@ -6,15 +6,23 @@
 using namespace strata::core::portable_detail;
 namespace {
 void need(bool ok,const char* m){if(!ok)throw std::runtime_error(m);}
-size_t quant_calls=0,dot_calls=0;bool bad_second=false,fail_dot=false;
+size_t quant_calls=0,dot_calls=0,quant_live=0;bool bad_second=false,fail_dot=false,fail_create=false;
 const ggml_tensor* packed_seen=nullptr;
+void write_model(const std::filesystem::path& path,const std::array<strata::core::PortableTensorView,2>& views){
+ std::vector<uint8_t> header;auto put=[&](const void* p,size_t n){auto b=static_cast<const uint8_t*>(p);header.insert(header.end(),b,b+n);};
+ auto u32=[&](uint32_t x){put(&x,4);};auto u64=[&](uint64_t x){put(&x,8);};auto str=[&](const std::string& x){u64(x.size());put(x.data(),x.size());};
+ u32(0x46554747);u32(3);u64(2);u64(0);size_t offset=0;
+ for(const auto& v:views){str(v.name);u32(2);for(auto d:v.shape)u64(uint64_t(d));u32(v.type);u64(offset);offset=(offset+v.bytes+31)/32*32;}
+ header.resize((header.size()+31)/32*32);std::ofstream f(path,std::ios::binary);f.write(reinterpret_cast<const char*>(header.data()),header.size());
+ offset=0;for(const auto& v:views){f.seekp(header.size()+offset);f.write(static_cast<const char*>(v.data),v.bytes);offset=(offset+v.bytes+31)/32*32;}need(bool(f),"GGUF fixture write");
+}
 }
 namespace strata::core::portable_detail {
 struct StrataVkNativeStages {};struct StrataVkQ8Wo {};
-StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char* p,size_t){std::ofstream(p)<<"mock";return new StrataVkNativeStages;}
+StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char* p,size_t){std::ofstream(p)<<"mock";++quant_live;return new StrataVkNativeStages;}
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages*){return 512;}
-void strata_vk_native_stages_destroy(StrataVkNativeStages*p)noexcept{delete p;}
-StrataVkQ8Wo* strata_vk_gdn_input_create(ggml_backend_t,const char* p,size_t){std::ofstream(p)<<"mock";return new StrataVkQ8Wo;}
+void strata_vk_native_stages_destroy(StrataVkNativeStages*p)noexcept{if(p)--quant_live;delete p;}
+StrataVkQ8Wo* strata_vk_gdn_input_create(ggml_backend_t,const char* p,size_t){if(fail_create)throw std::runtime_error("injected construction failure");std::ofstream(p)<<"mock";return new StrataVkQ8Wo;}
 size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo*){return 512;}
 void strata_vk_q8_wo_destroy(StrataVkQ8Wo*p)noexcept{delete p;}
 void strata_vk_gdn_input_quantize_bounded(StrataVkNativeStages*,const ggml_tensor* x,ggml_tensor* q,size_t rows){
@@ -38,6 +46,26 @@ int main(int argc,char**argv){try{
  std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)> wb(ggml_backend_alloc_ctx_tensors(ctx.get(),backend.get()),ggml_backend_buffer_free);need(bool(wb),"weight allocation");
  std::array<std::vector<uint8_t>,2> role;for(size_t i=0;i<2;++i){role[i].resize(ggml_nbytes(weights[i]));ggml_backend_tensor_set(weights[i],role[i].data(),0,role[i].size());}
  auto dir=std::filesystem::path(argv[1])/("gdn-input-rows-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+ std::array<strata::core::PortableTensorView,2> views{{
+  {"blk.2.attn_qkv.weight",{2560,10240},8,role[0].data(),role[0].size()},
+  {"blk.2.attn_gate.weight",{2560,6144},8,role[1].data(),role[1].size()}}};
+ auto factory_dir=dir.string()+"-factory";
+ auto reject=[&](int layer,const auto& v,size_t host,size_t device){bool failed=false;try{PortableNativeGdnInputOwner bad(layer,backend.get(),v,factory_dir,host,device);}catch(const std::exception&){failed=true;}need(failed&&!std::filesystem::exists(factory_dir),"factory preflight or cleanup");};
+ const size_t host=PortableNativeGdnInputOwner::host_bound();
+ const size_t device=ggml_backend_buffer_get_size(wb.get())+PortableNativeGdnInputRows::estimate(backend.get());
+ reject(3,views,host,device);reject(2,views,host-1,device);reject(2,views,host,1);
+ auto bad=views;bad[0].name="blk.4.attn_qkv.weight";reject(2,bad,host,device);
+ bad=views;bad[0].type=0;reject(2,bad,host,device);
+ bad=views;--bad[1].bytes;reject(2,bad,host,device);
+ bad=views;bad[1].shape[1]++;reject(2,bad,host,device);
+ fail_create=true;bool failed=false;try{PortableNativeGdnInputOwner partial(2,backend.get(),views,dir.string()+"-partial",host,device);}catch(const std::exception& e){failed=std::string(e.what())=="injected construction failure";}fail_create=false;
+ need(failed&&quant_live==0,"partial factory did not release quant owner");
+ auto model_path=dir.string()+".gguf";write_model(model_path,views);
+ std::unique_ptr<PortableNativeGdnInputOwner> factory;
+ { auto model=strata::GgufModel::open(model_path);factory=std::make_unique<PortableNativeGdnInputOwner>(2,backend.get(),model,factory_dir,host,device); }
+ need(factory->layer()==2,"factory layer");std::vector<float> factory_input(5120);factory_input[0]=3;factory_input[2560]=5;
+ factory->rows().run(factory_input,2);need(factory->rows().valid()&&quant_calls==1&&dot_calls==2,"factory execution after unmapping");
+ quant_calls=dot_calls=0;
  PortableNativeGdnInputRows owner(backend.get(),weights,{role[0].data(),role[1].data()},{role[0].size(),role[1].size()},dir.string(),PortableNativeGdnInputRows::estimate(backend.get()));
  std::vector<float> input(5120);input[0]=3;input[2560]=5;owner.run(input,2);need(owner.valid()&&quant_calls==1&&dot_calls==2,"T2 counts");
  for(size_t i=0;i<2;++i){auto*t=owner.output(i,2);size_t n=i?6144:10240;std::vector<float> values(2*n);ggml_backend_tensor_get(t,values.data(),0,values.size()*4);need(values[0]==1&&values[n]==float(n+1),"output row stride");}
