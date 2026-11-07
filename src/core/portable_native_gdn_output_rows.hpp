@@ -18,12 +18,19 @@ class PortableNativeGdnOutputRows {
  static Context context(){Context c(ggml_init({32768,nullptr,true}),ggml_free);if(!c)throw std::runtime_error("GDN output rows: metadata");return c;}
  static void need(bool x,const char*m){if(!x)throw std::runtime_error(m);}
 public:
- // Requested owner scratch, excluding caller inputs, roles and backend internals.
- static size_t host_bound(){return 32768+2*6912+2*2560*sizeof(float);}
+ // Construction peaks at either the role-comparison buffer or the two
+ // simultaneous metadata contexts in the final estimate, not both. Runtime
+ // retains one context while packed rows and output readback are live.
+ // Requested payload only; excludes caller inputs, roles, allocator overhead,
+ // factory internals and backend/driver allocations. Not an RSS bound.
+ static constexpr size_t construction_host_bound(){return 65536;}
+ static constexpr size_t runtime_host_bound(){return 32768+2*6912+2*2560*sizeof(float);}
+ static constexpr size_t host_bound(){return runtime_host_bound()>construction_host_bound()?runtime_host_bound():construction_host_bound();}
  static size_t estimate(ggml_backend_t b){need(b,"GDN output rows: backend");auto c=context();ggml_new_tensor_1d(c.get(),GGML_TYPE_F32,2*6144);ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,2*6912/4);ggml_new_tensor_1d(c.get(),GGML_TYPE_F32,2*2560);return ple_host_add(ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(b)),3u<<20);}
  PortableNativeGdnOutputRows(ggml_backend_t b,ggml_tensor*w,const void*role,size_t role_size,const std::string&directory,size_t budget){
   need(b&&w&&w->type==GGML_TYPE_Q8_0&&w->ne[0]==6144&&w->ne[1]==2560&&w->buffer&&ggml_is_contiguous(w)&&ggml_nbytes(w)==16711680&&estimate(b)<=budget,"GDN output rows: role or budget");
-  qsa_wo_weight_domain(role,role_size,"GDN output");std::vector<uint8_t>check(65536);for(size_t at=0;at<role_size;at+=check.size()){size_t n=std::min(check.size(),role_size-at);ggml_backend_tensor_get(w,check.data(),at,n);need(!std::memcmp(check.data(),static_cast<const uint8_t*>(role)+at,n),"GDN output rows: role mismatch");}
+  qsa_wo_weight_domain(role,role_size,"GDN output");
+  {std::vector<uint8_t>check(65536);for(size_t at=0;at<role_size;at+=check.size()){size_t n=std::min(check.size(),role_size-at);ggml_backend_tensor_get(w,check.data(),at,n);need(!std::memcmp(check.data(),static_cast<const uint8_t*>(role)+at,n),"GDN output rows: role mismatch");}}
   need(std::filesystem::create_directory(directory),"GDN output rows: fresh receipt");ctx_=context();weight_=ggml_view_1d(ctx_.get(),w,6144*2560,0);weight_->type=GGML_TYPE_I32;weight_->ne[0]=role_size/4;weight_->nb[0]=4;weight_->nb[1]=weight_->nb[2]=weight_->nb[3]=role_size;need(ggml_backend_view_init(weight_)==GGML_STATUS_SUCCESS,"GDN output rows: weight view");
   input_[1]=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,2*6144);packed_[1]=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_I32,2*6912/4);output_[1]=ggml_new_tensor_1d(ctx_.get(),GGML_TYPE_F32,2*2560);
   input_[0]=ggml_view_1d(ctx_.get(),input_[1],6144,0);packed_[0]=ggml_view_1d(ctx_.get(),packed_[1],6912/4,0);output_[0]=ggml_view_1d(ctx_.get(),output_[1],2560,0);

@@ -26,6 +26,8 @@ int main(int argc,char**argv){try{
  need(argc==2,"scratch");std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>backend(ggml_backend_cpu_init(),ggml_backend_free);std::unique_ptr<ggml_context,decltype(&ggml_free)>ctx(ggml_init({16384,nullptr,true}),ggml_free);
  std::array<ggml_tensor*,6>role{};const size_t counts[]={40960,61440,61440,48,48,128};for(size_t i=0;i<6;++i)role[i]=ggml_new_tensor_1d(ctx.get(),(i==1||i==2)?GGML_TYPE_I32:GGML_TYPE_F32,counts[i]);
  auto*q2=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,20480);auto*z2=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,12288);
+ auto*q_storage=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,20496);auto*z_storage=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,12304);
+ auto*q_view=ggml_view_1d(ctx.get(),q_storage,20480,16*sizeof(float));auto*z_view=ggml_view_1d(ctx.get(),z_storage,12288,16*sizeof(float));
  std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>buf(ggml_backend_alloc_ctx_tensors(ctx.get(),backend.get()),ggml_backend_buffer_free);need(bool(buf),"allocation");
  auto root=std::filesystem::path(argv[1])/("gdn-core-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));std::filesystem::create_directory(root);
  PortableNativeGdnCoreRows::Caps caps{512,512,512};auto budget=PortableNativeGdnCoreRows::estimate(backend.get(),caps);
@@ -34,7 +36,27 @@ int main(int argc,char**argv){try{
  std::vector<float>seed(786432,0.25f),hist(30720,0.5f);a.reset(seed,hist);
  std::vector<float>q(20480),z(12288),mixed(5120);for(size_t r=0;r<2;++r){std::fill(q.begin()+r*10240,q.begin()+(r+1)*10240,float(1+r));std::fill(z.begin()+r*6144,z.begin()+(r+1)*6144,float(3+r));mixed[r*2560]=float(5+r);}put(q2,q);put(z2,z);
  a.stage(mixed,q2,z2,2);auto out=a.output();need(a.committed_state()==seed&&a.committed_history()==hist&&conv_calls==1&&ab_calls==1&&recur_calls==1,"T2 staged or dispatch count");
- a.reset(seed,hist);ggml_tensor outside=*q2;outside.data=reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ggml_backend_buffer_get_base(q2->buffer))+ggml_backend_buffer_get_size(q2->buffer)-4);bool rejected_span=false;try{a.stage(mixed,&outside,z2,2);}catch(...){rejected_span=true;}need(rejected_span&&!a.poisoned()&&a.committed_state()==seed,"out-of-allocation span accepted");
+ a.reset(seed,hist);
+ auto reject_ingress=[&](ggml_tensor*q_arg,ggml_tensor*z_arg){
+  const auto cc=conv_calls,ac=ab_calls,rc=recur_calls;bool rejected=false;
+  try{a.stage(mixed,q_arg,z_arg,2);}catch(const std::exception&){rejected=true;}
+  need(rejected&&!a.candidate()&&!a.poisoned()&&conv_calls==cc&&ab_calls==ac&&recur_calls==rc&&
+       a.committed_state()==seed&&a.committed_history()==hist,"invalid ingress dispatched or changed candidate/state");
+ };
+ reject_ingress(nullptr,z2);reject_ingress(q2,nullptr);
+ for(size_t which=0;which<2;++which){
+  auto*original=which?q2:z2;ggml_tensor bad=*original;
+  auto reject=[&]{if(which)reject_ingress(&bad,z2);else reject_ingress(q2,&bad);};
+  bad.type=GGML_TYPE_I32;need(ggml_nbytes(&bad)==ggml_nbytes(original),"I32 extent");reject();
+  bad=*original;bad.ne[0]/=2;bad.ne[1]=2;bad.nb[0]=8;bad.nb[1]=4;
+  need(ggml_nbytes(&bad)==ggml_nbytes(original)&&!ggml_is_contiguous(&bad),"noncontiguous same-byte fixture");reject();
+  bad=*original;bad.data=nullptr;reject();bad=*original;bad.buffer=nullptr;reject();
+  bad=*original;bad.data=reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ggml_backend_buffer_get_base(original->buffer))+ggml_backend_buffer_get_size(original->buffer)-4);reject();
+ }
+ need(q_view->buffer&&z_view->buffer&&q_view->data!=q_storage->data&&z_view->data!=z_storage->data,"offset view binding");
+ put(q_view,q);put(z_view,z);a.stage(mixed,q_view,z_view,2);
+ need(a.output()==out&&a.committed_state()==seed&&a.committed_history()==hist,"valid nonzero-offset views");
+ a.reset(seed,hist);
  auto saved_state=a.committed_state(),saved_history=a.committed_history();for(int f=4;f<=6;++f){a.reset(saved_state,saved_history);fail=f;bool rejected=false;try{a.stage(mixed,q2,z2,2);}catch(...){rejected=true;}need(rejected&&!a.candidate()&&a.poisoned()&&a.committed_state()==saved_state&&a.committed_history()==saved_history,"failed stage changed committed state");}fail=0;a.reset(seed,hist);a.stage(mixed,q2,z2,2);need(a.output()==out,"reset A/B/A");
  std::puts("GDN core rows factory mock and staged banks passed");return 0;
 }catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

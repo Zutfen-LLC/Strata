@@ -34,7 +34,12 @@ void strata_vk_gdn_output_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggm
 }
 }
 int main(int argc,char**argv){try{
- need(argc==2,"scratch path");std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_cpu_init(),ggml_backend_free);
+ need(argc==2,"scratch path");
+ need(PortableNativeGdnOutputRows::construction_host_bound()==65536 &&
+      PortableNativeGdnOutputRows::runtime_host_bound()==32768+2*6912+2*2560*sizeof(float) &&
+      PortableNativeGdnOutputRows::host_bound()>=PortableNativeGdnOutputRows::construction_host_bound() &&
+      PortableNativeGdnOutputRows::host_bound()>=PortableNativeGdnOutputRows::runtime_host_bound(),"host phase bounds");
+ std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_cpu_init(),ggml_backend_free);
  std::unique_ptr<ggml_context,decltype(&ggml_free)> ctx(ggml_init({16384,nullptr,true}),ggml_free);
  auto*weight=ggml_new_tensor_2d(ctx.get(),GGML_TYPE_Q8_0,6144,2560);
  std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)> wb(ggml_backend_alloc_ctx_tensors(ctx.get(),backend.get()),ggml_backend_buffer_free);need(bool(wb),"weight allocation");
