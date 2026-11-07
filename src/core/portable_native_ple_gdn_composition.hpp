@@ -40,7 +40,7 @@ public:
   :ple_(ple),input_(input),core_(std::move(core)),output_(output),position_(ple.position()),host_budget_(host_budget){need(host_bound()<=host_budget_&&core_&&!core_->candidate()&&!core_->poisoned(),"PLE GDN: admission/core state");}
  PortableNativePleGdnComposition(const PortableNativePleGdnComposition&)=delete;PortableNativePleGdnComposition&operator=(const PortableNativePleGdnComposition&)=delete;
  ~PortableNativePleGdnComposition(){if(published_)published_->valid=false;}
- uint64_t position()const{return position_;}bool poisoned()const{return poisoned_;}
+ uint64_t position()const{return position_;}uint64_t generation()const{return generation_;}bool poisoned()const{return poisoned_;}
  std::vector<float> committed_state()const{return core_->committed_state();}
  std::vector<float> committed_history()const{return core_->committed_history();}
  // Optional preparation may perform downstream work that can still fail.

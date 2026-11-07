@@ -1,5 +1,7 @@
 #include "../../src/core/portable_local_experts.hpp"
 #include "../../src/core/portable_remote_experts.hpp"
+#include "../../src/core/portable_native_ffn_rows.hpp"
+#include <atomic>
 #include <thread>
 #include "strata/worker/vulkan_executor.hpp"
 #include "../../src/worker/vulkan_expert_graph.hpp"
@@ -10,7 +12,8 @@
 using namespace strata::core;
 using namespace model_fixture;
 namespace {
-struct State { std::function<void(size_t,strata::worker::GpuCounters&)> prepared_entry; int prepares=0,releases=0,inferences=0; size_t last_T=0; bool fail=false,bad=false,nonfinite=false; float bad_value=NAN; size_t bad_offset=0; };
+std::atomic<bool> vary_mock_rows{false};
+struct State { std::function<void(size_t,strata::worker::GpuCounters&)> prepared_entry; int prepares=0,releases=0,inferences=0; size_t last_T=0; bool fail=false,bad=false,missing=false,nonfinite=false; float bad_value=NAN; size_t bad_offset=0; };
 class RemoteFake final:public strata::worker::GpuExecutor {
     bool fail_;
 public:
@@ -26,7 +29,7 @@ public:
     bool infer_rows(const strata::worker::GpuPlan& p,const strata::worker::InferRequest& r,
                     strata::worker::EntryRowsReply& out,std::string&)override {
         if(fail_)return false;
-        for(size_t i=0;i<r.mask.size();++i)if(r.mask[i]){out.indices.push_back(uint16_t(i));out.rows.insert(out.rows.end(),p.n_embd,float(r.ids[i]+100));}
+        for(size_t i=0;i<r.mask.size();++i)if(r.mask[i]){out.indices.push_back(uint16_t(i));out.rows.insert(out.rows.end(),p.n_embd,float(r.ids[i]+100)+(vary_mock_rows?r.activations[(i/r.K)*p.n_embd]:0.f));}
         return true;
     }
     void release(strata::worker::GpuCounters& c)override{c.gpu_allocated_bytes=c.gpu_weight_bytes=c.gpu_allocation_count=0;}
@@ -72,9 +75,10 @@ public:
         out={};out.session=r.session;out.sequence=r.sequence;
         for(size_t i=0;i<r.mask.size();++i)if(r.mask[i]) {
             out.indices.push_back(uint16_t(i));
-            out.rows.insert(out.rows.end(),2560,float(r.ids[i]+1));
+            out.rows.insert(out.rows.end(),2560,float(r.ids[i]+1)+(vary_mock_rows?r.activations[(i/r.K)*2560]:0.f));
         }
         if(s.bad)out.indices.back()=out.indices.front();
+        if(s.missing&&!out.indices.empty()){out.indices.pop_back();out.rows.resize(out.rows.size()-2560);}
         if(s.nonfinite)out.rows.at(s.bad_offset)=s.bad_value;
         return true;
     }
@@ -227,6 +231,30 @@ int main(){
                       "remote, local and CPU must execute disjoint entries");
                 for(size_t slot=0;slot<10;++slot)for(size_t h=0;h<2560;++h)
                     check(rows[slot*2560+h]==(route.ids[slot]==9?109.f:good_rows[slot*2560+h]),"hybrid original slot mismatch");
+                // The standalone FFN core drives the actual remote/local/CPU
+                // ownership partition; executors here are CPU/socket mocks.
+                {
+                    using namespace strata::core::portable_detail;
+                    std::unique_ptr<ggml_context,decltype(&ggml_free)> c(ggml_init({8192,nullptr,true}),ggml_free);
+                    auto* w=ggml_new_tensor_2d(c.get(),GGML_TYPE_F32,2560,512);
+                    std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)> wb(ggml_backend_alloc_ctx_tensors(c.get(),first_backend.get()),ggml_backend_buffer_free);
+                    std::vector<float> zero(2560*512);ggml_backend_tensor_set(w,zero.data(),0,zero.size()*4);PortableNativeFfnProjection p(first_backend.get(),w,16u<<20);
+                    PortableNativeFfnRows::Dispatch d;d.router=[&](size_t n,const ggml_tensor*,std::vector<PortableRoute>& r){for(size_t t=0;t<n;++t){r[t].native_router=true;r[t].ids=route.ids;std::rotate(r[t].ids.begin(),r[t].ids.begin()+t,r[t].ids.end());for(size_t k=0;k<10;++k)r[t].weights.push_back(float(k+1)/32.f);}};
+                    d.shared=[](size_t n,const ggml_tensor*){return std::vector<float>(n*2560,.25f);};
+                    d.combine=[](size_t n,const auto& parts,const auto& weights,const auto& shared){auto out=shared;for(size_t t=0;t<n;++t)for(size_t k=0;k<10;++k)for(size_t h=0;h<2560;++h)out[t*2560+h]+=parts[(t*10+k)*2560+h]*weights[t*10+k];return out;};
+                    PortableNativeFfnRows core(0,p,d);std::vector<float> input(5120,.125f);std::fill(input.begin()+2560,input.end(),.25f);size_t calls=0;std::vector<PortableRoute> used;std::vector<float> raw;
+                    vary_mock_rows=true;struct VaryGuard{~VaryGuard(){vary_mock_rows=false;}} vary_guard;
+                    PortableExpertRowsBatch provider=[&](int64_t l,const auto& r,auto& out,auto& e){++calls;used=r;bool ok=hybrid.run_batch(l,r,out,e);raw=out;return ok;};
+                    auto c0=local.cpu_entries(),g0=local.gpu_entries(),r0=hybrid.stats().entries;auto inf=state.inferences;
+                    auto result=core.run(input,2,provider);
+                    check(calls==1&&local.cpu_entries()==c0+12&&local.gpu_entries()==g0+6&&hybrid.stats().entries==r0+2&&state.inferences==inf+2&&state.last_T==2,"row core hybrid ownership/topology");
+                    for(size_t t=0;t<2;++t){std::vector<float> cold;check(cpu.run(0,used[t],cold,error),error);for(size_t h=0;h<2560;++h){float expected=.25f;for(size_t k=0;k<10;++k){auto id=used[t].ids[k];float x=id==9?109.f+input[t*2560]:(id==1||id==3||id==5)?float(id+1)+input[t*2560]:cold[k*2560+h];check(raw[(t*10+k)*2560+h]==x,"row core hybrid raw token/slot scatter");expected+=x*used[t].weights[k];}check(result.block[t*2560+h]==expected,"row core hybrid scatter/weights");}}
+                    auto committed=result.block;
+                    for(int fault=0;fault<3;++fault){state.missing=fault==0;state.bad=fault==1;state.nonfinite=fault==2;bool rejected=false;auto before_fault=state.inferences;std::string diagnostic;
+                        try{core.run(input,2,provider);}catch(const std::exception& e){rejected=true;diagnostic=e.what();}
+                        state.missing=state.bad=state.nonfinite=false;const char* expected=fault==0?"resident reply identity/shape mismatch":fault==1?"resident reply duplicate/unowned slot":"nonfinite resident expert output";
+                        check(rejected&&diagnostic.find(expected)!=std::string::npos&&state.inferences>before_fault&&core.poisoned()&&result.block==committed,"row core malformed local reply");core.reset();}
+                }
                 const auto cpu_after=local.cpu_entries();state.fail=true;rows={123};
                 check(!hybrid.run(0,route,rows,error)&&rows.empty()&&local.cpu_entries()==cpu_after,
                       "local failure must not publish or run CPU fallback");state.fail=false;

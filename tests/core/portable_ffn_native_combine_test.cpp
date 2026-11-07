@@ -108,7 +108,7 @@ int main(int argc,char** argv){try {
             }
             throw std::runtime_error("test receipt directory unavailable");
         }
-        ~ReceiptDirectory(){std::error_code ignored;std::filesystem::remove_all(path,ignored);}
+        ~ReceiptDirectory(){if(std::getenv("STRATA_TEST_PRESERVE_MODEL_FIXTURE"))return;std::error_code ignored;std::filesystem::remove_all(path,ignored);}
     } private_receipts;
 #endif
     Fixture fixture;std::string error;

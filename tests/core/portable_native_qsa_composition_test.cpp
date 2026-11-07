@@ -2,9 +2,27 @@
 #include "portable_native_hc_test_backend.hpp"
 #include "portable_qsa_fixture.hpp"
 #include "portable_native_qsa_composition.hpp"
+#include "portable_native_ffn_test_access.hpp"
+#ifdef STRATA_FFN_CPU_PROVIDER_TEST
+#include "portable_cpu_experts.hpp"
+#include "portable_model_fixture.hpp"
+#endif
 #include <optional>
 namespace {size_t input_quant=0,qkv_calls=0,wo_quant=0,wo_calls=0;std::vector<float>row_input,row_gated;}
 namespace strata::core::portable_detail {
+#ifdef STRATA_FFN_CPU_PROVIDER_TEST
+struct StrataVkNativeRouter{};struct StrataVkNativeMoeCombine{};
+StrataVkNativeRouter* strata_vk_native_router_create(ggml_backend_t,const char*p){std::ofstream(p)<<"mock";return new StrataVkNativeRouter;}
+size_t strata_vk_native_router_bytes(const StrataVkNativeRouter*){return 512;}
+void strata_vk_native_router_destroy(StrataVkNativeRouter*p)noexcept{delete p;}
+void strata_vk_native_router_run(StrataVkNativeRouter*,const ggml_tensor*logits,ggml_tensor*ids,ggml_tensor*weights,uint32_t n){check(logits->ne[1]==n,"factory router columns");std::vector<int32_t>v(n*10);for(size_t t=0;t<n;++t)for(size_t k=0;k<10;++k)v[t*10+k]=9-k;ggml_backend_tensor_set(ids,v.data(),0,v.size()*4);put(weights,std::vector<float>(n*10,.1f));}
+StrataVkNativeMoeCombine* strata_vk_native_moe_combine_create(ggml_backend_t,const char*p){std::ofstream(p)<<"mock";return new StrataVkNativeMoeCombine;}
+size_t strata_vk_native_moe_combine_bytes(const StrataVkNativeMoeCombine*){return 512;}
+void strata_vk_native_moe_combine_destroy(StrataVkNativeMoeCombine*p)noexcept{delete p;}
+void strata_vk_native_moe_combine_run(StrataVkNativeMoeCombine*,const ggml_tensor*parts,const ggml_tensor*weights,const ggml_tensor*shared,ggml_tensor*out,uint32_t n){auto a=get(parts),w=get(weights),v=get(shared);for(size_t t=0;t<n;++t)for(size_t k=0;k<10;++k)for(size_t h=0;h<2560;++h)v[t*2560+h]+=a[(t*10+k)*2560+h]*w[t*10+k];put(out,v);}
+StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";return new StrataVkNativeStages;}
+StrataVkNativeShared* strata_vk_native_shared_create(ggml_backend_t,const char*p,size_t budget){std::ofstream(p)<<"mock";auto*r=new StrataVkNativeShared;r->budget=budget;return r;}
+#endif
 StrataVkQ8Wo* strata_vk_qsa_qkv_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";return new StrataVkQ8Wo;}
 StrataVkQ8Wo* strata_vk_qsa_wo_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";return new StrataVkQ8Wo;}
 StrataVkNativeShared* strata_vk_qsa_indexer_bf16_rows_create(ggml_backend_t,const char*p,size_t budget){check(budget>=512,"BF16 budget");std::ofstream(p)<<"mock";auto*x=new StrataVkNativeShared;x->budget=budget;return x;}
@@ -41,6 +59,80 @@ int main(int argc,char**argv){try{
  auto attention=std::make_unique<PortableNativeQsaAttention>(b.get(),cap,(root/"attention").string(),PortableNativeQsaAttention::estimate(b.get(),cap),false);
  auto output=std::make_unique<PortableNativeQsaWoRows>(b.get(),wo,wr.data(),wr.size(),(root/"wo").string(),PortableNativeQsaWoRows::estimate(b.get()));
  using Owner=PortableNativeQsaComposition;Owner owner(3,cap,Owner::host_bound(cap),std::move(hc),std::move(qkv),std::move(proj),std::move(norm),std::move(indexer),std::move(select),std::move(attention),std::move(output));observe_qsa_rows=true;
+ // Connected QSA candidate -> FFN HC -> real row owner -> next HC.
+ {
+  auto fc=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({8192,nullptr,true}),ggml_free);
+  auto*rw=ggml_new_tensor_2d(fc.get(),GGML_TYPE_F32,2560,512);auto fb=std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>(ggml_backend_alloc_ctx_tensors(fc.get(),b.get()),ggml_backend_buffer_free);
+  std::vector<float>zero(2560*512);ggml_backend_tensor_set(rw,zero.data(),0,zero.size()*4);PortableNativeFfnProjection router(b.get(),rw,16u<<20);
+  PortableNativeFfnRows::Dispatch fd;
+  fd.router=[](size_t n,const ggml_tensor* logits,std::vector<PortableRoute>&r){check(logits->ne[1]==int64_t(n),"FFN router columns");for(auto&v:r){v.native_router=true;for(int k=0;k<10;++k){v.ids.push_back(9-k);v.weights.push_back(.1f);}}};
+  fd.shared=[](size_t n,const ggml_tensor*){return std::vector<float>(n*2560,1.f);};
+  fd.combine=[](size_t n,const auto&parts,const auto&w,const auto&shared){auto out=shared;for(size_t t=0;t<n;++t)for(size_t k=0;k<10;++k)for(size_t h=0;h<2560;++h)out[t*2560+h]+=parts[(t*10+k)*2560+h]*w[t*10+k];return out;};
+  PortableNativeFfnRows rows(3,router,fd);HC::Dispatch ff;
+  ff.pending=[](const HC::Bank&bank){auto r=get(bank.input),block=get(bank.block);size_t n=block.size()/2560;for(size_t t=0;t<n;++t)for(size_t s=0;s<4;++s)for(size_t h=0;h<2560;++h)r[t*10240+s*2560+h]+=block[t*2560+h];put(bank.residual,r);};
+  ff.norm=[](const HC::Bank&bank,uint32_t n){put(bank.inject,std::vector<float>(n*4,.5f));};
+  ff.mix=[](const HC::Bank&bank){auto r=get(bank.residual);size_t n=r.size()/10240;std::vector<float>m(n*2560);for(size_t t=0;t<n;++t)std::copy_n(r.begin()+t*10240,2560,m.begin()+t*2560);put(bank.mixed,m);};
+  auto ffhc=std::make_unique<HC>(b.get(),hcroles[0],hcroles[1],hcroles[2],hcroles[3],20*1024*1024,nullptr,ff);
+  auto chain=PortableNativeFfnCompositionTestAccess::make(owner,std::move(ffhc),rows,PortableNativeFfnComposition::host_bound());HC next(b.get(),hcroles[0],hcroles[1],hcroles[2],hcroles[3],20*1024*1024,nullptr,ff);
+  size_t calls=0;PortableExpertRowsBatch expert=[&](int64_t layer,const auto&r,auto&v,auto&){++calls;check(layer==3&&r.size()>=1&&r.size()<=2,"FFN expert rows");v.assign(r.size()*10*2560,2.f);return true;};
+  PortableNativeFfnComposition::Batch first,tail,failed_ff;
+  bool wrong=false;try{chain.run(1,*producer,{snapshots[1]},expert,[](const auto&){});}catch(...){wrong=true;}check(wrong&&!chain.poisoned()&&calls==0,"FFN wrong source position dispatched");
+  chain.run(0,*producer,{snapshots[0],snapshots[1]},expert,[&](const auto&v){first=v;check(v.size()==2,"FFN T2 candidate");});
+  check(calls==1&&chain.position()==2&&first[0]->valid_for(chain,4,0)&&first[1]->valid_for(chain,4,1),"FFN T2 commit");
+  auto saved=first[0]->tuple().residual;check(first[0]->tuple().block[0]>2.9f&&first[0]->tuple().injection[0]==.5f,"post FFN tuple values");
+  bool bad=false;try{next.run(4,0,chain,{first[1],first[0]},[](const HC::View&,uint32_t){},[](const HC::View&,uint32_t){});}catch(...){bad=true;}check(bad&&next.rows()==0,"swapped FFN snapshots admitted");
+  bad=false;try{next.run(4,0,chain,{first[0],first[0]},[](const HC::View&,uint32_t){},[](const HC::View&,uint32_t){});}catch(...){bad=true;}check(bad&&next.rows()==0,"duplicate FFN snapshots admitted");
+  next.run(4,0,chain,first,[&](const HC::View&v,uint32_t n){check(n==2&&v.read(HC::View::Field::residual)[0]==saved[0]+first[0]->tuple().block[0],"next HC consumes FFN tuple");},[](const HC::View&,uint32_t){});
+  chain.run(2,*producer,{snapshots[2]},expert,[&](const auto&v){tail=v;});check(calls==2&&chain.position()==3&&first[0]->tuple().residual==saved&&first[0]->valid_for(chain,4,0),"FFN tail/retention");
+  auto before_late=owner.state();bool rejected=false;try{chain.run(3,*producer,{snapshots[3]},expert,[&](const auto&v){failed_ff=v;},[](const auto&){throw std::runtime_error("late FFN prepare");});}catch(...){rejected=true;}
+  auto after_late=owner.state();check(rejected&&chain.poisoned()&&owner.position()==3&&chain.position()==3&&first[0]->tuple().residual==saved&&after_late.keys==before_late.keys&&after_late.values==before_late.values&&after_late.indexer==before_late.indexer,"FFN late rollback");rejected=false;try{failed_ff[0]->tuple();}catch(...){rejected=true;}check(rejected,"failed FFN snapshot survived");
+  owner.reset();check(!first[0]->valid_for(chain,4,0),"source reset left FFN provenance live");chain.reset();rejected=false;try{first[0]->tuple();}catch(...){rejected=true;}check(rejected,"FFN reset did not invalidate retained tuple");
+  auto replay=[&](float bias){owner.reset();chain.reset();hc_bias=bias;PortableNativeFfnComposition::Batch v;bool reentrant=false;chain.run(0,*producer,{snapshots[0],snapshots[1]},expert,[&](const auto&s){v=s;try{chain.reset();}catch(...){reentrant=true;}});check(reentrant,"reentrant FFN reset");return v[0]->tuple().residual;};
+  auto a=replay(0.f),bvalue=replay(.125f),again=replay(0.f);check(a!=bvalue&&a==again,"FFN reset A/B/A");
+  PortableNativeFfnComposition::Batch prior;chain.run(2,*producer,{snapshots[2]},expert,[&](const auto&v){prior=v;});auto prior_value=prior[0]->tuple().block;
+  PortableExpertRowsBatch refusal=[](int64_t,const auto&,auto&,auto&error){error="rejected";return false;};rejected=false;
+  try{chain.run(3,*producer,{snapshots[3]},refusal,[](const auto&){});}catch(...){rejected=true;}
+  check(rejected&&chain.poisoned()&&chain.position()==3&&owner.position()==3&&prior[0]->tuple().block==prior_value,"FFN provider failure rollback");
+  rejected=false;try{chain.run(3,*producer,{snapshots[3]},expert,[](const auto&){});}catch(...){rejected=true;}check(rejected,"FFN poisoned continuation");
+  owner.reset();chain.reset();hc_bias=0;
+  PortableNativeFfnComposition::Batch before_source,attempt_source;chain.run(0,*producer,{snapshots[0]},expert,[&](const auto&v){before_source=v;});auto held=before_source[0]->tuple().residual;
+  rejected=false;try{chain.run(1,*producer,{snapshots[1]},expert,[&](const auto&v){attempt_source=v;},[&](const auto&){check(producer->reset(error),error);});}catch(...){rejected=true;}
+  check(rejected&&chain.poisoned()&&chain.position()==1&&owner.position()==1&&before_source[0]->tuple().residual==held&&!before_source[0]->valid_for(chain,4,0),"FFN source invalidation rollback/provenance");
+  rejected=false;try{attempt_source[0]->tuple();}catch(...){rejected=true;}check(rejected,"FFN invalidated source candidate survived");
+  snapshots.clear();for(int p=0;p<5;++p){check(producer->step(f.input(p),experts,route,error),error);snapshots.push_back(producer->pending_snapshot(error));check(bool(snapshots.back()),error);}
+  owner.reset();chain.reset();
+  // Actual named-role factory and production HC component wiring, T2/T1. The
+  // component implementation here remains a CPU low-level mock.
+  {
+   std::vector<float> norm(10240,2.f);std::array<std::vector<uint8_t>,3> packed;const size_t lengths[]={40960,3276800,3276800};
+   for(size_t i=0;i<3;++i){packed[i].resize(lengths[i]/32*34);for(size_t j=0;j<packed[i].size();j+=34){packed[i][j+1]=0x3c;packed[i][j+2]=uint8_t(i+1);}factory_ffn_roles[i]=native_hc_q8_bf16(packed[i].data(),packed[i].size(),lengths[i]);}
+   std::vector<PortableTensorView> ffviews{{"blk.3.hc_ffn_norm.weight",{10240},0,norm.data(),norm.size()*4},{"blk.3.hc_ffn_inject.weight",{10240,4},8,packed[0].data(),packed[0].size()},{"blk.3.hc_ffn_down.weight",{10240,320},8,packed[1].data(),packed[1].size()},{"blk.3.hc_ffn_up.weight",{320,10240},8,packed[2].data(),packed[2].size()}};
+#ifdef STRATA_FFN_CPU_PROVIDER_TEST
+   model_fixture::SparseModel fixture;strata::GgufModel model(fixture.paths);PortableModelOptions opts;opts.expert_workers=1;CpuExperts cpu_experts(model,(fixture.root/"manifest").string(),opts);
+   auto gguf_roles=NativeFfnHcFactory::from_gguf(model,3);check(gguf_roles.size()==4&&gguf_roles[0].name=="blk.3.hc_ffn_norm.weight"&&gguf_roles[3].name=="blk.3.hc_ffn_up.weight","GGUF role selection");
+   bool missing_gguf=false;try{(void)NativeFfnHcFactory::from_gguf(model,48);}catch(...){missing_gguf=true;}check(missing_gguf,"GGUF factory missing roles admitted");
+   auto wc=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({8192,nullptr,true}),ggml_free);std::array<ggml_tensor*,4> weights;
+   for(size_t i=0;i<3;++i)weights[i]=ggml_new_tensor_1d(wc.get(),GGML_TYPE_I32,87040/4);weights[3]=ggml_new_tensor_1d(wc.get(),GGML_TYPE_I32,5120/4);
+   auto wb=std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>(ggml_backend_alloc_ctx_tensors(wc.get(),b.get()),ggml_backend_buffer_free);
+   std::array<std::unique_ptr<PortableNativeRouter>,2> nr;std::array<std::unique_ptr<PortableNativeShared>,2> ns;std::array<std::unique_ptr<PortableNativeMoeCombine>,2> nc;
+   for(size_t i=0;i<2;++i){nr[i]=std::make_unique<PortableNativeRouter>(b.get(),i+1,16u<<20,(root/"ffn-router").string());ns[i]=std::make_unique<PortableNativeShared>(b.get(),2560,32,i+1,weights,16u<<20,(root/"ffn-shared").string());nc[i]=std::make_unique<PortableNativeMoeCombine>(b.get(),i+1,16u<<20,(root/"ffn-combine").string());}
+   PortableNativeFfnRows native_rows(3,router,PortableNativeFfnRows::native_dispatch({nr[0].get(),nr[1].get()},{ns[0].get(),ns[1].get()},{nc[0].get(),nc[1].get()}));
+   size_t actual_calls=0;PortableExpertRowsBatch actual_provider=[&](int64_t l,const auto&r,auto&out,auto&e){++actual_calls;return cpu_experts.run_batch(l,r,out,e);};
+   auto& selected_rows=native_rows;auto& selected_provider=actual_provider;
+#else
+   auto& selected_rows=rows;auto& selected_provider=expert;
+#endif
+   auto prefix=(root/"ffn-factory").string();PortableNativeFfnComposition real(owner,b.get(),ffviews,selected_rows,40u<<20,32u<<20,prefix.c_str(),HC::ComponentCaps{512,512,512});
+   std::fill(norm.begin(),norm.end(),9.f);for(auto&v:packed)std::fill(v.begin(),v.end(),0);factory_ffn_mode=true;factory_shared_mode=true;
+   PortableNativeFfnComposition::Batch actual,actual_tail;real.run(0,*producer,{snapshots[0],snapshots[1]},selected_provider,[&](const auto&v){actual=v;});real.run(2,*producer,{snapshots[2]},selected_provider,[&](const auto&v){actual_tail=v;});factory_ffn_mode=false;factory_shared_mode=false;
+#ifdef STRATA_FFN_CPU_PROVIDER_TEST
+   check(actual_calls==2&&cpu_experts.work().native_batches==2&&cpu_experts.work().batch_max_nt==2,"factory/native owners/CPU grouped provider chain");
+#endif
+   check(actual.size()==2&&actual_tail.size()==1&&actual[0]->valid_for(real,4,0)&&actual_tail[0]->valid_for(real,4,2)&&actual[0]->tuple().injection[0]==.5f,"production FFN factory chain");
+   for(const char* suffix:{".pending.spv",".norm.spv",".mix.spv"})check(std::filesystem::file_size(prefix+suffix)>0,"factory HC receipt");
+  }
+  owner.reset();
+ }
  std::vector<float>batched,serial;std::vector<int32_t>batch_ids,serial_ids;std::optional<Owner::View>old,failed;
  auto run=[&](size_t first,size_t n,std::vector<float>&out,std::vector<int32_t>&ids){std::vector<std::shared_ptr<const PortableGdnSnapshot>>s(snapshots.begin()+first,snapshots.begin()+first+n);owner.run(first,*producer,s,[&](const Owner::View&v){check(v.first()==first&&v.rows()==n&&v.residual().size()==n*10240&&v.injection().size()==n*4,"view provenance");auto x=v.output();out.insert(out.end(),x.begin(),x.end());for(size_t r=0;r<n;++r){auto z=v.selected(r);ids.insert(ids.end(),z.begin(),z.end());}old=v;});};
  input_quant=qkv_calls=qsa_row_bf_calls=wo_quant=wo_calls=qsa_row_idx_calls=qsa_row_score_calls=qsa_row_select_calls=qsa_row_attn_calls=0;auto before_norm=qsa_norm_calls;run(0,2,batched,batch_ids);check(input_quant==1&&qkv_calls==3&&qsa_row_bf_calls==2&&wo_quant==1&&wo_calls==1&&qsa_norm_calls-before_norm==6&&qsa_row_idx_calls==2&&qsa_row_score_calls==2&&qsa_row_select_calls==2&&qsa_row_attn_calls==2,"T2 real stage counts");run(2,1,batched,batch_ids);auto batch_state=owner.state();check(owner.position()==3&&batched.size()==3*2560,"T2 tail commit");

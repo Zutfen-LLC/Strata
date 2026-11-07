@@ -65,7 +65,7 @@ void strata_vk_native_moe_combine_run(StrataVkNativeMoeCombine*,const ggml_tenso
 int main(){try {
     const auto root=std::filesystem::temp_directory_path()/("router-ffn-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     need(std::filesystem::create_directory(root),"test receipt directory");
-    struct Cleanup{std::filesystem::path p;~Cleanup(){std::error_code ignored;std::filesystem::remove_all(p,ignored);}} cleanup{root};
+    struct Cleanup{std::filesystem::path p;~Cleanup(){if(std::getenv("STRATA_TEST_PRESERVE_MODEL_FIXTURE"))return;std::error_code ignored;std::filesystem::remove_all(p,ignored);}} cleanup{root};
     std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_cpu_init(),ggml_backend_free);need(bool(backend),"CPU mock backend");
     Fixture f;std::string error;PortableFfnOptions opts;opts.accelerator=backend.get();opts.request_accelerator=true;opts.native_router=true;opts.native_router_receipt_prefix=(root/"router").string();
     opts.native_moe_combine_receipt_prefix=(root/"combine").string();

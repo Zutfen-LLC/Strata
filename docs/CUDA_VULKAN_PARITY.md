@@ -47,6 +47,28 @@ expert execution, admission and model failure/reset qualification, and physical
 GPU validation remain. No independent-request batching, speculation, full model
 parity or throughput result is implied.
 
+## Standalone post-attention FFN rows
+
+The standalone FFN composition can consume a live PLE/GDN or QSA transaction
+for two rows or a one-row tail. It selects the layer's named FFN HC roles,
+converts the Q8_0 roles to BF16, and copies them into its own HC bank. A single
+GGML matrix projection feeds the native router; the existing shared and combine
+owners surround one fixed expert-provider batch. The resulting deferred tuples
+can be consumed by the next ordinary HC boundary after commit. Caller-retained
+snapshots own their tuples; reset or destruction invalidates their provenance.
+The upstream owner, row owner and backend are borrowed and must outlive the
+composition. This is not full-model chunk admission.
+
+CPU tests exercise the owner chain with low-level component mocks, a grouped
+CPU provider, and socket/local ownership mocks. The connected test uses synthetic
+named FFN views and zero-valued layer-3 fixture experts. GGUF role lookup is
+checked separately. They do not establish GPU
+arithmetic. The router matrix does not prove native MMVQ reduction equivalence.
+Native helper partial weighted reductions differ from portable full unweighted
+expert rows combined in original top-10 order. Q8_1/F32 row conventions do not
+prove native-prefill FP16/BF16 GEMM equivalence. No throughput or default-path
+claim follows from this slice.
+
 ## HC norm/injection checkpoint (2026-10-31)
 
 [PR #97](https://github.com/Zutfen-LLC/Strata/pull/97) defines the standalone
