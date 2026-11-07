@@ -1,7 +1,9 @@
 // Bounded 42 -> 47 component chain. CPU low-level mocks, not model/GPU evidence.
 #define STRATA_TERMINAL_FIXTURE 1
 #include "portable_native_ple_gdn_composition_test.cpp"
-#include "portable_native_terminal_composition.hpp"
+#include "portable_native_model_rows.hpp"
+#include <type_traits>
+static_assert(!std::is_copy_constructible_v<strata::core::portable_detail::PortableNativeModelRows>);
 #include "portable_gdn_fixture.hpp"
 #include "ggml-backend-impl.h"
 

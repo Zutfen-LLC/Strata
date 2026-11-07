@@ -22,6 +22,7 @@ private:
     std::unique_ptr<PortableNativePleTransaction> transaction_;
     std::unique_ptr<PortableNativeHcComposed> hc_;
     bool consuming_ = false;
+    uint64_t reset_generation_ = 0;
     std::shared_ptr<const PortableNativeLayer0Rows> staged_source_, predecessor_;
     uint64_t staged_generation_=0;
 
@@ -97,7 +98,8 @@ public:
     }
     void reset(std::array<int32_t, 2> previous = {-1, -1}, uint64_t position = 0) {
         // Reject reentrant changes before either participant can be changed.
-        if (consuming_) throw std::runtime_error("PLE composition: reentrant reset");
+        if (consuming_ || reset_generation_ == UINT64_MAX) throw std::runtime_error("PLE composition: reentrant reset or generation exhausted");
+        ++reset_generation_;
         hc_->reset();
         transaction_->reset(previous, position);
         staged_source_.reset(); predecessor_.reset();
@@ -105,6 +107,9 @@ public:
     // Raw/legacy commits have no typed predecessor and retain their historical behavior.
     bool provenance_live() const { return !predecessor_ || predecessor_->live(); }
     uint64_t position() const { return transaction_->position(); }
+    uint64_t reset_generation() const { return reset_generation_; }
+    uint64_t generation() const { return transaction_->generation(); }
+    bool available() const { return !consuming_ && transaction_->available() && provenance_live(); }
     const std::vector<float>& history() const { return transaction_->history(); }
     std::array<int32_t, 2> previous() const { return transaction_->previous(); }
 };

@@ -33,6 +33,7 @@ private:
     Dispatch dispatch_;
     int64_t layer_;
     bool running_=false,poisoned_=false;
+    uint64_t generation_=0;
     static void need(bool b,const char* m){if(!b)throw std::runtime_error(m);}
     static void finite(const std::vector<float>& v){for(float x:v)need(std::isfinite(x),"FFN rows: nonfinite value");}
 public:
@@ -44,11 +45,12 @@ public:
     PortableNativeFfnRows& operator=(const PortableNativeFfnRows&)=delete;
     int64_t layer()const{return layer_;}
     bool poisoned()const{return poisoned_;}
+    uint64_t generation()const{return generation_;}
     // Reset only after the enclosing producer/provider has also been reset or replayed.
-    void reset(){need(!running_,"FFN rows: active reset");poisoned_=false;}
+    void reset(){need(!running_&&generation_!=UINT64_MAX,"FFN rows: active reset or generation exhausted");++generation_;poisoned_=false;}
     Result run(const std::vector<float>& mixed,size_t count,const PortableExpertRowsBatch& provider){
-        need(!running_&&!poisoned_&&(count==1||count==2)&&mixed.size()==count*2560&&bool(provider),"FFN rows: unavailable or shape");
-        finite(mixed);running_=true;struct Guard{bool& flag;~Guard(){flag=false;}}guard{running_};
+        need(!running_&&!poisoned_&&generation_!=UINT64_MAX&&(count==1||count==2)&&mixed.size()==count*2560&&bool(provider),"FFN rows: unavailable or shape");
+        finite(mixed);++generation_;running_=true;struct Guard{bool& flag;~Guard(){flag=false;}}guard{running_};
         try {
             projection_.run(mixed,count);
             Result result;result.routes.resize(count);

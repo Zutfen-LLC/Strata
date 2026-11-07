@@ -21,7 +21,7 @@ private:
     PortableNativePleGdnComposition* gdn_=nullptr;PortableNativeOrdinaryGdnComposition* ordinary_=nullptr;PortableNativeQsaComposition* qsa_=nullptr;
     std::unique_ptr<PortableNativeHcComposed> hc_;
     PortableNativeFfnRows& rows_;
-    int layer_;uint64_t position_,upstream_generation_;bool running_=false,poisoned_=false;
+    int layer_;uint64_t position_,upstream_generation_,reset_generation_=0;bool running_=false,poisoned_=false;
     std::shared_ptr<Epoch> epoch_=make_epoch();
     Batch published_;
     std::shared_ptr<Epoch> make_epoch(){auto e=std::make_shared<Epoch>();e->source_live=[this]{return !running_&&upstream_provenance_live()&&upstream_position()==position_&&upstream_generation()==upstream_generation_;};return e;}
@@ -106,9 +106,17 @@ public:
     PortableNativeFfnComposition& operator=(const PortableNativeFfnComposition&)=delete;
     ~PortableNativeFfnComposition(){epoch_->valid=false;}
     bool poisoned()const{return poisoned_;}uint64_t position()const{return position_;}
+    int layer()const{return layer_;}
+    const PortableNativePleGdnComposition* ple_source()const{return gdn_;}
+    const PortableNativeOrdinaryGdnComposition* ordinary_source()const{return ordinary_;}
+    const PortableNativeQsaComposition* qsa_source()const{return qsa_;}
+    const void* rows_identity()const{return &rows_;}
+    uint64_t rows_generation()const{return rows_.generation();}
+    uint64_t reset_generation()const{return reset_generation_;}
+    bool available()const{return !running_&&!poisoned_&&!rows_.poisoned()&&rows_.generation()!=UINT64_MAX&&!upstream_poisoned()&&upstream_provenance_live()&&upstream_position()==position_&&upstream_generation()==upstream_generation_&&upstream_generation_!=UINT64_MAX;}
     // Caller must reset/replay the borrowed upstream and provider first. This
     // operation does not reset recurrent state or undo provider side effects.
-    void reset(){need(!running_&&!upstream_poisoned()&&upstream_provenance_live(),"FFN composition: active or invalid source");auto next=make_epoch();hc_->reset();rows_.reset();epoch_->valid=false;epoch_.swap(next);published_.clear();position_=upstream_position();upstream_generation_=upstream_generation();poisoned_=false;}
+    void reset(){need(!running_&&!upstream_poisoned()&&upstream_provenance_live()&&reset_generation_!=UINT64_MAX,"FFN composition: active or invalid source");++reset_generation_;auto next=make_epoch();hc_->reset();rows_.reset();epoch_->valid=false;epoch_.swap(next);published_.clear();position_=upstream_position();upstream_generation_=upstream_generation();poisoned_=false;}
     void run(const PortableNativePleGdnComposition::Handle& handle,const PortableExpertRowsBatch& provider,const Consumer& consumer,const Consumer& prepare={}){
         need(gdn_!=nullptr,"FFN composition: wrong source kind");auto first=handle.position();auto count=handle.tokens().size();
         execute(first,count,provider,consumer,prepare,[&](auto& stage,auto& ready){gdn_->run(handle,[&](const auto& v){stage(v.position(),v.generation(),v.residual(),v.output(),v.injection());},[&](const auto& v){ready(v.position(),v.generation());});});

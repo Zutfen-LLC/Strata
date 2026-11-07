@@ -26,7 +26,7 @@ class PortableNativeTerminalComposition {
     Buffer buffer_{nullptr,ggml_backend_buffer_free};
     Write write_{nullptr,strata_vk_native_hc_pending_destroy};
     std::array<Bank,2> banks_{};
-    uint64_t position_,generation_,owner_id_,sequence_=0; bool running_=false,poisoned_=false;
+    uint64_t position_,generation_,owner_id_,sequence_=0,reset_generation_=0; bool running_=false,poisoned_=false;
     static void need(bool b,const char* m){if(!b)throw std::runtime_error(m);}
     static uint64_t next_owner(){
         static std::atomic<uint64_t> id{1}; auto value=id.load(std::memory_order_relaxed);
@@ -73,10 +73,17 @@ public:
     PortableNativeTerminalComposition(const PortableNativeTerminalComposition&)=delete;
     PortableNativeTerminalComposition& operator=(const PortableNativeTerminalComposition&)=delete;
     uint64_t position()const{return position_;} bool poisoned()const{return poisoned_;}
+    const PortableNativeQsaComposition* source_identity()const{return &source_;}
+    const void* rows_identity()const{return &rows_;}
+    uint64_t rows_generation()const{return rows_.generation();}
+    size_t vocabulary_size()const{return head_.vocabulary_size();}
+    uint64_t reset_generation()const{return reset_generation_;}
+    bool available()const{return !running_&&!poisoned_&&!rows_.poisoned()&&rows_.generation()!=UINT64_MAX&&source_.available()&&source_.position()==position_&&source_.generation()==generation_&&generation_!=UINT64_MAX;}
+    bool can_run(size_t count)const{return available()&&(count==1||count==2)&&sequence_<=UINT64_MAX-count;}
     // Reset/replay upstream and provider separately; this does not roll back
     // earlier layer commits or external provider side effects.
-    void reset(){need(!running_&&!source_.poisoned()&&source_.provenance_live(),"terminal: reset source");
-        poisoned_=true;hc_->reset();rows_.reset();position_=source_.position();generation_=source_.generation();poisoned_=false;}
+    void reset(){need(!running_&&!source_.poisoned()&&source_.provenance_live()&&reset_generation_!=UINT64_MAX,"terminal: reset source");
+        ++reset_generation_;poisoned_=true;hc_->reset();rows_.reset();position_=source_.position();generation_=source_.generation();poisoned_=false;}
     std::shared_ptr<const Result> run(uint64_t first,const PortableNativeFfnComposition& producer,
         const PortableNativeFfnComposition::Batch& snapshots,const PortableExpertRowsBatch& provider,const Prepare& prepare={}) {
         const size_t count=snapshots.size();

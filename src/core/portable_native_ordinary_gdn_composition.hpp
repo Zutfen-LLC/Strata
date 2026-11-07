@@ -45,6 +45,7 @@ public:
  ~PortableNativeOrdinaryGdnComposition(){if(published_)published_->valid=false;}
  int layer()const{return layer_;}uint64_t position()const{return position_;}uint64_t generation()const{return generation_;}bool poisoned()const{return poisoned_;}
  bool provenance_live()const{return !anchor_||(position_&&anchor_->live()&&anchor_->layer()+1==layer_&&anchor_->position()==position_-1);}
+ bool available()const{return !running_&&!poisoned_&&generation_!=UINT64_MAX&&!core_->candidate()&&!core_->poisoned()&&provenance_live();}
  std::vector<float> committed_state()const{return core_->committed_state();}
  std::vector<float> committed_history()const{return core_->committed_history();}
  Seed state()const{Seed s;s.position=position_;s.state=core_->committed_state();s.history=core_->committed_history();s.anchor_=anchor_;return s;}

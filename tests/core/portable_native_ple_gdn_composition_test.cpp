@@ -19,13 +19,33 @@ std::vector<float> get(const ggml_tensor*t){std::vector<float>v(ggml_nbytes(t)/4
 void put(ggml_tensor*t,const std::vector<float>&v){need(ggml_nbytes(t)==v.size()*4,"mock span");ggml_backend_tensor_set(t,v.data(),0,v.size()*4);}
 }
  #include "portable_native_chain_qsa_mocks.hpp"
-namespace {std::vector<float> chain_qsa_input,chain_qsa_gated; size_t chain_qsa_qkv=0;}
+namespace {std::vector<float> chain_qsa_input,chain_qsa_gated; size_t chain_qsa_qkv=0;
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+size_t model_qsa_t2=0,model_gdn_t2=0;
+// Synthetic perturbation for model plumbing sensitivity, not a numerical oracle.
+float model_gdn_signal=1.f; bool model_gdn_saturated=false,model_qsa_saturated=false;
+#endif
+}
 namespace strata::core::portable_detail {
 StrataVkQ8Wo* strata_vk_qsa_qkv_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";return new StrataVkQ8Wo;}
 StrataVkQ8Wo* strata_vk_qsa_wo_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";return new StrataVkQ8Wo;}
 StrataVkNativeShared* strata_vk_qsa_indexer_bf16_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";return new StrataVkNativeShared;}
-void strata_vk_qsa_input_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t rows){chain_qsa_input=get(x);std::vector<uint8_t> packed(rows*2880);ggml_backend_tensor_set(q,packed.data(),0,packed.size());}
-void strata_vk_qsa_qkv_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t n,size_t rows){size_t role=chain_qsa_qkv++%3;std::vector<float> v(rows*n);for(size_t r=0;r<rows;++r)for(size_t i=0;i<n;++i)v[r*n+i]=chain_qsa_input[r*2560]+float(int((i+role*3)%17)-8)/32.f;put(y,v);}
+void strata_vk_qsa_input_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t rows){chain_qsa_input=get(x);
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ for(size_t r=0;r<rows;++r)model_qsa_saturated|=std::fabs(std::tanh(chain_qsa_input[r*2560]/1024.f))==1.f;
+#endif
+ std::vector<uint8_t> packed(rows*2880);ggml_backend_tensor_set(q,packed.data(),0,packed.size());}
+void strata_vk_qsa_qkv_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t n,size_t rows){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(rows==2)++model_qsa_t2;
+#endif
+ size_t role=chain_qsa_qkv++%3;std::vector<float> v(rows*n);for(size_t r=0;r<rows;++r)for(size_t i=0;i<n;++i)v[r*n+i]=
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ std::tanh(chain_qsa_input[r*2560]/1024.f)*.125f
+#else
+ chain_qsa_input[r*2560]
+#endif
+ +float(int((i+role*3)%17)-8)/32.f;put(y,v);}
 void strata_vk_qsa_wo_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t rows){chain_qsa_gated=get(x);std::vector<uint8_t> packed(rows*6912);ggml_backend_tensor_set(q,packed.data(),0,packed.size());}
 void strata_vk_qsa_wo_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t rows){std::vector<float> v(rows*2560);for(size_t r=0;r<rows;++r)std::copy_n(chain_qsa_gated.begin()+r*6144,2560,v.begin()+r*2560);put(y,v);}
 struct StrataVkNativeGdnConvRows{};struct StrataVkNativeGdnAbRows{};struct StrataVkNativeGdnRows{};
@@ -44,10 +64,24 @@ namespace { std::vector<float> gdn_quant_input; bool gdn_bad_second_scale=false;
 namespace strata::core::portable_detail {
 StrataVkQ8Wo* strata_vk_gdn_input_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";inject("gdn input factory");return new StrataVkQ8Wo;}
 StrataVkQ8Wo* strata_vk_gdn_output_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";inject("gdn output factory");return new StrataVkQ8Wo;}
-void strata_vk_gdn_input_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t rows){++in_quant;gdn_quant_input=get(x);std::vector<uint8_t>p(rows*2880);if(gdn_bad_second_scale&&rows==2)p[2880]=1;ggml_backend_tensor_set(q,p.data(),0,p.size());write_then_throw("gdn input quant",{q},9);}
+void strata_vk_gdn_input_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t rows){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(rows==2)++model_gdn_t2;
+#endif
+ ++in_quant;gdn_quant_input=get(x);std::vector<uint8_t>p(rows*2880);if(gdn_bad_second_scale&&rows==2)p[2880]=1;ggml_backend_tensor_set(q,p.data(),0,p.size());write_then_throw("gdn input quant",{q},9);}
 void strata_vk_gdn_input_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t columns,size_t rows){if(columns==10240)++in_qkv;else ++in_z;std::vector<float>v(rows*columns);for(size_t r=0;r<rows;++r)for(size_t i=0;i<columns;++i)v[r*columns+i]=gdn_quant_input[r*2560]+float(i%7)/16;put(y,v);write_then_throw(columns==10240?"gdn qkv":"gdn z",{y},9);}
-void strata_vk_gdn_output_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t rows){++out_quant;gdn_quant_input=get(x);std::vector<uint8_t>p(rows*6912);ggml_backend_tensor_set(q,p.data(),0,p.size());write_then_throw("gdn output quant",{q},9);}
-void strata_vk_gdn_output_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t rows){++out_dot;std::vector<float>v(rows*2560);for(size_t r=0;r<rows;++r)for(size_t i=0;i<2560;++i)v[r*2560+i]=gdn_quant_input[r*6144+i];put(y,v);write_then_throw("gdn output dot",{y},9);}
+void strata_vk_gdn_output_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t rows){++out_quant;gdn_quant_input=get(x);
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ for(size_t r=0;r<rows;++r)model_gdn_saturated|=std::fabs(std::tanh(gdn_quant_input[r*6144]/1024.f))==1.f;
+#endif
+ std::vector<uint8_t>p(rows*6912);ggml_backend_tensor_set(q,p.data(),0,p.size());write_then_throw("gdn output quant",{q},9);}
+void strata_vk_gdn_output_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t rows){++out_dot;std::vector<float>v(rows*2560);for(size_t r=0;r<rows;++r)for(size_t i=0;i<2560;++i)v[r*2560+i]=
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ std::tanh(gdn_quant_input[r*6144+i]/1024.f)*(.125f*model_gdn_signal);
+#else
+ gdn_quant_input[r*6144+i];
+#endif
+ put(y,v);write_then_throw("gdn output dot",{y},9);}
 }
 
 #ifdef STRATA_TERMINAL_FIXTURE
