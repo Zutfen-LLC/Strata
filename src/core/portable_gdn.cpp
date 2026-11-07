@@ -1588,8 +1588,9 @@ std::shared_ptr<const PortableGdnSnapshot> PortableGdnLayer::pending_snapshot(st
             impl_->snapshot_owner, impl_->layer, impl_->count-1, impl_->snapshot_owner->generation, impl_->pending));
     } catch (const std::exception& e) { error=e.what(); return {}; }
 }
+bool PortableGdnSnapshot::live() const noexcept { return owner_ && owner_->alive && owner_->generation == generation_; }
 bool PortableGdnSnapshot::valid_for(const PortableGdnLayer& producer, int64_t consumer_layer, uint64_t position) const {
-    return owner_ == producer.impl_->snapshot_owner && owner_->alive && owner_->generation == generation_ &&
+    return owner_ == producer.impl_->snapshot_owner && live() &&
            layer_ + 1 == consumer_layer && position_ == position;
 }
 bool PortableGdnLayer::step_pending(const PortableGdnLayer& producer, const PortableGdnSnapshot& snapshot, const PortableExpertRows& dispatch,

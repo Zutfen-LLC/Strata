@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include <stdexcept>
+#include <string>
 #include <cstdio>
 struct MockDevice {
     struct {struct {uint32_t maxComputeWorkGroupCount[3]={65535,65535,65535};uint32_t maxComputeSharedMemorySize=32768;uint32_t maxStorageBufferRange=1u<<30;} limits;} properties;
@@ -36,6 +37,7 @@ static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context*,const std::shared
 using namespace strata::core::portable_detail;
 void need(bool ok) {if(!ok)throw std::runtime_error("shared dispatch contract failed");}
 template<class F> void rejects(F fn) {const auto before=submissions;bool caught=false;try{fn();}catch(const std::invalid_argument&){caught=true;}need(caught && before==submissions);}
+template<class F> void rejects_geometry(F fn) {const auto before=submissions;bool caught=false;try{fn();}catch(const std::invalid_argument& e){caught=std::string(e.what())=="native BF16 matrix: unsupported geometry";}need(caught && before==submissions);}
 int main() {try {
     ggml_backend_vk_context vkctx;ggml_backend backend{};backend.context=&vkctx;
     ggml_backend_vk_buffer_context bufferctx;bufferctx.device=vkctx.device;
@@ -101,13 +103,18 @@ int main() {try {
     strata_vk_native_shared_run(&ple,1,pw,px,py,pa,2560,2560,1);
     need(last_grid==std::array<uint32_t,3>{2560,1,1} && last_params[8]==256);
     --ple.budget;rejects([&]{strata_vk_native_shared_run(&ple,1,pw,px,py,pa,2560,2560,1);});
+    // Restore admission before testing geometry isolation, and prove both
+    // original owners can dispatch their valid T1 shapes at these budgets.
+    matrix.budget=buffer.size+matrix.owner->bytes;ple.budget=buffer.size+ple.owner->bytes;
+    strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,1);
+    strata_vk_native_shared_run(&ple,1,pw,px,py,pa,2560,2560,1);
     // QSA T2 is its own bounded mode, never an expansion of serial QSA or PLE.
     StrataVkNativeShared rows;rows.owner=std::make_unique<StrataVkLogitsGuard>(StrataVkLogitsGuard{&backend});rows.matrix=true;rows.qsa_rows=true;rows.budget=buffer.size+512;
     mx->ne[0]=5120;my->ne[0]=256;
     auto qsa=[&](uint32_t t){strata_vk_native_shared_run(&rows,1,mw,mx,my,ma,2560,128,t);};qsa(2);
     need(last_grid==std::array<uint32_t,3>{128,2,1}&&last_params[4]==0&&last_params[5]==0&&last_params[6]==0);
-    rejects([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,2);});
-    rejects([&]{strata_vk_native_shared_run(&ple,1,mw,mx,my,ma,2560,128,2);});
+    rejects_geometry([&]{strata_vk_native_shared_run(&matrix,1,mw,mx,my,ma,2560,128,2);});
+    rejects_geometry([&]{strata_vk_native_shared_run(&ple,1,mw,mx,my,ma,2560,128,2);});
     rejects([&]{qsa(0);});rejects([&]{qsa(3);});rejects([&]{qsa(1);});
     saved=my->data;my->data=mx->data;rejects([&]{qsa(2);});my->data=reinterpret_cast<void*>(0x3000000);rejects([&]{qsa(2);});my->data=saved;
     --rows.budget;rejects([&]{qsa(2);});++rows.budget;

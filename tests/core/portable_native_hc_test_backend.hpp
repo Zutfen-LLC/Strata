@@ -266,7 +266,7 @@ uint32_t strata_vk_native_qsa_norm_rope_run(StrataVkNativeQsaNormRope*p,ggml_ten
 }
 #include "../kernels/native_qsa_indexer_fixture.hpp"
 #include "strata_vk_native_qsa_indexer.hpp"
-namespace {bool fail_qsa_indexer=false;std::vector<uint32_t>last_indexer_candidate;bool observe_qsa_rows=false;size_t qsa_row_bf_calls=0,qsa_row_idx_calls=0,qsa_row_score_calls=0,qsa_row_select_calls=0,qsa_row_attn_calls=0;std::string qsa_rows_fail;int64_t qsa_rows_fail_position=-1;}
+namespace {bool fail_qsa_indexer=false;std::vector<uint32_t>last_indexer_candidate;bool observe_qsa_rows=false;size_t qsa_row_bf_calls=0,qsa_row_idx_calls=0,qsa_row_score_calls=0,qsa_row_select_calls=0,qsa_row_attn_calls=0;std::string qsa_rows_fail;int64_t qsa_rows_fail_position=-1;std::vector<uint32_t>qsa_row_candidate_3,qsa_row_before_4;}
 namespace strata::core::portable_detail {
 struct StrataVkNativeQsaIndexer{uint64_t calls=0;};
 StrataVkNativeQsaIndexer* strata_vk_native_qsa_indexer_create(ggml_backend_t,const char*path,size_t budget){check(budget>=512,"QSA indexer metadata budget");std::ofstream(path)<<"mock, not GPU proof\n";return new StrataVkNativeQsaIndexer;}
@@ -280,7 +280,7 @@ uint32_t strata_vk_native_qsa_indexer_run(StrataVkNativeQsaIndexer*p,ggml_tensor
  std::vector<float>d(386);native_qsa_nr::Fixture n;n.cols=128;n.rows=1;n.stride=128;n.gamma=f.gamma;n.x.resize(128);n.pos={pos==0?0:base+4*(pos/4)};
  for(size_t i=0;i<128;++i){d[i]=native_qsa_idx::rounded(f.raw[i]);float sum=pos==0?d[i]:native_qsa_idx::value(f.before[i]);for(int j=1;j<4;++j)sum=sum+(pos==0||j==3?d[i]:native_qsa_idx::value(f.before[j*128+i]));n.x[i]=std::fma(.25f,sum,0.f);if(pos==0||pos%4==3)d[128+i]=n.x[i];}
  if(pos==0||pos%4==3){std::vector<float>nd(130);auto z=native_qsa_nr::control(n,nd);nd[0]=z.arg[0];nd[1]=1.f/std::sqrt(nd[0]);for(size_t i=0;i<32;++i){float freq=::powf(native_qsa_idx::value(theta),float(i)),angle=float(n.pos[0])*freq;nd[2+i]=freq;nd[34+i]=angle;nd[66+i]=::cosf(angle);nd[98+i]=::sinf(angle);}std::copy(nd.begin(),nd.end(),d.begin()+256);}
- auto out=native_qsa_idx::control(f,0,f.before,d);last_indexer_candidate=out;ggml_backend_tensor_set(t[3],out.data(),0,out.size()*4);put(t[4],d);if(observe_qsa_rows&&qsa_rows_fail=="indexer"&&pos==qsa_rows_fail_position)throw std::runtime_error("indexer write then fail");return 0;
+ auto out=native_qsa_idx::control(f,0,f.before,d);if(observe_qsa_rows&&pos==3)qsa_row_candidate_3=out;if(observe_qsa_rows&&pos==4)qsa_row_before_4=f.before;last_indexer_candidate=out;ggml_backend_tensor_set(t[3],out.data(),0,out.size()*4);put(t[4],d);if(observe_qsa_rows&&qsa_rows_fail=="indexer"&&pos==qsa_rows_fail_position)throw std::runtime_error("indexer write then fail");return 0;
 }
 }
 #include "../kernels/native_qsa_select_fixture.hpp"
