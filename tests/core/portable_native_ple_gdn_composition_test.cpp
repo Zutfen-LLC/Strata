@@ -24,6 +24,7 @@ namespace {std::vector<float> chain_qsa_input,chain_qsa_gated; size_t chain_qsa_
 size_t model_qsa_t2=0,model_gdn_t2=0;
 // Synthetic perturbation for model plumbing sensitivity, not a numerical oracle.
 float model_gdn_signal=1.f; bool model_gdn_saturated=false,model_qsa_saturated=false;
+size_t family_alpha_seen=0,family_input_seen=0,family_output_seen=0,family_conv_live=0;
 #endif
 }
 namespace strata::core::portable_detail {
@@ -35,11 +36,15 @@ void strata_vk_qsa_input_quantize_bounded(StrataVkNativeStages*,const ggml_tenso
  for(size_t r=0;r<rows;++r)model_qsa_saturated|=std::fabs(std::tanh(chain_qsa_input[r*2560]/1024.f))==1.f;
 #endif
  std::vector<uint8_t> packed(rows*2880);ggml_backend_tensor_set(q,packed.data(),0,packed.size());}
-void strata_vk_qsa_qkv_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t n,size_t rows){
+void strata_vk_qsa_qkv_run_bounded(StrataVkQ8Wo*,const ggml_tensor*weight,const ggml_tensor*,ggml_tensor*y,size_t n,size_t rows){
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  if(rows==2)++model_qsa_t2;
 #endif
- size_t role=chain_qsa_qkv++%3;std::vector<float> v(rows*n);for(size_t r=0;r<rows;++r)for(size_t i=0;i<n;++i)v[r*n+i]=
+ size_t role=chain_qsa_qkv++%3;
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ uint8_t marker[3]{};ggml_backend_tensor_get(weight,marker,0,3);if(marker[1]){check(marker[1]==0x3c&&marker[2]==41+role,"owned QSA QKV role");++owned_qkv_seen;}
+#endif
+ std::vector<float> v(rows*n);for(size_t r=0;r<rows;++r)for(size_t i=0;i<n;++i)v[r*n+i]=
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  std::tanh(chain_qsa_input[r*2560]/1024.f)*.125f
 #else
@@ -47,17 +52,41 @@ void strata_vk_qsa_qkv_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_t
 #endif
  +float(int((i+role*3)%17)-8)/32.f;put(y,v);}
 void strata_vk_qsa_wo_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t rows){chain_qsa_gated=get(x);std::vector<uint8_t> packed(rows*6912);ggml_backend_tensor_set(q,packed.data(),0,packed.size());}
-void strata_vk_qsa_wo_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t rows){std::vector<float> v(rows*2560);for(size_t r=0;r<rows;++r)std::copy_n(chain_qsa_gated.begin()+r*6144,2560,v.begin()+r*2560);put(y,v);}
+void strata_vk_qsa_wo_run_bounded(StrataVkQ8Wo*,const ggml_tensor*weight,const ggml_tensor*,ggml_tensor*y,size_t rows){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ uint8_t marker[3]{};ggml_backend_tensor_get(weight,marker,0,3);if(marker[1]){check(marker[1]==0x3c&&marker[2]==44,"owned QSA output role");++owned_wo_seen;}
+#endif
+ std::vector<float> v(rows*2560);for(size_t r=0;r<rows;++r)std::copy_n(chain_qsa_gated.begin()+r*6144,2560,v.begin()+r*2560);put(y,v);}
 struct StrataVkNativeGdnConvRows{};struct StrataVkNativeGdnAbRows{};struct StrataVkNativeGdnRows{};
-StrataVkNativeGdnConvRows* strata_vk_native_gdn_conv_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";if(fail==1)throw std::runtime_error("conv factory");return new StrataVkNativeGdnConvRows;}
-void strata_vk_native_gdn_conv_rows_destroy(StrataVkNativeGdnConvRows*p)noexcept{delete p;}size_t strata_vk_native_gdn_conv_rows_bytes(const StrataVkNativeGdnConvRows*){return 512;}
+StrataVkNativeGdnConvRows* strata_vk_native_gdn_conv_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";if(fail==1)throw std::runtime_error("conv factory");
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ ++family_conv_live;
+#endif
+ return new StrataVkNativeGdnConvRows;}
+void strata_vk_native_gdn_conv_rows_destroy(StrataVkNativeGdnConvRows*p)noexcept{
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(p)--family_conv_live;
+#endif
+ delete p;}size_t strata_vk_native_gdn_conv_rows_bytes(const StrataVkNativeGdnConvRows*){return 512;}
 StrataVkNativeGdnAbRows* strata_vk_native_gdn_ab_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";if(fail==2)throw std::runtime_error("AB factory");return new StrataVkNativeGdnAbRows;}
 void strata_vk_native_gdn_ab_rows_destroy(StrataVkNativeGdnAbRows*p)noexcept{delete p;}size_t strata_vk_native_gdn_ab_rows_bytes(const StrataVkNativeGdnAbRows*){return 512;}
 StrataVkNativeGdnRows* strata_vk_native_gdn_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";if(fail==3)throw std::runtime_error("recurrence factory");return new StrataVkNativeGdnRows;}
 void strata_vk_native_gdn_rows_destroy(StrataVkNativeGdnRows*p)noexcept{delete p;}size_t strata_vk_native_gdn_rows_bytes(const StrataVkNativeGdnRows*){return 512;}
-void strata_vk_native_gdn_conv_rows_run(StrataVkNativeGdnConvRows*,ggml_tensor*const t[10],uint32_t n){++conv_calls;auto h=get(t[0]),q=get(t[1]);std::vector<float>out(n*10240);for(size_t r=0;r<n;++r)for(size_t c=0;c<10240;++c){out[r*10240+c]=q[r*10240+c]+h[c*3];h[c*3]=h[c*3+1];h[c*3+1]=h[c*3+2];h[c*3+2]=q[r*10240+c];}put(t[3],h);put(t[4],out);if(fail==4)throw std::runtime_error("conv wrote then threw");}
-uint32_t strata_vk_native_gdn_ab_rows_run(StrataVkNativeGdnAbRows*,ggml_tensor*const t[8],uint32_t n){++ab_calls;auto mixed=get(t[0]);std::vector<float>gate(n*48),beta(n*48);for(size_t r=0;r<n;++r)for(size_t i=0;i<48;++i){gate[r*48+i]=mixed[r*2560];beta[r*48+i]=1;}put(t[5],gate);put(t[6],beta);return fail==5?1:0;}
-void strata_vk_native_gdn_rows_run(StrataVkNativeGdnRows*,ggml_tensor*const t[13],ggml_tensor*,uint32_t n){++recur_calls;auto state=get(t[0]),h=get(t[1]),gate=get(t[2]),z=get(t[4]);std::vector<float>y(n*6144);for(size_t r=0;r<n;++r)for(size_t i=0;i<6144;++i){state[i]+=h[r*10240+i]+gate[r*48]+z[r*6144+i];y[r*6144+i]=state[i];}put(t[6],state);put(t[7],y);if(fail==6)throw std::runtime_error("recurrence wrote then threw");}
+void strata_vk_native_gdn_conv_rows_run(StrataVkNativeGdnConvRows*,ggml_tensor*const t[10],uint32_t n){++conv_calls;
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ float role=0;ggml_backend_tensor_get(t[2],&role,0,4);if(role)check(role==3.f,"family convolution role");
+#endif
+ auto h=get(t[0]),q=get(t[1]);std::vector<float>out(n*10240);for(size_t r=0;r<n;++r)for(size_t c=0;c<10240;++c){out[r*10240+c]=q[r*10240+c]+h[c*3];h[c*3]=h[c*3+1];h[c*3+1]=h[c*3+2];h[c*3+2]=q[r*10240+c];}put(t[3],h);put(t[4],out);if(fail==4)throw std::runtime_error("conv wrote then threw");}
+uint32_t strata_vk_native_gdn_ab_rows_run(StrataVkNativeGdnAbRows*,ggml_tensor*const t[8],uint32_t n){++ab_calls;
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ uint16_t alpha_bits=0,beta_bits=0;ggml_backend_tensor_get(t[1],&alpha_bits,0,2);ggml_backend_tensor_get(t[2],&beta_bits,0,2);if(alpha_bits){float dt=0,a=0;ggml_backend_tensor_get(t[3],&dt,0,4);ggml_backend_tensor_get(t[4],&a,0,4);check(alpha_bits==0x3f80&&beta_bits==0x4000&&dt==4.f&&a==5.f,"family alpha/beta/dt/A roles");++family_alpha_seen;}
+#endif
+ auto mixed=get(t[0]);std::vector<float>gate(n*48),beta(n*48);for(size_t r=0;r<n;++r)for(size_t i=0;i<48;++i){gate[r*48+i]=mixed[r*2560];beta[r*48+i]=1;}put(t[5],gate);put(t[6],beta);return fail==5?1:0;}
+void strata_vk_native_gdn_rows_run(StrataVkNativeGdnRows*,ggml_tensor*const t[13],ggml_tensor*,uint32_t n){++recur_calls;
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ float gamma=0;ggml_backend_tensor_get(t[5],&gamma,0,4);if(gamma)check(gamma==6.f,"family gamma role");
+#endif
+ auto state=get(t[0]),h=get(t[1]),gate=get(t[2]),z=get(t[4]);std::vector<float>y(n*6144);for(size_t r=0;r<n;++r)for(size_t i=0;i<6144;++i){state[i]+=h[r*10240+i]+gate[r*48]+z[r*6144+i];y[r*6144+i]=state[i];}put(t[6],state);put(t[7],y);if(fail==6)throw std::runtime_error("recurrence wrote then threw");}
 }
 
 namespace { std::vector<float> gdn_quant_input; bool gdn_bad_second_scale=false; size_t in_quant=0,in_qkv=0,in_z=0,out_quant=0,out_dot=0; }
@@ -69,13 +98,21 @@ void strata_vk_gdn_input_quantize_bounded(StrataVkNativeStages*,const ggml_tenso
  if(rows==2)++model_gdn_t2;
 #endif
  ++in_quant;gdn_quant_input=get(x);std::vector<uint8_t>p(rows*2880);if(gdn_bad_second_scale&&rows==2)p[2880]=1;ggml_backend_tensor_set(q,p.data(),0,p.size());write_then_throw("gdn input quant",{q},9);}
-void strata_vk_gdn_input_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t columns,size_t rows){if(columns==10240)++in_qkv;else ++in_z;std::vector<float>v(rows*columns);for(size_t r=0;r<rows;++r)for(size_t i=0;i<columns;++i)v[r*columns+i]=gdn_quant_input[r*2560]+float(i%7)/16;put(y,v);write_then_throw(columns==10240?"gdn qkv":"gdn z",{y},9);}
+void strata_vk_gdn_input_run_bounded(StrataVkQ8Wo*,const ggml_tensor* weight,const ggml_tensor*,ggml_tensor*y,size_t columns,size_t rows){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ uint8_t marker[3];ggml_backend_tensor_get(weight,marker,0,3);if(marker[1]){check(marker[1]==0x3c&&marker[2]==(columns==10240?11:12),"family input role identity");++family_input_seen;}
+#endif
+ if(columns==10240)++in_qkv;else ++in_z;std::vector<float>v(rows*columns);for(size_t r=0;r<rows;++r)for(size_t i=0;i<columns;++i)v[r*columns+i]=gdn_quant_input[r*2560]+float(i%7)/16;put(y,v);write_then_throw(columns==10240?"gdn qkv":"gdn z",{y},9);}
 void strata_vk_gdn_output_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t rows){++out_quant;gdn_quant_input=get(x);
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  for(size_t r=0;r<rows;++r)model_gdn_saturated|=std::fabs(std::tanh(gdn_quant_input[r*6144]/1024.f))==1.f;
 #endif
  std::vector<uint8_t>p(rows*6912);ggml_backend_tensor_set(q,p.data(),0,p.size());write_then_throw("gdn output quant",{q},9);}
-void strata_vk_gdn_output_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t rows){++out_dot;std::vector<float>v(rows*2560);for(size_t r=0;r<rows;++r)for(size_t i=0;i<2560;++i)v[r*2560+i]=
+void strata_vk_gdn_output_run_bounded(StrataVkQ8Wo*,const ggml_tensor* weight,const ggml_tensor*,ggml_tensor*y,size_t rows){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ uint8_t marker[3];ggml_backend_tensor_get(weight,marker,0,3);if(marker[1]){check(marker[1]==0x3c&&marker[2]==13,"family output role identity");++family_output_seen;}
+#endif
+ ++out_dot;std::vector<float>v(rows*2560);for(size_t r=0;r<rows;++r)for(size_t i=0;i<2560;++i)v[r*2560+i]=
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  std::tanh(gdn_quant_input[r*6144+i]/1024.f)*(.125f*model_gdn_signal);
 #else

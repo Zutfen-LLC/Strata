@@ -25,6 +25,9 @@ class PortablePleTable {
                       std::vector<std::array<uint32_t, 16>> &rows,
                       std::vector<float> &embedding, std::string &error) const;
     uint64_t rows() const;
+    // Explicit backing payload accounting; excludes allocator/OS overhead.
+    size_t owned_bytes() const;
+    uint64_t mapped_file_bytes() const;
     const PortablePleConfig &config() const;
 
   private:
