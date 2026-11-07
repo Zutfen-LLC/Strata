@@ -158,7 +158,7 @@ int main(int argc,char** argv){try{
       for(size_t l=0;l<48;++l){PortableGdnOptions on,off;model_gdn_hc_options(hc_model,l,on);model_gdn_hc_options(disabled,l,off);
        const auto delta=l==1?PortableGdnOptions::native_hc_read_host_bound:0;
        check(on.state_budget-off.state_budget==delta,"PLE HC layer allowance scope differs");
-       check(model_hc_host_bound(hc_model,l)-model_hc_host_bound(disabled,l)==delta,"global/layer PLE HC allowances disagree");}}}
+       check(model_hc_host_bound(hc_model,l)-model_hc_host_bound(disabled,l)==delta+(serial && l==1 ? PortableFfnOptions::native_hc_pending_host_bound : 0),"global/layer PLE HC allowances disagree");}}}
     {auto short_budget=options;--short_budget.state_budget;
      check(!PortableGdnLayer::create(1,fixture.views,short_budget,error)&&error.find("host state budget exceeded")!=std::string::npos,"one-byte-short PLE HC host budget accepted");}
     for(const auto& v:fixture.views){
@@ -182,6 +182,37 @@ int main(int argc,char** argv){try{
     check(hc->step(20,fixture.input(1),ple_fixture::experts(),route,error),error);
     check(hc->reset(error),error);check(hc->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
     check(hc->ple_convolution_history()==hc_history&&hc->last_residual()==hc_residual,"HC reset differs");
+    hc.reset();
+    // The serial model policy composes post-PLE HC with the actual FFN pending read.
+    hc_model.native_hc_serial=true;hc_model.hc_serial_resident_weights=true;
+    hc_model.native_ple_hc_receipt_prefix=(root/"composed-hc").string();
+    hc_model.native_ple_conv_receipt_prefix=(root/"composed-conv").string();
+    hc_model.native_ple_gate_receipt_prefix=(root/"composed-gate").string();
+    hc_model.native_ple_norm_receipt_prefix=(root/"composed-norm").string();
+    auto serial=options;model_gdn_hc_options(hc_model,1,serial);
+    check(serial.native_hc_ffn_read && serial.resident_ffn_weights && !serial.native_hc_pending,
+          "serial PLE FFN handoff policy differs");
+    auto without_handoff=hc_model;without_handoff.native_ple_hc_read_t1=false;
+    check(model_hc_host_bound(hc_model,1)-model_hc_host_bound(without_handoff,1)==
+          PortableGdnOptions::native_hc_read_host_bound+PortableFfnOptions::native_hc_pending_host_bound,
+          "serial PLE FFN host admission differs");
+    for(const auto& v:fixture.views) if(v.name=="blk.1.hc_ffn_inject.weight")
+        expected_ffn_inject=native_hc_q8_bf16(static_cast<const uint8_t*>(v.data),v.bytes,40960);
+    auto composed=PortableGdnLayer::create(1,fixture.views,serial,error);check(bool(composed),error);
+    check(composed->reset(error),error);
+    auto before_composed=composed->ple_convolution_history();
+    auto before_state=composed->recurrent_state(), before_history=composed->convolution_history();
+    check(!composed->step(19,fixture.input(0),refuse,route,error),"composed FFN refusal accepted");
+    check(composed->tokens()==0 && composed->ple_convolution_history()==before_composed &&
+          composed->recurrent_state()==before_state && composed->convolution_history()==before_history,
+          "composed failure committed candidate state");
+    check(composed->step(19,fixture.input(0),ple_fixture::experts(),route,error,&trace),error);
+    check(composed->native_ffn_hc_pending_calls()==2 && composed->native_hc_pending_calls()==0,
+          "post-PLE FFN did not consume pending attention result");
+    auto composed_history=composed->ple_convolution_history(),composed_residual=composed->last_residual();
+    check(composed->reset(error),error);check(composed->step(19,fixture.input(0),ple_fixture::experts(),route,error),error);
+    check(composed->ple_convolution_history()==composed_history && composed->last_residual()==composed_residual,
+          "composed reset changed result");
     observe_ple_hc=false;
     std::puts("PLE conv producer, candidate history, refusal, retry and reset passed with host provider");return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
