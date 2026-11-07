@@ -102,9 +102,13 @@ prompt chunks.
 CPU tests execute the selected graphs at the native shapes and exercise one
 mapped, named layer through its owning composition, with mocked HC, convolution,
 alpha/beta and recurrence stages. The mixed input reaching the core and the
-projection consumers are checked separately. The selected method has not been
-run on a physical GPU or compared against native vendor reductions. Its
-conservative requested budgets count source and uploaded raw roles, decoded
+projection consumers are checked separately. Standalone row tests cover a
+late output row and input block with distinct projection-role values, and a
+CPU graph abort followed by stale-output refusal and recovery. The abort is
+reported after a computed node; the tests make no claim about partial writes.
+Post-compute nonfinite-result refusal has not been injected. The selected
+method has not been run on a physical GPU or compared against native vendor
+reductions. Its conservative requested budgets count source and uploaded raw roles, decoded
 weights, graph tensors, metadata and bounded conversion/readback envelopes;
 shared buffers and host allowances can be counted more than once. They are not
 physical residency limits and exclude backend-private workspace, driver and

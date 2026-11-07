@@ -86,7 +86,7 @@ int main(int argc,char**argv){try{
  bad_second=false;bad_nonfinite=true;bool rejected=false;try{owner.run(input,2);}catch(const std::exception&){rejected=true;}need(rejected&&!owner.valid()&&dot_calls==2,"second-row nonfinite scale reached dot");
  bad_nonfinite=false;fail_dot=true;rejected=false;try{owner.run(input,2);}catch(const std::exception&){rejected=true;}need(rejected&&!owner.valid()&&dot_calls==3,"write then throw invalidates output");
  fail_dot=false;input.resize(6144);owner.run(input,1);need(owner.valid()&&dot_calls==4&&ggml_nbytes(owner.output(1))==2560*4,"T1 tail");
- gdn_f16_test::fill(role,6144);ggml_backend_tensor_set(weight,role.data(),0,role.size());
+ gdn_f16_test::fill(role,6144,5);ggml_backend_tensor_set(weight,role.data(),0,role.size());
  auto method=PortableGdnProjectionMethod::native_f16;size_t cap=PortableNativeGdnOutputRows::estimate(backend.get(),method);auto fdir=dir.string()+"-f16";
  auto reject=[&](ggml_backend_t b,ggml_tensor*w,const void*p,size_t size,size_t budget){bool denied=false;try{PortableNativeGdnOutputRows bad(b,w,p,size,fdir,budget,method);}catch(const std::exception&){denied=true;}need(denied&&!std::filesystem::exists(fdir),"F16 output preflight");};
  reject(backend.get(),weight,role.data(),role.size(),cap-1);
@@ -102,6 +102,6 @@ int main(int argc,char**argv){try{
  reject(backend.get(),weight,role.data(),role.size(),cap);
  role[0]=original0;role[1]=original1;role[2]=original2;ggml_backend_tensor_set(weight,role.data(),0,34);
  {PortableNativeGdnOutputRows dense(backend.get(),weight,role.data(),role.size(),fdir,cap,method);need(dense.bytes()<=cap,"F16 output admitted bytes");
-  gdn_f16_test::exercise(dense,6144,{2560},[&](size_t,size_t r){return dense.output(r);});}
+  gdn_f16_test::exercise(backend.get(),dense,6144,{2560},[&](size_t,size_t r){return dense.output(r);},2);}
  std::puts("GDN output row owner/domain mock and F16 graph passed");return 0;
 }catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
