@@ -69,6 +69,13 @@ function(strata_native_hc_enable out)
     DEPENDS src/kernels/vulkan/native_gdn_t1.comp cmake/strata_native_stages_embed.cmake VERBATIM)
   add_custom_target(strata_native_gdn_t1_shader DEPENDS "${out}/strata_native_gdn_t1_spv.hpp")
   add_dependencies(ggml-vulkan strata_native_gdn_t1_shader)
+  add_custom_command(OUTPUT "${out}/strata_native_gdn_rows_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_gdn_rows.comp" -o "${out}/native_gdn_rows.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_gdn_rows.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_gdn_rows.spv" "-DOUTPUT=${out}/strata_native_gdn_rows_spv.hpp" -DARRAY_NAME=strata_native_gdn_rows_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_gdn_rows.comp src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_gdn_rows_shader DEPENDS "${out}/strata_native_gdn_rows_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_gdn_rows_shader)
   add_executable(native_gdn_t1_component tests/kernels/native_gdn_t1_component.cpp)
   target_include_directories(native_gdn_t1_component PRIVATE src/core tests/kernels)
   target_link_libraries(native_gdn_t1_component PRIVATE ggml-vulkan ggml-base)
@@ -99,6 +106,15 @@ function(strata_native_hc_enable out)
     DEPENDS src/kernels/vulkan/native_gdn_conv_t1.comp src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
   add_custom_target(strata_native_gdn_conv_t1_shader DEPENDS "${out}/strata_native_gdn_conv_t1_spv.hpp")
   add_dependencies(ggml-vulkan strata_native_gdn_conv_t1_shader)
+  add_custom_command(OUTPUT "${out}/strata_native_gdn_conv_rows_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_gdn_conv_rows.comp" -o "${out}/native_gdn_conv_rows.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_gdn_conv_rows.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_gdn_conv_rows.spv" "-DOUTPUT=${out}/strata_native_gdn_conv_rows_spv.hpp"
+      -DARRAY_NAME=strata_native_gdn_conv_rows_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_gdn_conv_rows.comp src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_gdn_conv_rows_shader DEPENDS "${out}/strata_native_gdn_conv_rows_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_gdn_conv_rows_shader)
   add_executable(native_gdn_conv_t1_component tests/kernels/native_gdn_conv_t1_component.cpp)
   target_include_directories(native_gdn_conv_t1_component PRIVATE src/core tests/kernels)
   target_link_libraries(native_gdn_conv_t1_component PRIVATE ggml-vulkan ggml-base)
@@ -144,6 +160,13 @@ function(strata_native_hc_enable out)
     DEPENDS src/kernels/vulkan/native_gdn_ab.comp src/kernels/vulkan/native_llvm_log1p.glsl src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
   add_custom_target(strata_native_gdn_ab_shader DEPENDS "${out}/strata_native_gdn_ab_spv.hpp")
   add_dependencies(ggml-vulkan strata_native_gdn_ab_shader)
+  add_custom_command(OUTPUT "${out}/strata_native_gdn_ab_rows_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_gdn_ab_rows.comp" -o "${out}/native_gdn_ab_rows.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_gdn_ab_rows.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_gdn_ab_rows.spv" "-DOUTPUT=${out}/strata_native_gdn_ab_rows_spv.hpp" -DARRAY_NAME=strata_native_gdn_ab_rows_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_gdn_ab_rows.comp src/kernels/vulkan/native_llvm_log1p.glsl src/core/native_hc_mix_limits.h cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_gdn_ab_rows_shader DEPENDS "${out}/strata_native_gdn_ab_rows_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_gdn_ab_rows_shader)
   add_executable(native_gdn_ab_component tests/kernels/native_gdn_ab_component.cpp)
   target_include_directories(native_gdn_ab_component PRIVATE src/core tests/kernels)
   target_link_libraries(native_gdn_ab_component PRIVATE ggml-vulkan ggml-base)
@@ -313,6 +336,19 @@ function(strata_native_hc_enable out)
   target_include_directories(native_hc_pending_component PRIVATE src/core tests/kernels)
   target_link_libraries(native_hc_pending_component PRIVATE ggml-vulkan ggml-base)
   if(STRATA_BUILD_TESTS)
+    add_executable(native_gdn_rows_dispatch_test tests/kernels/native_gdn_rows_dispatch_test.cpp)
+    target_include_directories(native_gdn_rows_dispatch_test PRIVATE src/core "${vk_source}/..")
+    target_link_libraries(native_gdn_rows_dispatch_test PRIVATE ggml-base)
+    add_test(NAME native_gdn_rows_dispatch_test COMMAND native_gdn_rows_dispatch_test)
+    add_executable(native_gdn_ab_rows_dispatch_test tests/kernels/native_gdn_ab_rows_dispatch_test.cpp)
+    target_include_directories(native_gdn_ab_rows_dispatch_test PRIVATE src/core "${vk_source}/..")
+    target_link_libraries(native_gdn_ab_rows_dispatch_test PRIVATE ggml-base)
+    add_test(NAME native_gdn_ab_rows_dispatch_test COMMAND native_gdn_ab_rows_dispatch_test)
+    add_executable(native_gdn_conv_rows_dispatch_test tests/kernels/native_gdn_conv_rows_dispatch_test.cpp)
+    target_include_directories(native_gdn_conv_rows_dispatch_test PRIVATE src/core "${out}" "${vk_source}/..")
+    target_link_libraries(native_gdn_conv_rows_dispatch_test PRIVATE ggml-base)
+    add_dependencies(native_gdn_conv_rows_dispatch_test strata_native_gdn_conv_rows_shader)
+    add_test(NAME native_gdn_conv_rows_dispatch_test COMMAND native_gdn_conv_rows_dispatch_test)
     add_executable(native_gdn_t1_effective_shader_test tests/kernels/native_gdn_t1_effective_shader_test.cpp)
     target_include_directories(native_gdn_t1_effective_shader_test PRIVATE src/core "${out}")
     target_link_libraries(native_gdn_t1_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)

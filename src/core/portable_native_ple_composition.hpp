@@ -20,6 +20,7 @@ private:
     std::unique_ptr<PortableNativePleExecutor> executor_;
     std::unique_ptr<PortableNativePleTransaction> transaction_;
     std::unique_ptr<PortableNativeHcComposed> hc_;
+    bool consuming_ = false;
 
 public:
     // The budget covers the admission payload bounds plus all three explicit
@@ -50,14 +51,22 @@ public:
     PortableNativePleComposition& operator=(const PortableNativePleComposition&) = delete;
 
     Handle stage(uint64_t position, const std::vector<int32_t>& tokens, const std::vector<float>& residual) {
+        if (consuming_) throw std::runtime_error("PLE composition: reentrant stage");
         return transaction_->stage(position, tokens, residual);
     }
     void commit_to_hc(const Handle& handle, const Consumer& first, const Consumer& second) {
+        if (consuming_) throw std::runtime_error("PLE composition: reentrant consume");
+        consuming_ = true;
+        struct Guard { bool& flag; ~Guard() { flag = false; } } guard{consuming_};
         hc_->run(1, handle.position(), *transaction_, handle, first, second);
     }
-    void abort(const Handle& handle) { transaction_->abort(handle); }
+    void abort(const Handle& handle) {
+        if (consuming_) throw std::runtime_error("PLE composition: reentrant abort");
+        transaction_->abort(handle);
+    }
     void reset(std::array<int32_t, 2> previous = {-1, -1}, uint64_t position = 0) {
-        // HC rejects reentrant reset before the producer can be changed.
+        // Reject reentrant changes before either participant can be changed.
+        if (consuming_) throw std::runtime_error("PLE composition: reentrant reset");
         hc_->reset();
         transaction_->reset(previous, position);
     }

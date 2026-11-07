@@ -50,5 +50,30 @@ int main() { try {
     x->ne[0]/=2; y->ne[0]/=2; run(1); need(grid_seen==std::array<uint32_t,3>{rows,1,1});
     strata_vk_q8_wo_run(&s,w,x,y,rows); need(grid_seen==std::array<uint32_t,3>{rows,1,1});
     x->ne[0]*=2; y->ne[0]*=2; rejects([&]{strata_vk_q8_wo_run(&s,w,x,y,rows);});
-    puts("PLE key wrapper mock dispatch passed"); return 0;
+    // GDN is a distinct component/domain, not a PLE flag. Both QKV and z
+    // consume the same packed rows and each uses one T-row dispatch.
+    s.vocab=false; s.gdn=true;
+    auto gdn=[&](size_t n,size_t t){strata_vk_gdn_input_run_bounded(&s,w,x,y,n,t);};
+    auto before=submissions; gdn(10240,2);
+    need(submissions==before+1 && grid_seen==std::array<uint32_t,3>{10240,2,1});
+    rejects([&]{strata_vk_ple_key_run_bounded(&s,w,x,y,rows,2);});
+    rejects([&]{gdn(10240,0);}); rejects([&]{gdn(10240,3);});
+    rejects([&]{gdn(6144,2);}); rejects([&]{gdn(10240,1);});
+    rejects([&]{strata_vk_gdn_input_run_bounded(&s,nullptr,x,y,rows,2);});
+    old=y->data; y->data=x->data; rejects([&]{gdn(10240,2);});
+    y->data=reinterpret_cast<void*>(0x5000000); rejects([&]{gdn(10240,2);}); y->data=old;
+    w->buffer=&fb; rejects([&]{gdn(10240,2);}); w->buffer=&buffer;
+    w->ne[0]=6144*2720/4; y->ne[0]=2*6144; gdn(6144,2);
+    need(grid_seen==std::array<uint32_t,3>{6144,2,1} && params_seen[2]==4 && params_seen[3]==6);
+    x->ne[0]/=2; y->ne[0]/=2; gdn(6144,1);
+    need(grid_seen==std::array<uint32_t,3>{6144,1,1});
+    // GDN output uses its own 6144-input shader and domain, not QSA/PLE.
+    s.gdn=false; s.gdn_output=true;
+    w->ne[0]=2560*6528/4; x->ne[0]=2*6912/4; y->ne[0]=2*2560;
+    auto gout=[&](size_t n){strata_vk_gdn_output_run_bounded(&s,w,x,y,n);};gout(2);
+    need(grid_seen==std::array<uint32_t,3>{2560,2,1}&&params_seen[0]==2560&&params_seen[2]==4&&params_seen[3]==6);
+    rejects([&]{gout(0);});rejects([&]{gout(1);});rejects([&]{gout(3);});
+    old=y->data;y->data=x->data;rejects([&]{gout(2);});y->data=old;
+    x->ne[0]/=2;y->ne[0]/=2;gout(1);need(grid_seen==std::array<uint32_t,3>{2560,1,1});
+    puts("PLE and GDN input/output wrapper mock dispatch passed"); return 0;
 } catch(const std::exception& e) { std::fprintf(stderr,"%s\n",e.what()); return 1; } }
