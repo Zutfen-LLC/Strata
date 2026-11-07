@@ -21,11 +21,11 @@ public:
         PortableNativeFfnOwner::Budgets rows;
     };
     PortableNativeOrdinaryLayerOwner(int layer,ggml_backend_t backend,const GgufModel& model,
-        const std::string& prefix,const Budgets& b) {
+        const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32) {
         if(!backend||prefix.empty())throw std::runtime_error("ordinary layer owner: layer/backend");
         auto roles=PortableNativeOrdinaryGdnOwner::from_gguf(model,layer);
         PortableNativeOrdinaryGdnOwner::validate(layer,roles);
-        auto row_roles=PortableNativeFfnOwner::from_gguf(model,layer);PortableNativeFfnOwner::validate(layer,row_roles);
+        auto row_roles=PortableNativeFfnOwner::from_gguf(model,layer);PortableNativeFfnOwner::validate(layer,row_roles,method);
         auto hc=NativeFfnHcFactory::from_gguf(model,layer);
         NativeFfnHcFactory::select(layer,hc,false);
         auto path=prefix+".ffn";
@@ -33,12 +33,13 @@ public:
         if(ple_host_add(ple_host_add(b.gdn.host,ffn_host),b.rows.host)>b.host || ple_host_add(ple_host_add(b.gdn.device,b.ffn_device),b.rows.device)>b.device ||
            NativeFfnHcFactory::device_bound(backend,b.ffn_caps)>b.ffn_device)
             throw std::runtime_error("ordinary layer owner: aggregate budget");
-        rows_=std::make_unique<PortableNativeFfnOwner>(layer,backend,row_roles,prefix+".rows",b.rows);
+        rows_=std::make_unique<PortableNativeFfnOwner>(layer,backend,row_roles,prefix+".rows",b.rows,method);
         gdn_=std::make_unique<PortableNativeOrdinaryGdnOwner>(layer,backend,roles,prefix+".gdn",b.gdn);
         ffn_=std::make_unique<PortableNativeFfnComposition>(gdn_->composition(),backend,hc,rows_->rows(),b.ffn_device,ffn_host,path.c_str(),b.ffn_caps);
     }
     PortableNativeOrdinaryLayerOwner(const PortableNativeOrdinaryLayerOwner&)=delete;
     PortableNativeOrdinaryLayerOwner& operator=(const PortableNativeOrdinaryLayerOwner&)=delete;
+    PortableRouterMethod router_method()const{return rows_->router_method();}
     PortableNativeOrdinaryGdnComposition& attention(){return gdn_->composition();}
     PortableNativeFfnComposition& ffn(){return *ffn_;}
 };

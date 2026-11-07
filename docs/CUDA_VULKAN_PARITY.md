@@ -88,6 +88,30 @@ backend validation remain open. The Q8_1/F32 row convention does not establish
 native-prefill FP16/BF16 GEMM equivalence, router or expert-reduction parity,
 full-model numerical parity, quality or throughput.
 
+## Bounded BF16 router operand method
+
+An internal FFN owner can opt into a K2560, N512, T1/T2 router projection
+with BF16 weights and BF16-rounded activations widened exactly to F32. It
+accepts BF16 weights or exactly promoted BF16 F32 weights; it rejects inexact
+F32 and nonfinite weights, nonfinite activations and activation BF16 overflow.
+Shared work and the expert provider keep the original F32 activations. BF16X2
+and the FP16 prompt variant are not implemented. The existing F32 method stays
+the default, and public prompt chunk admission is unchanged.
+
+Source inspection of the local GGML Vulkan backend indicates that T2 selects
+one batched BF16-weight/F32-input matrix-vector dispatch, with F32 shader
+accumulation, rather than a tiled GEMM. BF16 weights are not in its Q8_1 RHS
+pipeline set. CPU graph and mock-owner tests are not GPU dispatch measurements.
+The operand method does not establish vendor GEMM reduction identity, router
+or full-model numerical parity, throughput, or quality. The all-layer model
+owner selects it only through an explicit internal constructor option.
+
+The FFN host envelope includes 512 KiB projection metadata and 64 KiB for
+bounded conversion and readback scratch. Its tensor budget counts the copied
+weight, the two T2 input banks, and separate T1 and T2 output tensors. T1
+input and router-operand views reuse the T2 banks. These requested envelopes
+are not a physical cap on backend-private graph workspace or driver memory.
+
 ## Standalone post-attention FFN rows
 
 The standalone FFN composition can consume a live PLE/GDN or QSA transaction
