@@ -47,6 +47,25 @@ expert execution, admission and model failure/reset qualification, and physical
 GPU validation remain. No independent-request batching, speculation, full model
 parity or throughput result is implied.
 
+## Bounded terminal composition
+
+The standalone layer 47 terminal accepts live layer 46 FFN snapshots. It runs
+QSA and named FFN HC roles, batches the FFN rows, and uses the distinct native
+final-write owner. Checked device row views feed the existing serial
+`PortableHead` once per row; this is not a batched head. CPU component mocks
+exercise a bounded 42–47 chain, T2 plus T1 versus three T1 calls, and failure
+rollback. The terminal fixture uses the F32 vocabulary graph; separate head
+tests cover the native Q8 vocabulary component.
+
+Publication waits for QSA source revalidation. Head counters and receipts can
+record work done before a later failure. Earlier layers commit sequentially,
+not atomically across the chain; reset and replay them in order after failure.
+Borrowed owners and their backends must outlive the terminal and remain idle
+while attached. Full 48-layer production construction, admission and physical
+backend validation remain open. The Q8_1/F32 row convention does not establish
+native-prefill FP16/BF16 GEMM equivalence, router or expert-reduction parity,
+full-model numerical parity, quality or throughput.
+
 ## Standalone post-attention FFN rows
 
 The standalone FFN composition can consume a live PLE/GDN or QSA transaction

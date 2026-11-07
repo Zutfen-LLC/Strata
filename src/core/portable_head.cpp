@@ -398,6 +398,7 @@ uint64_t PortableHead::native_hc_calls()const{
     return 0;
 #endif
 }
+size_t PortableHead::vocabulary_size() const { return size_t(impl_->g.vocabulary); }
 uint64_t PortableHead::native_vocab_calls()const{
 #ifdef STRATA_PORTABLE_NATIVE_HC
     return impl_->native_vocab?impl_->native_vocab->calls():0;

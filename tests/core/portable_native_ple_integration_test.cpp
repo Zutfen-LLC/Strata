@@ -38,6 +38,13 @@ static std::vector<float> layer0_ple_residual_seen;
 static std::array<int,3> hc_creates{}, hc_runs{};
 static std::array<size_t,3> hc_budgets{};
 static std::array<std::vector<unsigned char>,4> hc_roles;
+#ifdef STRATA_TERMINAL_FIXTURE
+static ggml_tensor* terminal_write_bank=nullptr;
+static ggml_tensor* terminal_mixed_bank=nullptr;
+static std::vector<size_t> terminal_row_offsets;
+static bool terminal_fail_write_after=false;
+static size_t terminal_fail_head_at=SIZE_MAX,terminal_head_attempts=0;
+#endif
 static void verify_hc_role(const ggml_tensor* t,size_t i){std::vector<unsigned char> v(ggml_nbytes(t));ggml_backend_tensor_get(t,v.data(),0,v.size());check(v==hc_roles[i],"HC copied role");}
 static void fill_hc(ggml_tensor* t,float x){std::vector<float> v(ggml_nelements(t),x);ggml_backend_tensor_set(t,v.data(),0,v.size()*sizeof(float));}
 static unsigned candidate_writes=0;
@@ -61,9 +68,22 @@ void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p)noexcept{
  factory_destroy(p);delete p;}
 void strata_vk_native_hc_pending_run(StrataVkNativeHcPending* owner,const ggml_tensor* r,const ggml_tensor* b,const ggml_tensor* i,ggml_tensor* out,ggml_tensor* gate_out,ggml_tensor* exp_out){
 #ifdef STRATA_CONNECTED_LAYER0_TEST
- if(owner->final_write){inject("layer0 final write");size_t n=ggml_nelements(b)/2560;std::vector<float>x(n*10240),block(n*2560),inj(n*4),g(n*4),e(n*4);ggml_backend_tensor_get(r,x.data(),0,x.size()*4);ggml_backend_tensor_get(b,block.data(),0,block.size()*4);ggml_backend_tensor_get(i,inj.data(),0,inj.size()*4);for(size_t t=0;t<n;++t)for(size_t s=0;s<4;++s){auto j=t*4+s;e[j]=std::exp(-std::fma(.25f,inj[j],0.f));g[j]=std::fma(2.f,1.f/(1.f+e[j]),0.f);for(size_t h=0;h<2560;++h){auto k=t*10240+s*2560+h;x[k]=std::fma(block[t*2560+h],g[j],x[k]);}}ggml_backend_tensor_set(out,x.data(),0,x.size()*4);ggml_backend_tensor_set(gate_out,g.data(),0,g.size()*4);ggml_backend_tensor_set(exp_out,e.data(),0,e.size()*4);++layer0_write_calls;return;}
+ if(owner->final_write){inject("layer0 final write");size_t n=ggml_nelements(b)/2560;std::vector<float>x(n*10240),block(n*2560),inj(n*4),g(n*4),e(n*4);ggml_backend_tensor_get(r,x.data(),0,x.size()*4);ggml_backend_tensor_get(b,block.data(),0,block.size()*4);ggml_backend_tensor_get(i,inj.data(),0,inj.size()*4);for(size_t t=0;t<n;++t)for(size_t s=0;s<4;++s){auto j=t*4+s;e[j]=std::exp(-std::fma(.25f,inj[j],0.f));g[j]=std::fma(2.f,1.f/(1.f+e[j]),0.f);for(size_t h=0;h<2560;++h){auto k=t*10240+s*2560+h;x[k]=std::fma(block[t*2560+h],g[j],x[k]);}}
+#ifdef STRATA_TERMINAL_FIXTURE
+ if(terminal_fail_write_after){ggml_backend_tensor_set(out,x.data(),0,10240*4);throw std::runtime_error("terminal write after partial candidate");}
 #endif
- (void)owner;(void)r;(void)b;(void)i;(void)out;(void)gate_out;(void)exp_out;++hc_runs[0];throw std::runtime_error("unexpected pending");}
+ ggml_backend_tensor_set(out,x.data(),0,x.size()*4);ggml_backend_tensor_set(gate_out,g.data(),0,g.size()*4);ggml_backend_tensor_set(exp_out,e.data(),0,e.size()*4);
+#ifdef STRATA_TERMINAL_FIXTURE
+ terminal_write_bank=out;
+#endif
+ ++layer0_write_calls;return;}
+#endif
+#ifdef STRATA_TERMINAL_FIXTURE
+ {auto x=std::vector<float>(ggml_nelements(r)),block=std::vector<float>(ggml_nelements(b)),inj=std::vector<float>(ggml_nelements(i));ggml_backend_tensor_get(r,x.data(),0,x.size()*4);ggml_backend_tensor_get(b,block.data(),0,block.size()*4);ggml_backend_tensor_get(i,inj.data(),0,inj.size()*4);for(size_t t=0;t<block.size()/2560;++t)for(size_t s=0;s<4;++s){float g=2.f/(1.f+std::exp(-.25f*inj[t*4+s]));for(size_t h=0;h<2560;++h)x[t*10240+s*2560+h]+=g*block[t*2560+h];}ggml_backend_tensor_set(out,x.data(),0,x.size()*4);fill_hc(gate_out,0);fill_hc(exp_out,0);++hc_runs[0];return;}
+#else
+ (void)owner;(void)r;(void)b;(void)i;(void)out;(void)gate_out;(void)exp_out;++hc_runs[0];throw std::runtime_error("unexpected pending");
+#endif
+}
 StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t,const char*,size_t b){++hc_creates[1];hc_budgets[1]=b;auto i=factory_enter("hc norm");return factory_return(new StrataVkNativeHc,i);}
 size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*){return 227;}
 void strata_vk_native_hc_destroy(StrataVkNativeHc*p)noexcept{factory_destroy(p);delete p;}
@@ -71,7 +91,15 @@ void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*x,const ggml_te
 StrataVkNativeHcMix* strata_vk_native_hc_mix_create(ggml_backend_t,const char*,size_t b){++hc_creates[2];hc_budgets[2]=b;auto i=factory_enter("hc mix");return factory_return(new StrataVkNativeHcMix,i);}
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*){return 331;}
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix*p)noexcept{factory_destroy(p);delete p;}
-void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*x,const ggml_tensor*d,const ggml_tensor*u,ggml_tensor*lp,ggml_tensor*low,ggml_tensor*le,ggml_tensor*up,ggml_tensor*g,ggml_tensor*ue,ggml_tensor*mixed){++hc_runs[2];write_then_throw("hc mix written",{lp,low,le,up,g,ue,mixed},201.f);inject("hc mix");verify_hc_role(d,2);verify_hc_role(u,3);size_t n=ggml_nelements(mixed)/2560;check(n==1||n==2,"HC mix rows supported");std::vector<float> v(n*10240,-1234.f),o(n*2560,-1234.f);ggml_backend_tensor_get(x,v.data(),0,v.size()*4);for(size_t r=0;r<n;++r)for(size_t i=0;i<2560;++i)o[r*2560+i]=v[r*10240+i]+20;for(auto*t:{lp,low,le,up,g,ue})fill_hc(t,4);ggml_backend_tensor_set(mixed,o.data(),0,o.size()*4);}
+void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*x,const ggml_tensor*d,const ggml_tensor*u,ggml_tensor*lp,ggml_tensor*low,ggml_tensor*le,ggml_tensor*up,ggml_tensor*g,ggml_tensor*ue,ggml_tensor*mixed){++hc_runs[2];write_then_throw("hc mix written",{lp,low,le,up,g,ue,mixed},201.f);inject("hc mix");verify_hc_role(d,2);verify_hc_role(u,3);size_t n=ggml_nelements(mixed)/2560;check(n==1||n==2,"HC mix rows supported");std::vector<float> v(n*10240,-1234.f),o(n*2560,-1234.f);ggml_backend_tensor_get(x,v.data(),0,v.size()*4);for(size_t r=0;r<n;++r)for(size_t i=0;i<2560;++i)o[r*2560+i]=v[r*10240+i]+20;for(auto*t:{lp,low,le,up,g,ue})fill_hc(t,4);ggml_backend_tensor_set(mixed,o.data(),0,o.size()*4);
+#ifdef STRATA_TERMINAL_FIXTURE
+ terminal_mixed_bank=mixed;
+#endif
+}
+#ifdef STRATA_TERMINAL_FIXTURE
+StrataVkNativeHcMix* strata_vk_native_head_hc_mix_rn_create(ggml_backend_t b,const char*p,size_t n){return strata_vk_native_hc_mix_create(b,p,n);}
+void strata_vk_native_hc_norm_only(StrataVkNativeHc*,const ggml_tensor*x,const ggml_tensor*,ggml_tensor*out,ggml_tensor*rs){if(terminal_head_attempts++==terminal_fail_head_at)throw std::runtime_error("terminal injected head failure");check(x->view_src==terminal_write_bank,"head must read final-write row view");terminal_row_offsets.push_back(x->view_offs);std::vector<float> v(10240);ggml_backend_tensor_get(x,v.data(),0,v.size()*4);ggml_backend_tensor_set(out,v.data(),0,v.size()*4);fill_hc(rs,1);}
+#endif
 struct StrataVkNativeStages{}; struct StrataVkQ8Wo{}; struct StrataVkNativeShared{};
 StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char* p,size_t){++executor_creates;auto i=factory_enter("key quant");std::ofstream(p)<<"mock";return factory_return(new StrataVkNativeStages,i);}
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages*){return 512;}

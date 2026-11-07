@@ -37,6 +37,7 @@ class PortableHead {
     ~PortableHead();
     bool run(const std::vector<float> &streams, std::vector<float> &logits, std::string &error);
     bool run_device(const PortableFinalHcResidual& producer, std::vector<float>& logits, std::string& error);
+    size_t vocabulary_size() const;
     uint64_t native_hc_calls() const;
     uint64_t native_vocab_calls() const;
     size_t weight_bytes() const;

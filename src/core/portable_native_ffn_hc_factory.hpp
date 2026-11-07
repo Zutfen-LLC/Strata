@@ -19,8 +19,12 @@ public:
     static std::unique_ptr<PortableNativeHcComposed> create(int layer,ggml_backend_t backend,
         const std::vector<PortableTensorView>& views,size_t device_budget,size_t host_budget,
         const char* prefix,PortableNativeHcComposed::Dispatch test_dispatch={},
-        std::optional<PortableNativeHcComposed::ComponentCaps> caps=std::nullopt, bool layer0_attention=false){
-        need(layer>=0&&layer<47&&(!layer0_attention||layer==0)&&backend&&views.size()==4,"FFN HC factory: layer/backend/role count");
+        std::optional<PortableNativeHcComposed::ComponentCaps> caps=std::nullopt, bool layer0_attention=false,
+        bool terminal_ffn=false){
+        // Terminal materialization is a distinct role, not an ordinary
+        // deferred-FFN boundary. Callers must opt in explicitly for layer 47.
+        need(layer>=0&&((layer<47&&!terminal_ffn)||(layer==47&&terminal_ffn))&&
+             (!layer0_attention||(layer==0&&!terminal_ffn))&&backend&&views.size()==4,"FFN HC factory: layer/backend/role count");
         const bool injected=bool(test_dispatch.pending)||bool(test_dispatch.norm)||bool(test_dispatch.mix);
         if(!injected)native_hc_environment();
         need(injected||(prefix&&*prefix),"FFN HC factory: receipt prefix");
