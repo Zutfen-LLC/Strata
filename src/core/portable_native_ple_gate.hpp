@@ -1,5 +1,6 @@
 #pragma once
 #include "strata_vk_native_ple_gate.hpp"
+#include "portable_native_ple_host_bound.hpp"
 #include "ggml-alloc.h"
 #include <algorithm>
 #include <array>
@@ -22,16 +23,19 @@ class PortableNativePleGate {
     ggml_tensor *key_ = nullptr, *query_ = nullptr, *gate_ = nullptr, *diagnostic_ = nullptr;
     ggml_backend_t backend_ = nullptr;
     std::filesystem::path directory_;
-    size_t bytes_ = 0, borrowed_buffer_ = 0;
+    size_t bytes_ = 0, borrowed_buffer_ = 0, rows_ = 1;
     bool candidate_ = false, recorded_ = false;
     const ggml_tensor *key_copy_ = nullptr, *query_copy_ = nullptr, *raw_key_ = nullptr, *residual_ = nullptr;
     const ggml_tensor *direct_key_ = nullptr, *direct_query_ = nullptr;
     ggml_tensor *active_key_ = nullptr, *active_query_ = nullptr;
-    std::array<uint8_t, 40960> last_key_{}, last_query_{};
-    std::array<uint8_t, 16> last_gate_{};
+    std::vector<uint8_t> last_key_, last_query_, last_gate_;
 
     static void need(bool condition, const char* message) {
         if (!condition) throw std::runtime_error(message);
+    }
+    static size_t checked_rows(size_t rows) {
+        need(rows == 1 || rows == 2, "PLE gate: invalid rows");
+        return rows;
     }
     static Context context() {
         Context c(ggml_init({16384, nullptr, true}), ggml_free);
@@ -39,11 +43,11 @@ class PortableNativePleGate {
         return c;
     }
     static void leaves(ggml_context* c, ggml_tensor*& key, ggml_tensor*& query,
-                       ggml_tensor*& gate, ggml_tensor*& diagnostic) {
-        key = ggml_new_tensor_2d(c, GGML_TYPE_F32, 2560, 4);
-        query = ggml_new_tensor_2d(c, GGML_TYPE_F32, 2560, 4);
-        gate = ggml_new_tensor_2d(c, GGML_TYPE_F32, 1, 4);
-        diagnostic = ggml_new_tensor_2d(c, GGML_TYPE_F32, 4, 4);
+                       ggml_tensor*& gate, ggml_tensor*& diagnostic, size_t rows) {
+        key = ggml_new_tensor_3d(c, GGML_TYPE_F32, 2560, 4, rows);
+        query = ggml_new_tensor_3d(c, GGML_TYPE_F32, 2560, 4, rows);
+        gate = ggml_new_tensor_3d(c, GGML_TYPE_F32, 1, 4, rows);
+        diagnostic = ggml_new_tensor_3d(c, GGML_TYPE_F32, 4, 4, rows);
         for (auto* tensor : {key, query, gate, diagnostic}) ggml_set_input(tensor);
     }
     // GGML may rewrite graph edges to backend-copy tensors during scheduling.
@@ -63,7 +67,7 @@ class PortableNativePleGate {
         // The copy source can be the scheduler's backend copy, but the actual
         // source and the persistent destination must both be on this device.
         for (const ggml_tensor* tensor : std::array<const ggml_tensor*, 2>{copy->src[0], bank}) {
-            need(tensor->type == GGML_TYPE_F32 && tensor->buffer && ggml_is_contiguous(tensor) && ggml_nbytes(tensor) == 40960,
+            need(tensor->type == GGML_TYPE_F32 && tensor->buffer && ggml_is_contiguous(tensor) && ggml_nbytes(tensor) == 40960*rows_,
                  "PLE gate: normalized device span");
             auto type = ggml_backend_buffer_get_type(tensor->buffer);
             auto owner = ggml_backend_get_device(backend_);
@@ -75,11 +79,16 @@ class PortableNativePleGate {
         }
     }
   public:
-    static size_t estimate(ggml_backend_t backend) {
-        need(backend, "PLE gate: backend");
+    // Context and retained key/query/gate snapshots, plus the largest
+    // single verification/receipt buffer (key or query). Device banks excluded.
+    static constexpr size_t host_bound(size_t rows) {
+        return ple_host_add(16384, ple_host_mul(rows, 3 * 40960 + 16));
+    }
+    static size_t estimate(ggml_backend_t backend, size_t rows = 1) {
+        need(backend && (rows == 1 || rows == 2), "PLE gate: backend or rows");
         auto c = context();
         ggml_tensor *key, *query, *gate, *diagnostic;
-        leaves(c.get(), key, query, gate, diagnostic);
+        leaves(c.get(), key, query, gate, diagnostic, rows);
         auto bank = ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(), ggml_backend_get_default_buffer_type(backend));
         auto metadata = context();
         ggml_new_tensor_1d(metadata.get(), GGML_TYPE_I32, 1);
@@ -87,13 +96,14 @@ class PortableNativePleGate {
         need(bank <= SIZE_MAX - status, "PLE gate: budget overflow");
         return bank + status;
     }
-    PortableNativePleGate(ggml_backend_t backend, const std::string& directory, size_t budget, size_t borrowed_buffer = 0)
-        : backend_(backend), directory_(directory), borrowed_buffer_(borrowed_buffer) {
-        need(backend && !directory.empty() && estimate(backend) <= budget && std::filesystem::create_directory(directory),
+    PortableNativePleGate(ggml_backend_t backend, const std::string& directory, size_t budget, size_t borrowed_buffer = 0, size_t rows = 1)
+        : backend_(backend), directory_(directory), borrowed_buffer_(borrowed_buffer), rows_(checked_rows(rows)),
+          last_key_(40960*rows_), last_query_(40960*rows_), last_gate_(16*rows_) {
+        need(backend && !directory.empty() && estimate(backend, rows_) <= budget && std::filesystem::create_directory(directory),
              "PLE gate: backend, budget or fresh receipt");
         need(borrowed_buffer <= SIZE_MAX - budget, "PLE gate: borrowed buffer budget overflow");
         ctx_ = context();
-        leaves(ctx_.get(), key_, query_, gate_, diagnostic_);
+        leaves(ctx_.get(), key_, query_, gate_, diagnostic_, rows_);
         component_.reset(strata_vk_native_ple_gate_create(backend, (directory_ / "effective.spv").c_str(), budget + borrowed_buffer));
         need(bool(component_), "PLE gate: component");
         buffer_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(), backend));
@@ -102,7 +112,7 @@ class PortableNativePleGate {
         const auto extra = strata_vk_native_ple_gate_bytes(component_.get());
         need(bank <= SIZE_MAX - extra, "PLE gate: budget overflow");
         bytes_ = bank + extra;
-        need(bytes_ <= budget && bytes_ <= estimate(backend), "PLE gate: aligned budget");
+        need(bytes_ <= budget && bytes_ <= estimate(backend, rows_), "PLE gate: aligned budget");
     }
     size_t bytes() const { return bytes_; }
     uint64_t calls() const { return strata_vk_native_ple_gate_calls(component_.get()); }

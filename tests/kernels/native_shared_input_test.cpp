@@ -8,6 +8,13 @@ int main(int argc,char** argv) {try {
     need(argc==1,"usage: native_shared_input_test [--write NEW_FILE H F T]");
     for(uint32_t t=1;t<=8;++t){auto f=synthetic(2560,640,t);auto image=padded(f);need(image[X].size()==prefix(X)+2560*t+9,"padded count");}
     need(native_shared_mmvf_block(2560)==256 && native_shared_mmvf_block(640)==160,"native MMVF block selection");
+    native_shared_matrix_shape(true,1,2560,2560,1);
+    native_shared_matrix_shape(true,1,2560,2560,2);
+    native_shared_matrix_shape(false,1,2560,128,1);
+    rejects([]{native_shared_matrix_shape(true,1,2560,2560,0);});
+    rejects([]{native_shared_matrix_shape(true,1,2560,2560,3);});
+    rejects([]{native_shared_matrix_shape(false,1,2560,128,2);});
+    rejects([]{native_shared_matrix_shape(true,0,2560,2560,2);});
     need(native_shared_promoted_bf16(-0.f)==0x8000,"signed zero BF16");
     rejects([]{native_shared_shape(2561,640,1);});rejects([]{native_shared_shape(2560,640,9);});
     rejects([]{native_shared_shape(2560,640,1,12);});rejects([]{native_shared_promoted_bf16(1.00001f);});

@@ -20,11 +20,11 @@ float checked(float v){
  return v;
 }
 void main(){
- uint tid=gl_LocalInvocationID.x,lane=tid&31u,row=gl_WorkGroupID.x;
+ uint tid=gl_LocalInvocationID.x,lane=tid&31u,row=gl_WorkGroupID.x, token=gl_WorkGroupID.y;
  if(row>=4u)return;
  precise float sum=0.0;
  for(uint col=tid;col<p.cols;col+=1024u){
-  float v=checked(x[p.off[0]+row*p.cols+col]);
+  float v=checked(x[p.off[0]+(token*4u+row)*p.cols+col]);
   sum=checked(native_fma(v,v,sum));
  }
  partial[tid]=sum;barrier();
@@ -42,11 +42,11 @@ void main(){
  precise float mean=checked(partial[tid]/float(p.cols));
  precise float shifted=checked(mean+0.000001);
  float scale=checked(inversesqrt(shifted));
- if(tid==0u){diagnostic[p.off[3]+row*3u]=partial[0];diagnostic[p.off[3]+row*3u+1u]=mean;diagnostic[p.off[3]+row*3u+2u]=scale;}
+ if(tid==0u){diagnostic[p.off[3]+(token*4u+row)*3u]=partial[0];diagnostic[p.off[3]+(token*4u+row)*3u+1u]=mean;diagnostic[p.off[3]+(token*4u+row)*3u+2u]=scale;}
  for(uint col=tid;col<p.cols;col+=1024u){
   uint at=row*p.cols+col;
-  precise float scaled=checked(scale*checked(x[p.off[0]+at]));
+  precise float scaled=checked(scale*checked(x[p.off[0]+token*4u*p.cols+at]));
   precise float result=checked(scaled*checked(gamma[p.off[1]+at]));
-  y[p.off[2]+at]=result;
+  y[p.off[2]+token*4u*p.cols+at]=result;
  }
 }

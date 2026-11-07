@@ -144,6 +144,44 @@ bool PortablePleTable::gather(int32_t token, const std::array<int32_t, 2> &previ
         return false;
     }
 }
+bool PortablePleTable::gather_batch(const std::vector<int32_t> &tokens,
+                                    const std::vector<std::array<int32_t, 2>> &predecessors,
+                                    std::vector<std::array<uint32_t, 16>> &rows,
+                                    std::vector<float> &embedding, std::string &error) const {
+    error.clear();
+    if ((tokens.size() != 1 && tokens.size() != 2) || predecessors.size() != tokens.size()) {
+        error = "portable PLE: batch shape";
+        return false;
+    }
+    // Reject every malformed token before allocating or decoding the first row.
+    // In particular, a bad second token must not perform a partial gather.
+    for (int32_t token : tokens) {
+        if (token < 0) {
+            error = "portable PLE: token ID required (use configured image ID for image positions)";
+            return false;
+        }
+    }
+    if (tokens.size() == 2 && predecessors[1] != std::array<int32_t, 2>{predecessors[0][1], tokens[0]}) {
+        error = "portable PLE: batch predecessor chain";
+        return false;
+    }
+    std::vector<std::array<uint32_t, 16>> next_rows(tokens.size());
+    std::vector<float> next_embedding;
+    next_embedding.reserve(tokens.size() * 2560);
+    if (next_rows.capacity() != tokens.size() || next_embedding.capacity() != tokens.size() * 2560) {
+        error = "portable PLE: batch capacity";
+        return false;
+    }
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        std::vector<float> row;
+        if (!gather(tokens[i], predecessors[i], next_rows[i], row, error)) return false;
+        if (row.size() != 2560 || row.capacity() != 2560) { error = "portable PLE: row extent/capacity"; return false; }
+        next_embedding.insert(next_embedding.end(), row.begin(), row.end());
+    }
+    rows.swap(next_rows);
+    embedding.swap(next_embedding);
+    return true;
+}
 uint64_t PortablePleTable::rows() const { return impl_->count; }
 const PortablePleConfig &PortablePleTable::config() const { return impl_->config; }
 } // namespace strata::core

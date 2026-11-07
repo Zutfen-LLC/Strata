@@ -20,7 +20,16 @@ int main(){try {
  dispatch.mix=[&](const Owner::Bank& b){++mix;check(ggml_nbytes(b.mixed)==expected*10240,"mix rows");if(fail==3)throw std::runtime_error("mix");};
  bool short_budget=false; try { Owner insufficient(cpu.get(),nw,iw,down,up,1,nullptr,dispatch); } catch(...) {short_budget=true;} check(short_budget,"budget accepted");
  bool overlap=false; try { Owner bad(cpu.get(),nw,iw,down,down,20*1024*1024,nullptr,dispatch); } catch(...) {overlap=true;} check(overlap,"overlapping weights accepted");
- Owner owner(cpu.get(),nw,iw,down,up,20*1024*1024,nullptr,dispatch);
+ auto hb=Owner::host_breakdown(2); check(hb.total==hb.metadata+hb.state+hb.ple_copies+hb.read_copy+hb.component_runs && hb.metadata==73728 && hb.read_copy==81920 && hb.state==sizeof(Owner)+3*512,"host breakdown");
+ for(size_t rows : {size_t(1),size_t(2)}) { auto h=Owner::host_breakdown(rows); const size_t pending=(10240+2560+4+10240+4+4)*4; const size_t norm=(rows*10240+10240+rows*10240+rows*4+rows*4)*4+40960*2; const size_t mix=3276800*2; check(h.component_runs==pending+norm+mix,"independent component run arithmetic"); }
+ { strata::core::portable_detail::PleOwnerAllocator<unsigned char> alloc; auto p=alloc.allocate(512); alloc.deallocate(p,512); bool refused=false; try { (void)alloc.allocate(513); } catch(const std::bad_alloc&) { refused=true; } check(refused,"owner allocation limit"); }
+ { bool short_factory=false; try { Owner x(cpu.get(),nw,iw,down,up,20*1024*1024,nullptr,dispatch,Owner::host_bound(1)-1); } catch(...) { short_factory=true; } check(short_factory,"one-byte-short factory host budget accepted"); Owner exact(cpu.get(),nw,iw,down,up,20*1024*1024,nullptr,dispatch,Owner::host_bound(1)); }
+ bool bad_rows=false; try { (void)Owner::host_bound(SIZE_MAX); } catch(...) { bad_rows=true; } check(bad_rows,"invalid rows accepted");
+ bool overflow=false; try { (void)Owner::host_bound(2,SIZE_MAX); } catch(const std::overflow_error&) { overflow=true; } check(overflow,"host arithmetic overflow accepted");
+ { Owner limited(cpu.get(),nw,iw,down,up,20*1024*1024,nullptr,dispatch,Owner::host_bound(2)-1);
+   int before=pending; bool short_host=false; try { limited.run(4,0,*producer,{s0,s1},[](const auto&,uint32_t){},[](const auto&,uint32_t){}); } catch(...) { short_host=true; }
+   check(short_host && pending==before && !limited.rows(),"short host budget dispatched"); }
+ Owner owner(cpu.get(),nw,iw,down,up,20*1024*1024,nullptr,dispatch,Owner::host_bound(2));
  check(owner.bytes()>=13230080 && owner.role_bank()->bytes()>=13230080,"role accounting");
  auto consumer=[&](const Owner::View&,uint32_t n){++consumers;check(n==expected,"consumer rows");if(fail==3+consumers)throw std::runtime_error("consumer");};
  std::shared_ptr<Owner::View> retained, failed, destroyed;
@@ -32,7 +41,13 @@ int main(){try {
  bool second_threw=false; try {owner.run(4,0,*producer,{s0,s1},first_capture,second_fail);} catch(...) {second_threw=true;}
  auto stale=[](const std::shared_ptr<Owner::View>& v){try { (void)v->read(Owner::View::Field::mixed); return false; } catch(const std::runtime_error&) {return true;}};
  check(second_threw && stale(failed) && prior->rows()==2 && prior->read(Owner::View::Field::mixed).size()==5120,"failed second consumer invalidation");
- for(int stage=1;stage<=5;++stage){fail=stage;consumers=0;bool threw=false;try{owner.run(4,0,*producer,{s0,s1},consumer,consumer);}catch(...){threw=true;}check(threw&&owner.rows()==2,"failed publication");}
+ bool poisoned_rejected=false; try {owner.run(4,0,*producer,{s0,s1},capture,consumer);} catch(...) {poisoned_rejected=true;}
+ check(poisoned_rejected && prior->rows()==2,"consumer failure must poison until reset");
+ owner.reset(); check(stale(prior),"reset must invalidate publication");
+ owner.run(4,0,*producer,{s0,s1},capture,consumer); prior=retained;
+ for(int stage=1;stage<=5;++stage){fail=stage;consumers=0;bool threw=false;try{owner.run(4,0,*producer,{s0,s1},consumer,consumer);}catch(...){threw=true;}check(threw&&owner.rows()==2,"failed publication");
+   if(stage>=4) { bool refused=false; try {owner.run(4,0,*producer,{s0,s1},capture,consumer);} catch(...) {refused=true;} check(refused,"consumer failure did not poison"); owner.reset(); fail=0; consumers=0; owner.run(4,0,*producer,{s0,s1},capture,consumer); prior=retained; }
+ }
  fail=0;consumers=0;expected=1;owner.run(4,1,*producer,{s1},capture,consumer);check(owner.rows()==1&&consumers==1 && stale(prior),"tail publication");
  bool rejected=false;try{owner.run(4,0,*producer,{s1},consumer,consumer);}catch(...){rejected=true;}check(rejected&&owner.rows()==1,"snapshot identity");
  bool reset_rejected=false; auto reset_consumer=[&](const Owner::View& v,uint32_t){retained=std::make_shared<Owner::View>(v); try{owner.reset();}catch(...){reset_rejected=true;}};
@@ -55,6 +70,29 @@ int main(){try {
    check(producer->step(0,f.input(0),qsa_fixture::experts(),route,error),error); s1=producer->pending_snapshot(error);
    temporary.run(4,0,*producer,{s1},capture_destroyed,consumer); check(destroyed->rows()==1,"live temporary"); }
  check(stale(destroyed),"destruction left view valid");
+ // Materialized PLE enters at layer 1 without the pending dispatch.
+ {
+  using Tx=PortableNativePleTransaction;
+  auto executor=[](const Tx::Request& r, const Tx::OutputView& o){ size_t n=r.tokens.size();
+   for(size_t i=0;i<n;++i) { o.normalized[i]=float(r.tokens[i]); std::fill(o.residual.begin()+i*10240,o.residual.begin()+(i+1)*10240,float(r.tokens[i])); }
+   std::copy(r.history.begin()+n,r.history.end(),o.history.begin());
+   std::copy(o.normalized.begin(),o.normalized.end(),o.history.begin()+9-n); };
+  Tx tx(1,10240,200000,executor), foreign(1,10240,200000,executor);
+  Tx malformed(1,2,200000,[](const Tx::Request& r, const Tx::OutputView& o){ std::copy(r.history.begin()+r.tokens.size(),r.history.end(),o.history.begin()); for(size_t i=0;i<r.tokens.size();++i) o.history[9-r.tokens.size()+i]=o.normalized[i]=float(r.tokens[i]); std::fill(o.residual.begin(),o.residual.end(),0.0f); });
+  int pn=0,nn=0,mm=0,cc=0,stage=0; Owner::Dispatch pd;
+  pd.pending=[&](const Owner::Bank&){++pn; throw std::runtime_error("pending called");};
+  pd.norm=[&](const Owner::Bank& bank,uint32_t n){++nn; std::vector<float> x(n*10240); ggml_backend_tensor_get(bank.residual,x.data(),0,x.size()*4); check(x[0]==float(tx.position()?3:1) && (n==1 || x[10240]==2),"PLE rows"); if(stage==1) throw std::runtime_error("norm");};
+  pd.mix=[&](const Owner::Bank&){++mm; if(stage==2) throw std::runtime_error("mix");};
+  Owner po(cpu.get(),nw,iw,down,up,20*1024*1024,nullptr,pd);
+  auto pc=[&](const Owner::View& v,uint32_t n){check(v.rows()==n,"PLE view"); ++cc; if(stage==2+cc) throw std::runtime_error("consumer");};
+  auto h=tx.stage(0,{1,2},std::vector<float>(20480)); auto fh=foreign.stage(0,{1},std::vector<float>(10240)); auto mh=malformed.stage(0,{1},std::vector<float>(2));
+  auto reject=[&](int layer,uint64_t pos,Tx& p,const Tx::Handle& candidate){bool bad=false; try{po.run(layer,pos,p,candidate,pc,pc);}catch(...){bad=true;} check(bad && !po.rows() && tx.position()==0,"PLE rejection");};
+  reject(0,0,tx,h); reject(2,0,tx,h); reject(1,1,tx,h); reject(1,0,foreign,h); reject(1,0,malformed,mh);
+  for(stage=1;stage<=4;++stage) { cc=0; bool bad=false; try{po.run(1,0,tx,h,pc,pc);}catch(...){bad=true;} check(bad && !po.rows() && tx.position()==0 && tx.history()==std::vector<float>(9,0),"PLE partial commit"); if(stage>=3) { bool poisoned=false; try{po.run(1,0,tx,h,pc,pc);}catch(...){poisoned=true;} check(poisoned,"PLE poison"); po.reset(); } }
+  stage=0; cc=0; po.run(1,0,tx,h,pc,pc); check(tx.position()==2 && po.rows()==2 && cc==2 && pn==0,"PLE T2 commit");
+  bool stale_h=false; try{po.run(1,0,tx,h,pc,pc);}catch(...){stale_h=true;} check(stale_h,"PLE stale accepted");
+  auto tail=tx.stage(2,{3},std::vector<float>(10240)); cc=0; int n0=nn,m0=mm; po.run(1,2,tx,tail,pc,pc); check(tx.position()==3 && po.rows()==1 && cc==2 && nn==n0+1 && mm==m0+1 && pn==0,"PLE T1 commit");
+ }
  // Exercise the same composed control path with real GDN-issued snapshots.
  Fixture gf; auto views=gf.views; for(auto& v:views) v.name.replace(0,6,"blk.1.");
  PortableGdnOptions go; go.execution=options.execution; go.defer_ffn_hc_write=true;

@@ -12,7 +12,9 @@ new_scale='precise float scale=maxima[lane]*uintBitsToFloat(0x3c010204u);'
 old_ratio='precise float ratio=xi/d;'
 new_ratio='precise float reciprocal=1.0/d;\n    precise float ratio=xi*reciprocal;'
 assert original.count(old_scale)==1 and original.count(old_ratio)==1
-expected=original.replace(old_scale,new_scale).replace(old_ratio,new_ratio)
+expected=(original.replace(old_scale,new_scale).replace(old_ratio,new_ratio)
+          .replace('else xi=gate[p.gate_bias+i];', 'else xi=gate[p.gate_bias+gl_WorkGroupID.y*p.elements+i];')
+          .replace('p.packed_bias+gl_WorkGroupID.x*9u', 'p.packed_bias+(gl_WorkGroupID.y*(p.elements/32u)+gl_WorkGroupID.x)*9u'))
 with tempfile.TemporaryDirectory() as tmp:
     d=Path(tmp);driver=d/'transform.cmake'
     driver.write_text('include("${HELPER}")\nfile(READ "${INPUT}" source)\nstrata_native_quant_rcp_source("${source}" result)\nfile(WRITE "${OUTPUT}" "${result}")\n')
@@ -25,4 +27,4 @@ with tempfile.TemporaryDirectory() as tmp:
     for i,bad in enumerate((original.replace(old_scale,'precise float scale=maxima[lane]/126.0;'),
                              original.replace(old_ratio,'precise float ratio=xi/(d+1.0);'),original+'\n// changed input\n')):
         result,out=run(bad,'bad'+str(i));assert result.returncode and not out.exists()
-print('pin-gated candidate changes only scale and reciprocal association; mutated base sources refuse')
+print('pin-gated reciprocal and row addressing candidate; mutated base sources refuse')

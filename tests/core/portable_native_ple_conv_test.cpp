@@ -1,4 +1,4 @@
-#include "portable_native_ple_conv.hpp"
+#include "portable_native_ple_conv_copy_graph.hpp"
 #include "ggml-cpu.h"
 #include <cassert>
 #include <cstring>
@@ -12,7 +12,7 @@ namespace strata::core::portable_detail {
 struct StrataVkNativePleConv {size_t bytes;};
 bool fail_conv = false;
 bool corrupt_history = false, nonfinite_output = false;
-size_t component_creates=0;
+size_t component_creates=0, dispatch_rows=0;
 StrataVkNativePleConv* strata_vk_native_ple_conv_create(ggml_backend_t backend,const char*,size_t) {
     auto metadata=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({4096,nullptr,true}),ggml_free);
     ggml_new_tensor_1d(metadata.get(),GGML_TYPE_I32,1);
@@ -23,14 +23,28 @@ void strata_vk_native_ple_conv_destroy(StrataVkNativePleConv* p) noexcept { dele
 size_t strata_vk_native_ple_conv_bytes(const StrataVkNativePleConv* p) { return p->bytes; }
 void strata_vk_native_ple_conv_run(StrataVkNativePleConv*,ggml_tensor* const t[10]) {
     if (fail_conv) throw std::runtime_error("injected refusal");
-    std::vector<float> h(92160), n(10240), next(92160), output(10240, 1.0f);
+    const size_t rows=ggml_nbytes(t[1])/(10240*4); dispatch_rows=rows;
+    std::vector<float> h(92160), n(10240*rows), x(n.size()), g(n.size()), next(92160);
+    std::vector<float> conv(n.size()), result(n.size()), pre(n.size()), exponent(n.size());
     ggml_backend_tensor_get(t[0],h.data(),0,h.size()*4);
     ggml_backend_tensor_get(t[1],n.data(),0,n.size()*4);
-    for(size_t c=0;c<n.size();++c){for(size_t j=0;j<8;++j)next[c*9+j]=h[c*9+j+1];next[c*9+8]=n[c];}
+    ggml_backend_tensor_get(t[3],x.data(),0,x.size()*4);
+    ggml_backend_tensor_get(t[4],g.data(),0,g.size()*4);
+    // Test weights are all exactly one. Model the shader's immutable-history indexing.
+    for(size_t c=0;c<10240;++c){
+        for(size_t r=0;r<rows;++r){size_t i=r*10240+c;
+            pre[i]=((h[c*9+r]+h[c*9+r+3])+h[c*9+r+6])+n[i];
+            exponent[i]=std::exp(-pre[i]);conv[i]=pre[i]/(1.f+exponent[i]);
+            result[i]=x[i]+(g[i]+conv[i]);
+        }
+        for(size_t j=0;j<9-rows;++j)next[c*9+j]=h[c*9+j+rows];
+        for(size_t r=0;r<rows;++r)next[c*9+9-rows+r]=n[r*10240+c];
+    }
     if(corrupt_history)next[0]=77.f;
-    if(nonfinite_output)output[0]=std::numeric_limits<float>::infinity();
+    if(nonfinite_output)result[0]=std::numeric_limits<float>::infinity();
     ggml_backend_tensor_set(t[5],next.data(),0,next.size()*4);
-    for(size_t i=6;i<10;++i)ggml_backend_tensor_set(t[i],output.data(),0,output.size()*4);
+    std::vector<float>* out[]={&conv,&result,&pre,&exponent};
+    for(size_t i=6;i<10;++i)ggml_backend_tensor_set(t[i],out[i-6]->data(),0,out[i-6]->size()*4);
 }
 }
 int main() {
@@ -100,5 +114,58 @@ int main() {
     ggml_backend_tensor_set(originals[1],norm.data(),0,norm.size()*4);
     ggml_backend_tensor_set(owner.input(1),norm.data(),0,norm.size()*4);
     refused=false; try{owner.run(copies,originals,hidden);}catch(...){refused=true;} assert(refused && !owner.ready());
+    {
+        const auto budget=PortableNativePleConv::estimate(backend.get(),2);
+        PortableNativePleConv pair(backend.get(),weights.data(),weights.size()*2,1,"",budget,2);
+        auto c=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({16384,nullptr,true}),ggml_free);
+        ggml_tensor* src[4]; ggml_tensor* cp[4];
+        for(size_t i=0;i<4;++i){src[i]=ggml_new_tensor_1d(c.get(),GGML_TYPE_F32,i?20480:92160);cp[i]=ggml_cpy(c.get(),src[i],pair.input(i));}
+        pair.bind(cp,src);
+        auto b=std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>(ggml_backend_alloc_ctx_tensors(c.get(),backend.get()),ggml_backend_buffer_free);
+        std::vector<float> h(92160), n(20480), x(20480), g(20480);
+        for(size_t k=0;k<10240;++k){for(size_t j=0;j<9;++j)h[k*9+j]=float(j+1)*0.01f+float(k%7)*0.001f; n[k]=0.11f; n[10240+k]=0.22f; x[k]=0.31f; x[10240+k]=0.42f; g[k]=0.53f; g[10240+k]=0.64f;}
+        std::vector<float>* v[]={&h,&n,&x,&g};
+        for(size_t i=0;i<4;++i){ggml_backend_tensor_set(src[i],v[i]->data(),0,v[i]->size()*4);ggml_backend_tensor_set(pair.input(i),v[i]->data(),0,v[i]->size()*4);}
+        pair.run(cp,src,x);assert(pair.ready()&&dispatch_rows==2);
+        std::vector<float> out(92160);ggml_backend_tensor_get(pair.history(),out.data(),0,out.size()*4);
+        // Independent sequential T1 mutation, checking both intermediate rows and history.
+        std::vector<float> actual_conv(20480), actual_result(20480);
+        ggml_backend_tensor_get(pair.convolution(),actual_conv.data(),0,actual_conv.size()*4);
+        ggml_backend_tensor_get(pair.result(),actual_result.data(),0,actual_result.size()*4);
+        auto control=h;
+        for(size_t r=0;r<2;++r) for(size_t k=0;k<10240;++k){
+            auto* q=&control[k*9]; size_t i=r*10240+k;
+            float sum=((q[0]+q[3])+q[6])+n[i];
+            float activation=sum/(1.f+std::exp(-sum));
+            assert(actual_conv[i]==activation && actual_result[i]==x[i]+(g[i]+activation));
+            if(r==1 && k==0) assert(q[0]==h[1] && q[3]==h[4] && q[6]==h[7]);
+            for(size_t j=0;j<8;++j) q[j]=q[j+1]; q[8]=n[i];
+        }
+        assert(out==control);
+        assert(pair.calls()==1);
+        n[10240]=std::numeric_limits<float>::quiet_NaN();
+        ggml_backend_tensor_set(src[1],n.data(),0,n.size()*4);ggml_backend_tensor_set(pair.input(1),n.data(),0,n.size()*4);
+        dispatch_rows=0;bool bad=false;try{pair.run(cp,src,x);}catch(...){bad=true;}assert(bad&&!pair.ready()&&dispatch_rows==0&&pair.calls()==1);
+    }
+    for(size_t rows: {size_t(1),size_t(2)}) {
+        auto c=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({16384,nullptr,true}),ggml_free);
+        std::array<ggml_tensor*,4> src{};
+        for(size_t i=0;i<4;++i)src[i]=ggml_new_tensor_1d(c.get(),GGML_TYPE_F32,i?10240*rows:92160);
+        auto b=std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>(ggml_backend_alloc_ctx_tensors(c.get(),backend.get()),ggml_backend_buffer_free);
+        std::vector<float> h(92160),n(10240*rows),x(n.size()),g(n.size());
+        for(size_t k=0;k<10240;++k){for(size_t j=0;j<9;++j)h[9*k+j]=0.01f*float(j+1);for(size_t r=0;r<rows;++r){n[r*10240+k]=0.1f+0.1f*r;x[r*10240+k]=0.3f+0.1f*r;g[r*10240+k]=0.5f+0.1f*r;}}
+        std::vector<float>* v[]={&h,&n,&x,&g};for(size_t i=0;i<4;++i)ggml_backend_tensor_set(src[i],v[i]->data(),0,v[i]->size()*4);
+        auto budget=PortableNativePleConvCopyGraph::estimate(backend.get(),rows);bool bad=false;
+        try{PortableNativePleConvCopyGraph short_graph(backend.get(),src,weights.data(),weights.size()*2,1,"",budget-1,rows);}catch(...){bad=true;}assert(bad);
+        PortableNativePleConvCopyGraph graph(backend.get(),src,weights.data(),weights.size()*2,1,"",budget,rows);
+        assert(graph.bytes()<=budget&&graph.copy(1)->src[0]==src[1]);
+        graph.run(src,x);assert(graph.ready()&&graph.calls()==1&&dispatch_rows==rows);
+        std::vector<float> next(92160),original(92160);ggml_backend_tensor_get(graph.history(),next.data(),0,next.size()*4);ggml_backend_tensor_get(src[0],original.data(),0,original.size()*4);
+        assert(original==h);for(size_t r=0;r<rows;++r)assert(next[9-rows+r]==n[r*10240]);
+        auto wrong=src;wrong[1]=src[2];bad=false;try{graph.run(wrong,x);}catch(...){bad=true;}assert(bad&&!graph.ready()&&graph.calls()==1);
+        fail_conv=true;bad=false;try{graph.run(src,x);}catch(...){bad=true;}fail_conv=false;assert(bad&&!graph.ready()&&graph.calls()==1);
+        graph.run(src,x);assert(graph.ready()&&graph.calls()==2);graph.abort();assert(!graph.ready());
+        bad=false;try{(void)graph.history();}catch(...){bad=true;}assert(bad);
+    }
     std::cout << "PLE convolution candidate ownership, refusal and retry passed with host provider\n";
 }

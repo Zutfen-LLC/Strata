@@ -22,7 +22,10 @@ uint32_t strata_vk_native_ple_grouped_norm_run(StrataVkNativePleGroupedNorm* p,c
                                       ggml_tensor* output,ggml_tensor* diagnostic) {
     native_hc_need(p,"native PLE grouped norm: owner required");auto& g=*p->owner;
     auto* ctx=static_cast<ggml_backend_vk_context*>(g.backend->context);
-    const ggml_tensor* tensors[]={input,gamma,output,diagnostic};const size_t bytes[]={40960,40960,40960,48};
+    native_hc_need(input&&(ggml_nbytes(input)==40960||ggml_nbytes(input)==81920),"native PLE grouped norm: invalid rows");
+    const uint32_t rows=ggml_nbytes(input)/40960;
+    native_hc_need(ctx->device->properties.limits.maxComputeWorkGroupCount[1]>=rows,"native PLE grouped norm: Y grid unsupported");
+    const ggml_tensor* tensors[]={input,gamma,output,diagnostic};const size_t bytes[]={40960*rows,40960,40960*rows,48*rows};
     std::array<uint32_t,6> off{};size_t used=g.bytes;ggml_backend_buffer_t seen[4]{};size_t nseen=0;
     for(size_t i=0;i<4;++i){const auto* t=tensors[i];
         native_hc_need(t&&t->type==GGML_TYPE_F32&&ggml_nbytes(t)==bytes[i]&&ggml_is_contiguous(t)&&t->buffer&&ggml_backend_buffer_is_vk(t->buffer),"native PLE grouped norm: exact contiguous Vulkan F32 span required");
@@ -33,12 +36,12 @@ uint32_t strata_vk_native_ple_grouped_norm_run(StrataVkNativePleGroupedNorm* p,c
         for(size_t j=0;j<i;++j)if((i>=2||j>=2)&&t->buffer==tensors[j]->buffer){auto x=reinterpret_cast<uintptr_t>(t->data),y=reinterpret_cast<uintptr_t>(tensors[j]->data);native_hc_need(x<=y?y-x>=ggml_nbytes(t):x-y>=ggml_nbytes(tensors[j]),"native PLE grouped norm: output overlap");}
     }
     native_hc_need(used<=p->budget,"native PLE grouped norm: allocation budget exceeded");
-    ggml_backend_vk_synchronize(g.backend);std::vector<float> values(10240);
-    for(const auto* t:{input,gamma}){ggml_backend_tensor_get(t,values.data(),0,40960);for(float x:values)native_hc_normal(x);}
+    ggml_backend_vk_synchronize(g.backend);
+    for(const auto* t:{input,gamma}){std::vector<float> values(ggml_nbytes(t)/4);ggml_backend_tensor_get(t,values.data(),0,ggml_nbytes(t));for(float x:values)native_hc_normal(x);}
     const auto status_bias=get_misalign_bytes(ctx,g.status);native_hc_need(status_bias%4==0,"native PLE grouped norm: status alignment");off[4]=status_bias/4;off[5]=2560;const uint32_t zero=0;ggml_backend_tensor_set(g.status,&zero,0,4);
     ggml_pipeline_request_descriptor_sets(ctx,g.pipeline,1);auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
     ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,input,true),ggml_vk_tensor_subbuffer(ctx,gamma,true),
-        ggml_vk_tensor_subbuffer(ctx,output,true),ggml_vk_tensor_subbuffer(ctx,diagnostic,true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},off,{4,1,1});
+        ggml_vk_tensor_subbuffer(ctx,output,true),ggml_vk_tensor_subbuffer(ctx,diagnostic,true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},off,{4,rows,1});
     ggml_vk_sync_buffers(ctx,compute);compute.reset();ggml_backend_vk_synchronize(g.backend);
     uint32_t status=0;ggml_backend_tensor_get(g.status,&status,0,4);if(!status)++p->calls;return status;
 }

@@ -18,6 +18,9 @@ StrataVkNativeStages* strata_vk_native_stages_create_quant_rn_observation(ggml_b
 // Explicit standalone mode-0 observation: full F32 scale times 1/127, then
 // reciprocal and separate multiply. Reciprocal accuracy remains unqualified.
 StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char* effective_spv_path,size_t metadata_budget=SIZE_MAX);
+// Quantize one or two complete H2560 rows in one dispatch, packed row-major.
+void strata_vk_ple_key_quantize_bounded(StrataVkNativeStages*, const ggml_tensor* input,
+                                         ggml_tensor* packed, size_t tokens);
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages*);
 uint64_t strata_vk_native_stages_quant_submitted(const StrataVkNativeStages*) noexcept;
 uint64_t strata_vk_native_stages_quant_completed(const StrataVkNativeStages*) noexcept;

@@ -9,6 +9,12 @@ inline void native_shared_shape(uint32_t h,uint32_t f,uint32_t t,int type=8) {
     native_shared_need(h>=32 && h<=8192 && f>=32 && f<=8192 && h%32==0 && f%32==0 && t>=1 && t<=8,
         "native shared: require aligned dimensions 32..8192 and T1..8");
 }
+inline void native_shared_matrix_shape(bool ple_value, uint32_t mode, uint32_t ni, uint32_t no, uint32_t tokens) {
+    native_shared_need(mode == 1 && ni == 2560 &&
+        (ple_value ? (no == 2560 && tokens >= 1 && tokens <= 2)
+                   : ((no == 128 || no == 512) && tokens == 1)),
+        "native BF16 matrix: unsupported geometry");
+}
 // weights.cpp Conv::Bf16High recovers the high half of a promoted BF16.
 // Do not apply it to an arbitrary F32 tensor. Raw BF16 is already native storage.
 inline uint16_t native_shared_promoted_bf16(float x) {

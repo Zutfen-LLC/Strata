@@ -22,7 +22,10 @@ uint32_t strata_vk_native_ple_gate_run(StrataVkNativePleGate* p,const ggml_tenso
                                       ggml_tensor* gate,ggml_tensor* diagnostic) {
     native_hc_need(p,"native PLE gate: owner required");auto& g=*p->owner;
     auto* ctx=static_cast<ggml_backend_vk_context*>(g.backend->context);
-    const ggml_tensor* tensors[]={key,query,gate,diagnostic};const size_t bytes[]={40960,40960,16,64};
+    native_hc_need(key&&(ggml_nbytes(key)==40960||ggml_nbytes(key)==81920),"native PLE gate: invalid rows");
+    const uint32_t rows=ggml_nbytes(key)/40960;
+    native_hc_need(ctx->device->properties.limits.maxComputeWorkGroupCount[1]>=rows,"native PLE gate: Y grid unsupported");
+    const ggml_tensor* tensors[]={key,query,gate,diagnostic};const size_t bytes[]={40960*rows,40960*rows,16*rows,64*rows};
     std::array<uint32_t,5> off{};size_t used=g.bytes;ggml_backend_buffer_t seen[4]{};size_t nseen=0;
     for(size_t i=0;i<4;++i){const auto* t=tensors[i];
         native_hc_need(t&&t->type==GGML_TYPE_F32&&ggml_nbytes(t)==bytes[i]&&ggml_is_contiguous(t)&&t->buffer&&ggml_backend_buffer_is_vk(t->buffer),"native PLE gate: exact contiguous Vulkan F32 span required");
@@ -33,12 +36,12 @@ uint32_t strata_vk_native_ple_gate_run(StrataVkNativePleGate* p,const ggml_tenso
         for(size_t j=0;j<i;++j)if((i>=2||j>=2)&&t->buffer==tensors[j]->buffer){auto x=reinterpret_cast<uintptr_t>(t->data),y=reinterpret_cast<uintptr_t>(tensors[j]->data);native_hc_need(x<=y?y-x>=ggml_nbytes(t):x-y>=ggml_nbytes(tensors[j]),"native PLE gate: output overlap");}
     }
     native_hc_need(used<=p->budget,"native PLE gate: allocation budget exceeded");
-    ggml_backend_vk_synchronize(g.backend);std::vector<float> input(10240);
-    for(const auto* t:{key,query}){ggml_backend_tensor_get(t,input.data(),0,40960);for(float x:input)native_hc_normal(x);}
+    ggml_backend_vk_synchronize(g.backend);std::vector<float> input(10240*rows);
+    for(const auto* t:{key,query}){ggml_backend_tensor_get(t,input.data(),0,40960*rows);for(float x:input)native_hc_normal(x);}
     const auto status_bias=get_misalign_bytes(ctx,g.status);native_hc_need(status_bias%4==0,"native PLE gate: status alignment");off[4]=status_bias/4;const uint32_t zero=0;ggml_backend_tensor_set(g.status,&zero,0,4);
     ggml_pipeline_request_descriptor_sets(ctx,g.pipeline,1);auto compute=ggml_vk_get_compute_ctx(ctx);ggml_vk_sync_buffers(ctx,compute);
     ggml_vk_dispatch_pipeline(ctx,compute,g.pipeline,{ggml_vk_tensor_subbuffer(ctx,key,true),ggml_vk_tensor_subbuffer(ctx,query,true),
-        ggml_vk_tensor_subbuffer(ctx,gate,true),ggml_vk_tensor_subbuffer(ctx,diagnostic,true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},off,{4,1,1});
+        ggml_vk_tensor_subbuffer(ctx,gate,true),ggml_vk_tensor_subbuffer(ctx,diagnostic,true),ggml_vk_tensor_subbuffer(ctx,g.status,true)},off,{4,rows,1});
     ggml_vk_sync_buffers(ctx,compute);compute.reset();ggml_backend_vk_synchronize(g.backend);
     uint32_t status=0;ggml_backend_tensor_get(g.status,&status,0,4);if(!status)++p->calls;return status;
 }
