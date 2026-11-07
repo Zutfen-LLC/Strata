@@ -6,7 +6,7 @@
 using namespace strata::core::portable_detail;
 namespace {
 void need(bool b,const char*m){if(!b)throw std::runtime_error(m);}
-int fail=0;size_t conv_calls=0,ab_calls=0,recur_calls=0;
+int fail=0;size_t conv_calls=0,ab_calls=0,recur_calls=0,product_gate_calls=0;std::vector<float> recurrence_beta;
 std::vector<float> get(const ggml_tensor*t){std::vector<float>v(ggml_nbytes(t)/4);ggml_backend_tensor_get(t,v.data(),0,v.size()*4);return v;}
 void put(ggml_tensor*t,const std::vector<float>&v){need(ggml_nbytes(t)==v.size()*4,"mock span");ggml_backend_tensor_set(t,v.data(),0,v.size()*4);}
 }
@@ -16,11 +16,13 @@ StrataVkNativeGdnConvRows* strata_vk_native_gdn_conv_rows_create(ggml_backend_t,
 void strata_vk_native_gdn_conv_rows_destroy(StrataVkNativeGdnConvRows*p)noexcept{delete p;}size_t strata_vk_native_gdn_conv_rows_bytes(const StrataVkNativeGdnConvRows*){return 512;}
 StrataVkNativeGdnAbRows* strata_vk_native_gdn_ab_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";if(fail==2)throw std::runtime_error("AB factory");return new StrataVkNativeGdnAbRows;}
 void strata_vk_native_gdn_ab_rows_destroy(StrataVkNativeGdnAbRows*p)noexcept{delete p;}size_t strata_vk_native_gdn_ab_rows_bytes(const StrataVkNativeGdnAbRows*){return 512;}
+StrataVkNativeGdnAbRows* strata_vk_native_gdn_gate_products_create(ggml_backend_t b,const char*p,size_t n){return strata_vk_native_gdn_ab_rows_create(b,p,n);}
+uint32_t strata_vk_native_gdn_gate_products_run(StrataVkNativeGdnAbRows*,ggml_tensor*const t[8],uint32_t n){++product_gate_calls;auto a=get(t[1]),b=get(t[2]);need(a.size()==n*48&&b.size()==n*48,"product gate inputs");put(t[5],a);put(t[6],b);return fail==5?1:0;}
 StrataVkNativeGdnRows* strata_vk_native_gdn_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";if(fail==3)throw std::runtime_error("recurrence factory");return new StrataVkNativeGdnRows;}
 void strata_vk_native_gdn_rows_destroy(StrataVkNativeGdnRows*p)noexcept{delete p;}size_t strata_vk_native_gdn_rows_bytes(const StrataVkNativeGdnRows*){return 512;}
 void strata_vk_native_gdn_conv_rows_run(StrataVkNativeGdnConvRows*,ggml_tensor*const t[10],uint32_t n){++conv_calls;auto h=get(t[0]),q=get(t[1]);std::vector<float>out(n*10240);for(size_t r=0;r<n;++r)for(size_t c=0;c<10240;++c){out[r*10240+c]=q[r*10240+c]+h[c*3];h[c*3]=h[c*3+1];h[c*3+1]=h[c*3+2];h[c*3+2]=q[r*10240+c];}put(t[3],h);put(t[4],out);if(fail==4)throw std::runtime_error("conv wrote then threw");}
 uint32_t strata_vk_native_gdn_ab_rows_run(StrataVkNativeGdnAbRows*,ggml_tensor*const t[8],uint32_t n){++ab_calls;auto mixed=get(t[0]);std::vector<float>gate(n*48),beta(n*48);for(size_t r=0;r<n;++r)for(size_t i=0;i<48;++i){gate[r*48+i]=mixed[r*2560];beta[r*48+i]=1;}put(t[5],gate);put(t[6],beta);return fail==5?1:0;}
-void strata_vk_native_gdn_rows_run(StrataVkNativeGdnRows*,ggml_tensor*const t[13],ggml_tensor*,uint32_t n){++recur_calls;auto state=get(t[0]),h=get(t[1]),gate=get(t[2]),z=get(t[4]);std::vector<float>y(n*6144);for(size_t r=0;r<n;++r)for(size_t i=0;i<6144;++i){state[i]+=h[r*10240+i]+gate[r*48]+z[r*6144+i];y[r*6144+i]=state[i];}put(t[6],state);put(t[7],y);if(fail==6)throw std::runtime_error("recurrence wrote then threw");}
+void strata_vk_native_gdn_rows_run(StrataVkNativeGdnRows*,ggml_tensor*const t[13],ggml_tensor*,uint32_t n){++recur_calls;recurrence_beta=get(t[3]);auto state=get(t[0]),h=get(t[1]),gate=get(t[2]),z=get(t[4]);std::vector<float>y(n*6144);for(size_t r=0;r<n;++r)for(size_t i=0;i<6144;++i){state[i]+=h[r*10240+i]+gate[r*48]+z[r*6144+i];y[r*6144+i]=state[i];}put(t[6],state);put(t[7],y);if(fail==6)throw std::runtime_error("recurrence wrote then threw");}
 }
 int main(int argc,char**argv){try{
  need(argc==2,"scratch");std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>backend(ggml_backend_cpu_init(),ggml_backend_free);std::unique_ptr<ggml_context,decltype(&ggml_free)>ctx(ggml_init({16384,nullptr,true}),ggml_free);
@@ -58,5 +60,11 @@ int main(int argc,char**argv){try{
  need(a.output()==out&&a.committed_state()==seed&&a.committed_history()==hist,"valid nonzero-offset views");
  a.reset(seed,hist);
  auto saved_state=a.committed_state(),saved_history=a.committed_history();for(int f=4;f<=6;++f){a.reset(saved_state,saved_history);fail=f;bool rejected=false;try{a.stage(mixed,q2,z2,2);}catch(...){rejected=true;}need(rejected&&!a.candidate()&&a.poisoned()&&a.committed_state()==saved_state&&a.committed_history()==saved_history,"failed stage changed committed state");}fail=0;a.reset(seed,hist);a.stage(mixed,q2,z2,2);need(a.output()==out,"reset A/B/A");
+ // Selected baseline uses actual CPU BF16 graphs; mock gate passes products to recurrence.
+ std::vector<ggml_bf16_t> wa(2560*48),wb(2560*48);wa[0]=ggml_fp32_to_bf16(2.f);wb[0]=ggml_fp32_to_bf16(-3.f);ggml_backend_tensor_set(role[1],wa.data(),0,wa.size()*2);ggml_backend_tensor_set(role[2],wb.data(),0,wb.size()*2);
+ auto bcaps=caps;bcaps.products=PortableNativeGdnBf16AbRows::estimate(backend.get())+ggml_backend_buffer_get_size(buf.get());auto bbudget=PortableNativeGdnCoreRows::estimate(backend.get(),bcaps);
+ PortableNativeGdnCoreRows baseline(backend.get(),role,bcaps,bbudget,(root/"baseline").string(),PortableGdnAbMethod::baseline_bf16);need(baseline.ab_method()==PortableGdnAbMethod::baseline_bf16&&a.ab_method()==PortableGdnAbMethod::legacy_fused,"method accessor");baseline.reset(seed,hist);auto original=mixed;auto before=product_gate_calls;baseline.stage(mixed,q2,z2,2);need(product_gate_calls==before+1&&mixed==original&&baseline.committed_state()==seed&&baseline.output()[0]==14.75f&&recurrence_beta.size()==96&&recurrence_beta[0]==-15.f&&recurrence_beta[48]==-18.f,"selected T2 products to recurrence");
+ baseline.reset(seed,hist);size_t abort_calls=0;ggml_backend_cpu_set_abort_callback(backend.get(),[](void*p){++*static_cast<size_t*>(p);return true;},&abort_calls);bool aborted=false;try{baseline.stage(mixed,q2,z2,2);}catch(...){aborted=true;}ggml_backend_cpu_set_abort_callback(backend.get(),nullptr,nullptr);need(aborted&&abort_calls&&baseline.poisoned()&&!baseline.candidate()&&baseline.committed_state()==seed&&baseline.committed_history()==hist,"selected graph abort");
+ baseline.reset(seed,hist);fail=5;bool failed=false;try{baseline.stage(mixed,q2,z2,2);}catch(...){failed=true;}need(failed&&baseline.poisoned()&&!baseline.candidate()&&baseline.committed_state()==seed,"selected gate failure");fail=0;baseline.reset(seed,hist);baseline.stage(mixed,q2,z2,2);need(baseline.candidate(),"selected reset retry");
  std::puts("GDN core rows factory mock and staged banks passed");return 0;
 }catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
