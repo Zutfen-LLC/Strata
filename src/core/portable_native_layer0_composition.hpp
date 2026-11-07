@@ -108,6 +108,7 @@ public:
     const void* rows_identity()const{return &ffn_;}
     uint64_t rows_generation()const{return ffn_.generation();}
     bool available()const{return !running_&&!poisoned_&&!core_->candidate()&&!core_->poisoned()&&!ffn_.poisoned()&&ffn_.generation()!=UINT64_MAX;}
+    PortableGdnAbMethod ab_method()const{return core_->ab_method();}
     std::vector<float> committed_state()const{return core_->committed_state();}
     std::vector<float> committed_history()const{return core_->committed_history();}
     void reset(){

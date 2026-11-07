@@ -58,15 +58,15 @@ public:
     }
     // Production entry: the table factory validates fleet metadata, hashes and
     // geometry and reopens the source shard. Failure is propagated verbatim.
-    static std::unique_ptr<PortableNativePle1Owner> from_model(std::shared_ptr<const GgufModel> model,ggml_backend_t backend,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1){
+    static std::unique_ptr<PortableNativePle1Owner> from_model(std::shared_ptr<const GgufModel> model,ggml_backend_t backend,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused){
         need(bool(model),"PLE1 owner: missing model");std::string error;auto table=PortablePleTable::from_gguf(*model,error);
         if(!table)throw std::runtime_error("PLE1 owner: "+error);
-        return std::make_unique<PortableNativePle1Owner>(std::move(model),std::move(table),backend,prefix,b,method,gdn_method);
+        return std::make_unique<PortableNativePle1Owner>(std::move(model),std::move(table),backend,prefix,b,method,gdn_method,ab_method);
     }
     // Supplying an already checked table also permits the bounded copy() test
     // seam; it is not evidence for fleet table metadata or loading.
     PortableNativePle1Owner(std::shared_ptr<const GgufModel> model,std::shared_ptr<PortablePleTable> table,
-                            ggml_backend_t backend,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1)
+                            ggml_backend_t backend,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused)
       :model_(std::move(model)),table_(std::move(table)) {
         need(model_&&table_&&backend&&!prefix.empty(),"PLE1 owner: model/table/backend/prefix");
         auto p=from_gguf(*model_);validate(p);
@@ -78,6 +78,7 @@ public:
         auto fhost=ple_host_add(PortableNativeFfnComposition::host_bound(),NativeFfnHcFactory::host_bound(fp.size()));
         size_t total=role_host_bound();for(size_t n:{b.gdn.host,b.gdn.device,b.rows.host,b.rows.device,b.ple,b.role_device,b.ffn_device,fhost,PortableNativePleGdnComposition::host_bound()})total=ple_host_add(total,n);
         need(total<=b.total&&NativeFfnHcFactory::device_bound(backend,b.ffn_caps)<=b.ffn_device,"PLE1 owner: aggregate budget");
+        PortableNativeGdnComponents::preflight(backend,(prefix+".gdn").size()+3,b.gdn,gdn_method,ab_method);
         context_.reset(ggml_init({16384,nullptr,true}));need(bool(context_),"PLE1 owner: metadata");
         auto* key=ggml_new_tensor_2d(context_.get(),GGML_TYPE_Q8_0,2560,10240);
         auto* value=ggml_new_tensor_1d(context_.get(),GGML_TYPE_I32,2560*2560/2);
@@ -95,7 +96,7 @@ public:
         const size_t count[]={0,40960,3276800,3276800};
         for(size_t i=1;i<4;++i){auto x=native_hc_q8_bf16(static_cast<const uint8_t*>(hc[i]->data),hc[i]->bytes,count[i]);ggml_backend_tensor_set(const_cast<ggml_tensor*>(ht[i]),x.data(),0,x.size()*2);}
         rows_=std::make_unique<PortableNativeFfnOwner>(1,backend,r,prefix+".rows",b.rows,method);
-        gdn_=std::make_unique<PortableNativeGdnComponents>(1,backend,g,prefix+".gdn",b.gdn,gdn_method);
+        gdn_=std::make_unique<PortableNativeGdnComponents>(1,backend,g,prefix+".gdn",b.gdn,gdn_method,ab_method);
         PortableNativePleExecutor::Roles roles{backend,table_.get(),key,p[0].data,p[0].bytes,value,value_.data(),value_.size(),
             {static_cast<const float*>(p[2].data),static_cast<const float*>(p[3].data),static_cast<const float*>(p[4].data)},p[5].data,p[5].bytes,p[5].type,directory};
         ple_=std::make_unique<PortableNativePleComposition>(roles,ht,backend,b.ple_caps,b.ple,pp);
@@ -107,6 +108,7 @@ public:
     PortableRouterMethod router_method()const{return rows_->router_method();}
     PortableGdnProjectionMethod gdn_input_method()const{return gdn_->input_method();}
     PortableGdnProjectionMethod gdn_output_method()const{return gdn_->output_method();}
+    PortableGdnAbMethod gdn_ab_method()const{return attention_->ab_method();}
     PortableNativePleComposition& ple(){return *ple_;}
     PortableNativePleGdnComposition& attention(){return *attention_;}
     PortableNativeFfnComposition& ffn(){return *ffn_;}

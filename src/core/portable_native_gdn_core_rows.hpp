@@ -4,6 +4,7 @@
 #include "portable_native_ple_host_bound.hpp"
 #include "strata_vk_native_gdn_conv_rows.hpp"
 #include "strata_vk_native_gdn_ab_rows.hpp"
+#include "portable_native_gdn_bf16_ab_rows.hpp"
 #include "strata_vk_native_gdn_rows.hpp"
 #include "ggml-alloc.h"
 #include <array>
@@ -21,6 +22,8 @@ class PortableNativeGdnCoreRows {
  std::unique_ptr<StrataVkNativeGdnConvRows,decltype(&strata_vk_native_gdn_conv_rows_destroy)> conv_{nullptr,strata_vk_native_gdn_conv_rows_destroy};
  std::unique_ptr<StrataVkNativeGdnAbRows,decltype(&strata_vk_native_gdn_ab_rows_destroy)> ab_{nullptr,strata_vk_native_gdn_ab_rows_destroy};
  std::unique_ptr<StrataVkNativeGdnRows,decltype(&strata_vk_native_gdn_rows_destroy)> recurrence_{nullptr,strata_vk_native_gdn_rows_destroy};
+ std::unique_ptr<PortableNativeGdnBf16AbRows> products_;
+ PortableGdnAbMethod method_=PortableGdnAbMethod::legacy_fused;
  std::array<ggml_tensor*,2>state_{},history_{};std::array<Bank,2> bank_{};
  // Roles: convolution, alpha, beta, dt, A and gamma; storage is borrowed.
  std::array<ggml_tensor*,6> roles_{};ggml_backend_t backend_=nullptr;size_t bytes_=0;unsigned committed_=0;uint32_t rows_=0;bool candidate_=false,poisoned_=false;
@@ -40,25 +43,33 @@ class PortableNativeGdnCoreRows {
   }
  }
 public:
- struct Caps{size_t conv,ab,recurrence;};
+ struct Caps{size_t conv,ab,recurrence,products=0;};
  // Host scratch requested by reset/read/run, excluding caller copies, roles,
- // backend internals and allocator overhead. Not an RSS bound.
- static size_t host_bound(){return ple_host_add(65536,ple_host_add(786432*sizeof(float),30720*sizeof(float)));}
- static size_t estimate(ggml_backend_t backend,Caps caps){need(backend,"GDN core rows: backend");auto c=context();std::array<ggml_tensor*,2>s{},h{};std::array<Bank,2>b{};allocate(c.get(),s,h,b);auto n=ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(backend));return ple_host_add(n,ple_host_add(caps.conv,ple_host_add(caps.ab,caps.recurrence)));}
- PortableNativeGdnCoreRows(ggml_backend_t backend,const std::array<ggml_tensor*,6>&roles,Caps caps,size_t budget,const std::string&dir):roles_(roles),backend_(backend){
-  need(backend&&!dir.empty()&&estimate(backend,caps)<=budget,"GDN core rows: admission");
+ // backend internals and allocator overhead. Not an RSS bound. The selected
+ // product owner's additional host envelope is charged in caps.products.
+ static size_t host_bound(PortableGdnAbMethod method=PortableGdnAbMethod::legacy_fused){need(method==PortableGdnAbMethod::legacy_fused||method==PortableGdnAbMethod::baseline_bf16,"GDN core rows: method");auto n=ple_host_add(65536,ple_host_add(786432*sizeof(float),30720*sizeof(float)));return method==PortableGdnAbMethod::baseline_bf16?ple_host_add(n,PortableNativeGdnBf16AbRows::host_bound()):n;}
+ static size_t estimate(ggml_backend_t backend,Caps caps){need(backend,"GDN core rows: backend");auto c=context();std::array<ggml_tensor*,2>s{},h{};std::array<Bank,2>b{};allocate(c.get(),s,h,b);auto n=ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(backend));return ple_host_add(n,ple_host_add(caps.conv,ple_host_add(caps.ab,ple_host_add(caps.recurrence,caps.products))));}
+ PortableNativeGdnCoreRows(ggml_backend_t backend,const std::array<ggml_tensor*,6>&roles,Caps caps,size_t budget,const std::string&dir,PortableGdnAbMethod method=PortableGdnAbMethod::legacy_fused):method_(method),roles_(roles),backend_(backend){
+  need((method==PortableGdnAbMethod::legacy_fused||method==PortableGdnAbMethod::baseline_bf16)&&backend&&!dir.empty()&&estimate(backend,caps)<=budget,"GDN core rows: admission");
   const size_t sizes[]={40960*4,61440*4,61440*4,48*4,48*4,128*4};size_t borrowed=0;std::array<ggml_backend_buffer_t,6>seen{};
   for(size_t i=0;i<6;++i){auto*t=roles[i];need(span(backend,t)&&ggml_nbytes(t)==sizes[i]&&((i==1||i==2)?(t->type==GGML_TYPE_I32||t->type==GGML_TYPE_BF16):t->type==GGML_TYPE_F32),"GDN core rows: role descriptor");bool duplicate=false;for(size_t j=0;j<i;++j)duplicate|=seen[j]==t->buffer;seen[i]=t->buffer;if(!duplicate)borrowed=ple_host_add(borrowed,ggml_backend_buffer_get_size(t->buffer));}
+  // Product roles share these borrowed buffers; charge their full unique sizes
+  // before constructing any backend wrapper or allocating any bank.
+  if(method_==PortableGdnAbMethod::baseline_bf16){size_t ab_borrowed=ggml_backend_buffer_get_size(roles_[1]->buffer);if(roles_[2]->buffer!=roles_[1]->buffer)ab_borrowed=ple_host_add(ab_borrowed,ggml_backend_buffer_get_size(roles_[2]->buffer));need(PortableNativeGdnBf16AbRows::estimate_with_borrowed(backend,ab_borrowed)<=caps.products,"GDN core rows: product cap");}
   need(std::filesystem::create_directory(dir),"GDN core rows: fresh receipt");ctx_=context();allocate(ctx_.get(),state_,history_,bank_);auto bound=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx_.get(),ggml_backend_get_default_buffer_type(backend));need(bound<=budget,"GDN core rows: bank budget");
   // Wrappers count full borrowed buffers and the bank in their local guards.
   auto component_budget=[&](size_t cap){return ple_host_add(ple_host_add(bound,borrowed),ple_host_add(cap,cap));};
   conv_.reset(strata_vk_native_gdn_conv_rows_create(backend,(std::filesystem::path(dir)/"conv-effective.spv").string().c_str(),component_budget(caps.conv)));need(conv_&&strata_vk_native_gdn_conv_rows_bytes(conv_.get())<=caps.conv,"GDN core rows: conv cap");
-  ab_.reset(strata_vk_native_gdn_ab_rows_create(backend,(std::filesystem::path(dir)/"ab-effective.spv").string().c_str(),component_budget(caps.ab)));need(ab_&&strata_vk_native_gdn_ab_rows_bytes(ab_.get())<=caps.ab,"GDN core rows: AB cap");
+  if(method_==PortableGdnAbMethod::baseline_bf16){
+   products_=std::make_unique<PortableNativeGdnBf16AbRows>(backend,std::array<ggml_tensor*,2>{roles_[1],roles_[2]},caps.products);
+   ab_.reset(strata_vk_native_gdn_gate_products_create(backend,(std::filesystem::path(dir)/"ab-effective.spv").string().c_str(),ple_host_add(component_budget(caps.ab),caps.products)));
+  }else ab_.reset(strata_vk_native_gdn_ab_rows_create(backend,(std::filesystem::path(dir)/"ab-effective.spv").string().c_str(),component_budget(caps.ab)));
+  need(ab_&&strata_vk_native_gdn_ab_rows_bytes(ab_.get())<=caps.ab,"GDN core rows: AB cap");
   recurrence_.reset(strata_vk_native_gdn_rows_create(backend,(std::filesystem::path(dir)/"recurrence-effective.spv").string().c_str(),component_budget(caps.recurrence)));need(recurrence_&&strata_vk_native_gdn_rows_bytes(recurrence_.get())<=caps.recurrence,"GDN core rows: recurrence cap");
-  buffer_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),backend));need(bool(buffer_)&&ggml_backend_buffer_get_size(buffer_.get())<=bound,"GDN core rows: allocation");bytes_=ple_host_add(ggml_backend_buffer_get_size(buffer_.get()),ple_host_add(strata_vk_native_gdn_conv_rows_bytes(conv_.get()),ple_host_add(strata_vk_native_gdn_ab_rows_bytes(ab_.get()),strata_vk_native_gdn_rows_bytes(recurrence_.get()))));need(bytes_<=budget&&bytes_<=estimate(backend,caps),"GDN core rows: actual budget");reset();
+  buffer_.reset(ggml_backend_alloc_ctx_tensors(ctx_.get(),backend));need(bool(buffer_)&&ggml_backend_buffer_get_size(buffer_.get())<=bound,"GDN core rows: allocation");bytes_=ple_host_add(ggml_backend_buffer_get_size(buffer_.get()),ple_host_add(strata_vk_native_gdn_conv_rows_bytes(conv_.get()),ple_host_add(strata_vk_native_gdn_ab_rows_bytes(ab_.get()),strata_vk_native_gdn_rows_bytes(recurrence_.get()))));if(products_)bytes_=ple_host_add(bytes_,products_->bytes());need(bytes_<=budget&&bytes_<=estimate(backend,caps),"GDN core rows: actual budget");reset();
  }
  PortableNativeGdnCoreRows(const PortableNativeGdnCoreRows&)=delete;PortableNativeGdnCoreRows&operator=(const PortableNativeGdnCoreRows&)=delete;
- size_t bytes()const{return bytes_;}bool candidate()const{return candidate_;}bool poisoned()const{return poisoned_;}
+ size_t bytes()const{return bytes_;}bool candidate()const{return candidate_;}bool poisoned()const{return poisoned_;}PortableGdnAbMethod ab_method()const{return method_;}
  static void validate_seed(const std::vector<float>&state,const std::vector<float>&history){
   need(state.size()==786432&&history.size()==30720,"GDN core rows: reset extent");
   for(float x:state)need(std::isfinite(x)&&(x==0.f||std::isnormal(x)),"GDN core rows: reset state domain");
@@ -78,7 +89,8 @@ public:
   auto&b=bank_[rows-1];auto next=1-committed_;candidate_=false;poisoned_=true;
   ggml_backend_tensor_set(b.mixed,mixed.data(),0,mixed.size()*4);std::vector<float>copy(rows*10240);ggml_backend_tensor_get(qkv,copy.data(),0,copy.size()*4);ggml_backend_tensor_set(b.qkv,copy.data(),0,copy.size()*4);copy.resize(rows*6144);ggml_backend_tensor_get(z,copy.data(),0,copy.size()*4);ggml_backend_tensor_set(b.z,copy.data(),0,copy.size()*4);
   ggml_tensor*ct[]={history_[committed_],b.qkv,roles_[0],history_[next],b.h,b.pre,b.ex,b.silu,b.rs,b.arg};strata_vk_native_gdn_conv_rows_run(conv_.get(),ct,rows);
-  ggml_tensor*at[]={b.mixed,roles_[1],roles_[2],roles_[3],roles_[4],b.gate,b.beta,b.abdiag};need(strata_vk_native_gdn_ab_rows_run(ab_.get(),at,rows)==0,"GDN core rows: AB domain");
+  if(products_){products_->run(mixed,rows);ggml_tensor*at[]={b.mixed,products_->output(0,rows),products_->output(1,rows),roles_[3],roles_[4],b.gate,b.beta,b.abdiag};need(strata_vk_native_gdn_gate_products_run(ab_.get(),at,rows)==0,"GDN core rows: product gate domain");}
+  else{ggml_tensor*at[]={b.mixed,roles_[1],roles_[2],roles_[3],roles_[4],b.gate,b.beta,b.abdiag};need(strata_vk_native_gdn_ab_rows_run(ab_.get(),at,rows)==0,"GDN core rows: AB domain");}
   ggml_tensor*rt[]={state_[committed_],b.h,b.gate,b.beta,b.z,roles_[5],state_[next],b.y,b.decay,b.oc,b.scale,b.sigexp,b.sigmoid};strata_vk_native_gdn_rows_run(recurrence_.get(),rt,b.aux,rows);
   rows_=rows;candidate_=true;poisoned_=false;
  }

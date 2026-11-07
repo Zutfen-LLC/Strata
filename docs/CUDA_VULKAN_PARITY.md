@@ -8,6 +8,27 @@ Tracking: [umbrella #65](https://github.com/Zutfen-LLC/Strata/issues/65), with
 [product breadth #70](https://github.com/Zutfen-LLC/Strata/issues/70).
 This updates the existing roadmap rather than introducing a parallel plan.
 
+## GDN product-input gate preparation
+
+The internal GDN core row owner can select a baseline BF16 AB method instead
+of the default fused decode dot. It makes a private BF16-rounded image of mixed,
+widened exactly to FP32 for GGML, and uses two BF16-weight matrix products
+with FP32 outputs for T1 or T2. The Vulkan product-input gate wrapper uses the
+same epilogue, domain/status checks, float controls and LLVM log1p as the row
+decode shader. The gate remains a log gate. The optional BF16X2 residual
+method is outside this baseline. The independent AB selection is propagated
+through the internal component, entry, PLE1, ordinary and model owners; it does
+not enable public chunk admission. Accessors read the constructed core method.
+The selected host cap adds the product owner's host envelope. Its product cap
+also charges the full shared role buffer and repeats host metadata and scratch;
+these are conservative requested bounds, not disjoint physical allocations.
+
+CPU product arithmetic, a mapped single-layer owner control and mocked wrapper
+dispatch do not qualify device arithmetic. The HC producer, recurrence and
+numerical and physical parity remain unqualified; shader compilation and host
+gate controls do not establish CUDA/HIP/SYCL transcendental equality. Requested
+caps exclude backend-private workspace, driver and physical allocation costs.
+
 ## Bounded prefill ownership prerequisite
 
 For open [prefill #69](https://github.com/Zutfen-LLC/Strata/issues/69),

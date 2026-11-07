@@ -15,10 +15,14 @@
 #include "portable_native_terminal_owner.hpp"
 #include "portable_native_model_owner.hpp"
 #include <type_traits>
-static_assert(std::is_constructible_v<PortableNativeLayer0Owner,std::shared_ptr<const strata::GgufModel>,ggml_backend_t,const std::string&,const PortableNativeLayer0Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod>);
-static_assert(std::is_constructible_v<PortableNativePle1Owner,std::shared_ptr<const strata::GgufModel>,std::shared_ptr<PortablePleTable>,ggml_backend_t,const std::string&,const PortableNativePle1Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod>);
-static_assert(std::is_constructible_v<PortableNativeOrdinaryLayerOwner,int,ggml_backend_t,const strata::GgufModel&,const std::string&,const PortableNativeOrdinaryLayerOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod>);
-static_assert(std::is_constructible_v<PortableNativeModelOwner,std::shared_ptr<const strata::GgufModel>,std::shared_ptr<PortablePleTable>,ggml_backend_t,uint32_t,const std::string&,const PortableNativeModelOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod>);
+static_assert(std::is_constructible_v<PortableNativeLayer0Owner,std::shared_ptr<const strata::GgufModel>,ggml_backend_t,const std::string&,const PortableNativeLayer0Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod>);
+static_assert(std::is_constructible_v<PortableNativePle1Owner,std::shared_ptr<const strata::GgufModel>,std::shared_ptr<PortablePleTable>,ggml_backend_t,const std::string&,const PortableNativePle1Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod>);
+static_assert(std::is_constructible_v<PortableNativeOrdinaryLayerOwner,int,ggml_backend_t,const strata::GgufModel&,const std::string&,const PortableNativeOrdinaryLayerOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod>);
+static_assert(std::is_constructible_v<PortableNativeModelOwner,std::shared_ptr<const strata::GgufModel>,std::shared_ptr<PortablePleTable>,ggml_backend_t,uint32_t,const std::string&,const PortableNativeModelOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod>);
+using ModelFrom=std::unique_ptr<PortableNativeModelOwner>(*)(std::shared_ptr<const strata::GgufModel>,ggml_backend_t,uint32_t,const std::string&,const PortableNativeModelOwner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod);
+using PleFrom=std::unique_ptr<PortableNativePle1Owner>(*)(std::shared_ptr<const strata::GgufModel>,ggml_backend_t,const std::string&,const PortableNativePle1Owner::Budgets&,PortableRouterMethod,PortableGdnProjectionMethod,PortableGdnAbMethod);
+static_assert(std::is_same_v<decltype(&PortableNativeModelOwner::from_model),ModelFrom>);
+static_assert(std::is_same_v<decltype(&PortableNativePle1Owner::from_model),PleFrom>);
 namespace {
 std::vector<uint8_t> expected_head_vocab;const ggml_tensor* head_packed_bank=nullptr;size_t head_quant_calls=0,head_dot_calls=0;
 void write_family_gguf(const std::filesystem::path& path,const std::vector<PortableTensorView>& roles,bool architecture=false,bool sparse=false){
@@ -123,6 +127,21 @@ int main(int argc, char** argv) { try {
   }
   auto bad=std::vector<float>(2560,0.f);bad[0]=std::numeric_limits<float>::infinity();bool denied=false;try{comp->input().run(bad,1);}catch(...){denied=true;}check(denied&&!comp->input().valid(),"F16 family invalidation");
   bad[0]=2;comp->input().run(bad,1);check(comp->input().valid(),"F16 family recovery");family_f16_capture=false;
+ }
+ // One selected, mapped GDN component family. Graph products are real CPU
+ // operations; gate and recurrence are mocks, not device numerical evidence.
+ {
+  const auto method=PortableGdnProjectionMethod::legacy_q8_1;const auto ab=PortableGdnAbMethod::baseline_bf16;auto path=(root/"family-ab").string();auto fb=budgets;
+  fb.host=PortableNativeGdnComponents::host_bound(path.size()+3,method,ab);fb.core_caps.products=PortableNativeGdnBf16AbRows::estimate_with_borrowed(b.get(),fb.roles);fb.core=PortableNativeGdnCoreRows::estimate(b.get(),fb.core_caps);fb.device=0;for(size_t n:{fb.input,fb.roles,fb.core,fb.output,fb.hc})fb.device=ple_host_add(fb.device,n);
+  std::unique_ptr<PortableNativeGdnComponents> comp;
+  {auto mapped=strata::GgufModel::open(family_path.string());auto roles=PortableNativeGdnComponents::from_gguf(mapped,2);auto low=fb;--low.host;bool denied=false;try{PortableNativeGdnComponents bad(2,b.get(),roles,path,low,method,ab);}catch(...){denied=true;}check(denied&&!std::filesystem::exists(path+".input"),"AB host preflight");
+   low=fb;--low.core_caps.products;denied=false;try{PortableNativeGdnComponents bad(2,b.get(),roles,path,low,method,ab);}catch(...){denied=true;}check(denied&&!std::filesystem::exists(path+".input"),"AB shared role product preflight");comp=std::make_unique<PortableNativeGdnComponents>(2,b.get(),roles,path,fb,method,ab);}
+  check(comp->ab_method()==ab,"component actual AB method");auto core=comp->take_core();check(core->ab_method()==ab&&comp->input_method()==method&&comp->output_method()==method,"independent actual methods");family_ab_capture=true;auto before=family_ab_calls;
+  std::vector<float> seed(786432,.25f),history(30720,.5f);
+  for(int phase=0;phase<3;++phase){size_t n=phase==1?1:2;std::vector<float> mixed(n*2560);mixed[0]=1.f+0x1p-8f+phase;if(n==2)mixed[2560]=-2.f-phase;auto original=mixed;core->reset(seed,history);comp->input().run(mixed,n);core->stage(mixed,comp->input().output(0,n),comp->input().output(1,n),uint32_t(n));
+   check(family_ab_mixed==original&&mixed==original&&core->committed_state()==seed&&core->committed_history()==history,"AB mixed or committed mutation");for(size_t r=0;r<n;++r){float rounded=ggml_bf16_to_fp32(ggml_fp32_to_bf16(mixed[r*2560]));check(family_ab_alpha[r*48]==rounded&&family_ab_beta[r*48]==2*rounded&&family_ab_recurrence_beta[r*48]==2*rounded,"named AB products/recurrence");}}
+  check(family_ab_calls==before+3,"AB T2/T1/T2 dispatch count");core->reset(seed,history);std::vector<float> mixed(2560,1.f);comp->input().run(mixed,1);fail=5;bool denied=false;try{core->stage(mixed,comp->input().output(0,1),comp->input().output(1,1),1);}catch(...){denied=true;}fail=0;check(denied&&core->poisoned()&&!core->candidate()&&core->committed_state()==seed&&core->committed_history()==history,"AB gate failure state");core->reset(seed,history);core->stage(mixed,comp->input().output(0,1),comp->input().output(1,1),1);check(core->candidate(),"AB reset retry");family_ab_capture=false;core.reset();comp.reset();
+  auto owner_path=(root/"family-ab-owner").string();fb.host=GdnOwner::host_bound(owner_path.size()+3,method,ab);auto mapped=strata::GgufModel::open(family_path.string());GdnOwner owner(2,b.get(),mapped,owner_path,fb,method,ab);check(owner.ab_method()==ab&&owner.input_method()==method&&owner.output_method()==method,"ordinary owner actual AB method");
  }
  budgets.host=GdnOwner::host_bound(family_prefix.size()+7);using LayerOwner=PortableNativeOrdinaryLayerOwner;
  PortableNativeFfnOwner::Budgets row_budget{4u<<20,80u<<20,16u<<20,16u<<20,{4u<<20,4u<<20},{8u<<20,8u<<20},{4u<<20,4u<<20}};

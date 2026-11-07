@@ -20,7 +20,8 @@ class PortableNativeGdnComponents {
     std::unique_ptr<PortableNativeGdnCoreRows> core_;
     static void need(bool b,const char* m){if(!b)throw std::runtime_error(m);}
 public:
-    // Reservations for disjoint requested device payloads. HC includes its
+    // Conservative requested envelopes; the product cap also charges host
+    // scratch and shared borrowed roles, not disjoint physical residency. HC includes its
     // temporary upload and retained copy at construction. They are summed
     // before any role upload. These are not driver/private-workspace bounds.
     struct Budgets {
@@ -29,12 +30,17 @@ public:
         PortableNativeHcComposed::ComponentCaps hc_caps;
     };
     using Roles=std::array<PortableTensorView,13>;
-    static size_t host_bound(size_t prefix_bytes,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1) {
+    static size_t host_bound(size_t prefix_bytes,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused) {
         size_t n=PortableNativeGdnInputOwner::host_bound(method);
-        for(size_t v:{size_t(16384+245760),PortableNativeGdnCoreRows::host_bound(),
+        for(size_t v:{size_t(16384+245760),PortableNativeGdnCoreRows::host_bound(ab_method),
                       method==PortableGdnProjectionMethod::native_f16?PortableNativeGdnF16Rows::host_bound():PortableNativeGdnOutputRows::host_bound(),PortableNativeOrdinaryGdnComposition::host_bound(),
                       NativeFfnHcFactory::host_bound(prefix_bytes)}) n=ple_host_add(n,v);
         return n;
+    }
+    static void preflight(ggml_backend_t backend,size_t prefix_bytes,const Budgets& b,PortableGdnProjectionMethod method,PortableGdnAbMethod ab_method){
+        need(backend&&b.host>=host_bound(prefix_bytes,method,ab_method),"ordinary GDN factory: host budget");
+        if(ab_method==PortableGdnAbMethod::baseline_bf16)need(PortableNativeGdnBf16AbRows::estimate_with_borrowed(backend,b.roles)<=b.core_caps.products,"ordinary GDN factory: product cap");
+        need(PortableNativeGdnCoreRows::estimate(backend,b.core_caps)<=b.core,"ordinary GDN factory: core budget");
     }
     static void validate(int layer,const Roles& roles,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1) {
         need(method==PortableGdnProjectionMethod::legacy_q8_1||method==PortableGdnProjectionMethod::native_f16,"ordinary GDN factory: method");
@@ -66,10 +72,10 @@ public:
             for(auto d:t->shape){need(d<=INT64_MAX,"ordinary GDN factory: dimension overflow");result[i].shape.push_back(int64_t(d));}}
         return result;
     }
-    PortableNativeGdnComponents(int layer,ggml_backend_t backend,const Roles& roles,const std::string& prefix,const Budgets& b,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1){
+    PortableNativeGdnComponents(int layer,ggml_backend_t backend,const Roles& roles,const std::string& prefix,const Budgets& b,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused){
         need(backend&&!prefix.empty(),"ordinary GDN factory: backend/prefix");
         validate(layer,roles,method);
-        need(b.host>=host_bound(prefix.size()+3,method),"ordinary GDN factory: host budget");
+        preflight(backend,prefix.size()+3,b,method,ab_method);
         size_t total=0;for(size_t v:{b.input,b.roles,b.core,b.output,b.hc})total=ple_host_add(total,v);
         need(total<=b.device,"ordinary GDN factory: aggregate device budget");
         // The output tensor shares the whole core-role upload buffer. Charge
@@ -91,6 +97,7 @@ public:
         for(auto* x:t)need(x,"ordinary GDN factory: tensor metadata");
         auto upload=ggml_backend_alloc_ctx_tensors_from_buft_size(context_.get(),ggml_backend_get_default_buffer_type(backend));
         need(upload<=b.roles,"ordinary GDN factory: role budget");
+        if(ab_method==PortableGdnAbMethod::baseline_bf16)need(PortableNativeGdnBf16AbRows::estimate_with_borrowed(backend,upload)<=b.core_caps.products,"ordinary GDN factory: product cap");
         storage_.reset(ggml_backend_alloc_ctx_tensors(context_.get(),backend));need(bool(storage_),"ordinary GDN factory: role allocation");
         need(ggml_backend_buffer_get_size(storage_.get())<=b.roles,"ordinary GDN factory: actual role budget");
         ggml_backend_tensor_set(t[0],roles[2].data,0,roles[2].bytes);
@@ -98,12 +105,13 @@ public:
         input_=std::make_unique<PortableNativeGdnInputOwner>(layer,backend,std::array<PortableTensorView,2>{roles[0],roles[1]},prefix+".input",PortableNativeGdnInputOwner::host_bound(method),b.input,method);
         output_=std::make_unique<PortableNativeGdnOutputRows>(backend,t[0],roles[2].data,roles[2].bytes,prefix+".output",b.output,method);
         std::array<ggml_tensor*,6> core_roles{t[1],t[2],t[3],t[4],t[5],t[6]};
-        core_=std::make_unique<PortableNativeGdnCoreRows>(backend,core_roles,b.core_caps,b.core,prefix+".core");
+        core_=std::make_unique<PortableNativeGdnCoreRows>(backend,core_roles,b.core_caps,b.core,prefix+".core",ab_method);
     }
     PortableNativeGdnInputRows& input(){return input_->rows();}
     PortableNativeGdnOutputRows& output(){return *output_;}
     PortableGdnProjectionMethod input_method()const{return input_->rows().method();}
     PortableGdnProjectionMethod output_method()const{return output_->method();}
+    PortableGdnAbMethod ab_method()const{need(bool(core_),"GDN components: core already transferred");return core_->ab_method();}
     std::unique_ptr<PortableNativeGdnCoreRows> take_core(){need(bool(core_),"GDN components: core already transferred");return std::move(core_);}
     PortableNativeGdnComponents(const PortableNativeGdnComponents&)=delete;
     PortableNativeGdnComponents& operator=(const PortableNativeGdnComponents&)=delete;
@@ -116,22 +124,23 @@ class PortableNativeOrdinaryGdnOwner {
 public:
     using Roles=PortableNativeGdnComponents::Roles;
     using Budgets=PortableNativeGdnComponents::Budgets;
-    static size_t host_bound(size_t n,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1){return PortableNativeGdnComponents::host_bound(n,method);}
+    static size_t host_bound(size_t n,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused){return PortableNativeGdnComponents::host_bound(n,method,ab_method);}
     static void validate(int layer,const Roles& roles,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1){layer_check(layer);PortableNativeGdnComponents::validate(layer,roles,method);}
     static Roles from_gguf(const GgufModel& m,int layer){layer_check(layer);return PortableNativeGdnComponents::from_gguf(m,layer);}
-    PortableNativeOrdinaryGdnOwner(int layer,ggml_backend_t backend,const Roles& roles,const std::string& prefix,const Budgets& b,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1){
+    PortableNativeOrdinaryGdnOwner(int layer,ggml_backend_t backend,const Roles& roles,const std::string& prefix,const Budgets& b,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused){
         validate(layer,roles,method);
-        components_=std::make_unique<PortableNativeGdnComponents>(layer,backend,roles,prefix,b,method);
+        components_=std::make_unique<PortableNativeGdnComponents>(layer,backend,roles,prefix,b,method,ab_method);
         std::vector<PortableTensorView> hc{roles[9],roles[10],roles[11],roles[12]};
         auto attention=NativeFfnHcFactory::create(layer,backend,hc,b.hc,NativeFfnHcFactory::host_bound(prefix.size()+3),(prefix+".hc").c_str(),{},b.hc_caps,false,false,true);
         composition_=std::make_unique<PortableNativeOrdinaryGdnComposition>(layer,std::move(attention),components_->input(),components_->take_core(),components_->output(),PortableNativeOrdinaryGdnComposition::host_bound());
     }
-    PortableNativeOrdinaryGdnOwner(int layer,ggml_backend_t backend,const GgufModel& model,const std::string& prefix,const Budgets& b,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1)
-      :PortableNativeOrdinaryGdnOwner(layer,backend,from_gguf(model,layer),prefix,b,method){}
+    PortableNativeOrdinaryGdnOwner(int layer,ggml_backend_t backend,const GgufModel& model,const std::string& prefix,const Budgets& b,PortableGdnProjectionMethod method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused)
+      :PortableNativeOrdinaryGdnOwner(layer,backend,from_gguf(model,layer),prefix,b,method,ab_method){}
     PortableNativeOrdinaryGdnOwner(const PortableNativeOrdinaryGdnOwner&)=delete;
     PortableNativeOrdinaryGdnOwner& operator=(const PortableNativeOrdinaryGdnOwner&)=delete;
     PortableGdnProjectionMethod input_method()const{return components_->input_method();}
     PortableGdnProjectionMethod output_method()const{return components_->output_method();}
+    PortableGdnAbMethod ab_method()const{return composition_->ab_method();}
     PortableNativeOrdinaryGdnComposition& composition(){return *composition_;}
 };
 }
