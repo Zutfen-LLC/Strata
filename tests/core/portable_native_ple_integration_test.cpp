@@ -7,6 +7,7 @@ static ggml_status gated_test_compute(ggml_backend_t backend, ggml_cgraph* graph
 }
 #ifdef STRATA_MODEL_ROWS_FIXTURE
 static size_t owned_qnorm_seen=0,owned_knorm_seen=0,owned_qproj_seen=0,owned_kproj_seen=0,owned_qkv_seen=0,owned_wo_seen=0;
+static size_t owned_ple_key_seen=0,owned_ple_value_seen=0,owned_ple_conv_seen=0,owned_ple_gamma_seen[3]{};
 #endif
 #define STRATA_PLE_GATED_VALUE_TEST_COMPUTE gated_test_compute
 #include "portable_native_ple_executor.hpp"
@@ -124,7 +125,13 @@ StrataVkQ8Wo* strata_vk_head_vocab_create(ggml_backend_t,const char*p,size_t){++
 size_t strata_vk_q8_wo_bytes(const StrataVkQ8Wo*){return 512;}
 void strata_vk_q8_wo_destroy(StrataVkQ8Wo*p)noexcept{factory_destroy(p);delete p;}
 void strata_vk_ple_key_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t t){inject("quant");check(t==1||t==2,"quant rows");std::vector<float>a(t*2560);ggml_backend_tensor_get(x,a.data(),0,a.size()*4);check(a==expected_embedding,"gather embedding");std::vector<uint8_t> z(t*2880);ggml_backend_tensor_set(q,z.data(),0,z.size());++quant;}
-void strata_vk_ple_key_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*out,size_t rows,size_t t){inject("dot");check((t==1||t==2)&&rows==10240,"key rows");std::vector<float> a(t*rows,-1234.f);for(size_t r=0;r<t;++r)for(size_t i=0;i<rows;++i)a[r*rows+i]=1.f+expected_embedding[r*2560];ggml_backend_tensor_set(out,a.data(),0,a.size()*4);++dot;}
+void strata_vk_ple_key_run_bounded(StrataVkQ8Wo*,const ggml_tensor* weight,const ggml_tensor*,ggml_tensor*out,size_t rows,size_t t){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ uint8_t marker[3]{};ggml_backend_tensor_get(weight,marker,0,3);check(marker[1]==0x3c&&marker[2]==31,"PLE key copied role");++owned_ple_key_seen;
+#else
+ (void)weight;
+#endif
+ inject("dot");check((t==1||t==2)&&rows==10240,"key rows");std::vector<float> a(t*rows,-1234.f);for(size_t r=0;r<t;++r)for(size_t i=0;i<rows;++i)a[r*rows+i]=1.f+expected_embedding[r*2560];ggml_backend_tensor_set(out,a.data(),0,a.size()*4);++dot;}
 StrataVkNativeShared* strata_vk_ple_value_bf16_create(ggml_backend_t,const char*,size_t){++executor_creates;auto i=factory_enter("value");return factory_return(new StrataVkNativeShared,i);}
 void strata_vk_native_shared_destroy(StrataVkNativeShared*p)noexcept{
 #ifdef STRATA_MODEL_ROWS_FIXTURE
@@ -149,7 +156,11 @@ void strata_vk_native_shared_run(StrataVkNativeShared*,uint32_t mode,const ggml_
 #endif
  std::vector<float> result;for(size_t r=0;r<t;++r){auto row=qsa_indexer_bf16_control(input.data()+r*ni,weights.data(),no);result.insert(result.end(),row.begin(),row.end());}ggml_backend_tensor_set(out,result.data(),0,result.size()*4);return;}
 #endif
- inject("value");check(mode==1&&ni==2560&&no==2560&&(t==1||t==2),"value rows");std::vector<float>a(t*ni);ggml_backend_tensor_get(x,a.data(),0,a.size()*4);check(a==expected_embedding,"value gather");std::vector<uint16_t>w(size_t(ni)*no);ggml_backend_tensor_get(weight_for_value,w.data(),0,w.size()*2);std::vector<float>v;for(size_t r=0;r<t;++r){auto row=native_bf16_matrix_control(a.data()+r*ni,w.data(),ni);v.insert(v.end(),row.begin(),row.end());}ggml_backend_tensor_set(out,v.data(),0,v.size()*4);++value;}
+ inject("value");check(mode==1&&ni==2560&&no==2560&&(t==1||t==2),"value rows");std::vector<float>a(t*ni);ggml_backend_tensor_get(x,a.data(),0,a.size()*4);check(a==expected_embedding,"value gather");std::vector<uint16_t>w(size_t(ni)*no);ggml_backend_tensor_get(weight_for_value,w.data(),0,w.size()*2);
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ check(w[0]==0x3f80&&w[2560]==0x4000,"PLE value converted role");++owned_ple_value_seen;
+#endif
+ std::vector<float>v;for(size_t r=0;r<t;++r){auto row=native_bf16_matrix_control(a.data()+r*ni,w.data(),ni);v.insert(v.end(),row.begin(),row.end());}ggml_backend_tensor_set(out,v.data(),0,v.size()*4);++value;}
 struct StrataVkNativePleGroupedNorm{size_t bytes;uint64_t calls=0;};
 struct StrataVkNativePleGate{size_t bytes,budget;uint64_t calls=0;};
 static size_t mock_bytes(ggml_backend_t b){auto c=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({4096,nullptr,true}),ggml_free);ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,1);return ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(b));}
@@ -157,7 +168,13 @@ StrataVkNativePleGroupedNorm* strata_vk_native_ple_grouped_norm_create(ggml_back
 void strata_vk_native_ple_grouped_norm_destroy(StrataVkNativePleGroupedNorm*p)noexcept{factory_destroy(p);delete p;}
 size_t strata_vk_native_ple_grouped_norm_bytes(const StrataVkNativePleGroupedNorm*p){return p->bytes;}
 uint64_t strata_vk_native_ple_grouped_norm_calls(const StrataVkNativePleGroupedNorm*p)noexcept{return p->calls;}
-uint32_t strata_vk_native_ple_grouped_norm_run(StrataVkNativePleGroupedNorm*p,const ggml_tensor*in,const ggml_tensor*,ggml_tensor*out,ggml_tensor*){++norm_call; inject(norm_call==1?"key norm":norm_call==2?"query norm":"value norm");size_t count=ggml_nelements(in);check(count==10240||count==2*10240,"norm rows");std::vector<float>a(count);ggml_backend_tensor_get(in,a.data(),0,a.size()*4);ggml_backend_tensor_set(out,a.data(),0,a.size()*4);++norm;++p->calls;return 0;}
+uint32_t strata_vk_native_ple_grouped_norm_run(StrataVkNativePleGroupedNorm*p,const ggml_tensor*in,const ggml_tensor*weight,ggml_tensor*out,ggml_tensor*){++norm_call;
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ float marker=0;ggml_backend_tensor_get(weight,&marker,0,4);check(norm_call>=1&&norm_call<=3&&marker==float(norm_call)*.5f,"PLE gamma role/order");++owned_ple_gamma_seen[norm_call-1];
+#else
+ (void)weight;
+#endif
+ inject(norm_call==1?"key norm":norm_call==2?"query norm":"value norm");size_t count=ggml_nelements(in);check(count==10240||count==2*10240,"norm rows");std::vector<float>a(count);ggml_backend_tensor_get(in,a.data(),0,a.size()*4);ggml_backend_tensor_set(out,a.data(),0,a.size()*4);++norm;++p->calls;return 0;}
 StrataVkNativePleGate* strata_vk_native_ple_gate_create(ggml_backend_t b,const char*,size_t budget){++executor_creates;auto i=factory_enter("gate");return factory_return(new StrataVkNativePleGate{mock_bytes(b),budget},i);}
 void strata_vk_native_ple_gate_destroy(StrataVkNativePleGate*p)noexcept{factory_destroy(p);delete p;}
 size_t strata_vk_native_ple_gate_bytes(const StrataVkNativePleGate*p){return p->bytes;}
@@ -167,7 +184,11 @@ struct StrataVkNativePleConv{size_t bytes;};
 StrataVkNativePleConv* strata_vk_native_ple_conv_create(ggml_backend_t b,const char*,size_t){++executor_creates;auto i=factory_enter("conv");return factory_return(new StrataVkNativePleConv{mock_bytes(b)},i);}
 void strata_vk_native_ple_conv_destroy(StrataVkNativePleConv*p)noexcept{factory_destroy(p);delete p;}
 size_t strata_vk_native_ple_conv_bytes(const StrataVkNativePleConv*p){return p->bytes;}
-void strata_vk_native_ple_conv_run(StrataVkNativePleConv*,ggml_tensor*const t[10]){write_then_throw("conv written",{t[5],t[6],t[7],t[8],t[9]},301.f);inject("conv");size_t count=ggml_nelements(t[1]);check(count==10240||count==20480,"conv rows");size_t rows=count/10240;std::vector<float>h(92160),n(count),x(count),g(count),next(92160,-1234.f),c(count,-1234.f),y(count,-1234.f),pre(count,-1234.f),e(count,-1234.f);ggml_backend_tensor_get(t[0],h.data(),0,h.size()*4);ggml_backend_tensor_get(t[1],n.data(),0,n.size()*4);ggml_backend_tensor_get(t[3],x.data(),0,x.size()*4);
+void strata_vk_native_ple_conv_run(StrataVkNativePleConv*,ggml_tensor*const t[10]){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ uint16_t marker=0;ggml_backend_tensor_get(t[2],&marker,0,2);check(marker==0x3c00,"PLE conv converted role");++owned_ple_conv_seen;
+#endif
+ write_then_throw("conv written",{t[5],t[6],t[7],t[8],t[9]},301.f);inject("conv");size_t count=ggml_nelements(t[1]);check(count==10240||count==20480,"conv rows");size_t rows=count/10240;std::vector<float>h(92160),n(count),x(count),g(count),next(92160,-1234.f),c(count,-1234.f),y(count,-1234.f),pre(count,-1234.f),e(count,-1234.f);ggml_backend_tensor_get(t[0],h.data(),0,h.size()*4);ggml_backend_tensor_get(t[1],n.data(),0,n.size()*4);ggml_backend_tensor_get(t[3],x.data(),0,x.size()*4);
 #ifdef STRATA_CONNECTED_LAYER0_TEST
  layer0_ple_residual_seen=x;
 #endif
