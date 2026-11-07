@@ -39,6 +39,7 @@ void strata_vk_native_hc_run(StrataVkNativeHc* p,const ggml_tensor* residual,con
 }
 #ifndef STRATA_NATIVE_HC_NORM_DISPATCH_TEST
 #include "strata_vk_native_hc_mix.inc"
+#include "strata_vk_native_hc_prefill.inc"
 
 #include "strata_vk_native_hc_pending.inc"
 

@@ -1,10 +1,17 @@
 #pragma once
 #include "ggml-backend.h"
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 namespace strata::core::portable_detail {
+struct StrataVkNativeHcPrefill;
+StrataVkNativeHcPrefill* strata_vk_native_hc_prefill_create(ggml_backend_t,const char*,size_t);
+size_t strata_vk_native_hc_prefill_bytes(const StrataVkNativeHcPrefill*);
+void strata_vk_native_hc_prefill_destroy(StrataVkNativeHcPrefill*) noexcept;
+// mode 0 norm, 1 SiLU, 2 mix. Null marks unused bindings.
+void strata_vk_native_hc_prefill_run(StrataVkNativeHcPrefill*,uint32_t,uint32_t,const std::array<ggml_tensor*,6>&);
 struct StrataVkNativeHc;
 // Standalone component and experimental serial bridge. Numerical contract v1;
 // no universal rsqrt bit identity or full-HC qualification.
