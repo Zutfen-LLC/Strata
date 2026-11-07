@@ -3,7 +3,7 @@
 #include "portable_native_ple_integration_test.cpp"
 #undef main
 #include "portable_native_ple_gdn_composition.hpp"
-#include "portable_native_ffn_composition.hpp"
+#include "portable_native_ffn_test_access.hpp"
 namespace {
 void need(bool b,const char*m){if(!b)throw std::runtime_error(m);}
 int fail=0;size_t conv_calls=0,ab_calls=0,recur_calls=0;
@@ -64,7 +64,7 @@ int main(){try{
   d.shared=[](size_t n,const ggml_tensor*){return std::vector<float>(n*2560,1.f);};d.combine=[](size_t,const auto&,const auto&,const auto&s){return s;};PortableNativeFfnRows row_owner(1,projection,d);
   HC::Dispatch dispatch;dispatch.pending=[](const HC::Bank&bank){auto r=get(bank.input),o=get(bank.block);for(size_t t=0;t<o.size()/2560;++t)for(size_t s=0;s<4;++s)for(size_t h=0;h<2560;++h)r[t*10240+s*2560+h]+=o[t*2560+h];put(bank.residual,r);};
   dispatch.norm=[](const HC::Bank&bank,uint32_t n){put(bank.inject,std::vector<float>(n*4,.25f));};dispatch.mix=[](const HC::Bank&bank){auto r=get(bank.residual);std::vector<float>m(r.size()/4);for(size_t t=0;t<m.size()/2560;++t)std::copy_n(r.begin()+t*10240,2560,m.begin()+t*2560);put(bank.mixed,m);};
-  auto ff=std::make_unique<HC>(b.get(),hc[0],hc[1],hc[2],hc[3],20*1024*1024,nullptr,dispatch);PortableNativeFfnComposition chain(PortableNativeFfnComposition::TestOnlyHc{},owner,std::move(ff),row_owner,PortableNativeFfnComposition::host_bound());HC next(b.get(),hc[0],hc[1],hc[2],hc[3],20*1024*1024,nullptr,dispatch);
+  auto ff=std::make_unique<HC>(b.get(),hc[0],hc[1],hc[2],hc[3],20*1024*1024,nullptr,dispatch);auto chain=PortableNativeFfnCompositionTestAccess::make(owner,std::move(ff),row_owner,PortableNativeFfnComposition::host_bound());HC next(b.get(),hc[0],hc[1],hc[2],hc[3],20*1024*1024,nullptr,dispatch);
   size_t calls=0;PortableExpertRowsBatch experts=[&](int64_t l,const auto&r,auto&out,auto&){++calls;check(l==1&&(r.size()==1||r.size()==2),"PLE FFN route");out.assign(r.size()*10*2560,0);return true;};
   PortableNativeFfnComposition::Batch snapshots;auto input=stage({7,9});chain.run(input,experts,[&](const auto&v){snapshots=v;});
   check(calls==1&&chain.position()==2&&snapshots.size()==2&&snapshots[0]->valid_for(chain,2,0),"PLE FFN T2 commit");auto residual=snapshots[0]->tuple().residual;

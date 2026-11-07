@@ -2,7 +2,7 @@
 #include "portable_native_hc_test_backend.hpp"
 #include "portable_qsa_fixture.hpp"
 #include "portable_native_qsa_composition.hpp"
-#include "portable_native_ffn_composition.hpp"
+#include "portable_native_ffn_test_access.hpp"
 #ifdef STRATA_FFN_CPU_PROVIDER_TEST
 #include "portable_cpu_experts.hpp"
 #include "portable_model_fixture.hpp"
@@ -73,7 +73,7 @@ int main(int argc,char**argv){try{
   ff.norm=[](const HC::Bank&bank,uint32_t n){put(bank.inject,std::vector<float>(n*4,.5f));};
   ff.mix=[](const HC::Bank&bank){auto r=get(bank.residual);size_t n=r.size()/10240;std::vector<float>m(n*2560);for(size_t t=0;t<n;++t)std::copy_n(r.begin()+t*10240,2560,m.begin()+t*2560);put(bank.mixed,m);};
   auto ffhc=std::make_unique<HC>(b.get(),hcroles[0],hcroles[1],hcroles[2],hcroles[3],20*1024*1024,nullptr,ff);
-  PortableNativeFfnComposition chain(PortableNativeFfnComposition::TestOnlyHc{},owner,std::move(ffhc),rows,PortableNativeFfnComposition::host_bound());HC next(b.get(),hcroles[0],hcroles[1],hcroles[2],hcroles[3],20*1024*1024,nullptr,ff);
+  auto chain=PortableNativeFfnCompositionTestAccess::make(owner,std::move(ffhc),rows,PortableNativeFfnComposition::host_bound());HC next(b.get(),hcroles[0],hcroles[1],hcroles[2],hcroles[3],20*1024*1024,nullptr,ff);
   size_t calls=0;PortableExpertRowsBatch expert=[&](int64_t layer,const auto&r,auto&v,auto&){++calls;check(layer==3&&r.size()>=1&&r.size()<=2,"FFN expert rows");v.assign(r.size()*10*2560,2.f);return true;};
   PortableNativeFfnComposition::Batch first,tail,failed_ff;
   bool wrong=false;try{chain.run(1,*producer,{snapshots[1]},expert,[](const auto&){});}catch(...){wrong=true;}check(wrong&&!chain.poisoned()&&calls==0,"FFN wrong source position dispatched");

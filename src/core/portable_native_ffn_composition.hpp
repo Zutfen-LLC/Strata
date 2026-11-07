@@ -3,7 +3,7 @@
 // All borrowed upstream/row owners and their backends must outlive this owner;
 // they must not be operated independently while attached or during callbacks.
 // Production construction selects this layer's named FFN HC roles and copies
-// them into an independently owned bank. TestOnlyHc is a low-level test seam.
+// them into an independently owned bank. Unchecked injection is private.
 #include "portable_native_ple_gdn_composition.hpp"
 #include "portable_native_qsa_composition.hpp"
 #include "portable_native_ffn_rows.hpp"
@@ -87,7 +87,9 @@ public:
     // allowance and transient HC copies. Caller-retained snapshots, row core,
     // upstream, backend buffers, allocator and driver overhead are excluded.
     static constexpr size_t host_bound(){return 1u<<20;}
-    // Explicit low-level test seam; production construction must use named roles.
+private:
+    friend struct PortableNativeFfnCompositionTestAccess;
+    // Low-level unit fixtures only; production construction must use named roles.
     struct TestOnlyHc { explicit TestOnlyHc()=default; };
     PortableNativeFfnComposition(TestOnlyHc,PortableNativePleGdnComposition& source,std::unique_ptr<PortableNativeHcComposed> hc,PortableNativeFfnRows& rows,size_t host_budget)
       :gdn_(&source),hc_(std::move(hc)),rows_(rows),layer_(1),position_(source.position()),upstream_generation_(source.generation()){
@@ -95,6 +97,7 @@ public:
     PortableNativeFfnComposition(TestOnlyHc,PortableNativeQsaComposition& source,std::unique_ptr<PortableNativeHcComposed> hc,PortableNativeFfnRows& rows,size_t host_budget)
       :qsa_(&source),hc_(std::move(hc)),rows_(rows),layer_(source.layer()),position_(source.position()),upstream_generation_(source.generation()){
         need(hc_&&rows_.layer()==layer_&&host_budget>=host_bound()&&native_hc_boundary(layer_).defer_ffn&&!source.poisoned(),"FFN composition: admission");}
+public:
     template<class Source>
     PortableNativeFfnComposition(Source& source,ggml_backend_t backend,const std::vector<PortableTensorView>& views,
         PortableNativeFfnRows& rows,size_t device_budget,size_t host_budget,const char* prefix,

@@ -60,7 +60,9 @@ The upstream owner, row owner and backend are borrowed and must outlive the
 composition. This is not full-model chunk admission.
 
 CPU tests exercise the owner chain with low-level component mocks, a grouped
-CPU provider, and socket/local ownership mocks. They do not establish GPU
+CPU provider, and socket/local ownership mocks. The connected test uses synthetic
+named FFN views and zero-valued layer-3 fixture experts. GGUF role lookup is
+checked separately. They do not establish GPU
 arithmetic. The router matrix does not prove native MMVQ reduction equivalence.
 Native helper partial weighted reductions differ from portable full unweighted
 expert rows combined in original top-10 order. Q8_1/F32 row conventions do not
