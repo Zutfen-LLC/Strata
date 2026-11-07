@@ -32,6 +32,9 @@ static std::string fail_at;
 static int norm_call=0;
 static void inject(const char* name){if(fail_at==name) throw std::runtime_error(std::string("injected ")+name);}
 static std::vector<float> expected_embedding;
+#ifdef STRATA_CONNECTED_LAYER0_TEST
+static std::vector<float> layer0_ple_residual_seen;
+#endif
 static std::array<int,3> hc_creates{}, hc_runs{};
 static std::array<size_t,3> hc_budgets{};
 static std::array<std::vector<unsigned char>,4> hc_roles;
@@ -44,11 +47,23 @@ static void write_then_throw(const char* point, std::initializer_list<ggml_tenso
  ++candidate_writes;throw std::runtime_error(std::string("injected after write ")+point);
 }
 namespace strata::core::portable_detail {
-struct StrataVkNativeHcPending{}; struct StrataVkNativeHc{}; struct StrataVkNativeHcMix{};
+struct StrataVkNativeHcPending{bool final_write=false;}; struct StrataVkNativeHc{}; struct StrataVkNativeHcMix{};
+#ifdef STRATA_CONNECTED_LAYER0_TEST
+static size_t layer0_write_owners=0,layer0_write_calls=0;
+StrataVkNativeHcPending* strata_vk_native_hc_write_create(ggml_backend_t,const char*,size_t budget){check(budget>=113,"write budget");++layer0_write_owners;return new StrataVkNativeHcPending{true};}
+#endif
 StrataVkNativeHcPending* strata_vk_native_hc_pending_create(ggml_backend_t,const char*,size_t b){++hc_creates[0];hc_budgets[0]=b;auto i=factory_enter("hc pending");return factory_return(new StrataVkNativeHcPending,i);}
 size_t strata_vk_native_hc_pending_bytes(const StrataVkNativeHcPending*){return 113;}
-void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p)noexcept{factory_destroy(p);delete p;}
-void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*,const ggml_tensor*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*,ggml_tensor*,ggml_tensor*){++hc_runs[0];throw std::runtime_error("unexpected pending");}
+void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p)noexcept{
+#ifdef STRATA_CONNECTED_LAYER0_TEST
+ if(p&&p->final_write)--layer0_write_owners;
+#endif
+ factory_destroy(p);delete p;}
+void strata_vk_native_hc_pending_run(StrataVkNativeHcPending* owner,const ggml_tensor* r,const ggml_tensor* b,const ggml_tensor* i,ggml_tensor* out,ggml_tensor* gate_out,ggml_tensor* exp_out){
+#ifdef STRATA_CONNECTED_LAYER0_TEST
+ if(owner->final_write){inject("layer0 final write");size_t n=ggml_nelements(b)/2560;std::vector<float>x(n*10240),block(n*2560),inj(n*4),g(n*4),e(n*4);ggml_backend_tensor_get(r,x.data(),0,x.size()*4);ggml_backend_tensor_get(b,block.data(),0,block.size()*4);ggml_backend_tensor_get(i,inj.data(),0,inj.size()*4);for(size_t t=0;t<n;++t)for(size_t s=0;s<4;++s){auto j=t*4+s;e[j]=std::exp(-std::fma(.25f,inj[j],0.f));g[j]=std::fma(2.f,1.f/(1.f+e[j]),0.f);for(size_t h=0;h<2560;++h){auto k=t*10240+s*2560+h;x[k]=std::fma(block[t*2560+h],g[j],x[k]);}}ggml_backend_tensor_set(out,x.data(),0,x.size()*4);ggml_backend_tensor_set(gate_out,g.data(),0,g.size()*4);ggml_backend_tensor_set(exp_out,e.data(),0,e.size()*4);++layer0_write_calls;return;}
+#endif
+ (void)owner;(void)r;(void)b;(void)i;(void)out;(void)gate_out;(void)exp_out;++hc_runs[0];throw std::runtime_error("unexpected pending");}
 StrataVkNativeHc* strata_vk_native_hc_create(ggml_backend_t,const char*,size_t b){++hc_creates[1];hc_budgets[1]=b;auto i=factory_enter("hc norm");return factory_return(new StrataVkNativeHc,i);}
 size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*){return 227;}
 void strata_vk_native_hc_destroy(StrataVkNativeHc*p)noexcept{factory_destroy(p);delete p;}
@@ -91,7 +106,11 @@ struct StrataVkNativePleConv{size_t bytes;};
 StrataVkNativePleConv* strata_vk_native_ple_conv_create(ggml_backend_t b,const char*,size_t){++executor_creates;auto i=factory_enter("conv");return factory_return(new StrataVkNativePleConv{mock_bytes(b)},i);}
 void strata_vk_native_ple_conv_destroy(StrataVkNativePleConv*p)noexcept{factory_destroy(p);delete p;}
 size_t strata_vk_native_ple_conv_bytes(const StrataVkNativePleConv*p){return p->bytes;}
-void strata_vk_native_ple_conv_run(StrataVkNativePleConv*,ggml_tensor*const t[10]){write_then_throw("conv written",{t[5],t[6],t[7],t[8],t[9]},301.f);inject("conv");size_t count=ggml_nelements(t[1]);check(count==10240||count==20480,"conv rows");size_t rows=count/10240;std::vector<float>h(92160),n(count),x(count),g(count),next(92160,-1234.f),c(count,-1234.f),y(count,-1234.f),pre(count,-1234.f),e(count,-1234.f);ggml_backend_tensor_get(t[0],h.data(),0,h.size()*4);ggml_backend_tensor_get(t[1],n.data(),0,n.size()*4);ggml_backend_tensor_get(t[3],x.data(),0,x.size()*4);ggml_backend_tensor_get(t[4],g.data(),0,g.size()*4);for(size_t k=0;k<10240;++k){for(size_t r=0;r<rows;++r){size_t i=r*10240+k;pre[i]=((h[9*k+r]+h[9*k+r+3])+h[9*k+r+6])+n[i];e[i]=std::exp(-pre[i]);c[i]=pre[i]/(1+e[i]);y[i]=x[i]+(g[i]+c[i]);}for(size_t j=0;j<9-rows;++j)next[9*k+j]=h[9*k+j+rows];for(size_t r=0;r<rows;++r)next[9*k+9-rows+r]=n[r*10240+k];}ggml_backend_tensor_set(t[5],next.data(),0,next.size()*4);std::vector<float>*o[]={&c,&y,&pre,&e};for(size_t i=6;i<10;++i)ggml_backend_tensor_set(t[i],o[i-6]->data(),0,o[i-6]->size()*4);++conv;}
+void strata_vk_native_ple_conv_run(StrataVkNativePleConv*,ggml_tensor*const t[10]){write_then_throw("conv written",{t[5],t[6],t[7],t[8],t[9]},301.f);inject("conv");size_t count=ggml_nelements(t[1]);check(count==10240||count==20480,"conv rows");size_t rows=count/10240;std::vector<float>h(92160),n(count),x(count),g(count),next(92160,-1234.f),c(count,-1234.f),y(count,-1234.f),pre(count,-1234.f),e(count,-1234.f);ggml_backend_tensor_get(t[0],h.data(),0,h.size()*4);ggml_backend_tensor_get(t[1],n.data(),0,n.size()*4);ggml_backend_tensor_get(t[3],x.data(),0,x.size()*4);
+#ifdef STRATA_CONNECTED_LAYER0_TEST
+ layer0_ple_residual_seen=x;
+#endif
+ ggml_backend_tensor_get(t[4],g.data(),0,g.size()*4);for(size_t k=0;k<10240;++k){for(size_t r=0;r<rows;++r){size_t i=r*10240+k;pre[i]=((h[9*k+r]+h[9*k+r+3])+h[9*k+r+6])+n[i];e[i]=std::exp(-pre[i]);c[i]=pre[i]/(1+e[i]);y[i]=x[i]+(g[i]+c[i]);}for(size_t j=0;j<9-rows;++j)next[9*k+j]=h[9*k+j+rows];for(size_t r=0;r<rows;++r)next[9*k+9-rows+r]=n[r*10240+k];}ggml_backend_tensor_set(t[5],next.data(),0,next.size()*4);std::vector<float>*o[]={&c,&y,&pre,&e};for(size_t i=6;i<10;++i)ggml_backend_tensor_set(t[i],o[i-6]->data(),0,o[i-6]->size()*4);++conv;}
 }
 int main(){try{
  std::string error;auto table=ple_fixture::small_table(error);check(bool(table),error.c_str());std::vector<std::array<uint32_t,16>> rows;std::vector<std::array<int32_t,2>> predecessors{{3,5},{5,7}};check(table->gather_batch({7,9},predecessors,rows,expected_embedding,error),error.c_str());

@@ -86,6 +86,7 @@ public:
 private:
  friend class PortableNativePleGdnComposition;
  friend class PortableNativeOrdinaryGdnComposition;
+ friend class PortableNativeLayer0Composition;
  // Only the composition may swap after PLE has committed. All throwing work
  // and candidate validation must already have completed.
  void publish_prepared()noexcept{committed_=1-committed_;candidate_=false;rows_=0;}
