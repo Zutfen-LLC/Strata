@@ -106,6 +106,7 @@ bool GpuWorkerGroup::validate(const std::vector<GpuWorkerTier::Open>& opts,std::
             !endpoints.emplace(o.host,o.port).second || !validate_gpu_plan(o.plan,err)) {
             if(err.empty())err="invalid/duplicate CUDA endpoint or deadline";return false;
         }
+        if(o.native_q8 && !o.vulkan) {err="native Q8 requires Vulkan";return false;}
         if(o.vulkan && (!o.entry_rows || (o.host!="127.0.0.1" && !o.tls.enabled()) ||
             o.plan.n_embd!=2560 || o.plan.n_ff!=640)) {
             err="Vulkan requires indexed rows, H2560/FF640 and mTLS outside loopback";return false;

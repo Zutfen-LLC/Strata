@@ -9,6 +9,7 @@ struct GpuEndpoint {
     std::string host, plan;
     uint16_t port = 0;
     bool vulkan = false; // explicit per-endpoint opt-in; CUDA remains the default
+    bool native_q8 = false;
 };
 inline bool gpu_numeric_ipv4(const std::string& host) {
     size_t start=0;
@@ -25,8 +26,9 @@ inline bool gpu_numeric_ipv4(const std::string& host) {
 // Match the existing controlled connector's numeric IPv4 contract. No DNS/new route.
 inline bool parse_gpu_endpoint(const std::string& text, GpuEndpoint& out) {
     std::string address=text;
-    bool vulkan=false;
-    if(address.rfind("vulkan@",0)==0) {vulkan=true;address.erase(0,7);}
+    bool vulkan=false, native_q8=false;
+    if(address.rfind("vulkan-native-q8@",0)==0) {vulkan=native_q8=true;address.erase(0,17);}
+    else if(address.rfind("vulkan@",0)==0) {vulkan=true;address.erase(0,7);}
     else if(address.rfind("cuda@",0)==0) address.erase(0,5);
     const auto colon = address.rfind(':');
     if (colon == std::string::npos || !colon || colon+1 == address.size()) return false;
@@ -38,6 +40,6 @@ inline bool parse_gpu_endpoint(const std::string& text, GpuEndpoint& out) {
     }
     if (!port) return false;
     if (!gpu_numeric_ipv4(address.substr(0,colon))) return false;
-    out.vulkan=vulkan; out.host=address.substr(0,colon); out.port=(uint16_t)port; return true;
+    out.vulkan=vulkan; out.native_q8=native_q8; out.host=address.substr(0,colon); out.port=(uint16_t)port; return true;
 }
 } // namespace strata::worker

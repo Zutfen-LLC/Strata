@@ -12,7 +12,8 @@ public:
         uint16_t port=7432;
         int deadline_ms=10000,setup_ms=600000;
         GpuPlan plan;
-        bool vulkan=false; // opt-in hybrid contract, requires indexed rows and mTLS outside 127.0.0.1
+        bool vulkan=false; // requires indexed rows and mTLS outside 127.0.0.1
+        bool native_q8=false; // explicit native Vulkan numerical contract
         TlsConfig tls;
         bool entry_rows=false; // negotiated; unsupported peers fail without weighted fallback
         std::function<bool(int64_t,int64_t,uint8_t*,uint32_t)> fetch;
@@ -57,7 +58,7 @@ private:
     GpuPlan plan_;
     InferReply reply_;
     EntryRowsReply rows_reply_;
-    bool rows_=false,vulkan_=false;
+    bool rows_=false,vulkan_=false,native_q8_=false;
     Stats stats_;
     GpuCounters remote_;
 };
