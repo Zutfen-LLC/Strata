@@ -88,15 +88,17 @@ public:
     template<class Source>
     PortableNativeFfnComposition(Source& source,ggml_backend_t backend,const std::vector<PortableTensorView>& views,
         PortableNativeFfnRows& rows,size_t device_budget,size_t host_budget,const char* prefix,
-        std::optional<PortableNativeHcComposed::ComponentCaps> caps=std::nullopt)
+        std::optional<PortableNativeHcComposed::ComponentCaps> caps=std::nullopt,PortableHcReadSelection selection={})
       :PortableNativeFfnComposition(TestOnlyHc{},source,
-        NativeFfnHcFactory::create(source_layer(source),backend,views,device_budget,
-            host_budget>=host_bound()?host_budget-host_bound():0,prefix,{},caps),rows,host_budget){}
+        selection.method==PortableHcReadMethod::legacy_decode && !caps
+          ? (selection.validate(),NativeFfnHcFactory::create(source_layer(source),backend,views,device_budget,host_budget>=host_bound()?host_budget-host_bound():0,prefix))
+          : NativeFfnHcFactory::create_selected(source_layer(source),backend,views,device_budget,
+            host_budget>=host_bound()?host_budget-host_bound():0,prefix,caps.value_or(PortableNativeHcComposed::ComponentCaps{}),selection),rows,host_budget){}
     template<class Source>
     PortableNativeFfnComposition(Source& source,ggml_backend_t backend,const GgufModel& model,
         PortableNativeFfnRows& rows,size_t device_budget,size_t host_budget,const char* prefix,
-        std::optional<PortableNativeHcComposed::ComponentCaps> caps=std::nullopt)
-      :PortableNativeFfnComposition(source,backend,NativeFfnHcFactory::from_gguf(model,source_layer(source)),rows,device_budget,host_budget,prefix,caps){}
+        std::optional<PortableNativeHcComposed::ComponentCaps> caps=std::nullopt,PortableHcReadSelection selection={})
+      :PortableNativeFfnComposition(source,backend,NativeFfnHcFactory::from_gguf(model,source_layer(source)),rows,device_budget,host_budget,prefix,caps,selection){}
 private:
     static int source_layer(const PortableNativePleGdnComposition&){return 1;}
     static int source_layer(const PortableNativeQsaComposition& source){return source.layer();}
@@ -107,6 +109,7 @@ public:
     ~PortableNativeFfnComposition(){epoch_->valid=false;}
     bool poisoned()const{return poisoned_;}uint64_t position()const{return position_;}
     int layer()const{return layer_;}
+    PortableHcReadMethod hc_read_method()const{return hc_->read_method();}
     const PortableNativePleGdnComposition* ple_source()const{return gdn_;}
     const PortableNativeOrdinaryGdnComposition* ordinary_source()const{return ordinary_;}
     const PortableNativeQsaComposition* qsa_source()const{return qsa_;}

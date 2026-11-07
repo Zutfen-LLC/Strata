@@ -94,6 +94,7 @@ public:
  }
  PortableNativeQsaComposition(const PortableNativeQsaComposition&)=delete;PortableNativeQsaComposition&operator=(const PortableNativeQsaComposition&)=delete;
  ~PortableNativeQsaComposition(){if(published_)published_->valid=false;}
+ PortableHcReadMethod hc_read_method()const{return hc_->read_method();}
  int layer()const{return layer_;}uint64_t position()const{return position_;}uint64_t generation()const{return generation_;}bool poisoned()const{return poisoned_;}
  bool provenance_live()const{return !anchored(anchor_) || (position_&&anchor_live(anchor_,layer_,position_-1));}
  uint32_t capacity()const{return cells_;}

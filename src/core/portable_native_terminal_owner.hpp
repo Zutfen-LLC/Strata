@@ -46,29 +46,29 @@ public:
         for(size_t i=0;i<r.size();++i)need(r[i].name==names[i]&&r[i].data&&r[i].shape==shapes[i]&&r[i].type==(i?8u:0u)&&r[i].bytes==bytes[i],"terminal owner: head role descriptor");
         qsa_wo_require_scales(qsa_wo_scale_classes(static_cast<const uint8_t*>(r[3].data),vocab*80,34),r[3].name,true);
     }
-    PortableNativeTerminalOwner(uint32_t cells,size_t vocab,ggml_backend_t backend,const GgufModel& model,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32){
+    PortableNativeTerminalOwner(uint32_t cells,size_t vocab,ggml_backend_t backend,const GgufModel& model,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableHcReadSelection selection={}){
         need(backend&&!prefix.empty(),"terminal owner: backend/prefix");
         auto q=PortableNativeQsaOwner::from_gguf(model,47);PortableNativeQsaOwner::validate(47,q);
         auto r=PortableNativeFfnOwner::from_gguf(model,47);PortableNativeFfnOwner::validate(47,r,method);
         auto hc=NativeFfnHcFactory::from_gguf(model,47);NativeFfnHcFactory::select(47,hc,false);
         auto hr=from_gguf(model);validate_head(hr,vocab);std::vector<PortableTensorView> hv(hr.begin(),hr.end());
         auto hp=prefix+".head",tp=prefix+".terminal-hc";
-        auto th=ple_host_add(ple_host_add(2u<<20,ple_host_mul(vocab,2*sizeof(float))),NativeFfnHcFactory::host_bound(tp.size()));
+        auto th=ple_host_add(ple_host_add(2u<<20,ple_host_mul(vocab,2*sizeof(float))),NativeFfnHcFactory::selected_host_bound(tp.size(),selection));
         need(b.head_host>=head_host_bound(vocab),"terminal owner: head host budget");
         // Head graph admission is mixed host/device, so reserve it in both
         // envelopes rather than claiming unproven workspace placement.
         size_t host=0;for(size_t n:{b.qsa.host,b.rows.host,b.head_host,b.head_graph,th})host=ple_host_add(host,n);
         size_t device=0;for(size_t n:{b.qsa.device,b.rows.device,b.head_weight,b.head_graph,b.terminal_hc,b.terminal_write})device=ple_host_add(device,n);
-        need(host<=b.host&&device<=b.device&&NativeFfnHcFactory::device_bound(backend,b.terminal_caps)<=b.terminal_hc,"terminal owner: aggregate budget");
+        need(host<=b.host&&device<=b.device&&NativeFfnHcFactory::selected_device_bound(backend,b.terminal_caps,selection)<=b.terminal_hc&&b.qsa.host>=PortableNativeQsaOwner::host_bound(cells,(prefix+".qsa").size()+3,selection)&&NativeFfnHcFactory::selected_device_bound(backend,b.qsa.hc_caps,selection)<=b.qsa.hc,"terminal owner: aggregate budget");
         PortableHeadGeometry geo{2560,4,320,int64_t(vocab),1e-6f};PortableFfnOptions opts;
         opts.accelerator=backend;opts.request_accelerator=true;opts.resident_dense_weights=true;opts.allow_cpu_fallback=false;
         opts.native_head_hc_t1=true;opts.native_head_vocab_t1=true;opts.native_head_hc_receipt_prefix=hp;
         opts.weight_budget=b.head_weight;opts.graph_budget=b.head_graph;
         need(PortableHead::weight_allocation_size(backend,geo,hv,true)<=b.head_weight&&PortableHead::admission(geo,hv,opts,false).graph_bound<=b.head_graph,"terminal owner: head budgets");
         rows_=std::make_unique<PortableNativeFfnOwner>(47,backend,r,prefix+".rows",b.rows,method);
-        qsa_=std::make_unique<PortableNativeQsaOwner>(47,cells,backend,q,prefix+".qsa",b.qsa);
+        qsa_=std::make_unique<PortableNativeQsaOwner>(47,cells,backend,q,prefix+".qsa",b.qsa,selection);
         std::string error;head_=PortableHead::create(geo,hv,opts,error);if(!head_)throw std::runtime_error("terminal owner: head: "+error);
-        terminal_=std::make_unique<PortableNativeTerminalComposition>(qsa_->composition(),backend,hc,rows_->rows(),*head_,b.terminal_hc,th,b.terminal_write,tp.c_str(),(prefix+".write").c_str(),b.terminal_caps);
+        terminal_=std::make_unique<PortableNativeTerminalComposition>(qsa_->composition(),backend,hc,rows_->rows(),*head_,b.terminal_hc,th,b.terminal_write,tp.c_str(),(prefix+".write").c_str(),b.terminal_caps,selection);
     }
     PortableNativeTerminalOwner(const PortableNativeTerminalOwner&)=delete;
     PortableNativeTerminalOwner& operator=(const PortableNativeTerminalOwner&)=delete;

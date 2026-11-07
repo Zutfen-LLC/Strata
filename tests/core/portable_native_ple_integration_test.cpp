@@ -74,6 +74,7 @@ namespace strata::core::portable_detail {
 struct StrataVkNativeHcPending{bool final_write=false;}; struct StrataVkNativeHc{}; struct StrataVkNativeHcMix{};
 #ifdef STRATA_CONNECTED_LAYER0_TEST
 static size_t layer0_write_owners=0,layer0_write_calls=0;
+static bool selected_layer0_pending=false;
 StrataVkNativeHcPending* strata_vk_native_hc_write_create(ggml_backend_t,const char*,size_t budget){check(budget>=113,"write budget");
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  if(terminal_fail_write_create)throw std::runtime_error("injected terminal write factory");
@@ -89,6 +90,7 @@ void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p)noexcept{
  factory_destroy(p);delete p;}
 void strata_vk_native_hc_pending_run(StrataVkNativeHcPending* owner,const ggml_tensor* r,const ggml_tensor* b,const ggml_tensor* i,ggml_tensor* out,ggml_tensor* gate_out,ggml_tensor* exp_out){
 #ifdef STRATA_CONNECTED_LAYER0_TEST
+ if(!owner->final_write&&selected_layer0_pending){size_t n=ggml_nelements(b)/2560;std::vector<float>x(n*10240),block(n*2560);ggml_backend_tensor_get(r,x.data(),0,x.size()*4);ggml_backend_tensor_get(b,block.data(),0,block.size()*4);for(size_t t=0;t<n;++t)for(size_t s=0;s<4;++s)for(size_t h=0;h<2560;++h)x[t*10240+s*2560+h]+=block[t*2560+h];ggml_backend_tensor_set(out,x.data(),0,x.size()*4);fill_hc(gate_out,0);fill_hc(exp_out,0);return;}
  if(owner->final_write){inject("layer0 final write");size_t n=ggml_nelements(b)/2560;std::vector<float>x(n*10240),block(n*2560),inj(n*4),g(n*4),e(n*4);ggml_backend_tensor_get(r,x.data(),0,x.size()*4);ggml_backend_tensor_get(b,block.data(),0,block.size()*4);ggml_backend_tensor_get(i,inj.data(),0,inj.size()*4);for(size_t t=0;t<n;++t)for(size_t s=0;s<4;++s){auto j=t*4+s;e[j]=std::exp(-std::fma(.25f,inj[j],0.f));g[j]=std::fma(2.f,1.f/(1.f+e[j]),0.f);for(size_t h=0;h<2560;++h){auto k=t*10240+s*2560+h;x[k]=std::fma(block[t*2560+h],g[j],x[k]);}}
 #ifdef STRATA_TERMINAL_FIXTURE
  if(terminal_fail_write_after){ggml_backend_tensor_set(out,x.data(),0,10240*4);std::vector<float> written(10240);ggml_backend_tensor_get(out,written.data(),0,written.size()*4);check(std::equal(written.begin(),written.end(),x.begin()),"partial final-write candidate not stored");++terminal_partial_write_hits;throw std::runtime_error("terminal write after partial candidate");}

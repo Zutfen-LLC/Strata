@@ -1,6 +1,18 @@
 #include "portable_native_hc_test_backend.hpp"
 #include "portable_qsa_fixture.hpp"
 #include "portable_native_hc_composed.hpp"
+#include "portable_native_hc_prefill_selection.hpp"
+namespace strata::core::portable_detail {
+struct StrataVkNativeHcPrefill {};
+StrataVkNativeHcPrefill* strata_vk_native_hc_prefill_create(ggml_backend_t,const char*,size_t cap){check(cap>=512,"prefill scalar cap");return new StrataVkNativeHcPrefill;}
+size_t strata_vk_native_hc_prefill_bytes(const StrataVkNativeHcPrefill*){return 512;}
+void strata_vk_native_hc_prefill_destroy(StrataVkNativeHcPrefill*p) noexcept{delete p;}
+void strata_vk_native_hc_prefill_run(StrataVkNativeHcPrefill*,uint32_t mode,uint32_t rows,const std::array<ggml_tensor*,6>&t){
+ if(mode==0){put(t[2],std::vector<float>(rows*10240));put(t[3],std::vector<float>(rows*10240));}
+ else if(mode==1){put(t[2],std::vector<float>(rows*320));put(t[3],std::vector<float>(rows*320));}
+ else put(t[2],std::vector<float>(rows*2560));
+}
+}
 int main(){try {
  std::string error; std::shared_ptr<ggml_backend> cpu(ggml_backend_cpu_init(),ggml_backend_free);
  qsa_fixture::Fixture f; PortableQsaOptions options; options.capacity=4; options.execution.threads=1; options.execution.accelerator=cpu.get(); options.execution.request_accelerator=true; options.defer_ffn_hc_write=true;
@@ -11,6 +23,17 @@ int main(){try {
  auto nw=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_F32,10240); auto iw=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_I32,20480);
  auto down=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_I32,1638400); auto up=ggml_new_tensor_1d(ctx.get(),GGML_TYPE_I32,1638400);
  std::shared_ptr<ggml_backend_buffer> weights(ggml_backend_alloc_ctx_tensors(ctx.get(),cpu.get()),ggml_backend_buffer_free); check(bool(weights),"weights");
+ // Selected prefill with a real authenticated QSA-issued pending snapshot.
+ // Scalar stages are mocked; the actual GGML products run with zero weights.
+ { std::vector<uint8_t> zero(6553600);for(auto*t:{nw,iw,down,up})ggml_backend_tensor_set(t,zero.data(),0,ggml_nbytes(t));
+   std::array<const ggml_tensor*,4> source{nw,iw,down,up};PortableNativeHcComposed::PrefillCaps caps{512,512};
+   auto db=PortableNativeHcPrefillSelection::device_bound(cpu.get(),source,caps);auto hb=PortableNativeHcPrefillSelection::host_bound(20);
+   auto selected=PortableNativeHcComposed::create_prefill(cpu.get(),source,hb,db,"prefill-pending-test",caps);
+   auto expected=native_hc_pending_control(s0->tuple().residual,s0->tuple().block,s0->tuple().injection);int calls=0;
+   auto consume=[&](const PortableNativeHcComposed::View&v,uint32_t n){check(n==1&&v.read(PortableNativeHcComposed::View::Field::residual)==expected.residual,"selected authenticated pending residual");++calls;};
+   selected->run(4,0,*producer,{s0},consume,consume);check(calls==2&&selected->rows()==1,"selected pending publication");
+   bool bad=false;try{selected->run(4,1,*producer,{s0},consume,consume);}catch(...){bad=true;}check(bad&&calls==2,"selected pending identity");selected->reset();
+ }
  std::vector<unsigned char> payload(6553600,0x5a); ggml_backend_tensor_set(down,payload.data(),0,payload.size());
  int pending=0,norm=0,mix=0,consumers=0,fail=0; uint32_t expected=2;
  using Owner=PortableNativeHcComposed;

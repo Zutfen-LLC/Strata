@@ -42,6 +42,20 @@ function(strata_native_hc_enable out)
     DEPENDS src/kernels/vulkan/native_hc.comp cmake/strata_native_stages_embed.cmake VERBATIM)
   add_custom_target(strata_native_hc_shader DEPENDS "${out}/strata_native_hc_spv.hpp")
   add_dependencies(ggml-vulkan strata_native_hc_shader)
+  add_custom_command(OUTPUT "${out}/strata_native_hc_prefill_spv.hpp"
+    COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_hc_prefill.comp" -o "${out}/native_hc_prefill.spv"
+    COMMAND "${STRATA_SPIRV_VAL}" --target-env vulkan1.2 "${out}/native_hc_prefill.spv"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${out}/native_hc_prefill.spv" "-DOUTPUT=${out}/strata_native_hc_prefill_spv.hpp"
+      -DARRAY_NAME=strata_native_hc_prefill_spv -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_native_stages_embed.cmake"
+    DEPENDS src/kernels/vulkan/native_hc_prefill.comp cmake/strata_native_stages_embed.cmake VERBATIM)
+  add_custom_target(strata_native_hc_prefill_shader DEPENDS "${out}/strata_native_hc_prefill_spv.hpp")
+  add_dependencies(ggml-vulkan strata_native_hc_prefill_shader)
+  add_executable(native_hc_prefill_effective_shader_test tests/kernels/native_hc_prefill_effective_shader_test.cpp)
+  add_dependencies(native_hc_prefill_effective_shader_test strata_native_hc_prefill_shader)
+  target_include_directories(native_hc_prefill_effective_shader_test PRIVATE src/core tests/kernels "${out}")
+  target_link_libraries(native_hc_prefill_effective_shader_test PRIVATE SPIRV-Headers::SPIRV-Headers Vulkan::Vulkan ggml-base)
+  add_test(NAME native_hc_prefill_effective_shader_test COMMAND native_hc_prefill_effective_shader_test)
   add_custom_command(OUTPUT "${out}/strata_native_hc_mix_spv.hpp"
     COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -fshader-stage=compute --target-env=vulkan1.2 -O
       "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vulkan/native_hc_mix.comp" -o "${out}/native_hc_mix.spv"

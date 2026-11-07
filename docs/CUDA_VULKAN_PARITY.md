@@ -68,6 +68,41 @@ expert execution, admission and model failure/reset qualification, and physical
 GPU validation remain. No independent-request batching, speculation, full model
 parity or throughput result is implied.
 
+### Internal HC prefill read candidate
+
+`PortableNativeHcComposed::create_prefill` selects a separate internal read:
+per-channel prefill normalization and a rounded image, BF16 down product,
+device SiLU and rounded image, BF16 up and injection products, then device
+FMA mix and independent BF16 and FP16 images. T2 uses one GGML matrix operation
+per product. The owner copies product scratch before the next product and keeps
+publication in the existing composed owner. The final-head read and the legacy
+decode default are unchanged. The selected owner has separate requested host and
+device envelopes; they exclude backend-private, driver and physical costs.
+The scalar candidate requires the strict-FMA capability and refuses values
+outside its checked normal-or-zero domain, including activation arguments
+above magnitude 80 and subnormal or overflowing 16-bit images.
+
+CPU tests exercise the actual product graphs and composed transaction with
+mocked scalar stages, including a materialized PLE transaction and a genuine
+QSA-issued pending snapshot. Product image inputs reject incompatible GGML
+layouts; scalar Vulkan spans reject tensor views and nonzero view offsets.
+Separate mocked Vulkan transport tests and shader compilation do not execute
+the arithmetic on a GPU. Float-control and effective
+shader checks do not establish vendor GEMM, exp, rsqrt or reduction equality.
+The internal selector now reaches the entry, PLE, ordinary GDN and QSA,
+FFN, terminal FFN and all-48 model-owner construction paths. It defaults to
+the legacy read. Selected attention and FFN owners have method-aware requested
+host and device admission, including their source and retained role images;
+the model preflights their envelopes before allocating its layers. The separate
+final-head HC is unchanged.
+
+A bounded CPU fixture constructs selected PLE and FFN owners and runs a T2
+layer-zero composition with real product graphs and mocked scalar and pending
+stages. A source-wiring check and constructor type checks cover the all-48
+factory; they do not allocate or run a selected full model. These controls do
+not establish device arithmetic. The selector does not enable public native
+chunking or establish full-model parity.
+
 ## Bounded 48-layer row executor
 
 `PortableNativeModelRows` is an internal, synchronous borrowed-owner chain from

@@ -1,0 +1,38 @@
+#version 450
+#extension GL_EXT_spirv_intrinsics : require
+spirv_instruction(extensions=["SPV_KHR_fma"],capabilities=[6030],id=4427)
+float fused(float a,float b,float c);
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer X {float x[];};
+layout(binding=1,std430) readonly buffer Y {float y[];};
+layout(binding=2,std430) writeonly buffer A {float a[];};
+layout(binding=3,std430) writeonly buffer B {float b[];};
+layout(binding=4,std430) writeonly buffer C {uint c[];};
+layout(binding=5,std430) writeonly buffer D {uint d[];};
+layout(binding=6,std430) buffer S {uint status[];};
+layout(push_constant) uniform P {uint mode,rows,xb,yb,ab,bb,cb,db,sb;} p;
+shared float partial[256];
+float checked(float v){uint z=floatBitsToUint(v)&0x7fffffffu;if(z>=0x7f800000u)atomicOr(status[p.sb],1u);if(z>0u&&z<0x00800000u)atomicOr(status[p.sb],2u);return v;}
+uint bf(float v){uint u=floatBitsToUint(checked(v));uint q=(u+0x7fffu+((u>>16)&1u))>>16;uint m=q&0x7fffu;if(m>=0x7f80u||(m>0u&&m<0x80u))atomicOr(status[p.sb],4u);return q;}
+// Direct F32 to FP16 RNE, independently of the BF16 image and of a
+// vendor's packHalf rounding. Subnormal/overflow images are refused.
+uint hf(float v){uint u=floatBitsToUint(checked(v)),sign=(u>>16)&0x8000u,e=(u>>23)&255u,m=u&0x7fffffu,h=0u;
+ if(e>=143u)h=0x7c00u;else if(e>=113u)h=((e-112u)<<10)+((m+0xfffu+((m>>13)&1u))>>13);
+ else if(e>=102u){uint sig=m|0x800000u,shift=126u-e,base=sig>>shift,rem=sig&((1u<<shift)-1u),halfway=1u<<(shift-1u);h=base+uint(rem>halfway||(rem==halfway&&(base&1u)!=0u));}
+ if(h>=0x7c00u||(h>0u&&h<0x0400u))atomicOr(status[p.sb],16u);return sign|h;}
+void main(){uint tid=gl_LocalInvocationID.x,t=gl_WorkGroupID.y;
+ if(p.mode==0u){uint ch=gl_WorkGroupID.x,base=t*10240u+ch*2560u;float ss=0.0;
+  for(uint i=tid;i<2560u;i+=256u){float v=checked(x[p.xb+base+i]);ss=checked(fused(v,v,ss));}
+  partial[tid]=ss;barrier();
+  for(uint k=16u;k>0u;k>>=1u){precise float v=checked(partial[tid]+partial[tid^k]);barrier();partial[tid]=v;barrier();}
+  float w=tid<8u?partial[tid*32u]:0.0;barrier();partial[tid]=w;barrier();
+  for(uint k=16u;k>0u;k>>=1u){precise float v=checked(partial[tid]+partial[tid^k]);barrier();partial[tid]=v;barrier();}
+  precise float mean=checked(partial[0]/2560.0);precise float shift=checked(mean+0.000001);float rs=checked(inversesqrt(shift));if(tid==0u)d[p.db+t*4u+ch]=floatBitsToUint(rs);
+  for(uint i=tid*2u;i<2560u;i+=512u){uint j=base+i;precise float v0=checked(checked(x[p.xb+j]*rs)*checked(y[p.yb+ch*2560u+i]));precise float v1=checked(checked(x[p.xb+j+1u]*rs)*checked(y[p.yb+ch*2560u+i+1u]));uint h0=bf(v0),h1=bf(v1);a[p.ab+j]=v0;a[p.ab+j+1u]=v1;b[p.bb+j]=uintBitsToFloat(h0<<16);b[p.bb+j+1u]=uintBitsToFloat(h1<<16);c[p.cb+j/2u]=h0|(h1<<16);}
+ }else if(p.mode==1u){uint j=gl_WorkGroupID.x*512u+tid*2u;if(j>=320u)return;uint q=t*320u+j;vec2 z=vec2(checked(x[p.xb+q]),checked(x[p.xb+q+1u]))/4.0;
+  if(any(greaterThan(abs(z),vec2(80.0))))atomicOr(status[p.sb],8u);
+  vec2 e=exp(-z);vec2 den=vec2(1.0)+e;vec2 v=z/den;uint h0=bf(v.x),h1=bf(v.y);a[p.ab+q]=checked(v.x);a[p.ab+q+1u]=checked(v.y);b[p.bb+q]=uintBitsToFloat(h0<<16);b[p.bb+q+1u]=uintBitsToFloat(h1<<16);c[p.cb+q/2u]=h0|(h1<<16);
+ }else{uint j=gl_WorkGroupID.x*512u+tid*2u;if(j>=2560u)return;vec2 sum=vec2(0);for(uint ch=0u;ch<4u;++ch){uint q=t*10240u+ch*2560u+j;vec2 v=vec2(checked(y[p.yb+q]),checked(y[p.yb+q+1u]));if(any(greaterThan(abs(v),vec2(80.0))))atomicOr(status[p.sb],8u);vec2 gate=vec2(1)/(vec2(1)+exp(-v));sum.x=checked(fused(checked(x[p.xb+q]),gate.x,sum.x));sum.y=checked(fused(checked(x[p.xb+q+1u]),gate.y,sum.y));}
+  sum/=4.0;uint h0=bf(sum.x),h1=bf(sum.y);uint q=t*2560u+j;a[p.ab+q]=checked(sum.x);a[p.ab+q+1u]=checked(sum.y);c[p.cb+q/2u]=h0|(h1<<16);d[p.db+q/2u]=hf(sum.x)|(hf(sum.y)<<16);
+ }
+}

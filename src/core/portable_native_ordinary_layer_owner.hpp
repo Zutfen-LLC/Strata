@@ -21,7 +21,7 @@ public:
         PortableNativeFfnOwner::Budgets rows;
     };
     PortableNativeOrdinaryLayerOwner(int layer,ggml_backend_t backend,const GgufModel& model,
-        const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused) {
+        const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused,PortableHcReadSelection selection={}) {
         if(!backend||prefix.empty())throw std::runtime_error("ordinary layer owner: layer/backend");
         auto roles=PortableNativeOrdinaryGdnOwner::from_gguf(model,layer);
         PortableNativeOrdinaryGdnOwner::validate(layer,roles,gdn_method);
@@ -29,14 +29,14 @@ public:
         auto hc=NativeFfnHcFactory::from_gguf(model,layer);
         NativeFfnHcFactory::select(layer,hc,false);
         auto path=prefix+".ffn";
-        const auto ffn_host=ple_host_add(PortableNativeFfnComposition::host_bound(),NativeFfnHcFactory::host_bound(path.size()));
+        const auto ffn_host=ple_host_add(PortableNativeFfnComposition::host_bound(),NativeFfnHcFactory::selected_host_bound(path.size(),selection));
         if(ple_host_add(ple_host_add(b.gdn.host,ffn_host),b.rows.host)>b.host || ple_host_add(ple_host_add(b.gdn.device,b.ffn_device),b.rows.device)>b.device ||
-           NativeFfnHcFactory::device_bound(backend,b.ffn_caps)>b.ffn_device)
+           NativeFfnHcFactory::selected_device_bound(backend,b.ffn_caps,selection)>b.ffn_device)
             throw std::runtime_error("ordinary layer owner: aggregate budget");
-        PortableNativeGdnComponents::preflight(backend,(prefix+".gdn").size()+3,b.gdn,gdn_method,ab_method);
+        PortableNativeGdnComponents::preflight(backend,(prefix+".gdn").size()+3,b.gdn,gdn_method,ab_method,selection);
         rows_=std::make_unique<PortableNativeFfnOwner>(layer,backend,row_roles,prefix+".rows",b.rows,method);
-        gdn_=std::make_unique<PortableNativeOrdinaryGdnOwner>(layer,backend,roles,prefix+".gdn",b.gdn,gdn_method,ab_method);
-        ffn_=std::make_unique<PortableNativeFfnComposition>(gdn_->composition(),backend,hc,rows_->rows(),b.ffn_device,ffn_host,path.c_str(),b.ffn_caps);
+        gdn_=std::make_unique<PortableNativeOrdinaryGdnOwner>(layer,backend,roles,prefix+".gdn",b.gdn,gdn_method,ab_method,selection);
+        ffn_=std::make_unique<PortableNativeFfnComposition>(gdn_->composition(),backend,hc,rows_->rows(),b.ffn_device,ffn_host,path.c_str(),b.ffn_caps,selection);
     }
     PortableNativeOrdinaryLayerOwner(const PortableNativeOrdinaryLayerOwner&)=delete;
     PortableNativeOrdinaryLayerOwner& operator=(const PortableNativeOrdinaryLayerOwner&)=delete;

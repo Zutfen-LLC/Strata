@@ -50,13 +50,14 @@ public:
     PortableNativeTerminalComposition(PortableNativeQsaComposition& source,ggml_backend_t backend,
         const std::vector<PortableTensorView>& roles,PortableNativeFfnRows& rows,PortableHead& head,
         size_t hc_device_budget,size_t hc_host_budget,size_t write_device_budget,const char* hc_prefix,const char* write_receipt,
-        std::optional<PortableNativeHcComposed::ComponentCaps> caps=std::nullopt)
+        std::optional<PortableNativeHcComposed::ComponentCaps> caps=std::nullopt,PortableHcReadSelection selection={})
       :source_(source),rows_(rows),head_(head),position_(source.position()),generation_(source.generation()),owner_id_(next_owner()) {
         need(source.layer()==47&&!source.poisoned()&&source.provenance_live()&&rows.layer()==47&&backend&&write_receipt&&*write_receipt,
              "terminal: source/rows/backend");
         const size_t own_host=host_bound(head_);
         need(hc_host_budget>=own_host,"terminal: host budget");
-        hc_=NativeFfnHcFactory::create(47,backend,roles,hc_device_budget,hc_host_budget-own_host,hc_prefix,{},caps,false,true);
+        if(selection.method==PortableHcReadMethod::legacy_decode&&!caps){selection.validate();hc_=NativeFfnHcFactory::create(47,backend,roles,hc_device_budget,hc_host_budget-own_host,hc_prefix,{},caps,false,true);}
+        else hc_=NativeFfnHcFactory::create_selected(47,backend,roles,hc_device_budget,hc_host_budget-own_host,hc_prefix,caps.value_or(PortableNativeHcComposed::ComponentCaps{}),selection,false,true);
         ctx_.reset(ggml_init({16384,nullptr,true}));need(bool(ctx_),"terminal: metadata");
         for(size_t i=0;i<2;++i){auto make=[&](int n){auto*t=ggml_new_tensor_2d(ctx_.get(),GGML_TYPE_F32,n,i+1);need(t,"terminal: tensor");return t;};
             banks_[i]={make(10240),make(2560),make(4),make(10240),make(4),make(4),{}};}
@@ -73,6 +74,7 @@ public:
     PortableNativeTerminalComposition(const PortableNativeTerminalComposition&)=delete;
     PortableNativeTerminalComposition& operator=(const PortableNativeTerminalComposition&)=delete;
     uint64_t position()const{return position_;} bool poisoned()const{return poisoned_;}
+    PortableHcReadMethod hc_read_method()const{return hc_->read_method();}
     const PortableNativeQsaComposition* source_identity()const{return &source_;}
     const void* rows_identity()const{return &rows_;}
     uint64_t rows_generation()const{return rows_.generation();}

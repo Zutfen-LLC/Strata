@@ -20,8 +20,8 @@ public:
  // comparison and diagnostics plus the composition and HC bounds. Excludes
  // mapped roles, caller-retained results, allocator and backend internals; it
  // is not a process RSS or physical-device admission bound.
- static size_t host_bound(uint32_t cells,size_t prefix){
-  return ple_host_add(32u<<20,ple_host_add(PortableNativeQsaComposition::host_bound(cells),NativeFfnHcFactory::host_bound(prefix)));
+ static size_t host_bound(uint32_t cells,size_t prefix,PortableHcReadSelection selection={}){
+  return ple_host_add(32u<<20,ple_host_add(PortableNativeQsaComposition::host_bound(cells),NativeFfnHcFactory::selected_host_bound(prefix,selection)));
  }
  static Roles from_gguf(const GgufModel&m,int layer){
   need(layer>=3&&layer<48&&layer%4==3,"QSA owner: layer");
@@ -41,10 +41,10 @@ public:
    if(type==0){for(size_t j=0;j<count[i];++j){float x;std::memcpy(&x,static_cast<const uint8_t*>(r[i].data)+j*4,4);need(qsa_wo_normal_or_zero(x),"QSA owner: norm domain");}}
   }
  }
- PortableNativeQsaOwner(int layer,uint32_t cells,ggml_backend_t b,const Roles&r,const std::string&prefix,const Budgets& caps){
-  need(b&&!prefix.empty(),"QSA owner: backend/prefix");validate(layer,r);need(caps.host>=host_bound(cells,prefix.size()+3),"QSA owner: host budget");
+ PortableNativeQsaOwner(int layer,uint32_t cells,ggml_backend_t b,const Roles&r,const std::string&prefix,const Budgets& caps,PortableHcReadSelection selection={}){
+  need(b&&!prefix.empty(),"QSA owner: backend/prefix");validate(layer,r);need(caps.host>=host_bound(cells,prefix.size()+3,selection),"QSA owner: host budget");
   size_t total=0;for(size_t n:{caps.roles,caps.qkv,caps.projection,caps.norm,caps.indexer,caps.select,caps.attention,caps.wo,caps.hc})total=ple_host_add(total,n);need(total<=caps.device,"QSA owner: aggregate device budget");
-  need(PortableNativeQsaQkvRows::estimate(b)<=caps.qkv&&PortableNativeQsaIndexerRows::estimate(b)<=caps.projection&&PortableNativeQsaNormRope::estimate(b)<=caps.norm&&PortableNativeQsaIndexer::estimate(b,cells)<=caps.indexer&&PortableNativeQsaSelect::estimate(b,cells)<=caps.select&&PortableNativeQsaAttention::estimate(b,cells)<=caps.attention&&PortableNativeQsaWoRows::estimate(b)<=caps.wo&&NativeFfnHcFactory::device_bound(b,caps.hc_caps)<=caps.hc,"QSA owner: component budgets");
+  need(PortableNativeQsaQkvRows::estimate(b)<=caps.qkv&&PortableNativeQsaIndexerRows::estimate(b)<=caps.projection&&PortableNativeQsaNormRope::estimate(b)<=caps.norm&&PortableNativeQsaIndexer::estimate(b,cells)<=caps.indexer&&PortableNativeQsaSelect::estimate(b,cells)<=caps.select&&PortableNativeQsaAttention::estimate(b,cells)<=caps.attention&&PortableNativeQsaWoRows::estimate(b)<=caps.wo&&NativeFfnHcFactory::selected_device_bound(b,caps.hc_caps,selection)<=caps.hc,"QSA owner: component budgets");
   context_.reset(ggml_init({16384,nullptr,true}));need(bool(context_),"QSA owner: metadata");std::array<ggml_tensor*,10>t{};
   t[0]=ggml_new_tensor_2d(context_.get(),GGML_TYPE_Q8_0,2560,12288);t[1]=ggml_new_tensor_2d(context_.get(),GGML_TYPE_Q8_0,2560,512);t[2]=ggml_new_tensor_2d(context_.get(),GGML_TYPE_Q8_0,2560,512);t[3]=ggml_new_tensor_2d(context_.get(),GGML_TYPE_Q8_0,6144,2560);
   t[4]=ggml_new_tensor_1d(context_.get(),GGML_TYPE_I32,2560*128/2);t[5]=ggml_new_tensor_1d(context_.get(),GGML_TYPE_I32,2560*512/2);
@@ -59,10 +59,10 @@ public:
   auto sel=std::make_unique<PortableNativeQsaSelect>(b,cells,prefix+".select",caps.select,false);
   auto att=std::make_unique<PortableNativeQsaAttention>(b,cells,prefix+".attention",caps.attention,false);
   auto wo=std::make_unique<PortableNativeQsaWoRows>(b,t[3],r[3].data,r[3].bytes,prefix+".wo",caps.wo);
-  auto hc=NativeFfnHcFactory::create(layer,b,std::vector<PortableTensorView>{r[10],r[11],r[12],r[13]},caps.hc,NativeFfnHcFactory::host_bound(prefix.size()+3),(prefix+".hc").c_str(),{},caps.hc_caps,false,false,true);
+  auto hc=NativeFfnHcFactory::create_selected(layer,b,std::vector<PortableTensorView>{r[10],r[11],r[12],r[13]},caps.hc,NativeFfnHcFactory::selected_host_bound(prefix.size()+3,selection),(prefix+".hc").c_str(),caps.hc_caps,selection,true);
   composition_=std::make_unique<PortableNativeQsaComposition>(layer,cells,PortableNativeQsaComposition::host_bound(cells),std::move(hc),std::move(qkv),std::move(proj),std::move(norm),std::move(idx),std::move(sel),std::move(att),std::move(wo));
  }
- PortableNativeQsaOwner(int layer,uint32_t cells,ggml_backend_t b,const GgufModel&m,const std::string&p,const Budgets& caps):PortableNativeQsaOwner(layer,cells,b,from_gguf(m,layer),p,caps){}
+ PortableNativeQsaOwner(int layer,uint32_t cells,ggml_backend_t b,const GgufModel&m,const std::string&p,const Budgets& caps,PortableHcReadSelection selection={}):PortableNativeQsaOwner(layer,cells,b,from_gguf(m,layer),p,caps,selection){}
  PortableNativeQsaOwner(const PortableNativeQsaOwner&)=delete;PortableNativeQsaOwner&operator=(const PortableNativeQsaOwner&)=delete;
  PortableNativeQsaComposition& composition(){return *composition_;}
 };

@@ -19,6 +19,17 @@
 #include <vector>
 
 namespace strata::core::portable_detail {
+enum class PortableHcReadMethod { legacy_decode, baseline_prefill_bf16 };
+struct PortableHcReadSelection {
+    PortableHcReadMethod method=PortableHcReadMethod::legacy_decode;
+    size_t pending=0,scalar=0;
+    void validate() const {
+        if (method!=PortableHcReadMethod::legacy_decode && method!=PortableHcReadMethod::baseline_prefill_bf16)
+            throw std::invalid_argument("HC read: invalid method");
+        if (method==PortableHcReadMethod::baseline_prefill_bf16 && (!pending || !scalar))
+            throw std::invalid_argument("HC read: incomplete prefill caps");
+    }
+};
 class PortableNativeFfnComposition;
 class PortableNativeFfnSnapshot;
 // Immutable snapshot of the already-packed roles. The backend remains borrowed.
@@ -69,6 +80,8 @@ class PortableNativeHcComposed {
     friend class PortableNativeTerminalComposition;
     friend class PortableNativeLayer0Composition;
     friend class NativeFfnHcFactory;
+    friend class PortableNativeHcPrefillSelection;
+    PortableHcReadMethod read_method_=PortableHcReadMethod::legacy_decode;
     int checked_layer_=-1;
     bool checked_attention_=false;
     using Context = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
@@ -79,6 +92,12 @@ public:
         ggml_tensor *normalized, *rs, *inject, *low_pre, *low, *low_exp, *up_pre, *gates, *up_exp, *mixed;
     };
     struct ComponentCaps { size_t pending, norm, mix; };
+    struct PrefillCaps { size_t pending, scalar; };
+    // Defined in portable_native_hc_prefill_selection.hpp; legacy construction
+    // remains decode by default. This is internal, not public chunk admission.
+    static std::unique_ptr<PortableNativeHcComposed> create_prefill(ggml_backend_t,
+        const std::array<const ggml_tensor*,4>&,size_t host_budget,size_t device_budget,
+        const char* prefix,PrefillCaps);
     struct Dispatch {
         std::function<void(const Bank&)> pending;
         std::function<void(const Bank&, uint32_t)> norm;
@@ -131,7 +150,7 @@ private:
     std::unique_ptr<StrataVkNativeHcMix,decltype(&strata_vk_native_hc_mix_destroy)> mix_{nullptr,strata_vk_native_hc_mix_destroy};
     std::array<std::array<Bank,2>,2> banks_{}; // publication slot, exact row count minus one
     Dispatch dispatch_;
-    int published_=-1; uint32_t rows_=0; size_t bytes_=0;
+    int published_=-1; uint32_t rows_=0; size_t bytes_=0, selected_bytes_=0;
     bool running_=false, poisoned_=false;
     size_t host_budget_ = SIZE_MAX;
     static void require(bool b, const char* s) { if (!b) throw std::runtime_error(s); }
@@ -197,7 +216,8 @@ public:
     // Source tensors and their storage need only survive synchronous construction.
     // The backend must outlive this owner. Model chunk admission remains separate.
     // Injected dispatch is trusted test infrastructure, not a consumer API: it
-    // must not retain bank pointers. Production leaves it empty. The owner must
+    // must not retain bank pointers. Legacy production leaves it empty; the
+    // selected prefill factory installs its own lifetime-owned closures. The owner must
     // not be destroyed during a run or concurrently with any view operation.
     // Caps bound only the components' reported bytes, not hidden backend or
     // pipeline resources; callers must budget those separately.
@@ -245,7 +265,8 @@ public:
     PortableNativeHcComposed(const PortableNativeHcComposed&)=delete;
     PortableNativeHcComposed& operator=(const PortableNativeHcComposed&)=delete;
     ~PortableNativeHcComposed() { if (publication_) publication_->valid=false; }
-    size_t bytes() const {return bytes_;}
+    size_t bytes() const {return ple_host_add(bytes_,selected_bytes_);}
+    PortableHcReadMethod read_method() const {return read_method_;}
     std::shared_ptr<const NativeHcRoleBank> role_bank() const { return roles_; }
     uint32_t rows() const {return rows_;}
     // Publication exposes metadata only, never a pointer into reusable banks.

@@ -33,12 +33,14 @@ public:
     PortableNativePleComposition(const PortableNativePleExecutor::Roles& roles,
                                  const std::array<const ggml_tensor*, 4>& hc_roles,
                                  ggml_backend_t backend, ComponentCaps caps,
-                                 size_t budget, const std::string& hc_receipt_prefix) {
+                                 size_t budget, const std::string& hc_receipt_prefix,PortableHcReadSelection selection={}) {
         PortableNativePleExecutor::validate_roles(roles);
         if (!backend || roles.backend != backend || hc_receipt_prefix.empty())
             throw std::invalid_argument("PLE composition: backend or receipt prefix");
+        selection.validate();size_t borrowed=0;
+        if(selection.method==PortableHcReadMethod::baseline_prefill_bf16)for(size_t i=0;i<4;++i){if(!hc_roles[i]||!hc_roles[i]->buffer)throw std::invalid_argument("PLE composition: HC source buffer");bool seen=false;for(size_t j=0;j<i;++j)seen|=hc_roles[i]->buffer==hc_roles[j]->buffer;if(!seen)borrowed=ple_host_add(borrowed,ggml_backend_buffer_get_size(hc_roles[i]->buffer));}
         const auto bounds = PortableNativePleAdmission::preflight(budget, [&] {
-            return PortableNativePleAdmission::calculate(backend, hc_roles, roles.directory, hc_receipt_prefix.size(), caps);
+            return PortableNativePleAdmission::calculate(backend, hc_roles, roles.directory, hc_receipt_prefix.size(), caps,selection,borrowed);
         });
 
         executor_ = std::make_unique<PortableNativePleExecutor>(roles,
@@ -48,12 +50,15 @@ public:
                                          const PortableNativePleTransaction::OutputView& output) {
                 (*executor)(request, output);
             });
-        hc_ = std::make_unique<PortableNativeHcComposed>(backend, hc_roles[0], hc_roles[1], hc_roles[2], hc_roles[3],
+        if(selection.method==PortableHcReadMethod::baseline_prefill_bf16)
+            hc_=PortableNativeHcComposed::create_prefill(backend,hc_roles,bounds.hc_host,bounds.hc_device,hc_receipt_prefix.c_str(),{selection.pending,selection.scalar});
+        else hc_ = std::make_unique<PortableNativeHcComposed>(backend, hc_roles[0], hc_roles[1], hc_roles[2], hc_roles[3],
             bounds.hc_device, hc_receipt_prefix.c_str(), PortableNativeHcComposed::Dispatch{}, bounds.hc_host, caps);
     }
     PortableNativePleComposition(const PortableNativePleComposition&) = delete;
     PortableNativePleComposition& operator=(const PortableNativePleComposition&) = delete;
 
+    PortableHcReadMethod hc_read_method()const{return hc_->read_method();}
     Handle stage(uint64_t position, const std::vector<int32_t>& tokens, const std::vector<float>& residual) {
         if (consuming_) throw std::runtime_error("PLE composition: reentrant stage");
         auto handle=transaction_->stage(position, tokens, residual);

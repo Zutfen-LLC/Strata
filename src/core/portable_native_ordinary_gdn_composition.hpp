@@ -43,6 +43,7 @@ public:
  PortableNativeOrdinaryGdnComposition(const PortableNativeOrdinaryGdnComposition&)=delete;
  PortableNativeOrdinaryGdnComposition& operator=(const PortableNativeOrdinaryGdnComposition&)=delete;
  ~PortableNativeOrdinaryGdnComposition(){if(published_)published_->valid=false;}
+ PortableHcReadMethod hc_read_method()const{return hc_->read_method();}
  int layer()const{return layer_;}uint64_t position()const{return position_;}uint64_t generation()const{return generation_;}bool poisoned()const{return poisoned_;}
  bool provenance_live()const{return !anchor_||(position_&&anchor_->live()&&anchor_->layer()+1==layer_&&anchor_->position()==position_-1);}
  bool available()const{return !running_&&!poisoned_&&generation_!=UINT64_MAX&&!core_->candidate()&&!core_->poisoned()&&provenance_live();}
