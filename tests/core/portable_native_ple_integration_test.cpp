@@ -46,7 +46,16 @@ static bool terminal_fail_write_after=false;
 static size_t terminal_partial_write_hits=0;
 static size_t terminal_fail_head_at=SIZE_MAX,terminal_head_attempts=0;
 #endif
-static void verify_hc_role(const ggml_tensor* t,size_t i){std::vector<unsigned char> v(ggml_nbytes(t));ggml_backend_tensor_get(t,v.data(),0,v.size());check(v==hc_roles[i],"HC copied role");}
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+static std::array<std::vector<unsigned char>,4> model_ple_hc_roles;
+#endif
+static void verify_hc_role(const ggml_tensor* t,size_t i){std::vector<unsigned char> v(ggml_nbytes(t));ggml_backend_tensor_get(t,v.data(),0,v.size());
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ check(v==hc_roles[i] || v==model_ple_hc_roles[i],"HC copied role");
+#else
+ check(v==hc_roles[i],"HC copied role");
+#endif
+}
 static void fill_hc(ggml_tensor* t,float x){std::vector<float> v(ggml_nelements(t),x);ggml_backend_tensor_set(t,v.data(),0,v.size()*sizeof(float));}
 static unsigned candidate_writes=0;
 static void write_then_throw(const char* point, std::initializer_list<ggml_tensor*> tensors, float value) {

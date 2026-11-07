@@ -47,6 +47,24 @@ expert execution, admission and model failure/reset qualification, and physical
 GPU validation remain. No independent-request batching, speculation, full model
 parity or throughput result is implied.
 
+## Bounded 48-layer row executor
+
+`PortableNativeModelRows` is an internal, synchronous borrowed-owner chain from
+checked layer 0 token embedding through typed PLE and all ordinary GDN and QSA
+layers to the layer 47 terminal and actual head. Assembly starts at position
+zero. The caller owns the roles, providers, backends and separately admitted
+component resources, and must keep them alive and exclusive. A failed batch
+poisons the chain; earlier layers may already have committed and ordered reset
+and replay are required. This is not a GGUF-to-model factory or public native
+chunk admission; existing model chunk refusals are unchanged.
+
+A CPU fixture with synthetic, bounded component mocks compares three T1 calls,
+T2 plus T1, and T1 plus T2 for three tokens. It compares logits, routes, PLE
+history and all GDN/QSA states, checks batch dispatch and preflight, and tests
+provider and terminal failures followed by reset/replay. Its F32 vocabulary
+has 16 entries. These are orchestration checks, not physical GPU or native
+numerical parity, production resource admission, quality or performance proof.
+
 ## Bounded terminal composition
 
 The standalone layer 47 terminal accepts live layer 46 FFN snapshots. It runs
