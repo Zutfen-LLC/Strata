@@ -21,6 +21,7 @@ using namespace strata::core;
 using namespace strata::core::portable_detail;
 using namespace gdn_fixture;
 namespace {
+bool observe_ple_hc=false;size_t ple_hc_links=0;
 bool inspect_producer=false;std::vector<float> actual_projected,actual_attention_inject;size_t ffn_mixed_consumers=0;
 size_t write_owners=0,write_calls=0;bool fail_write_create=false,fail_write_run=false;ggml_tensor* actual_final_write_bank=nullptr;
 const ggml_tensor* live_ffn_residual=nullptr;const ggml_tensor* live_ffn_inject=nullptr;std::vector<float> write_seen_block;
@@ -171,7 +172,8 @@ size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*){return 512;}
 void strata_vk_native_hc_destroy(StrataVkNativeHc*p)noexcept{if(p)--owners;if(!owners){bound_weight=nullptr;live_normalized=nullptr;}delete p;}
 void strata_vk_native_hc_norm_only(StrataVkNativeHc*,const ggml_tensor*x,const ggml_tensor*w,ggml_tensor*xn,ggml_tensor*rs){check(!fail_run&&x==actual_final_write_bank,"head must read actual final FFN producer");auto out=native_hc_norm_oracle(get(x),get(w),1);put(xn,out.xn);put(rs,out.rs);live_normalized=xn;last_norm_ffn=false;++calls;}
 void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*x,const ggml_tensor*w,const ggml_tensor*wi,ggml_tensor*xn,ggml_tensor*rs,ggml_tensor*inject,uint32_t t){
- native_hc_environment();last_norm_ffn=std::string(ggml_get_name(wi)).ends_with(".hc_ffn_inject.weight");check(x->ne[0]==2560&&x->ne[1]==4&&!x->view_src&&xn->ne[0]==10240&&xn->ne[1]==1&&!xn->view_src,"original input/normalized geometry");live_normalized=xn;
+ if(observe_ple_hc){check(actual_ple_conv_result&&x==actual_ple_conv_result,"HC must read completed PLE producer bank");check(x->buffer&&ggml_is_contiguous(x)&&ggml_backend_buffer_get_type(x->buffer)==ggml_backend_buffer_get_type(xn->buffer),"HC producer device/span");++ple_hc_links;}
+ native_hc_environment();last_norm_ffn=std::string(ggml_get_name(wi)).ends_with(".hc_ffn_inject.weight");check((observe_ple_hc ? (x==actual_ple_conv_result&&ggml_nelements(x)==10240) : (x->ne[0]==2560&&x->ne[1]==4&&!x->view_src))&&xn->ne[0]==10240&&xn->ne[1]==1&&!xn->view_src,"original input/normalized geometry");live_normalized=xn;
  check(t==1&&wi->type==GGML_TYPE_I32&&ggml_nbytes(wi)==81920,"native weight/T binding");
  check(!fail_run,"injected HC failure");
  std::vector<uint16_t>weight(40960);ggml_backend_tensor_get(wi,weight.data(),0,81920);check(weight==(last_norm_ffn&&!expected_ffn_inject.empty()?expected_ffn_inject:expected_weights),"BF16 replacement differs from original pack conversion");
