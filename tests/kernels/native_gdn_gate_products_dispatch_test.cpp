@@ -1,4 +1,4 @@
-// Actual GDN row convolution wrapper with mocked Vulkan submission. No GPU arithmetic.
+// Actual GDN product gate run wrapper with mocked Vulkan submission. No GPU arithmetic.
 #include "ggml.h"
 #include "ggml-backend-impl.h"
 #include <array>
@@ -16,7 +16,6 @@ struct StrataVkLogitsGuard { ggml_backend_t backend; ggml_tensor* status=nullptr
 static size_t submissions=0; static std::array<uint32_t,9> offsets; static std::array<uint32_t,3> grid; static std::array<const ggml_tensor*,9> descriptors; static size_t di=0; static uint32_t fake_status=0; static const ggml_tensor* status_tensor=nullptr;
 static bool ggml_backend_is_vk(ggml_backend_t){return true;}
 static bool ggml_backend_buffer_is_vk(ggml_backend_buffer_t){return true;}
-static std::unique_ptr<StrataVkLogitsGuard> strata_vk_q8_component_owner(ggml_backend_t b,const uint32_t*,size_t,NativeComponentAddressing,const char*,uint32_t n,uint32_t words,const char*,size_t,size_t){if(n!=11||words!=12)throw std::runtime_error("pipeline layout");return std::make_unique<StrataVkLogitsGuard>(StrataVkLogitsGuard{b});}
 static uint32_t get_misalign_bytes(ggml_backend_vk_context*,const ggml_tensor*t){return uintptr_t(t->data)%256;}
 static void ggml_backend_vk_synchronize(ggml_backend_t){}
 static void ggml_pipeline_request_descriptor_sets(ggml_backend_vk_context*,int,int){di=0;}
@@ -41,7 +40,7 @@ struct StrataVkNativeGdnAbRows { std::unique_ptr<StrataVkLogitsGuard> owner;size
 #undef ggml_backend_tensor_set
 #undef ggml_backend_buffer_get_base
 using namespace strata::core::portable_detail;
-static void need(bool b){if(!b)throw std::runtime_error("conv mock contract");}
+static void need(bool b){if(!b)throw std::runtime_error("product gate mock contract");}
 template<class F> static void reject(F f){auto before=submissions;bool caught=false;try{f();}catch(const std::invalid_argument&){caught=true;}need(caught&&before==submissions);}
 int main(){try{
  ggml_backend_vk_context vk;ggml_backend backend{};backend.context=&vk;ggml_backend_vk_buffer_context bc;bc.device=vk.device;ggml_backend_buffer buffer{};buffer.context=&bc;buffer.size=16u<<20;

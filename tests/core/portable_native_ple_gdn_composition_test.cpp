@@ -26,6 +26,7 @@ size_t model_qsa_t2=0,model_gdn_t2=0;
 float model_gdn_signal=1.f; bool model_gdn_saturated=false,model_qsa_saturated=false;
 size_t family_alpha_seen=0,family_input_seen=0,family_output_seen=0,family_conv_live=0;
 bool family_f16_capture=false;std::vector<float> family_f16_mixed,family_f16_qkv,family_f16_z,family_f16_y;
+bool family_ab_capture=false;size_t family_ab_calls=0;std::vector<float> family_ab_mixed,family_ab_alpha,family_ab_beta,family_ab_recurrence_beta;
 #endif
 }
 namespace strata::core::portable_detail {
@@ -71,7 +72,13 @@ void strata_vk_native_gdn_conv_rows_destroy(StrataVkNativeGdnConvRows*p)noexcept
  delete p;}size_t strata_vk_native_gdn_conv_rows_bytes(const StrataVkNativeGdnConvRows*){return 512;}
 StrataVkNativeGdnAbRows* strata_vk_native_gdn_ab_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";if(fail==2)throw std::runtime_error("AB factory");return new StrataVkNativeGdnAbRows;}
 StrataVkNativeGdnAbRows* strata_vk_native_gdn_gate_products_create(ggml_backend_t b,const char*p,size_t n){return strata_vk_native_gdn_ab_rows_create(b,p,n);}
-uint32_t strata_vk_native_gdn_gate_products_run(StrataVkNativeGdnAbRows*,ggml_tensor*const[8],uint32_t){throw std::runtime_error("unexpected product gate");}
+uint32_t strata_vk_native_gdn_gate_products_run(StrataVkNativeGdnAbRows*,ggml_tensor*const t[8],uint32_t n){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ check(family_ab_capture,"unexpected product gate");family_ab_mixed=get(t[0]);family_ab_alpha=get(t[1]);family_ab_beta=get(t[2]);++family_ab_calls;check(family_ab_alpha.size()==n*48&&family_ab_beta.size()==n*48,"product spans");put(t[5],family_ab_alpha);put(t[6],family_ab_beta);return fail==5?1:0;
+#else
+ (void)t;(void)n;throw std::runtime_error("unexpected product gate");
+#endif
+}
 void strata_vk_native_gdn_ab_rows_destroy(StrataVkNativeGdnAbRows*p)noexcept{delete p;}size_t strata_vk_native_gdn_ab_rows_bytes(const StrataVkNativeGdnAbRows*){return 512;}
 StrataVkNativeGdnRows* strata_vk_native_gdn_rows_create(ggml_backend_t,const char*p,size_t){std::ofstream(p)<<"mock";if(fail==3)throw std::runtime_error("recurrence factory");return new StrataVkNativeGdnRows;}
 void strata_vk_native_gdn_rows_destroy(StrataVkNativeGdnRows*p)noexcept{delete p;}size_t strata_vk_native_gdn_rows_bytes(const StrataVkNativeGdnRows*){return 512;}
@@ -100,6 +107,7 @@ void strata_vk_native_gdn_rows_run(StrataVkNativeGdnRows*,ggml_tensor*const t[13
  auto state=get(t[0]),h=get(t[1]),gate=get(t[2]),z=get(t[4]);std::vector<float>y(n*6144);for(size_t r=0;r<n;++r)for(size_t i=0;i<6144;++i){state[i]+=h[r*10240+i]+gate[r*48]+z[r*6144+i];y[r*6144+i]=state[i];}
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  if(family_f16_capture){family_f16_z=z;family_f16_y=y;}
+ if(family_ab_capture)family_ab_recurrence_beta=get(t[3]);
 #endif
  put(t[6],state);put(t[7],y);if(fail==6)throw std::runtime_error("recurrence wrote then threw");}
 }

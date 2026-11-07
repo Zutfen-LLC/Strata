@@ -48,7 +48,7 @@ public:
  size_t bytes()const{return bytes_;}size_t graph_attempts()const{return attempts_;}bool valid()const{return ready_!=0;}
  ggml_tensor* output(size_t i,size_t rows)const{need(i<2&&ready_==rows&&ready_,"GDN BF16 AB: stale output");return output_[i][rows-1];}
  void run(const std::vector<float>&mixed,size_t rows){ready_=0;need((rows==1||rows==2)&&mixed.size()==rows*2560,"GDN BF16 AB: input shape");std::vector<float> rounded(mixed.size());
-  for(size_t i=0;i<mixed.size();++i){need(std::isfinite(mixed[i]),"GDN BF16 AB: nonfinite input");rounded[i]=ggml_bf16_to_fp32(ggml_fp32_to_bf16(mixed[i]));need(std::isfinite(rounded[i])&&(rounded[i]==0.f||std::isnormal(rounded[i])),"GDN BF16 AB: rounded input domain");}
+  for(size_t i=0;i<mixed.size();++i){need(std::isfinite(mixed[i])&&(mixed[i]==0.f||std::isnormal(mixed[i])),"GDN BF16 AB: input domain");rounded[i]=ggml_bf16_to_fp32(ggml_fp32_to_bf16(mixed[i]));need(std::isfinite(rounded[i])&&(rounded[i]==0.f||std::isnormal(rounded[i])),"GDN BF16 AB: rounded input domain");}
   ggml_backend_tensor_set(input_[rows-1],rounded.data(),0,rounded.size()*sizeof(float));++attempts_;auto status=ggml_backend_graph_compute(backend_,graph_[rows-1]);ggml_backend_synchronize(backend_);need(status==GGML_STATUS_SUCCESS,"GDN BF16 AB: graph failure");
   for(size_t i=0;i<2;++i){std::vector<float> v(rows*48);ggml_backend_tensor_get(output_[i][rows-1],v.data(),0,v.size()*sizeof(float));for(float x:v)need(std::isfinite(x),"GDN BF16 AB: product domain");}ready_=rows;
  }

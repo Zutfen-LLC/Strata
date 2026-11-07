@@ -47,7 +47,7 @@ public:
  // Host scratch requested by reset/read/run, excluding caller copies, roles,
  // backend internals and allocator overhead. Not an RSS bound. The selected
  // product owner's additional host envelope is charged in caps.products.
- static size_t host_bound(){return ple_host_add(65536,ple_host_add(786432*sizeof(float),30720*sizeof(float)));}
+ static size_t host_bound(PortableGdnAbMethod method=PortableGdnAbMethod::legacy_fused){need(method==PortableGdnAbMethod::legacy_fused||method==PortableGdnAbMethod::baseline_bf16,"GDN core rows: method");auto n=ple_host_add(65536,ple_host_add(786432*sizeof(float),30720*sizeof(float)));return method==PortableGdnAbMethod::baseline_bf16?ple_host_add(n,PortableNativeGdnBf16AbRows::host_bound()):n;}
  static size_t estimate(ggml_backend_t backend,Caps caps){need(backend,"GDN core rows: backend");auto c=context();std::array<ggml_tensor*,2>s{},h{};std::array<Bank,2>b{};allocate(c.get(),s,h,b);auto n=ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(backend));return ple_host_add(n,ple_host_add(caps.conv,ple_host_add(caps.ab,ple_host_add(caps.recurrence,caps.products))));}
  PortableNativeGdnCoreRows(ggml_backend_t backend,const std::array<ggml_tensor*,6>&roles,Caps caps,size_t budget,const std::string&dir,PortableGdnAbMethod method=PortableGdnAbMethod::legacy_fused):method_(method),roles_(roles),backend_(backend){
   need((method==PortableGdnAbMethod::legacy_fused||method==PortableGdnAbMethod::baseline_bf16)&&backend&&!dir.empty()&&estimate(backend,caps)<=budget,"GDN core rows: admission");

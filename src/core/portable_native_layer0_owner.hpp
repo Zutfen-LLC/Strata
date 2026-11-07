@@ -22,7 +22,7 @@ public:
         PortableNativeHcComposed::ComponentCaps ffn_caps;
     };
     PortableNativeLayer0Owner(std::shared_ptr<const GgufModel> model,ggml_backend_t backend,
-                              const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1):model_(std::move(model)) {
+                              const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32,PortableGdnProjectionMethod gdn_method=PortableGdnProjectionMethod::legacy_q8_1,PortableGdnAbMethod ab_method=PortableGdnAbMethod::legacy_fused):model_(std::move(model)) {
         need(model_&&backend&&!prefix.empty(),"layer0 owner: model/backend/prefix");
         auto g=PortableNativeGdnComponents::from_gguf(*model_,0);PortableNativeGdnComponents::validate(0,g,gdn_method);
         auto r=PortableNativeFfnOwner::from_gguf(*model_,0);PortableNativeFfnOwner::validate(0,r,method);
@@ -37,8 +37,9 @@ public:
         size_t h=ple_host_add(ple_host_add(b.gdn.host,b.rows.host),ple_host_add(fh,PortableNativeLayer0Composition::host_bound()));
         size_t d=ple_host_add(ple_host_add(b.gdn.device,b.rows.device),ple_host_add(b.ffn_hc,b.write));
         need(h<=b.host&&d<=b.device&&NativeFfnHcFactory::device_bound(backend,b.ffn_caps)<=b.ffn_hc,"layer0 owner: aggregate budget");
+        PortableNativeGdnComponents::preflight(backend,(prefix+".gdn").size()+3,b.gdn,gdn_method,ab_method);
         rows_=std::make_unique<PortableNativeFfnOwner>(0,backend,r,prefix+".rows",b.rows,method);
-        gdn_=std::make_unique<PortableNativeGdnComponents>(0,backend,g,prefix+".gdn",b.gdn,gdn_method);
+        gdn_=std::make_unique<PortableNativeGdnComponents>(0,backend,g,prefix+".gdn",b.gdn,gdn_method,ab_method);
         std::vector<PortableTensorView> ah{g[9],g[10],g[11],g[12]};
         auto attention=NativeFfnHcFactory::create(0,backend,ah,b.gdn.hc,NativeFfnHcFactory::host_bound(prefix.size()+7),(prefix+".attn").c_str(),{},b.gdn.hc_caps,true);
         auto ffn=NativeFfnHcFactory::create(0,backend,f,b.ffn_hc,fh,path.c_str(),{},b.ffn_caps);
@@ -49,6 +50,7 @@ public:
     PortableRouterMethod router_method()const{return rows_->router_method();}
     PortableGdnProjectionMethod gdn_input_method()const{return gdn_->input_method();}
     PortableGdnProjectionMethod gdn_output_method()const{return gdn_->output_method();}
+    PortableGdnAbMethod gdn_ab_method()const{return composition_->ab_method();}
     PortableNativeLayer0Composition& composition(){return *composition_;}
 };
 }
