@@ -42,6 +42,8 @@ public:
  ~PortableNativePleGdnComposition(){if(published_)published_->valid=false;}
  uint64_t position()const{return position_;}uint64_t generation()const{return generation_;}bool poisoned()const{return poisoned_;}
  bool provenance_live()const{return ple_.position()==position_&&ple_.provenance_live();}
+ const PortableNativePleComposition* ple_identity()const{return &ple_;}
+ bool available()const{return !running_&&!poisoned_&&generation_!=UINT64_MAX&&!core_->candidate()&&!core_->poisoned()&&provenance_live();}
  std::vector<float> committed_state()const{return core_->committed_state();}
  std::vector<float> committed_history()const{return core_->committed_history();}
  // Optional preparation may perform downstream work that can still fail.

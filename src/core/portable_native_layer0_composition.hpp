@@ -74,7 +74,7 @@ class PortableNativeLayer0Composition {
     struct Bank {ggml_tensor *residual,*block,*inject,*candidate,*gate,*exp;};
     std::array<Bank,2> banks_{};
     std::shared_ptr<PortableNativeLayer0Rows::Epoch> epoch_=std::make_shared<PortableNativeLayer0Rows::Epoch>();
-    uint64_t position_=0; bool running_=false,poisoned_=false;
+    uint64_t position_=0, reset_generation_=0; bool running_=false,poisoned_=false;
     static void need(bool b,const char* m){if(!b)throw std::runtime_error(m);}
 public:
     // Excludes borrowed owners, backend internals, allocator metadata and caller-retained rows.
@@ -103,10 +103,15 @@ public:
     PortableNativeLayer0Composition& operator=(const PortableNativeLayer0Composition&)=delete;
     ~PortableNativeLayer0Composition(){epoch_->valid=false;}
     uint64_t position()const{return position_;} bool poisoned()const{return poisoned_;}
+    uint64_t reset_generation()const{return reset_generation_;}
+    size_t vocabulary_size()const{return size_t(embedding_.shape[1]);}
+    const void* rows_identity()const{return &ffn_;}
+    uint64_t rows_generation()const{return ffn_.generation();}
+    bool available()const{return !running_&&!poisoned_&&!core_->candidate()&&!core_->poisoned()&&!ffn_.poisoned()&&ffn_.generation()!=UINT64_MAX;}
     std::vector<float> committed_state()const{return core_->committed_state();}
     std::vector<float> committed_history()const{return core_->committed_history();}
     void reset(){
-        need(!running_,"layer0: active reset"); auto next=std::make_shared<PortableNativeLayer0Rows::Epoch>();
+        need(!running_&&reset_generation_!=UINT64_MAX,"layer0: active reset or generation exhausted"); ++reset_generation_; auto next=std::make_shared<PortableNativeLayer0Rows::Epoch>();
         poisoned_=true; epoch_->valid=false; attention_->reset(); ffn_hc_->reset(); ffn_.reset(); core_->reset();
         epoch_.swap(next);position_=0;poisoned_=false;
     }

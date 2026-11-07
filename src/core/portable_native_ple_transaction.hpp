@@ -221,6 +221,8 @@ public:
         std::fill(history_.begin(), history_.end(), 0.0f);
     }
     uint64_t position() const { return position_; }
+    uint64_t generation() const { return generation_; }
+    bool available() const { return !pending_ && !executing_ && generation_ != UINT64_MAX; }
     const std::vector<float>& history() const { return history_; }
     std::array<int32_t,2> previous() const { return previous_; }
 };
