@@ -83,8 +83,11 @@ outside its checked normal-or-zero domain, including activation arguments
 above magnitude 80 and subnormal or overflowing 16-bit images.
 
 CPU tests exercise the actual product graphs and composed transaction with
-mocked scalar stages. Separate mocked Vulkan transport tests and shader
-compilation do not execute the arithmetic on a GPU. Float-control and effective
+mocked scalar stages, including a materialized PLE transaction and a genuine
+QSA-issued pending snapshot. Product image inputs reject incompatible GGML
+layouts; scalar Vulkan spans reject tensor views and nonzero view offsets.
+Separate mocked Vulkan transport tests and shader compilation do not execute
+the arithmetic on a GPU. Float-control and effective
 shader checks do not establish vendor GEMM, exp, rsqrt or reduction equality.
 The HC role factory can select it for named attention or FFN roles; higher
 layer and model owners do not yet propagate the selector. It does not enable

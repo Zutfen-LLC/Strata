@@ -55,7 +55,7 @@ class PortableNativeHcBf16Products {
  // Their full borrowed buffers are not in device_bytes(); the enclosing owner
  // must charge them, with deduplication, for the duration of each call.
  void upload_image(const ggml_tensor* src,size_t n,ggml_tensor* dst){
-  need(src&&src->buffer&&src->data&&src->type==GGML_TYPE_F32&&ggml_is_contiguous(src)&&ggml_nbytes(src)==n*sizeof(float)&&
+  need(src&&src->buffer&&src->data&&src->type==GGML_TYPE_F32&&ggml_is_contiguous(src)&&ggml_nbytes(src)==n*sizeof(float)&&ggml_are_same_shape(src,dst)&&ggml_are_same_stride(src,dst)&&
        ggml_backend_buffer_get_type(src->buffer)==ggml_backend_get_default_buffer_type(backend_)&&src->buffer!=buffer_.get(),"HC BF16 products: image descriptor");
   auto base=reinterpret_cast<uintptr_t>(ggml_backend_buffer_get_base(src->buffer)),data=reinterpret_cast<uintptr_t>(src->data);size_t cap=ggml_backend_buffer_get_size(src->buffer);
   need(data>=base&&data-base<=cap&&n*sizeof(float)<=cap-(data-base),"HC BF16 products: image span");

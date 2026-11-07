@@ -12,6 +12,7 @@ int main(){try{
  std::unique_ptr<ggml_context,decltype(&ggml_free)> c(ggml_init({16384,nullptr,true}),ggml_free);
  std::array<ggml_tensor*,3>w{ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,1638400),ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,1638400),ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,20480)};
  auto* image=ggml_new_tensor_2d(c.get(),GGML_TYPE_F32,10240,2);auto* low_image=ggml_new_tensor_2d(c.get(),GGML_TYPE_F32,320,2);
+ auto* flat_image=ggml_new_tensor_1d(c.get(),GGML_TYPE_F32,20480);auto* flat_low=ggml_new_tensor_1d(c.get(),GGML_TYPE_F32,640);
  std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)> buf(ggml_backend_alloc_ctx_tensors(c.get(),b.get()),ggml_backend_buffer_free);
  // Literal BF16 weights; no production rounding helper is used as an oracle.
  std::vector<uint16_t> d(10240*320),u(320*10240),inj(10240*4);
@@ -54,5 +55,8 @@ int main(){try{
  xi[0]=1;ggml_backend_tensor_set(image,xi.data(),0,xi.size()*4);p.down_image(image,2);li[0]=std::numeric_limits<float>::infinity();ggml_backend_tensor_set(low_image,li.data(),0,li.size()*4);need(fails([&]{p.up_image(low_image);})&&fails([&]{p.output(0);}),"low image domain/stale");
  li[0]=1;ggml_backend_tensor_set(low_image,li.data(),0,li.size()*4);p.down_image(image,2);p.up_image(low_image);p.inject();need(get(p.output(2))==iv,"image recovery");
  p.down_image(image,2);auto* internal=p.output(0);need(fails([&]{p.up_image(internal);})&&fails([&]{p.output(0);}),"internal image alias/stale");
+ need(fails([&]{p.down_image(flat_image,2);})&&fails([&]{p.output(2);}),"flat normalized image/stale");
+ p.down_image(image,2);need(fails([&]{p.up_image(flat_low);})&&fails([&]{p.output(0);}),"flat low image/stale");
+ p.down_image(image,2);p.up_image(low_image);p.inject();need(get(p.output(2))==iv,"wrong-layout recovery");
  puts("HC BF16 CPU product graphs passed (SiLU and device arithmetic not tested)");return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}

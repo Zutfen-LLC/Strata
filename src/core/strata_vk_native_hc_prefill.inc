@@ -24,7 +24,7 @@ void strata_vk_native_hc_prefill_run(StrataVkNativeHcPrefill* p,uint32_t mode,ui
  const auto* sizes=mode==0?norm:mode==1?silu:mix;std::array<uint32_t,9> params{mode,rows,0,0,0,0,0,0,0};
  for(size_t i=0;i<6;++i){if(!sizes[i]){native_hc_need(!t[i],"HC prefill: unused binding");continue;}auto* v=t[i];
   const auto type=(i==4||(i==5&&mode==2))?GGML_TYPE_I32:GGML_TYPE_F32;
-  native_hc_need(v&&v->type==type&&ggml_nbytes(v)==sizes[i]&&v->buffer&&ggml_is_contiguous(v)&&ggml_backend_buffer_is_vk(v->buffer),"HC prefill: type/span/backend");
+  native_hc_need(v&&v->type==type&&ggml_nbytes(v)==sizes[i]&&v->buffer&&v->data&&!v->view_src&&v->view_offs==0&&ggml_is_contiguous(v)&&ggml_backend_buffer_is_vk(v->buffer),"HC prefill: type/span/backend");
   auto* b=static_cast<ggml_backend_vk_buffer_context*>(v->buffer->context);native_hc_need(b->device.lock()==ctx->device,"HC prefill: foreign device");
   auto base=reinterpret_cast<uintptr_t>(ggml_backend_buffer_get_base(v->buffer)),data=reinterpret_cast<uintptr_t>(v->data);size_t capacity=ggml_backend_buffer_get_size(v->buffer);native_hc_need(data>=base&&data-base<=capacity&&sizes[i]<=capacity-(data-base),"HC prefill: backing span");
   auto bias=get_misalign_bytes(ctx,v);native_hc_need(bias%4==0&&uint64_t(bias)/4+sizes[i]/4-1<=UINT32_MAX,"HC prefill: offset");params[2+i]=bias/4;

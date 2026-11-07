@@ -61,6 +61,9 @@ int main(){try{
  vk.device->properties.limits.maxComputeWorkGroupCount[1]=1;reject([&]{strata_vk_native_hc_prefill_run(p.get(),0,2,norm);});vk.device->properties.limits.maxComputeWorkGroupCount[1]=65535;
  fake_status=1;bool caught=false;try{strata_vk_native_hc_prefill_run(p.get(),0,2,norm);}catch(...){caught=true;}native_hc_need(caught,"device status");fake_status=0;
  for(size_t i:{0u,2u,3u,4u,5u})norm[i]->ne[0]/=2;strata_vk_native_hc_prefill_run(p.get(),0,1,norm);native_hc_need(calls.back().grid==std::array<uint32_t,3>{4,1,1},"T1 grid");
- auto save=norm[0]->data;norm[0]->data=(void*)(buffer.size-4);reject([&]{strata_vk_native_hc_prefill_run(p.get(),0,1,norm);});norm[0]->data=save;
+ auto save=norm[0]->data;norm[0]->data=(void*)(buffer.size-4);reject([&]{strata_vk_native_hc_prefill_run(p.get(),0,1,norm);});norm[0]->data=nullptr;reject([&]{strata_vk_native_hc_prefill_run(p.get(),0,1,norm);});norm[0]->data=save;
+ norm[0]->view_src=norm[1];reject([&]{strata_vk_native_hc_prefill_run(p.get(),0,1,norm);});norm[0]->view_src=nullptr;
+ norm[0]->view_offs=4;reject([&]{strata_vk_native_hc_prefill_run(p.get(),0,1,norm);});norm[0]->view_offs=0;
+ strata_vk_native_hc_prefill_run(p.get(),0,1,norm);native_hc_need(calls.back().grid==std::array<uint32_t,3>{4,1,1},"view refusal recovery");
  puts("HC prefill wrapper transport controls passed; no shader execution");return 0;
 }catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return 1;}}
