@@ -50,7 +50,11 @@ void strata_vk_gdn_output_quantize_bounded(StrataVkNativeStages*,const ggml_tens
 void strata_vk_gdn_output_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*y,size_t rows){++out_dot;std::vector<float>v(rows*2560);for(size_t r=0;r<rows;++r)for(size_t i=0;i<2560;++i)v[r*2560+i]=gdn_quant_input[r*6144+i];put(y,v);write_then_throw("gdn output dot",{y},9);}
 }
 
+#ifdef STRATA_TERMINAL_FIXTURE
+int prior_chain_main(){try{
+#else
 int main(){try{
+#endif
  std::string error;auto table=ple_fixture::small_table(error);check(bool(table),"fixture table");auto b=std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)>(ggml_backend_cpu_init(),ggml_backend_free);
  auto c=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({32768,nullptr,true}),ggml_free);auto*k=ggml_new_tensor_2d(c.get(),GGML_TYPE_Q8_0,2560,10240);auto*v=ggml_new_tensor_1d(c.get(),GGML_TYPE_I32,2560*2560/2);
  auto*qi=ggml_new_tensor_2d(c.get(),GGML_TYPE_Q8_0,2560,10240);auto*zi=ggml_new_tensor_2d(c.get(),GGML_TYPE_Q8_0,2560,6144);auto*wo=ggml_new_tensor_2d(c.get(),GGML_TYPE_Q8_0,6144,2560);

@@ -1,6 +1,7 @@
 // CPU-only test of the real empty-Dispatch wiring; not shader or GPU evidence.
 #include "portable_native_hc_composed.hpp"
 #include "portable_native_ffn_hc_factory.hpp"
+#include "portable_native_terminal_composition.hpp"
 #include "ggml-cpu.h"
 #include <algorithm>
 #include <array>
@@ -145,6 +146,13 @@ int main(){try {
   const auto exact=upload+Owner::tensor_bound(cpu.get(),desc)+pb+nb+mb;reject(v,exact-1,SIZE_MAX);
   auto converted=std::array<std::vector<uint16_t>,3>{native_hc_q8_bf16(q[0].data(),q[0].size(),count[0]),native_hc_q8_bf16(q[1].data(),q[1].size(),count[1]),native_hc_q8_bf16(q[2].data(),q[2].size(),count[2])};
   auto owner=NativeFfnHcFactory::create(3,cpu.get(),v,exact,SIZE_MAX,"factory",{},Owner::ComponentCaps{pb,nb,mb});
+  auto terminal=v;for(auto& role:terminal)role.name.replace(0,6,"blk.47.");
+  bool rejected=false;try{auto x=NativeFfnHcFactory::create(47,cpu.get(),terminal,exact,SIZE_MAX,"factory",{},Owner::ComponentCaps{pb,nb,mb});}catch(...){rejected=true;}
+  check(rejected,"ordinary factory admitted terminal layer");
+  rejected=false;try{auto x=NativeFfnHcFactory::create(3,cpu.get(),v,exact,SIZE_MAX,"factory",{},Owner::ComponentCaps{pb,nb,mb},false,true);}catch(...){rejected=true;}
+  check(rejected,"terminal factory admitted ordinary layer");
+  auto terminal_owner=NativeFfnHcFactory::create(47,cpu.get(),terminal,exact,SIZE_MAX,"factory",{},Owner::ComponentCaps{pb,nb,mb},false,true);
+  check(bool(terminal_owner),"terminal named roles rejected");
   std::fill(norm.begin(),norm.end(),9.f);for(auto& x:q)std::fill(x.begin(),x.end(),0);
   std::vector<float> copied(10240);ggml_backend_tensor_get(owner->role_bank()->role(0),copied.data(),0,copied.size()*4);check(copied[0]==2.f,"factory norm not copied");
   for(size_t i=0;i<3;++i){std::vector<uint16_t> value(count[i]);ggml_backend_tensor_get(owner->role_bank()->role(i+1),value.data(),0,value.size()*2);check(value==converted[i],"factory FFN role conversion/copy");}

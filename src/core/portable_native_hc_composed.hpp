@@ -66,6 +66,7 @@ public:
 };
 class PortableNativeHcComposed {
     friend class PortableNativeFfnComposition;
+    friend class PortableNativeTerminalComposition;
     friend class PortableNativeLayer0Composition;
     friend class NativeFfnHcFactory;
     int checked_layer_=-1;

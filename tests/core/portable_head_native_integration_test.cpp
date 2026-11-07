@@ -9,6 +9,7 @@
 #include "ggml-backend-impl.h"
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -53,7 +54,7 @@ int main(int argc,char**argv){try{
  native_hc_need(!PortableHead::create({2560,4,319,2,1e-6f},views,o,error),"head unsupported rank accepted");
  const auto saved=q[1];q[1]=0x7c;native_hc_need(!PortableHead::create(geo,views,o,error),"head nonfinite source scale accepted");q[1]=saved;
  norm[0]=std::numeric_limits<float>::infinity();native_hc_need(!PortableHead::create(geo,views,o,error),"head nonfinite norm accepted");norm[0]=1.f;
- const auto admission=PortableHead::admission(geo,views,o,false);auto head=PortableHead::create(geo,views,o,error);native_hc_need(bool(head),error.c_str());native_hc_need(head->weight_bytes()<=weight&&head->graph_bytes()<=o.graph_budget&&head->memory_usage().device_state>0&&admission.graph_bound>=head->memory_usage().device_state,"head converted weights/owner admission");
+ const auto admission=PortableHead::admission(geo,views,o,false);auto head=PortableHead::create(geo,views,o,error);native_hc_need(bool(head),error.c_str());native_hc_need(head->vocabulary_size()==2,"head vocabulary size");native_hc_need(head->weight_bytes()<=weight&&head->graph_bytes()<=o.graph_budget&&head->memory_usage().device_state>0&&admission.graph_bound>=head->memory_usage().device_state,"head converted weights/owner admission");
  PortableFinalHcResidual producer{final_bank,24,42,3,47,final_bank,[](const void* owner,const PortableFinalHcResidual& info){return owner==info.tensor;}};
  std::vector<float> logits;native_hc_need(head->run_device(producer,logits,error),error.c_str());native_hc_need(graph_links==1&&logits==std::vector<float>({2560.f,2560.f})&&head->native_hc_calls()==1,"actual head mixer/vocabulary link");native_hc_need(!std::filesystem::exists(std::filesystem::path(o.native_head_hc_receipt_prefix)/"vocabulary"),"disabled vocabulary created receipt");
  producer.position=26;producer.write_sequence=4;std::vector<float> current(10240,26.f);ggml_backend_tensor_set(final_bank,current.data(),0,current.size()*4);
@@ -75,16 +76,22 @@ int main(int argc,char**argv){try{
  const auto vocab_receipt=std::filesystem::path(vo.native_head_hc_receipt_prefix)/"vocabulary";
  fail_vocab=true;logits={42.f};native_hc_need(!vhead->run_device(producer,logits,error)&&logits.empty()&&vhead->native_vocab_calls()==0&&!std::filesystem::exists(vocab_receipt/"first-q8_1.bin")&&!std::filesystem::exists(vocab_receipt/"first.json"),"failed first projection captured or published");fail_vocab=false;
  corrupt_packed=true;logits={42.f};native_hc_need(!vhead->run_device(producer,logits,error)&&logits.empty()&&vhead->native_vocab_calls()==0&&!std::filesystem::exists(vocab_receipt/"first-q8_1.bin"),"modified consumed packed bank was accepted");corrupt_packed=false;
- {std::ofstream conflict(vocab_receipt/"first.json");conflict<<"existing";}logits={42.f};native_hc_need(!vhead->run_device(producer,logits,error)&&logits.empty()&&!std::filesystem::exists(vocab_receipt/"first-q8_1.bin")&&!std::filesystem::exists(std::filesystem::path(vo.native_head_hc_receipt_prefix)/"first.json"),"failed receipt published or left packed bytes");std::filesystem::remove(vocab_receipt/"first.json");
+ if (std::getenv("STRATA_TEST_PRESERVE_MODEL_FIXTURE")) std::puts("SKIP: vocabulary receipt collision rollback (fixture preservation)");
+ if (!std::getenv("STRATA_TEST_PRESERVE_MODEL_FIXTURE")) {
+  {std::ofstream conflict(vocab_receipt/"first.json");conflict<<"existing";}logits={42.f};native_hc_need(!vhead->run_device(producer,logits,error)&&logits.empty()&&!std::filesystem::exists(vocab_receipt/"first-q8_1.bin")&&!std::filesystem::exists(std::filesystem::path(vo.native_head_hc_receipt_prefix)/"first.json"),"failed receipt published or left packed bytes");std::filesystem::remove(vocab_receipt/"first.json");
+ }
  const auto q_before=quant_calls,dot_before=dot_calls,calls_before_vocab=vhead->native_vocab_calls();
  native_hc_need(vhead->run_device(producer,logits,error)&&logits==std::vector<float>({1.f,2.f})&&quant_calls==q_before+1&&dot_calls==dot_before+1&&vhead->native_vocab_calls()==calls_before_vocab+1&&graph_links==old_graph,"native vocabulary producer or output link");
  std::ifstream qreceipt(vocab_receipt/"first-q8_1.bin",std::ios::binary);std::vector<uint8_t> qbytes((std::istreambuf_iterator<char>(qreceipt)),{});native_hc_need(qbytes==std::vector<uint8_t>(2880,0),"packed receipt is not actual consumed bank");
  std::ifstream vmetadata(vocab_receipt/"first.json");std::string vtext((std::istreambuf_iterator<char>(vmetadata)),{});native_hc_need(vtext.find("\"position\":26")!=std::string::npos&&vtext.find("\"producer_owner_id\":42")!=std::string::npos&&vtext.find("\"producer_write_sequence\":4")!=std::string::npos&&vtext.find("\"packed_consumer_identity\":true")!=std::string::npos&&vtext.find("\"logits_tensor_identity\":true")!=std::string::npos&&vtext.find("\"slice_count\":1")!=std::string::npos,"vocabulary receipt attribution differs");
  const auto successful_calls=vhead->native_vocab_calls();fail_vocab=true;logits={42.f};native_hc_need(!vhead->run_device(producer,logits,error)&&logits.empty()&&vhead->native_vocab_calls()==successful_calls&&graph_links==old_graph,"failed native vocabulary published logits");fail_vocab=false;
  native_hc_need(vhead->run_device(producer,logits,error)&&logits==std::vector<float>({1.f,2.f})&&vhead->native_vocab_calls()==successful_calls+1,"native vocabulary retry");
+ if (std::getenv("STRATA_TEST_PRESERVE_MODEL_FIXTURE")) std::puts("SKIP: HC receipt failure vocabulary rollback (fixture preservation)");
+ if (!std::getenv("STRATA_TEST_PRESERVE_MODEL_FIXTURE")) {
  auto hc_receipt_failure=vo;hc_receipt_failure.native_head_hc_receipt_prefix+="-hc-receipt-failure";auto hcfailed=PortableHead::create(geo,vocab_views,hc_receipt_failure,error);native_hc_need(bool(hcfailed),error.c_str());
  {std::ofstream conflict(std::filesystem::path(hc_receipt_failure.native_head_hc_receipt_prefix)/"first.json");conflict<<"existing";}
  logits={42.f};native_hc_need(!hcfailed->run_device(producer,logits,error)&&logits.empty()&&!std::filesystem::exists(std::filesystem::path(hc_receipt_failure.native_head_hc_receipt_prefix)/"vocabulary/first-q8_1.bin")&&!std::filesystem::exists(std::filesystem::path(hc_receipt_failure.native_head_hc_receipt_prefix)/"vocabulary/first.json"),"HC receipt failure did not roll back vocabulary receipt");
+ }
  auto guard_opts=vo;guard_opts.native_head_hc_receipt_prefix+="-guard";auto guarded=PortableHead::create(geo,vocab_views,guard_opts,error,true);native_hc_need(bool(guarded),error.c_str());nonfinite_vocab=true;native_hc_need(!guarded->run_device(producer,logits,error)&&logits.empty()&&!std::filesystem::exists(std::filesystem::path(guard_opts.native_head_hc_receipt_prefix)/"vocabulary/first-q8_1.bin"),"native vocabulary bypassed nonfinite guard or captured failure");nonfinite_vocab=false;native_hc_need(guarded->run_device(producer,logits,error)&&logits==std::vector<float>({1.f,2.f}),"native vocabulary guard retry failed");
  constexpr size_t large_rows=16385;std::vector<uint8_t> large_output(large_rows*80*34,0);auto large_views=views;large_views[3]={"output.weight",{2560,int64_t(large_rows)},8,large_output.data(),large_output.size()};auto large_opts=vo;large_opts.native_head_hc_receipt_prefix+="-sliced";
  auto sliced=PortableHead::create({2560,4,320,int64_t(large_rows),1e-6f},large_views,large_opts,error);native_hc_need(bool(sliced),error.c_str());const auto old_q=quant_calls,old_dot=dot_calls;
