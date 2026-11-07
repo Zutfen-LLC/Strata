@@ -3,7 +3,7 @@
 #include "strata_vk_native_qsa_norm_rope.hpp"
 namespace { bool fail_qsa_norm=false;size_t qsa_norm_calls=0;std::vector<float>qsa_last_raw;
 #ifdef STRATA_MODEL_ROWS_FIXTURE
-bool owned_fail_indexer_create=false;size_t owned_norm_live=0;
+bool owned_fail_indexer_create=false;size_t owned_norm_live=0,owned_attn_q_seen=0,owned_attn_k_seen=0;
 #endif
 }
 namespace strata::core::portable_detail {
@@ -25,6 +25,8 @@ uint32_t strata_vk_native_qsa_norm_rope_run(StrataVkNativeQsaNormRope*p,ggml_ten
  native_qsa_nr::Fixture f;f.cols=cols;f.rows=rows;f.stride=stride;f.theta=theta;f.x=get(t[0]);f.gamma=get(t[1]);f.pos.resize(rows);ggml_backend_tensor_get(t[2],f.pos.data(),0,rows*4);native_qsa_nr::validate(f);qsa_last_raw=f.x;
 #ifdef STRATA_MODEL_ROWS_FIXTURE
  if(f.gamma[0]==1.25f){check(cols==128&&rows==4,"owned QSA query norm binding");++owned_qnorm_seen;}
+ if(f.gamma[0]==1.5f){check(cols==256&&rows==24,"owned attention query norm binding");++owned_attn_q_seen;}
+ if(f.gamma[0]==.5f){check(cols==256&&rows==2,"owned attention key norm binding");++owned_attn_k_seen;}
 #endif
  ++p->calls;++qsa_norm_calls;if(fail_qsa_norm)return 1;
  // Independent host primitive provider, not Vulkan/CUDA numerical evidence.
