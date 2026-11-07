@@ -41,12 +41,13 @@ public:
  PortableNativePleGdnComposition(const PortableNativePleGdnComposition&)=delete;PortableNativePleGdnComposition&operator=(const PortableNativePleGdnComposition&)=delete;
  ~PortableNativePleGdnComposition(){if(published_)published_->valid=false;}
  uint64_t position()const{return position_;}uint64_t generation()const{return generation_;}bool poisoned()const{return poisoned_;}
+ bool provenance_live()const{return ple_.position()==position_&&ple_.provenance_live();}
  std::vector<float> committed_state()const{return core_->committed_state();}
  std::vector<float> committed_history()const{return core_->committed_history();}
  // Optional preparation may perform downstream work that can still fail.
  // Neither callback may mutate the borrowed dependencies.
  void run(const Handle&handle,const Consumer&consumer,const Consumer&prepare={}){
-  need(!running_&&!poisoned_&&bool(consumer)&&!core_->candidate()&&!core_->poisoned(),"PLE GDN: unavailable");
+  need(!running_&&!poisoned_&&provenance_live()&&bool(consumer)&&!core_->candidate()&&!core_->poisoned(),"PLE GDN: unavailable");
   const auto first=handle.position(),gen=handle.generation();auto tokens=handle.tokens();const size_t count=tokens.size();
   need((count==1||count==2)&&first==position_&&ple_.position()==position_&&first<=UINT64_MAX-count&&generation_!=UINT64_MAX,"PLE GDN: position/rows/generation");
   running_=true;struct Guard{bool&x;~Guard(){x=false;}} guard{running_};std::shared_ptr<Access> candidate;

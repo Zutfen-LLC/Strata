@@ -66,6 +66,10 @@ public:
 };
 class PortableNativeHcComposed {
     friend class PortableNativeFfnComposition;
+    friend class PortableNativeLayer0Composition;
+    friend class NativeFfnHcFactory;
+    int checked_layer_=-1;
+    bool checked_attention_=false;
     using Context = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
     using Buffer = std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)>;
 public:
@@ -299,6 +303,24 @@ public:
         publication_=std::move(candidate); published_=slot; rows_=uint32_t(count);
     }
 private:
+    // Layer zero starts with a materialized embedding, never a pending tuple.
+    void run_layer0_embedding(const std::vector<float>& residual, size_t count, const Consumer& consume) {
+        require(!running_ && !poisoned_ && (count==1 || count==2) && consume &&
+                residual.size()==count*10240 && host_bound(count)<=host_budget_, "composed HC: layer0 entry");
+        for(float x:residual) require(std::isfinite(x), "composed HC: nonfinite embedding");
+        running_=true; struct Guard { bool& b; ~Guard(){b=false;} } guard{running_};
+        int slot=published_==0?1:0; auto& b=banks_[slot][count-1];
+        std::shared_ptr<Access> candidate;
+        try {
+            ggml_backend_tensor_set(b.residual,residual.data(),0,residual.size()*sizeof(float));
+            dispatch_.norm(b,uint32_t(count)); dispatch_.mix(b);
+            candidate=std::allocate_shared<Access>(PleOwnerAllocator<Access>{});
+            candidate->bank=&b; candidate->rows=uint32_t(count);
+            consume(View(candidate),uint32_t(count));
+        } catch (...) { if(candidate) candidate->valid=false; poisoned_=true; throw; }
+        if(publication_) publication_->valid=false;
+        publication_=std::move(candidate); published_=slot; rows_=uint32_t(count);
+    }
     // Only the connected FFN owner can invoke this same-layer entry, inside a
     // live upstream producer callback. These copies are not an identity API.
     void run_post_attention(const std::vector<float>& residual,const std::vector<float>& output,

@@ -19,14 +19,15 @@ public:
     static std::unique_ptr<PortableNativeHcComposed> create(int layer,ggml_backend_t backend,
         const std::vector<PortableTensorView>& views,size_t device_budget,size_t host_budget,
         const char* prefix,PortableNativeHcComposed::Dispatch test_dispatch={},
-        std::optional<PortableNativeHcComposed::ComponentCaps> caps=std::nullopt){
-        need(layer>=1&&layer<47&&backend&&views.size()==4,"FFN HC factory: layer/backend/role count");
+        std::optional<PortableNativeHcComposed::ComponentCaps> caps=std::nullopt, bool layer0_attention=false){
+        need(layer>=0&&layer<47&&(!layer0_attention||layer==0)&&backend&&views.size()==4,"FFN HC factory: layer/backend/role count");
         const bool injected=bool(test_dispatch.pending)||bool(test_dispatch.norm)||bool(test_dispatch.mix);
         if(!injected)native_hc_environment();
         need(injected||(prefix&&*prefix),"FFN HC factory: receipt prefix");
         need(host_bound(!injected&&prefix?std::strlen(prefix):0)<=host_budget,"FFN HC factory: host budget");
         const std::string base="blk."+std::to_string(layer)+".";
-        const std::array<std::string,4> names{base+"hc_ffn_norm.weight",base+"hc_ffn_inject.weight",base+"hc_ffn_down.weight",base+"hc_ffn_up.weight"};
+        const std::string role=layer0_attention?"hc_attn_":"hc_ffn_";
+        const std::array<std::string,4> names{base+role+"norm.weight",base+role+"inject.weight",base+role+"down.weight",base+role+"up.weight"};
         const std::array<std::vector<int64_t>,4> shapes{{{10240},{10240,4},{10240,320},{320,10240}}};
         const std::array<size_t,4> elements{{10240,40960,3276800,3276800}};
         std::array<const PortableTensorView*,4> selected{};
@@ -47,7 +48,9 @@ public:
         const auto actual=ggml_backend_buffer_get_size(buffer.get());need(actual<=device_budget&&retained<=device_budget-actual&&component<=device_budget-actual-retained,"FFN HC factory: actual construction budget");
         ggml_backend_tensor_set(roles[0],selected[0]->data,0,selected[0]->bytes);
         for(size_t i=1;i<4;++i){auto packed=native_hc_q8_bf16(static_cast<const uint8_t*>(selected[i]->data),selected[i]->bytes,elements[i]);ggml_backend_tensor_set(roles[i],packed.data(),0,packed.size()*2);}
-        return std::make_unique<PortableNativeHcComposed>(backend,roles[0],roles[1],roles[2],roles[3],device_budget-actual,prefix,std::move(test_dispatch),host_budget,caps);
+        auto result=std::make_unique<PortableNativeHcComposed>(backend,roles[0],roles[1],roles[2],roles[3],device_budget-actual,prefix,std::move(test_dispatch),host_budget,caps);
+        result->checked_layer_=layer; result->checked_attention_=layer0_attention;
+        return result;
     }
     static std::vector<PortableTensorView> from_gguf(const GgufModel& model,int layer){
         std::vector<PortableTensorView> views;views.reserve(4);

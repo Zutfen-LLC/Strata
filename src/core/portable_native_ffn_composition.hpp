@@ -29,7 +29,7 @@ private:
     uint64_t upstream_position()const{return gdn_?gdn_->position():ordinary_?ordinary_->position():qsa_->position();}
     uint64_t upstream_generation()const{return gdn_?gdn_->generation():ordinary_?ordinary_->generation():qsa_->generation();}
     bool upstream_poisoned()const{return gdn_?gdn_->poisoned():ordinary_?ordinary_->poisoned():qsa_->poisoned();}
-    bool upstream_provenance_live()const{return gdn_|| (ordinary_?ordinary_->provenance_live():qsa_->provenance_live());}
+    bool upstream_provenance_live()const{return gdn_?gdn_->provenance_live():(ordinary_?ordinary_->provenance_live():qsa_->provenance_live());}
     template<class Invoke>
     void execute(uint64_t first,size_t count,const PortableExpertRowsBatch& provider,const Consumer& consumer,const Consumer& prepare,Invoke invoke){
         need(!running_&&!poisoned_&&!upstream_poisoned()&&upstream_provenance_live()&&!rows_.poisoned()&&consumer&&provider&&
