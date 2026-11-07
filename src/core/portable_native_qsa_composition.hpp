@@ -85,7 +85,8 @@ public:
  }
  PortableNativeQsaComposition(const PortableNativeQsaComposition&)=delete;PortableNativeQsaComposition&operator=(const PortableNativeQsaComposition&)=delete;
  ~PortableNativeQsaComposition(){if(published_)published_->valid=false;}
- uint64_t position()const{return position_;}uint64_t generation()const{return generation_;}bool poisoned()const{return poisoned_;}
+ int layer()const{return layer_;}uint64_t position()const{return position_;}uint64_t generation()const{return generation_;}bool poisoned()const{return poisoned_;}
+ bool provenance_live()const{return !anchor_ || (anchor_->live()&&anchor_->layer()+1==layer_&&position_&&anchor_->position()==position_-1);}
  Seed state()const{Seed s;s.position=position_;s.keys=keys_;s.values=values_;s.indexer=indexer_state_;s.anchor_=anchor_;return s;}
  void reset(){need(!running_&&generation_!=UINT64_MAX,"QSA composition: reset active/generation");Seed s;s.keys.resize(size_t(cells_)*512);s.values.resize(size_t(cells_)*512);s.indexer.resize(qsa_idx_words(cells_));reset(s);}
  // Nonzero seeds must come from state() and retain its live producer-generation

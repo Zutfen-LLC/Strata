@@ -3,6 +3,7 @@
 #include "portable_native_ple_integration_test.cpp"
 #undef main
 #include "portable_native_ple_gdn_composition.hpp"
+#include "portable_native_ffn_composition.hpp"
 namespace {
 void need(bool b,const char*m){if(!b)throw std::runtime_error(m);}
 int fail=0;size_t conv_calls=0,ab_calls=0,recur_calls=0;
@@ -53,6 +54,29 @@ int main(){try{
  PortableNativeGdnOutputRows out(b.get(),wo,wr.data(),wr.size(),(root/"gdn-out").string(),PortableNativeGdnOutputRows::estimate(b.get()));
  using Owner=PortableNativePleGdnComposition;Owner owner(ple,in,std::move(core),out,Owner::host_bound());owner.reset({3,5});
  auto stage=[&](std::vector<int32_t>tokens){std::vector<std::array<uint32_t,16>>indices;auto prev=ple.previous();std::vector<std::array<int32_t,2>>pred;for(auto t:tokens){pred.push_back(prev);prev={prev[1],t};}check(table->gather_batch(tokens,pred,indices,expected_embedding,error),"gather");norm_call=0;return ple.stage(ple.position(),tokens,std::vector<float>(tokens.size()*10240,0.25f));};
+ // Drive the actual PLE/GDN transaction through the standalone FFN chain.
+ {
+  using HC=PortableNativeHcComposed;
+  auto metadata=std::unique_ptr<ggml_context,decltype(&ggml_free)>(ggml_init({8192,nullptr,true}),ggml_free);
+  auto* rw=ggml_new_tensor_2d(metadata.get(),GGML_TYPE_F32,2560,512);auto rb=std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)>(ggml_backend_alloc_ctx_tensors(metadata.get(),b.get()),ggml_backend_buffer_free);
+  std::vector<float> zero(2560*512);ggml_backend_tensor_set(rw,zero.data(),0,zero.size()*4);PortableNativeFfnProjection projection(b.get(),rw,16u<<20);
+  PortableNativeFfnRows::Dispatch d;d.router=[](size_t,const ggml_tensor*,std::vector<PortableRoute>&r){for(auto&v:r){v.native_router=true;for(int k=0;k<10;++k){v.ids.push_back(k);v.weights.push_back(.1f);}}};
+  d.shared=[](size_t n,const ggml_tensor*){return std::vector<float>(n*2560,1.f);};d.combine=[](size_t,const auto&,const auto&,const auto&s){return s;};PortableNativeFfnRows row_owner(1,projection,d);
+  HC::Dispatch dispatch;dispatch.pending=[](const HC::Bank&bank){auto r=get(bank.input),o=get(bank.block);for(size_t t=0;t<o.size()/2560;++t)for(size_t s=0;s<4;++s)for(size_t h=0;h<2560;++h)r[t*10240+s*2560+h]+=o[t*2560+h];put(bank.residual,r);};
+  dispatch.norm=[](const HC::Bank&bank,uint32_t n){put(bank.inject,std::vector<float>(n*4,.25f));};dispatch.mix=[](const HC::Bank&bank){auto r=get(bank.residual);std::vector<float>m(r.size()/4);for(size_t t=0;t<m.size()/2560;++t)std::copy_n(r.begin()+t*10240,2560,m.begin()+t*2560);put(bank.mixed,m);};
+  auto ff=std::make_unique<HC>(b.get(),hc[0],hc[1],hc[2],hc[3],20*1024*1024,nullptr,dispatch);PortableNativeFfnComposition chain(PortableNativeFfnComposition::TestOnlyHc{},owner,std::move(ff),row_owner,PortableNativeFfnComposition::host_bound());HC next(b.get(),hc[0],hc[1],hc[2],hc[3],20*1024*1024,nullptr,dispatch);
+  size_t calls=0;PortableExpertRowsBatch experts=[&](int64_t l,const auto&r,auto&out,auto&){++calls;check(l==1&&(r.size()==1||r.size()==2),"PLE FFN route");out.assign(r.size()*10*2560,0);return true;};
+  PortableNativeFfnComposition::Batch snapshots;auto input=stage({7,9});chain.run(input,experts,[&](const auto&v){snapshots=v;});
+  check(calls==1&&chain.position()==2&&snapshots.size()==2&&snapshots[0]->valid_for(chain,2,0),"PLE FFN T2 commit");auto residual=snapshots[0]->tuple().residual;
+  next.run(2,0,chain,snapshots,[&](const HC::View&v,uint32_t n){check(n==2&&v.read(HC::View::Field::residual)[0]==residual[0]+1.f,"PLE FFN next HC");},[](const HC::View&,uint32_t){});
+  auto tail_input=stage({11});PortableNativeFfnComposition::Batch tail;chain.run(tail_input,experts,[&](const auto&v){tail=v;});check(calls==2&&chain.position()==3&&tail[0]->valid_for(chain,2,2)&&snapshots[0]->tuple().residual==residual,"PLE FFN tail and retained tuple");
+  auto state_before=owner.committed_state(),history_before=owner.committed_history(),ple_before=ple.history();auto bad_input=stage({13});PortableNativeFfnComposition::Batch failed;bool rejected=false;
+  try{chain.run(bad_input,experts,[&](const auto&v){failed=v;},[](const auto&){throw std::runtime_error("late prepare");});}catch(...){rejected=true;}
+  check(rejected&&chain.poisoned()&&chain.position()==3&&owner.position()==3&&owner.committed_state()==state_before&&owner.committed_history()==history_before&&ple.history()==ple_before&&snapshots[0]->tuple().residual==residual,"PLE FFN preparation rollback");
+  rejected=false;try{failed[0]->tuple();}catch(...){rejected=true;}check(rejected,"PLE FFN failed candidate retained");
+  owner.reset({3,5});chain.reset();bool stale=false;try{snapshots[0]->tuple();}catch(...){stale=true;}check(stale,"PLE FFN reset provenance");
+ }
+ in_quant=in_qkv=in_z=conv_calls=ab_calls=recur_calls=out_quant=out_dot=0;
  std::optional<Owner::View> old;auto h=stage({7,9});auto expected_residual=h.residual();owner.run(h,[&](const Owner::View&view){check(view.position()==0&&view.tokens()==std::vector<int32_t>{7,9}&&view.residual()==expected_residual&&view.injection()==std::vector<float>(8,3),"row provenance");check(view.output().size()==5120,"output rows");bool reset_rejected=false,abort_rejected=false,owner_reset_rejected=false;try{ple.reset();}catch(...){reset_rejected=true;}try{ple.abort(h);}catch(...){abort_rejected=true;}try{owner.reset();}catch(...){owner_reset_rejected=true;}check(reset_rejected&&abort_rejected&&owner_reset_rejected,"reentrant mutation accepted");old=view;});
  check(owner.position()==2&&ple.position()==2&&old&&old->tokens()==std::vector<int32_t>{7,9}&&in_quant==1&&in_qkv==1&&in_z==1&&conv_calls==1&&ab_calls==1&&recur_calls==1&&out_quant==1&&out_dot==1,"coordinated T2 commit and dispatch counts");auto before_state=owner.committed_state(),before_history=owner.committed_history(),before_ple=ple.history();
  auto tail=stage({11});std::optional<Owner::View> failed;bool rejected=false;try{owner.run(tail,[&](const Owner::View&view){failed=view;throw std::runtime_error("consumer failure");});}catch(const std::exception&){rejected=true;}

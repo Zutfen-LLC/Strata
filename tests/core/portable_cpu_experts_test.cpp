@@ -1,4 +1,6 @@
 #include "../../src/core/portable_cpu_experts.hpp"
+#include "../../src/core/portable_native_ffn_rows.hpp"
+#include "ggml-cpu.h"
 #include "portable_model_fixture.hpp"
 #include <cstdio>
 #include <limits>
@@ -159,6 +161,40 @@ int main() {
                     (unsigned long long)candidate.work().batch_max_nt,
                     (unsigned long long)candidate.work().batch_native_jobs,
                     (unsigned long long)candidate.work().batch_logical_rows,candidate.bytes());
+        // Exercise the new row core through the actual mapped CPU grouped provider.
+        {
+            using namespace strata::core::portable_detail;
+            std::unique_ptr<ggml_backend,decltype(&ggml_backend_free)> backend(ggml_backend_cpu_init(),ggml_backend_free);
+            std::unique_ptr<ggml_context,decltype(&ggml_free)> ctx(ggml_init({8192,nullptr,true}),ggml_free);
+            auto* weight=ggml_new_tensor_2d(ctx.get(),GGML_TYPE_F32,2560,512);
+            std::unique_ptr<ggml_backend_buffer,decltype(&ggml_backend_buffer_free)> buf(ggml_backend_alloc_ctx_tensors(ctx.get(),backend.get()),ggml_backend_buffer_free);
+            std::vector<float> zeros(2560*512);ggml_backend_tensor_set(weight,zeros.data(),0,zeros.size()*4);
+            PortableNativeFfnProjection projection(backend.get(),weight,16u<<20);
+            bool disjoint=false;
+            PortableNativeFfnRows::Dispatch dispatch;
+            dispatch.router=[&](size_t n,const ggml_tensor*,std::vector<PortableRoute>& r){for(size_t t=0;t<n;++t){r[t].native_router=true;for(size_t k=0;k<10;++k){r[t].ids.push_back(int32_t(9-k+(disjoint?10*t:0)));r[t].weights.push_back(float(k+1)/16);}}};
+            dispatch.shared=[](size_t n,const ggml_tensor*){return std::vector<float>(n*2560,0.25f);};
+            dispatch.combine=[](size_t n,const auto& parts,const auto& weights,const auto& shared){auto out=shared;for(size_t t=0;t<n;++t)for(size_t k=0;k<10;++k)for(size_t h=0;h<2560;++h)out[t*2560+h]+=parts[(t*10+k)*2560+h]*weights[t*10+k];return out;};
+            PortableNativeFfnRows core(0,projection,dispatch);CpuExperts grouped(model,(fixture.root / "manifest").string(),opts);std::vector<float> input(5120);
+            for(size_t t=0;t<2;++t)for(size_t h=0;h<2560;++h)input[t*2560+h]=float(int((h+3*t)%17)-8)/7;
+            for(bool distinct:{false,true}){disjoint=distinct;size_t calls=0;std::vector<PortableRoute> used;
+                PortableExpertRowsBatch provider=[&](int64_t layer,const auto& routes,auto& rows,auto& err){++calls;used=routes;return grouped.run_batch(layer,routes,rows,err);};
+                const auto before=grouped.work();auto actual=core.run(input,2,provider);const auto after=grouped.work();
+                check(calls==1&&after.native_batches==before.native_batches+1&&after.batch_native_jobs==before.batch_native_jobs+(distinct?20:10),"row core actual grouped CPU topology");
+                if(!distinct)check(before.batch_max_nt==0&&after.batch_max_nt==2,"row core shared expert token grouping");
+                for(size_t t=0;t<2;++t){std::vector<float> serial;check(oracle.run(0,used[t],serial,error),error);
+                    for(size_t h=0;h<2560;++h){float expected=.25f;for(size_t k=0;k<10;++k)expected+=serial[k*2560+h]*used[t].weights[k];check(actual.block[t*2560+h]==expected,"row core grouped scatter/weight mismatch");}}
+            }
+            // Corrupt only this test's mapped fixture and restore it even if the
+            // provider unexpectedly throws. The provider must refuse before a pool call.
+            CpuExperts guarded(model,(fixture.root / "manifest").string(),opts);
+            auto path=fixture.paths[3];auto time=std::filesystem::last_write_time(path);
+            struct Restore {SparseModel& f;std::filesystem::path p;std::filesystem::file_time_type time;~Restore(){try{const uint8_t one=1;f.patch(3,"blk.0.ffn_gate_exps.weight",2,&one,1);std::filesystem::last_write_time(p,time);}catch(...){}}} restore{fixture,path,time};
+            const uint8_t corrupt=2;fixture.patch(3,"blk.0.ffn_gate_exps.weight",2,&corrupt,1);std::filesystem::last_write_time(path,time+std::chrono::seconds(10));
+            disjoint=false;PortableExpertRowsBatch bad_provider=[&](int64_t l,const auto& routes,auto& output,auto& err){return guarded.run_batch(l,routes,output,err);};
+            bool caught=false;try{core.run(input,2,bad_provider);}catch(const std::exception& e){caught=std::string(e.what())=="portable model: selected expert digest mismatch at layer 0 expert 0";}
+            check(caught&&core.poisoned()&&guarded.work().native_batches==0,"row core source digest corruption must refuse before pool");
+        }
         const auto path = fixture.paths[3];
         const auto time = std::filesystem::last_write_time(path);
         const uint8_t corrupt = 1, restored = 0;

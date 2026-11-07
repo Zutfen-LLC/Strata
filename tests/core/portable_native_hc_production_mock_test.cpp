@@ -1,5 +1,6 @@
 // CPU-only test of the real empty-Dispatch wiring; not shader or GPU evidence.
 #include "portable_native_hc_composed.hpp"
+#include "portable_native_ffn_hc_factory.hpp"
 #include "ggml-cpu.h"
 #include <algorithm>
 #include <array>
@@ -126,5 +127,27 @@ int main(){try {
  owner.reset(); check(owner.rows()==0,"final reset");
  }
  check(destroys==std::array<int,3>{1,1,1},"component destruction");
+ {
+  using strata::core::PortableTensorView;std::vector<float> norm(10240,2.f);
+  std::array<std::vector<uint8_t>,3> q;const size_t count[]={40960,3276800,3276800};
+  for(size_t j=0;j<3;++j){q[j].resize(count[j]/32*34);for(size_t k=0;k<q[j].size();k+=34){q[j][k]=0;q[j][k+1]=0x3c;q[j][k+2]=uint8_t(j+1);}}
+  std::vector<PortableTensorView> v{{"blk.3.hc_ffn_norm.weight",{10240},0,norm.data(),norm.size()*4},
+   {"blk.3.hc_ffn_inject.weight",{10240,4},8,q[0].data(),q[0].size()},
+   {"blk.3.hc_ffn_down.weight",{10240,320},8,q[1].data(),q[1].size()},
+   {"blk.3.hc_ffn_up.weight",{320,10240},8,q[2].data(),q[2].size()}};
+  auto reject=[&](std::vector<PortableTensorView> bad,size_t db,size_t hb){bool threw=false;try{auto x=NativeFfnHcFactory::create(3,cpu.get(),bad,db,hb,"factory",{},Owner::ComponentCaps{pb,nb,mb});}catch(...){threw=true;}check(threw,"invalid FFN role factory admission");};
+  auto bad=v;bad.pop_back();reject(bad,40u<<20,SIZE_MAX);bad=v;bad[1]=bad[2];reject(bad,40u<<20,SIZE_MAX);
+  bad=v;bad[1].name="blk.2.hc_ffn_inject.weight";reject(bad,40u<<20,SIZE_MAX);bad=v;bad[1].name="blk.3.hc_attn_inject.weight";reject(bad,40u<<20,SIZE_MAX);
+  reject(v,1,SIZE_MAX);reject(v,40u<<20,NativeFfnHcFactory::host_bound(7)-1);
+  std::unique_ptr<ggml_context,decltype(&ggml_free)> sizing(ggml_init({16384,nullptr,true}),ggml_free);
+  std::array<const ggml_tensor*,4> desc{ggml_new_tensor_1d(sizing.get(),GGML_TYPE_F32,10240),ggml_new_tensor_1d(sizing.get(),GGML_TYPE_I32,20480),ggml_new_tensor_1d(sizing.get(),GGML_TYPE_I32,1638400),ggml_new_tensor_1d(sizing.get(),GGML_TYPE_I32,1638400)};
+  const auto upload=ggml_backend_alloc_ctx_tensors_from_buft_size(sizing.get(),ggml_backend_get_default_buffer_type(cpu.get()));
+  const auto exact=upload+Owner::tensor_bound(cpu.get(),desc)+pb+nb+mb;reject(v,exact-1,SIZE_MAX);
+  auto converted=std::array<std::vector<uint16_t>,3>{native_hc_q8_bf16(q[0].data(),q[0].size(),count[0]),native_hc_q8_bf16(q[1].data(),q[1].size(),count[1]),native_hc_q8_bf16(q[2].data(),q[2].size(),count[2])};
+  auto owner=NativeFfnHcFactory::create(3,cpu.get(),v,exact,SIZE_MAX,"factory",{},Owner::ComponentCaps{pb,nb,mb});
+  std::fill(norm.begin(),norm.end(),9.f);for(auto& x:q)std::fill(x.begin(),x.end(),0);
+  std::vector<float> copied(10240);ggml_backend_tensor_get(owner->role_bank()->role(0),copied.data(),0,copied.size()*4);check(copied[0]==2.f,"factory norm not copied");
+  for(size_t i=0;i<3;++i){std::vector<uint16_t> value(count[i]);ggml_backend_tensor_get(owner->role_bank()->role(i+1),value.data(),0,value.size()*2);check(value==converted[i],"factory FFN role conversion/copy");}
+ }
  std::puts("composed HC production wiring CPU mock passed"); return 0;
  }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what()); return 1;}}

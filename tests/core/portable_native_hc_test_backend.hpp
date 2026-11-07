@@ -65,6 +65,7 @@ void check_indexer_bank(ggml_tensor* t,size_t role,size_t bytes){
 size_t owners=0,calls=0,mix_owners=0,mix_calls=0;bool fail_mix_domain=false,fail_mix_domain_ffn=false,last_norm_ffn=false;bool fail_mix=false,fail_mix_create=false;float mixed_scale=1;const ggml_tensor* live_mixed=nullptr;size_t mixed_consumers=0;
 std::vector<uint16_t> expected_down,expected_up;bool fail_run=false,fail_create=false;float inject_bias=0,norm_scale=1;
 std::vector<uint16_t> expected_ffn_down,expected_ffn_up,expected_ffn_inject;
+bool factory_ffn_mode=false,factory_shared_mode=false;std::array<std::vector<uint16_t>,3> factory_ffn_roles;
 std::vector<float> uploaded,expected_xn,expected_rs,expected_inject;
 std::vector<uint16_t> expected_weights;
 const ggml_tensor* bound_weight=nullptr;const ggml_tensor* live_normalized=nullptr;size_t direct_consumers=0;
@@ -146,6 +147,7 @@ void strata_vk_native_hc_pending_destroy(StrataVkNativeHcPending*p)noexcept{if(p
 void strata_vk_native_hc_pending_run(StrataVkNativeHcPending*owner,const ggml_tensor*r,const ggml_tensor*b,const ggml_tensor*i,ggml_tensor*rp,ggml_tensor*g,ggml_tensor*e){
  if(observe_gdn_output&&!owner->final_write){check_gdn_output_bank(b,actual_gdn_output_bank,2560*4);++gdn_output_pending_links;}
  if(observe_wo_pending&&!actual_native_wo.empty()&&get(b)==actual_native_wo)++wo_pending_links;
+ if(factory_ffn_mode&&!owner->final_write){auto rr=get(r),bb=get(b),ii=get(i);size_t n=bb.size()/2560;std::vector<float>res,gate,exp;for(size_t t=0;t<n;++t){auto value=native_hc_pending_control({rr.begin()+t*10240,rr.begin()+(t+1)*10240},{bb.begin()+t*2560,bb.begin()+(t+1)*2560},{ii.begin()+t*4,ii.begin()+(t+1)*4});res.insert(res.end(),value.residual.begin(),value.residual.end());gate.insert(gate.end(),value.gate.begin(),value.gate.end());exp.insert(exp.end(),value.exponential.begin(),value.exponential.end());}put(rp,res);put(g,gate);put(e,exp);return;}
  if(owner->final_write){
  check(!fail_write_run,"injected final write refusal");check(r==live_ffn_residual&&i==live_ffn_inject,"final write did not consume retained actual FFN operands");check(r!=rp&&b!=rp&&i!=rp,"final write producer/candidate alias");
  auto x=get(r),bo=get(b),inj=get(i);write_seen_block=bo;std::vector<float> result(10240),gate(4),exp(4);
@@ -160,6 +162,7 @@ StrataVkNativeHcMix* strata_vk_native_head_hc_mix_rn_create(ggml_backend_t backe
 size_t strata_vk_native_hc_mix_bytes(const StrataVkNativeHcMix*){return 512;}
 void strata_vk_native_hc_mix_destroy(StrataVkNativeHcMix*p)noexcept{if(p)--mix_owners;if(!mix_owners)live_mixed=nullptr;delete p;}
 void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*x,const ggml_tensor*down,const ggml_tensor*up,ggml_tensor*lp,ggml_tensor*low,ggml_tensor*le,ggml_tensor*upre,ggml_tensor*gates,ggml_tensor*ue,ggml_tensor*mixed){
+ if(factory_ffn_mode){for(size_t i=0;i<2;++i){auto*t=i?up:down;std::vector<uint16_t>v(ggml_nbytes(t)/2);ggml_backend_tensor_get(t,v.data(),0,v.size()*2);check(v==factory_ffn_roles[i+1],"factory FFN mix role");}for(auto*t:{lp,low,le,upre,gates,ue})put(t,std::vector<float>(size_t(ggml_nelements(t))));auto input=get(x);std::vector<float>v(ggml_nelements(mixed));for(size_t r=0;r<v.size()/2560;++r)std::copy_n(input.begin()+r*10240,2560,v.begin()+r*2560);put(mixed,v);return;}
  check(!fail_mix,"injected mix refusal");check(x==live_normalized,"composition normalized operand differs");
  size_t wi=0;for(auto*w:{down,up}){check(w->type==GGML_TYPE_I32&&ggml_nbytes(w)==6553600,"converted down/up span");std::vector<uint16_t> b(3276800);ggml_backend_tensor_get(w,b.data(),0,b.size()*2);const auto&want=last_norm_ffn&&!expected_ffn_down.empty()?(wi?expected_ffn_up:expected_ffn_down):(wi?expected_up:expected_down);++wi;check(b==want,"original BF16 role conversion");}
  for(auto*t:{lp,low,le,upre,gates,ue})put(t,std::vector<float>(size_t(ggml_nelements(t)),0));
@@ -172,6 +175,7 @@ size_t strata_vk_native_hc_bytes(const StrataVkNativeHc*){return 512;}
 void strata_vk_native_hc_destroy(StrataVkNativeHc*p)noexcept{if(p)--owners;if(!owners){bound_weight=nullptr;live_normalized=nullptr;}delete p;}
 void strata_vk_native_hc_norm_only(StrataVkNativeHc*,const ggml_tensor*x,const ggml_tensor*w,ggml_tensor*xn,ggml_tensor*rs){check(!fail_run&&x==actual_final_write_bank,"head must read actual final FFN producer");auto out=native_hc_norm_oracle(get(x),get(w),1);put(xn,out.xn);put(rs,out.rs);live_normalized=xn;last_norm_ffn=false;++calls;}
 void strata_vk_native_hc_run(StrataVkNativeHc*,const ggml_tensor*x,const ggml_tensor*w,const ggml_tensor*wi,ggml_tensor*xn,ggml_tensor*rs,ggml_tensor*inject,uint32_t t){
+ if(factory_ffn_mode){std::vector<uint16_t>v(ggml_nbytes(wi)/2);ggml_backend_tensor_get(wi,v.data(),0,v.size()*2);check(v==factory_ffn_roles[0]&&get(w)[0]==2.f,"factory FFN norm/inject role");put(xn,get(x));put(rs,std::vector<float>(t*4,1.f));put(inject,std::vector<float>(t*4,.5f));return;}
  const bool ple_attention=observe_ple_hc && !std::string(ggml_get_name(wi)).ends_with(".hc_ffn_inject.weight");
  if(ple_attention){check(actual_ple_conv_result&&x==actual_ple_conv_result,"HC must read completed PLE producer bank");check(x->buffer&&ggml_is_contiguous(x)&&ggml_backend_buffer_get_type(x->buffer)==ggml_backend_buffer_get_type(xn->buffer),"HC producer device/span");++ple_hc_links;}
  native_hc_environment();last_norm_ffn=std::string(ggml_get_name(wi)).ends_with(".hc_ffn_inject.weight");check((ple_attention ? (x==actual_ple_conv_result&&ggml_nelements(x)==10240) : (x->ne[0]==2560&&x->ne[1]==4&&!x->view_src))&&xn->ne[0]==10240&&xn->ne[1]==1&&!xn->view_src,"original input/normalized geometry");live_normalized=xn;
@@ -318,7 +322,8 @@ size_t strata_vk_native_stages_bytes(const StrataVkNativeStages*){return 512;}
 uint64_t strata_vk_native_stages_quant_submitted(const StrataVkNativeStages*p) noexcept{return p?p->submitted:0;}
 uint64_t strata_vk_native_stages_quant_completed(const StrataVkNativeStages*p) noexcept{return p?p->completed:0;}
 uint64_t strata_vk_native_stages_quant_submission_uncertain(const StrataVkNativeStages*) noexcept{return 0;}
-void strata_vk_native_stages_run(StrataVkNativeStages*p,uint32_t mode,const ggml_tensor*gate,const ggml_tensor*,ggml_tensor*,ggml_tensor*packed,uint32_t n,const int32_t*,size_t){
+void strata_vk_native_stages_run(StrataVkNativeStages*p,uint32_t mode,const ggml_tensor*gate,const ggml_tensor*,ggml_tensor*hidden,ggml_tensor*packed,uint32_t n,const int32_t*,size_t){
+ if(factory_shared_mode){if(mode==1)put(hidden,std::vector<float>(ggml_nelements(hidden)));else{std::vector<int32_t>z(ggml_nelements(packed));ggml_backend_tensor_set(packed,z.data(),0,z.size()*4);}return;}
  check(mode==0&&(n==6144||n==2560),"unexpected quantizer geometry");auto values=get(gate);
  if(n==6144&&observe_gdn_output){check_gdn_output_bank(gate,actual_gdn_gated,6144*4);++gdn_output_quant_links;}
  else if(n==6144)check(values==actual_native_gated,"quantizer ignored actual native attention output");
@@ -366,6 +371,7 @@ uint64_t strata_vk_native_shared_submitted(const StrataVkNativeShared*p)noexcept
 uint64_t strata_vk_native_shared_completed(const StrataVkNativeShared*p)noexcept{return p?p->completed:0;}
 uint64_t strata_vk_native_shared_uncertain(const StrataVkNativeShared*p)noexcept{return p?p->uncertain:0;}
 void strata_vk_native_shared_run(StrataVkNativeShared*p,uint32_t mode,const ggml_tensor*w,const ggml_tensor*x,ggml_tensor*out,ggml_tensor*aux,uint32_t ni,uint32_t no,uint32_t tokens){
+ if(factory_shared_mode && no!=128 && no!=512){put(out,std::vector<float>(ggml_nelements(out),mode==2?1.f:0.f));if(mode==2)put(aux,std::vector<float>(ggml_nelements(aux),.5f));return;}
  if(observe_qsa_rows){++qsa_row_bf_calls;check(mode==1&&ni==2560&&(tokens==1||tokens==2)&&(no==128||no==512),"QSA indexer row projection geometry");auto in=get(x);std::vector<uint16_t>weights(size_t(no)*2560);ggml_backend_tensor_get(w,weights.data(),0,weights.size()*2);std::vector<float>result;for(size_t r=0;r<tokens;++r){auto v=qsa_indexer_bf16_control(in.data()+r*2560,weights.data(),no);result.insert(result.end(),v.begin(),v.end());}put(out,result);++p->submitted;++p->completed;if(qsa_rows_fail=="bf16")throw std::runtime_error("BF16 write then fail");return;}
  if(no==2560){check(mode==1&&ni==2560&&tokens==1,"PLE value geometry");if(fail_ple_value)throw std::runtime_error("injected PLE value failure");actual_ple_value_input=x;auto in=get(x);std::vector<uint16_t> weights(size_t(no)*2560);ggml_backend_tensor_get(w,weights.data(),0,weights.size()*2);auto result=native_bf16_matrix_control(in.data(),weights.data(),no);ple_value_bank=out;ggml_backend_tensor_set(out,result.data(),0,result.size()*4);++p->submitted;++p->completed;return;}
  check(mode==1&&ni==2560&&tokens==1&&(no==128||no==512)&&x==live_mixed,"indexer projection did not consume actual HC mixed tensor");

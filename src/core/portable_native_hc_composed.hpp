@@ -19,6 +19,8 @@
 #include <vector>
 
 namespace strata::core::portable_detail {
+class PortableNativeFfnComposition;
+class PortableNativeFfnSnapshot;
 // Immutable snapshot of the already-packed roles. The backend remains borrowed.
 // Payload is 13,230,080 bytes before backend alignment. This allocation is
 // additional to the source bank while the latter remains resident; callers
@@ -63,6 +65,7 @@ public:
     ggml_backend_t backend() const { return backend_; }
 };
 class PortableNativeHcComposed {
+    friend class PortableNativeFfnComposition;
     using Context = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
     using Buffer = std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)>;
 public:
@@ -256,6 +259,10 @@ public:
     void run(int layer, uint64_t first, const PortableGdnLayer& producer,
              const std::vector<std::shared_ptr<const PortableGdnSnapshot>>& snapshots,
              const Consumer& a, const Consumer& b) { run_impl(layer, first, producer, snapshots, a, b); }
+    // Ordinary next-layer consumption of privately issued post-FFN tuples.
+    void run(int layer, uint64_t first, const PortableNativeFfnComposition& producer,
+             const std::vector<std::shared_ptr<const PortableNativeFfnSnapshot>>& snapshots,
+             const Consumer& a, const Consumer& b);
     // Materialized PLE is the sole layer-1 entry; it has no pending HC tuple.
     // The transaction and its handle must remain alive and unmodified throughout
     // synchronous consumption. Revalidation at commit catches reentrant changes.
@@ -292,6 +299,29 @@ public:
         publication_=std::move(candidate); published_=slot; rows_=uint32_t(count);
     }
 private:
+    // Only the connected FFN owner can invoke this same-layer entry, inside a
+    // live upstream producer callback. These copies are not an identity API.
+    void run_post_attention(const std::vector<float>& residual,const std::vector<float>& output,
+                            const std::vector<float>& injection,size_t count,const Consumer& consume) {
+        require(!running_&&!poisoned_&&(count==1||count==2)&&consume &&
+                residual.size()==count*10240&&output.size()==count*2560&&injection.size()==count*4,
+                "composed HC: post-attention tuple");
+        require(host_bound(count)<=host_budget_,"composed HC: host budget");
+        for(const auto* v:{&residual,&output,&injection})for(float x:*v)require(std::isfinite(x),"composed HC: nonfinite post-attention tuple");
+        running_=true;struct Guard{bool& b;~Guard(){b=false;}}guard{running_};
+        int slot=published_==0?1:0;auto& b=banks_[slot][count-1];
+        ggml_backend_tensor_set(b.input,residual.data(),0,residual.size()*sizeof(float));
+        ggml_backend_tensor_set(b.block,output.data(),0,output.size()*sizeof(float));
+        ggml_backend_tensor_set(b.previous,injection.data(),0,injection.size()*sizeof(float));
+        std::shared_ptr<Access> candidate;
+        try {
+            dispatch_.pending(b);dispatch_.norm(b,uint32_t(count));dispatch_.mix(b);
+            candidate=std::allocate_shared<Access>(PleOwnerAllocator<Access>{});candidate->bank=&b;candidate->rows=uint32_t(count);
+            consume(View(candidate),uint32_t(count));
+        }catch(...){if(candidate)candidate->valid=false;poisoned_=true;throw;}
+        if(publication_)publication_->valid=false;
+        publication_=std::move(candidate);published_=slot;rows_=uint32_t(count);
+    }
     template<class Producer, class Snapshot>
     void run_impl(int layer, uint64_t first, const Producer& producer,
              const std::vector<std::shared_ptr<const Snapshot>>& snapshots,
