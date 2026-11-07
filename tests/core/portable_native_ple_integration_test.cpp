@@ -8,6 +8,7 @@ static ggml_status gated_test_compute(ggml_backend_t backend, ggml_cgraph* graph
 #ifdef STRATA_MODEL_ROWS_FIXTURE
 static size_t owned_qnorm_seen=0,owned_knorm_seen=0,owned_qproj_seen=0,owned_kproj_seen=0,owned_qkv_seen=0,owned_wo_seen=0;
 static size_t owned_ple_key_seen=0,owned_ple_value_seen=0,owned_ple_conv_seen=0,owned_ple_gamma_seen[3]{};
+static bool terminal_fail_head_create=false;
 #endif
 #define STRATA_PLE_GATED_VALUE_TEST_COMPUTE gated_test_compute
 #include "portable_native_ple_executor.hpp"
@@ -111,10 +112,14 @@ void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*x,const 
 #endif
 }
 #ifdef STRATA_TERMINAL_FIXTURE
-StrataVkNativeHcMix* strata_vk_native_head_hc_mix_rn_create(ggml_backend_t b,const char*p,size_t n){return strata_vk_native_hc_mix_create(b,p,n);}
+StrataVkNativeHcMix* strata_vk_native_head_hc_mix_rn_create(ggml_backend_t b,const char*p,size_t n){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(terminal_fail_head_create)throw std::runtime_error("injected head mix factory");
+#endif
+ return strata_vk_native_hc_mix_create(b,p,n);}
 void strata_vk_native_hc_norm_only(StrataVkNativeHc*,const ggml_tensor*x,const ggml_tensor*,ggml_tensor*out,ggml_tensor*rs){if(terminal_head_attempts++==terminal_fail_head_at)throw std::runtime_error("terminal injected head failure");check(x->view_src==terminal_write_bank,"head must read final-write row view");terminal_row_offsets.push_back(x->view_offs);std::vector<float> v(10240);ggml_backend_tensor_get(x,v.data(),0,v.size()*4);ggml_backend_tensor_set(out,v.data(),0,v.size()*4);fill_hc(rs,1);}
 #endif
-struct StrataVkNativeStages{}; struct StrataVkQ8Wo{}; struct StrataVkNativeShared{bool ffn=false;};
+struct StrataVkNativeStages{bool reciprocal=true;}; struct StrataVkQ8Wo{}; struct StrataVkNativeShared{bool ffn=false;};
 #ifdef STRATA_MODEL_ROWS_FIXTURE
 static int ffn_shared_live=0;
 #endif
