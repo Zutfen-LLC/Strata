@@ -21,6 +21,14 @@ public:
     // estimate is the existing owner's requested device envelope, not a
     // physical memory measurement. Host covers metadata and its role readback.
     static size_t host_bound() { return ple_host_add(16384 + 65536, PortableNativeGdnInputRows::host_bound()); }
+    static size_t device_bound(ggml_backend_t backend) {
+        need(backend, "GDN input factory: backend");
+        Context c(ggml_init({16384,nullptr,true}),ggml_free);need(bool(c), "GDN input factory: metadata");
+        need(ggml_new_tensor_2d(c.get(),GGML_TYPE_Q8_0,2560,10240) &&
+             ggml_new_tensor_2d(c.get(),GGML_TYPE_Q8_0,2560,6144), "GDN input factory: tensor metadata");
+        return ple_host_add(ggml_backend_alloc_ctx_tensors_from_buft_size(c.get(),ggml_backend_get_default_buffer_type(backend)),
+                            PortableNativeGdnInputRows::estimate(backend));
+    }
     PortableNativeGdnInputOwner(int layer, ggml_backend_t backend,
         const std::array<PortableTensorView,2>& roles, const std::string& directory,
         size_t host_budget, size_t device_budget) : layer_(layer) {
