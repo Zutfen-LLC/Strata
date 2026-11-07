@@ -110,7 +110,10 @@ void strata_vk_native_hc_mix_run(StrataVkNativeHcMix*,const ggml_tensor*x,const 
 StrataVkNativeHcMix* strata_vk_native_head_hc_mix_rn_create(ggml_backend_t b,const char*p,size_t n){return strata_vk_native_hc_mix_create(b,p,n);}
 void strata_vk_native_hc_norm_only(StrataVkNativeHc*,const ggml_tensor*x,const ggml_tensor*,ggml_tensor*out,ggml_tensor*rs){if(terminal_head_attempts++==terminal_fail_head_at)throw std::runtime_error("terminal injected head failure");check(x->view_src==terminal_write_bank,"head must read final-write row view");terminal_row_offsets.push_back(x->view_offs);std::vector<float> v(10240);ggml_backend_tensor_get(x,v.data(),0,v.size()*4);ggml_backend_tensor_set(out,v.data(),0,v.size()*4);fill_hc(rs,1);}
 #endif
-struct StrataVkNativeStages{}; struct StrataVkQ8Wo{}; struct StrataVkNativeShared{};
+struct StrataVkNativeStages{}; struct StrataVkQ8Wo{}; struct StrataVkNativeShared{bool ffn=false;};
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+static int ffn_shared_live=0;
+#endif
 StrataVkNativeStages* strata_vk_native_stages_create_quant_rcp_observation(ggml_backend_t,const char* p,size_t){++executor_creates;auto i=factory_enter("key quant");std::ofstream(p)<<"mock";return factory_return(new StrataVkNativeStages,i);}
 size_t strata_vk_native_stages_bytes(const StrataVkNativeStages*){return 512;}
 void strata_vk_native_stages_destroy(StrataVkNativeStages*p)noexcept{factory_destroy(p);delete p;}
@@ -120,9 +123,22 @@ void strata_vk_q8_wo_destroy(StrataVkQ8Wo*p)noexcept{factory_destroy(p);delete p
 void strata_vk_ple_key_quantize_bounded(StrataVkNativeStages*,const ggml_tensor*x,ggml_tensor*q,size_t t){inject("quant");check(t==1||t==2,"quant rows");std::vector<float>a(t*2560);ggml_backend_tensor_get(x,a.data(),0,a.size()*4);check(a==expected_embedding,"gather embedding");std::vector<uint8_t> z(t*2880);ggml_backend_tensor_set(q,z.data(),0,z.size());++quant;}
 void strata_vk_ple_key_run_bounded(StrataVkQ8Wo*,const ggml_tensor*,const ggml_tensor*,ggml_tensor*out,size_t rows,size_t t){inject("dot");check((t==1||t==2)&&rows==10240,"key rows");std::vector<float> a(t*rows,-1234.f);for(size_t r=0;r<t;++r)for(size_t i=0;i<rows;++i)a[r*rows+i]=1.f+expected_embedding[r*2560];ggml_backend_tensor_set(out,a.data(),0,a.size()*4);++dot;}
 StrataVkNativeShared* strata_vk_ple_value_bf16_create(ggml_backend_t,const char*,size_t){++executor_creates;auto i=factory_enter("value");return factory_return(new StrataVkNativeShared,i);}
-void strata_vk_native_shared_destroy(StrataVkNativeShared*p)noexcept{factory_destroy(p);delete p;}
+void strata_vk_native_shared_destroy(StrataVkNativeShared*p)noexcept{
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ if(p&&p->ffn)--ffn_shared_live;
+#endif
+ factory_destroy(p);delete p;}
 size_t strata_vk_native_shared_bytes(const StrataVkNativeShared*){return 0;}
 void strata_vk_native_shared_run(StrataVkNativeShared*,uint32_t mode,const ggml_tensor*weight_for_value,const ggml_tensor*x,ggml_tensor*out,ggml_tensor*,uint32_t ni,uint32_t no,uint32_t t){
+#ifdef STRATA_MODEL_ROWS_FIXTURE
+ static size_t shared_phase=0;
+ if((mode==0&&(no==640||no==2560))||(mode==1&&no==1)){
+  uint8_t marker[3]{};ggml_backend_tensor_get(weight_for_value,marker,0,mode==1?2:3);
+  if(mode==1)check(marker[0]==0x80&&marker[1]==0x3f,"FFN scalar role");else {check(marker[1]==0x3c&&marker[2]==21+shared_phase%3&&no==(shared_phase%3==2?2560u:640u),"FFN shared role/order");++shared_phase;}
+  fill_hc(out,0.f);return;
+ }
+ if(mode==2){fill_hc(out,.001f);return;}
+#endif
 #ifdef STRATA_CHAIN_QSA_MOCKS
  if(no==128||no==512){check(mode==1&&ni==2560&&(t==1||t==2),"QSA indexer rows");std::vector<float> input(t*ni);ggml_backend_tensor_get(x,input.data(),0,input.size()*4);std::vector<uint16_t> weights(size_t(no)*ni);ggml_backend_tensor_get(weight_for_value,weights.data(),0,weights.size()*2);std::vector<float> result;for(size_t r=0;r<t;++r){auto row=qsa_indexer_bf16_control(input.data()+r*ni,weights.data(),no);result.insert(result.end(),row.begin(),row.end());}ggml_backend_tensor_set(out,result.data(),0,result.size()*4);return;}
 #endif
