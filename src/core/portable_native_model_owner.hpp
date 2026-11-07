@@ -48,7 +48,7 @@ public:
     // small-table copy) are separately counted; backend-private allocations,
     // allocator/driver costs, provider and caller-retained results are excluded.
     PortableNativeModelOwner(std::shared_ptr<const GgufModel> model,std::shared_ptr<PortablePleTable> table,
-        ggml_backend_t backend,uint32_t cells,const std::string& prefix,const Budgets& b)
+        ggml_backend_t backend,uint32_t cells,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32)
       :model_(std::move(model)),table_(std::move(table)){
         need(model_&&table_&&backend&&!prefix.empty(),"model owner: source/table/backend/prefix");
         auto arch=check_architecture(model_->meta());need(arch.empty(),"model owner: architecture: "+arch);
@@ -65,7 +65,7 @@ public:
         for(size_t i=2;i<5;++i)for(size_t j=0;j<10240;++j){float x;std::memcpy(&x,static_cast<const uint8_t*>(p[i].data)+j*4,4);native_hc_normal(x);}
         (void)PortableNativePleConv::native_weights(p[5].data,p[5].bytes,p[5].type);
         for(int i=0;i<48;++i){
-            auto r=PortableNativeFfnOwner::from_gguf(*model_,i);PortableNativeFfnOwner::validate(i,r);hc_check(i,*model_);
+            auto r=PortableNativeFfnOwner::from_gguf(*model_,i);PortableNativeFfnOwner::validate(i,r,method);hc_check(i,*model_);
             if(i%4==3){auto q=PortableNativeQsaOwner::from_gguf(*model_,i);PortableNativeQsaOwner::validate(i,q);}
             else {auto g=PortableNativeGdnComponents::from_gguf(*model_,i);PortableNativeGdnComponents::validate(i,g);}
         }
@@ -82,20 +82,25 @@ public:
         need(roles<=accounting_.device_requested,"model owner: role accounting");accounting_.explicit_role_device=roles;accounting_.other_device_including_scratch=accounting_.device_requested-roles;
         accounting_.executor_host=b.executor_host;accounting_.result_allowance=ple_host_mul(vocab,2*sizeof(float));
         need(accounting_.host_requested<=b.host&&accounting_.device_requested<=b.device,"model owner: aggregate budget");
-        entry_=std::make_unique<PortableNativeLayer0Owner>(model_,backend,prefix+".entry",b.entry);
-        ple_=std::make_unique<PortableNativePle1Owner>(model_,table_,backend,prefix+".ple1",b.ple);
+        entry_=std::make_unique<PortableNativeLayer0Owner>(model_,backend,prefix+".entry",b.entry,method);
+        ple_=std::make_unique<PortableNativePle1Owner>(model_,table_,backend,prefix+".ple1",b.ple,method);
         std::array<PortableNativeModelRows::Layer,48> layers{};
         for(int i=2;i<=46;++i){auto path=prefix+".layer"+std::to_string(i);
-            if(i%4==3){qsa_[i]=std::make_unique<PortableNativeQsaLayerOwner>(i,cells,backend,*model_,path,b.qsa);layers[i].qsa=&qsa_[i]->attention();layers[i].ffn=&qsa_[i]->ffn();}
-            else {gdn_[i]=std::make_unique<PortableNativeOrdinaryLayerOwner>(i,backend,*model_,path,b.gdn);layers[i].gdn=&gdn_[i]->attention();layers[i].ffn=&gdn_[i]->ffn();}}
-        terminal_=std::make_unique<PortableNativeTerminalOwner>(cells,vocab,backend,*model_,prefix+".terminal",b.terminal);
+            if(i%4==3){qsa_[i]=std::make_unique<PortableNativeQsaLayerOwner>(i,cells,backend,*model_,path,b.qsa,method);layers[i].qsa=&qsa_[i]->attention();layers[i].ffn=&qsa_[i]->ffn();}
+            else {gdn_[i]=std::make_unique<PortableNativeOrdinaryLayerOwner>(i,backend,*model_,path,b.gdn,method);layers[i].gdn=&gdn_[i]->attention();layers[i].ffn=&gdn_[i]->ffn();}}
+        terminal_=std::make_unique<PortableNativeTerminalOwner>(cells,vocab,backend,*model_,prefix+".terminal",b.terminal,method);
         rows_=std::make_unique<PortableNativeModelRows>(entry_->composition(),ple_->ple(),ple_->attention(),ple_->ffn(),layers,terminal_->attention(),terminal_->terminal(),b.executor_host);
     }
-    static std::unique_ptr<PortableNativeModelOwner> from_model(std::shared_ptr<const GgufModel> model,ggml_backend_t backend,uint32_t cells,const std::string& prefix,const Budgets& b){
+    static std::unique_ptr<PortableNativeModelOwner> from_model(std::shared_ptr<const GgufModel> model,ggml_backend_t backend,uint32_t cells,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32){
         need(bool(model),"model owner: missing model");std::string error;auto table=PortablePleTable::from_gguf(*model,error);need(bool(table),"model owner: "+error);
-        return std::make_unique<PortableNativeModelOwner>(std::move(model),std::move(table),backend,cells,prefix,b);
+        return std::make_unique<PortableNativeModelOwner>(std::move(model),std::move(table),backend,cells,prefix,b,method);
     }
     PortableNativeModelOwner(const PortableNativeModelOwner&)=delete;PortableNativeModelOwner& operator=(const PortableNativeModelOwner&)=delete;
+    std::array<PortableRouterMethod,48> router_methods()const{
+        std::array<PortableRouterMethod,48> result{};result[0]=entry_->router_method();result[1]=ple_->router_method();
+        for(int i=2;i<=46;++i)result[i]=i%4==3?qsa_[i]->router_method():gdn_[i]->router_method();
+        result[47]=terminal_->router_method();return result;
+    }
     const Accounting& accounting()const{return accounting_;}
     uint64_t position()const{return rows_->position();}bool poisoned()const{return rows_->poisoned();}
     auto run(uint64_t first,const std::vector<int32_t>& tokens,const PortableExpertRowsBatch& provider){return rows_->run(first,tokens,provider);}

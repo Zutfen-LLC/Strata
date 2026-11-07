@@ -58,6 +58,33 @@ int main(){try{
  for(size_t j=0;j<512;++j)check(v[j]==2*float(j+1)+6&&v[512+j]==5*float(j+1)-2,"T2 projection mismatch");
  mixed.resize(2560);p.run(mixed,1);v.resize(512);ggml_backend_tensor_get(p.output(1),v.data(),0,v.size()*4);
  for(size_t j=0;j<512;++j)check(v[j]==2*float(j+1)+6,"tail mismatch");
+ // Independent exact arithmetic: two halfway inputs round to even, signed
+ // zero survives the operand image, and shared input remains unrounded.
+ std::fill(weights.begin(),weights.end(),0.f);
+ for(size_t j=0;j<512;++j){weights[j*2560]=float(j%128+1);weights[j*2560+1]=1.f;}
+ ggml_backend_tensor_set(role,weights.data(),0,weights.size()*4);
+ PortableNativeFfnProjection bf(backend.get(),role,16u<<20,PortableRouterMethod::single_bf16);
+ std::vector<float> bm(5120,0.f);bm[0]=1.f+1.f/256;bm[1]=1.f+3.f/256;bm[2560]=2.f;bm[2561]=-0.f;
+ bf.run(bm,2);check(bf.graph_attempts()==1,"T2 graph count");
+ auto* bo=bf.output(2);check(bo->op==GGML_OP_MUL_MAT&&bo->src[0]->type==GGML_TYPE_BF16&&bo->src[1]->type==GGML_TYPE_F32&&bo->ne[1]==2,"BF16 graph shape");
+ std::vector<float> operands(5120),original(5120),bl(1024);
+ ggml_backend_tensor_get(bo->src[1],operands.data(),0,operands.size()*4);
+ ggml_backend_tensor_get(bf.mixed(2),original.data(),0,original.size()*4);
+ ggml_backend_tensor_get(bo,bl.data(),0,bl.size()*4);
+ check(operands[0]==1.f&&operands[1]==1.f+1.f/64&&std::signbit(operands[2561]),"round-to-even operands");
+ check(original==bm&&original[0]!=operands[0],"shared input changed");
+ for(size_t j=0;j<512;++j)check(bl[j]==float(j%128+1)+1.f+1.f/64&&bl[512+j]==2.f*float(j%128+1),"BF16 logits");
+ bm.resize(2560);bf.run(bm,1);check(bf.graph_attempts()==2,"tail graph count");
+ ggml_backend_tensor_get(bf.output(1),bl.data(),0,512*4);for(size_t j=0;j<512;++j)check(bl[j]==float(j%128+1)+1.f+1.f/64,"BF16 tail");
+ weights[0]=1.f+1.f/65536;ggml_backend_tensor_set(role,weights.data(),0,weights.size()*4);
+ bool inexact=false;try{PortableNativeFfnProjection no(backend.get(),role,16u<<20,PortableRouterMethod::single_bf16);}catch(...){inexact=true;}check(inexact,"inexact router admitted");
+ bm[0]=std::numeric_limits<float>::max();bool overflow=false;try{bf.run(bm,1);}catch(...){overflow=true;}check(overflow,"BF16 overflow admitted");
+ overflow=false;try{bf.output(1);}catch(...){overflow=true;}check(overflow,"BF16 stale output");
+ bm[0]=std::numeric_limits<float>::infinity();bool rejected_bf=false;try{bf.run(bm,1);}catch(...){rejected_bf=true;}check(rejected_bf,"BF16 nonfinite input");
+ rejected_bf=false;try{bf.run(bm,3);}catch(...){rejected_bf=true;}check(rejected_bf,"BF16 shape");
+ bm[0]=1.f+1.f/256;bf.run(bm,1);ggml_backend_tensor_get(bf.output(1),bl.data(),0,512*4);check(bl[0]==2.f+1.f/64,"BF16 recovery");
+ weights[0]=std::numeric_limits<float>::infinity();ggml_backend_tensor_set(role,weights.data(),0,weights.size()*4);
+ rejected_bf=false;try{PortableNativeFfnProjection no(backend.get(),role,16u<<20,PortableRouterMethod::single_bf16);}catch(...){rejected_bf=true;}check(rejected_bf,"BF16 nonfinite weight");
  mixed[0]=std::numeric_limits<float>::infinity();bool failed=false;try{p.run(mixed,1);}catch(...){failed=true;}check(failed,"nonfinite input accepted");
  failed=false;try{p.output(1);}catch(...){failed=true;}check(failed,"failed output remained accessible");
  mixed.assign(5120,0);mixed[0]=2;mixed[2560]=5;size_t calls=0, router_calls=0;

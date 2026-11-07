@@ -46,10 +46,10 @@ public:
         for(size_t i=0;i<r.size();++i)need(r[i].name==names[i]&&r[i].data&&r[i].shape==shapes[i]&&r[i].type==(i?8u:0u)&&r[i].bytes==bytes[i],"terminal owner: head role descriptor");
         qsa_wo_require_scales(qsa_wo_scale_classes(static_cast<const uint8_t*>(r[3].data),vocab*80,34),r[3].name,true);
     }
-    PortableNativeTerminalOwner(uint32_t cells,size_t vocab,ggml_backend_t backend,const GgufModel& model,const std::string& prefix,const Budgets& b){
+    PortableNativeTerminalOwner(uint32_t cells,size_t vocab,ggml_backend_t backend,const GgufModel& model,const std::string& prefix,const Budgets& b,PortableRouterMethod method=PortableRouterMethod::legacy_f32){
         need(backend&&!prefix.empty(),"terminal owner: backend/prefix");
         auto q=PortableNativeQsaOwner::from_gguf(model,47);PortableNativeQsaOwner::validate(47,q);
-        auto r=PortableNativeFfnOwner::from_gguf(model,47);PortableNativeFfnOwner::validate(47,r);
+        auto r=PortableNativeFfnOwner::from_gguf(model,47);PortableNativeFfnOwner::validate(47,r,method);
         auto hc=NativeFfnHcFactory::from_gguf(model,47);NativeFfnHcFactory::select(47,hc,false);
         auto hr=from_gguf(model);validate_head(hr,vocab);std::vector<PortableTensorView> hv(hr.begin(),hr.end());
         auto hp=prefix+".head",tp=prefix+".terminal-hc";
@@ -65,13 +65,14 @@ public:
         opts.native_head_hc_t1=true;opts.native_head_vocab_t1=true;opts.native_head_hc_receipt_prefix=hp;
         opts.weight_budget=b.head_weight;opts.graph_budget=b.head_graph;
         need(PortableHead::weight_allocation_size(backend,geo,hv,true)<=b.head_weight&&PortableHead::admission(geo,hv,opts,false).graph_bound<=b.head_graph,"terminal owner: head budgets");
-        rows_=std::make_unique<PortableNativeFfnOwner>(47,backend,r,prefix+".rows",b.rows);
+        rows_=std::make_unique<PortableNativeFfnOwner>(47,backend,r,prefix+".rows",b.rows,method);
         qsa_=std::make_unique<PortableNativeQsaOwner>(47,cells,backend,q,prefix+".qsa",b.qsa);
         std::string error;head_=PortableHead::create(geo,hv,opts,error);if(!head_)throw std::runtime_error("terminal owner: head: "+error);
         terminal_=std::make_unique<PortableNativeTerminalComposition>(qsa_->composition(),backend,hc,rows_->rows(),*head_,b.terminal_hc,th,b.terminal_write,tp.c_str(),(prefix+".write").c_str(),b.terminal_caps);
     }
     PortableNativeTerminalOwner(const PortableNativeTerminalOwner&)=delete;
     PortableNativeTerminalOwner& operator=(const PortableNativeTerminalOwner&)=delete;
+    PortableRouterMethod router_method()const{return rows_->router_method();}
     PortableNativeQsaComposition& attention(){return qsa_->composition();}
     PortableNativeTerminalComposition& terminal(){return *terminal_;}
     PortableHead& head(){return *head_;}
